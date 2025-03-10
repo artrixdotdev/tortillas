@@ -39,6 +39,8 @@ pub struct Info {
    pieces: Hashes,
    #[serde(flatten)]
    file: InfoKeys,
+
+   source: Option<String>,
 }
 
 /// A custom type for serializing and deserializing a vector of 20-byte SHA-1 hashes.
