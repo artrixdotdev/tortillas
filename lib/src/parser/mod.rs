@@ -1,8 +1,8 @@
 use std::fmt;
 
 use serde::{
-   Deserialize, Serialize,
    de::{self, Visitor},
+   Deserialize, Serialize,
 };
 
 mod file;
@@ -27,7 +27,7 @@ pub enum MetaInfo {
 #[derive(Debug, Deserialize)]
 pub struct MagnetUri {
    #[serde(rename(deserialize = "xt"))]
-   topic: String,
+   info_hash: String,
 
    #[serde(rename(deserialize = "dn"))]
    name: String,
@@ -88,6 +88,15 @@ pub struct Info {
    file: InfoKeys,
 
    source: Option<String>,
+}
+
+impl MetaInfo {
+   pub fn info_hash(&self) -> &str {
+      match &self {
+         MetaInfo::Torrent(torrent) => "test",
+         MetaInfo::MagnetUri(magnet_uri) => magnet_uri.info_hash.split(":").last().unwrap(),
+      }
+   }
 }
 
 /// A custom type for serializing and deserializing a vector of 20-byte SHA-1 hashes.
