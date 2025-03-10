@@ -1,3 +1,5 @@
+use std::fmt;
+
 use serde::{
    Deserialize, Serialize,
    de::{self, Visitor},
@@ -30,16 +32,13 @@ pub struct Metainfo {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Info {
-   #[serde(default)] // This will use Vec::default() if missing
-   files: Vec<InfoFile>,
    name: String,
    #[serde(rename = "piece length")]
    piece_length: u64,
    /// Binary string of concatenated 20-byte SHA-1 hash values
    pieces: Hashes,
-   // For single-file torrents, length may be here instead of in files
-   #[serde(skip_serializing_if = "Option::is_none")]
-   length: Option<u64>,
+   #[serde(flatten)]
+   file: InfoKeys,
 }
 
 /// A custom type for serializing and deserializing a vector of 20-byte SHA-1 hashes.
@@ -81,8 +80,24 @@ impl<'de> Visitor<'de> for HashesVisitor {
       ))
    }
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InfoKeys {
+   Single {
+      length: u64,
+   },
+   Multi {
+      #[serde(default)]
+      files: Vec<InfoFile>,
+   },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfoFile {
-   length: u64,
+   /// The length of the file, in bytes.
+   length: usize,
+
+   /// Subdirectory names for this file, the last of which is the actual file name
+   /// (a zero length list is an error case).
    path: Vec<String>,
 }
