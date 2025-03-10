@@ -4,33 +4,33 @@ use serde::{
    Deserialize, Serialize,
    de::{self, Visitor},
 };
+
 mod file;
 mod magnet;
 
 pub use file::*;
 pub use magnet::*;
+
 /// An Announce URI from a torrent file or magnet URI.
 /// https://www.bittorrent.org/beps/bep_0012.html
 /// Example: udp://tracker.opentrackr.org:1337/announce
 #[derive(Debug, Deserialize)]
 pub struct AnnounceUri(String);
 
+#[derive(Debug, Deserialize)]
 pub enum MetaInfo {
-   Torrent (
-      TorrentFile
-   ),
-   MagnetUri (
-   )
+   Torrent(TorrentFile),
+   MagnetUri(MagnetUri),
 }
 
-/// Magnet URI Spec: https://en.wikipedia.org/wiki/Magnet_URI_scheme
+/// Magnet URI Spec: https://en.wikipedia.org/wiki/Magnet_URI_scheme or https://www.bittorrent.org/beps/bep_0053.html
 #[derive(Debug, Deserialize)]
-pub struct MagnetUri{
+pub struct MagnetUri {
    #[serde(rename(deserialize = "xt"))]
    topic: String,
 
    #[serde(rename(deserialize = "dn"))]
-   name: Option<String>,
+   name: String,
 
    #[serde(rename(deserialize = "xl"))]
    length: Option<u32>,
@@ -57,7 +57,7 @@ pub struct MagnetUri{
    select_only: Option<Vec<String>>,
 
    #[serde(rename(deserialize = "x.pe"))]
-   peer: Option<String>
+   peer: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,7 +76,6 @@ pub struct TorrentFile {
    info: Info,
    url_list: Option<Vec<String>>,
 }
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Info {
