@@ -4,9 +4,13 @@ use serde::{
    Deserialize, Serialize,
    de::{self, Visitor},
 };
+
 mod file;
+mod magnet;
 
 pub use file::*;
+pub use magnet::*;
+
 /// An Announce URI from a torrent file or magnet URI.
 /// https://www.bittorrent.org/beps/bep_0012.html
 /// Example: udp://tracker.opentrackr.org:1337/announce
@@ -14,7 +18,50 @@ pub use file::*;
 pub struct AnnounceUri(String);
 
 #[derive(Debug, Deserialize)]
-pub struct Metainfo {
+pub enum MetaInfo {
+   Torrent(TorrentFile),
+   MagnetUri(MagnetUri),
+}
+
+/// Magnet URI Spec: https://en.wikipedia.org/wiki/Magnet_URI_scheme or https://www.bittorrent.org/beps/bep_0053.html
+#[derive(Debug, Deserialize)]
+pub struct MagnetUri {
+   #[serde(rename(deserialize = "xt"))]
+   topic: String,
+
+   #[serde(rename(deserialize = "dn"))]
+   name: String,
+
+   #[serde(rename(deserialize = "xl"))]
+   length: Option<u32>,
+
+   #[serde(rename(deserialize = "tr"))]
+   announce_list: Option<Vec<AnnounceUri>>,
+
+   #[serde(rename(deserialize = "ws"))]
+   web_seed: String,
+
+   #[serde(rename(deserialize = "as"))]
+   source: Option<String>,
+
+   #[serde(rename(deserialize = "xs"))]
+   exact_source: Option<String>,
+
+   #[serde(rename(deserialize = "kt"))]
+   keywords: Option<Vec<String>>,
+
+   #[serde(rename(deserialize = "mt"))]
+   manifest_topic: Option<String>,
+
+   #[serde(rename(deserialize = "so"))]
+   select_only: Option<Vec<String>>,
+
+   #[serde(rename(deserialize = "x.pe"))]
+   peer: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TorrentFile {
    /// The primary announce URI for the torrent.
    announce: AnnounceUri,
    /// Secondary announce URIs for different trackers, and protocols. Also can be used as a backup
