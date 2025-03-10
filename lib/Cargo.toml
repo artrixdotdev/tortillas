@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
+librqbit-bencode = "3.0.2"
+serde = { version = "1.0", features = ["derive"] }
