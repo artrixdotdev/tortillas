@@ -9,3 +9,5 @@ anyhow = "1.0"
 serde_bencode = "^0.2.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_qs = "0.14.0"
+sha1 = "0.10.6"
+hex = "0.4.3"

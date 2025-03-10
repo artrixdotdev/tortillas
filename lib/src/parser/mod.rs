@@ -1,8 +1,9 @@
-use std::fmt;
+use std::{fmt, io::Read};
 
+use anyhow::Result;
 use serde::{
-   de::{self, Visitor},
    Deserialize, Serialize,
+   de::{self, Visitor},
 };
 
 mod file;
@@ -10,6 +11,7 @@ mod magnet;
 
 pub use file::*;
 pub use magnet::*;
+use sha1::{Digest, Sha1};
 
 /// An Announce URI from a torrent file or magnet URI.
 /// https://www.bittorrent.org/beps/bep_0012.html
@@ -90,11 +92,22 @@ pub struct Info {
    source: Option<String>,
 }
 
+impl Info {
+   pub fn hash(&self) -> Result<String> {
+      let mut hasher = Sha1::new();
+      hasher.update(serde_bencode::to_bytes(&self)?);
+      let result = hasher.finalize();
+      Ok(hex::encode(result))
+   }
+}
+
 impl MetaInfo {
-   pub fn info_hash(&self) -> &str {
+   pub fn info_hash(&self) -> String {
       match &self {
-         MetaInfo::Torrent(torrent) => "test",
-         MetaInfo::MagnetUri(magnet_uri) => magnet_uri.info_hash.split(":").last().unwrap(),
+         MetaInfo::Torrent(torrent) => torrent.info.hash().unwrap(),
+         MetaInfo::MagnetUri(magnet_uri) => {
+            String::from(magnet_uri.info_hash.split(":").last().unwrap())
+         }
       }
    }
 }
