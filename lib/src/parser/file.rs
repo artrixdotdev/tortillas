@@ -11,3 +11,19 @@ pub async fn parse_file(path: PathBuf) -> Result<Metainfo> {
    let metainfo: Metainfo = bencode::from_bytes(&file)?;
    Ok(metainfo)
 }
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   #[tokio::test]
+   async fn test_parse_file() {
+      println!("{}", std::env::current_dir().unwrap().display());
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/torrents/big-buck-bunny.torrent");
+      let metainfo = parse_file(path).await.unwrap();
+
+      assert_eq!(metainfo.info.name, "Big Buck Bunny");
+   }
+}
