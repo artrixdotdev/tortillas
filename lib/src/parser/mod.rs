@@ -2,8 +2,8 @@ use std::{fmt, io::Read};
 
 use anyhow::Result;
 use serde::{
-   Deserialize, Serialize,
    de::{self, Visitor},
+   Deserialize, Serialize,
 };
 
 mod file;
@@ -19,10 +19,28 @@ use sha1::{Digest, Sha1};
 #[derive(Debug, Deserialize)]
 pub struct AnnounceUri(String);
 
+/// Always utilize MetaInfo instead of directly using TorrentFile or MagnetUri
 #[derive(Debug, Deserialize)]
 pub enum MetaInfo {
    Torrent(TorrentFile),
    MagnetUri(MagnetUri),
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TorrentFile {
+   /// The primary announce URI for the torrent.
+   announce: AnnounceUri,
+   /// Secondary announce URIs for different trackers, and protocols. Also can be used as a backup
+   #[serde(rename(deserialize = "announce-list"))]
+   announce_list: Option<Vec<Vec<AnnounceUri>>>, // Note: This is a list of lists
+   comment: Option<String>,
+   #[serde(rename(deserialize = "created by"))]
+   created_by: Option<String>,
+   #[serde(rename(deserialize = "creation date"))]
+   creation_date: Option<i64>, // Typically stored as unix timestamp
+   encoding: Option<String>,
+   info: Info,
+   url_list: Option<Vec<String>>,
 }
 
 /// Magnet URI Spec: https://en.wikipedia.org/wiki/Magnet_URI_scheme or https://www.bittorrent.org/beps/bep_0053.html
@@ -62,23 +80,7 @@ pub struct MagnetUri {
    peer: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct TorrentFile {
-   /// The primary announce URI for the torrent.
-   announce: AnnounceUri,
-   /// Secondary announce URIs for different trackers, and protocols. Also can be used as a backup
-   #[serde(rename(deserialize = "announce-list"))]
-   announce_list: Option<Vec<Vec<AnnounceUri>>>, // Note: This is a list of lists
-   comment: Option<String>,
-   #[serde(rename(deserialize = "created by"))]
-   created_by: Option<String>,
-   #[serde(rename(deserialize = "creation date"))]
-   creation_date: Option<i64>, // Typically stored as unix timestamp
-   encoding: Option<String>,
-   info: Info,
-   url_list: Option<Vec<String>>,
-}
-
+/// Struct for TorrentFile
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Info {
    name: String,
@@ -93,6 +95,7 @@ pub struct Info {
 }
 
 impl Info {
+   /// Gets the file hash (xt, or exact topic) for the given Info struct
    pub fn hash(&self) -> Result<String> {
       let mut hasher = Sha1::new();
       hasher.update(serde_bencode::to_bytes(&self)?);
@@ -102,6 +105,10 @@ impl Info {
 }
 
 impl MetaInfo {
+   /// Returns the info hash for the given MetaInfo enum. If the enum is a [Torrent](TorrentFile), then this
+   /// function will calculate and return the hash. If the enum is a [MagnetUri](MagnetUri), then this
+   /// function will grab the existing hash and return it, as the MagnetUri spec already contains
+   /// the hash.
    pub fn info_hash(&self) -> String {
       match &self {
          MetaInfo::Torrent(torrent) => torrent.info.hash().unwrap(),
