@@ -53,7 +53,7 @@ mod tests {
          .join("tests/magneturis/big-buck-bunny.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
 
-      let metainfo = parse_magnet_uri(contents).await.unwrap();
+      let metainfo = MagnetUri::parse(contents).await.unwrap();
       assert_eq!(
          metainfo.info_hash(),
          "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
@@ -65,7 +65,7 @@ mod tests {
       let path = std::env::current_dir()
          .unwrap()
          .join("tests/torrents/big-buck-bunny.torrent");
-      let file = parse_file(path).await.unwrap();
+      let file = TorrentFile::parse(path).await.unwrap();
       assert_eq!(file.info_hash(), "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c");
    }
 }

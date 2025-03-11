@@ -27,6 +27,15 @@ pub struct TorrentFile {
    pub url_list: Option<Vec<String>>,
 }
 
+impl TorrentFile {
+   /// Parse torrent file into [`Metainfo`](super::MetaInfo).
+   pub async fn parse(path: PathBuf) -> Result<MetaInfo> {
+      let file = fs::read(path).await?;
+      let metainfo: MetaInfo = MetaInfo::Torrent(bencode::from_bytes(&file)?);
+      Ok(metainfo)
+   }
+}
+
 /// Struct for TorrentFile
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Info {
@@ -124,13 +133,6 @@ impl<'de> Visitor<'de> for HashesVisitor {
    }
 }
 
-/// Parse torrent file into [`Metainfo`](super::MetaInfo).
-pub async fn parse_file(path: PathBuf) -> Result<MetaInfo> {
-   let file = fs::read(path).await?;
-   let metainfo: MetaInfo = MetaInfo::Torrent(bencode::from_bytes(&file)?);
-   Ok(metainfo)
-}
-
 #[cfg(test)]
 mod tests {
    use super::*;
@@ -141,7 +143,7 @@ mod tests {
          .unwrap()
          .join("tests/torrents/big-buck-bunny.torrent");
 
-      let metainfo = parse_file(path).await.unwrap();
+      let metainfo = TorrentFile::parse(path).await.unwrap();
 
       match metainfo {
          MetaInfo::Torrent(torrent) => {
