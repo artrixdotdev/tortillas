@@ -3,7 +3,7 @@ use std::{fmt, io::Read};
 use anyhow::Result;
 use serde::{
    de::{self, Visitor},
-   Deserialize, Serialize,
+   Deserialize, Serialize, Serializer,
 };
 
 mod file;
@@ -150,7 +150,7 @@ mod tests {
 
 /// A custom type for serializing and deserializing a vector of 20-byte SHA-1 hashes.
 /// Credit to [Jon Gjengset](https://github.com/jonhoo/codecrafters-bittorrent-rust/)
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct Hashes(pub Vec<[u8; 20]>);
 
 // Add this implementation
@@ -160,6 +160,17 @@ impl<'de> Deserialize<'de> for Hashes {
       D: de::Deserializer<'de>,
    {
       deserializer.deserialize_bytes(HashesVisitor)
+   }
+}
+
+impl Serialize for Hashes {
+   fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+   where
+      S: Serializer,
+   {
+      let single_slice = self.0.concat();
+
+      serializer.serialize_bytes(&single_slice)
    }
 }
 
