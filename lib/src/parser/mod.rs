@@ -39,6 +39,7 @@ impl Visitor<'_> for AnnounceUriVisitor {
       formatter.write_str("a string")
    }
 
+   // Alittle DRY code here but its fine (surely)
    fn visit_string<E>(self, s: String) -> Result<Self::Value, E>
    where
       E: de::Error,
@@ -47,6 +48,18 @@ impl Visitor<'_> for AnnounceUriVisitor {
          "http" | "https" => AnnounceUri::Http(s),
          "udp" => AnnounceUri::Udp(s),
          "wss" => AnnounceUri::Websocket(s),
+         _ => panic!(),
+      })
+   }
+
+   fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+   where
+      E: de::Error,
+   {
+      Ok(match s.split("://").collect::<Vec<&str>>()[0] {
+         "http" | "https" => AnnounceUri::Http(s.to_string()),
+         "udp" => AnnounceUri::Udp(s.to_string()),
+         "wss" => AnnounceUri::Websocket(s.to_string()),
          _ => panic!(),
       })
    }
