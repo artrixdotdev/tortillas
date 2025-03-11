@@ -1,17 +1,10 @@
-use std::{fmt, io::Read};
-
-use anyhow::Result;
-use serde::{
-   Deserialize, Serialize, Serializer,
-   de::{self, Visitor},
-};
+use serde::Deserialize;
 
 mod file;
 mod magnet;
 
 pub use file::*;
 pub use magnet::*;
-use sha1::{Digest, Sha1};
 
 /// An Announce URI from a torrent file or magnet URI.
 /// https://www.bittorrent.org/beps/bep_0012.html
