@@ -59,7 +59,7 @@ impl Visitor<'_> for AnnounceUriVisitor {
       Ok(match s.split("://").collect::<Vec<&str>>()[0] {
          "http" | "https" => AnnounceUri::Http(s.to_string()),
          "udp" => AnnounceUri::Udp(s.to_string()),
-         "wss" => AnnounceUri::Websocket(s.to_string()),
+         "ws" | "wss" => AnnounceUri::Websocket(s.to_string()),
          _ => panic!(),
       })
    }
