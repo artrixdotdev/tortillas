@@ -110,7 +110,7 @@ impl Serialize for Hashes {
 
 struct HashesVisitor;
 
-impl<'de> Visitor<'de> for HashesVisitor {
+impl Visitor<'_> for HashesVisitor {
    type Value = Hashes;
 
    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {

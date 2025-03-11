@@ -10,7 +10,7 @@ pub use magnet::*;
 /// https://www.bittorrent.org/beps/bep_0012.html
 /// Example: udp://tracker.opentrackr.org:1337/announce
 #[derive(Debug, Deserialize)]
-pub struct AnnounceUri(String);
+pub struct AnnounceUri(pub String);
 
 /// Always utilize MetaInfo instead of directly using TorrentFile or MagnetUri
 #[derive(Debug, Deserialize)]
