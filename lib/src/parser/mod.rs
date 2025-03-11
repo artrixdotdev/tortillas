@@ -1,8 +1,8 @@
 use std::fmt;
 
 use serde::{
-   de::{self, Visitor},
    Deserialize,
+   de::{self, Visitor},
 };
 
 mod file;
@@ -44,7 +44,7 @@ impl Visitor<'_> for AnnounceUriVisitor {
       E: de::Error,
    {
       Ok(match s.split("://").collect::<Vec<&str>>()[0] {
-         "http" => AnnounceUri::Http(s),
+         "http" | "https" => AnnounceUri::Http(s),
          "udp" => AnnounceUri::Udp(s),
          "wss" => AnnounceUri::Websocket(s),
          _ => panic!(),
