@@ -1,8 +1,46 @@
 use std::collections::HashMap;
 
-use super::MetaInfo;
+use super::{AnnounceUri, MetaInfo};
 use anyhow::Result;
+use serde::Deserialize;
 use serde_qs;
+
+/// Magnet URI Spec: https://en.wikipedia.org/wiki/Magnet_URI_scheme or https://www.bittorrent.org/beps/bep_0053.html
+#[derive(Debug, Deserialize)]
+pub struct MagnetUri {
+   #[serde(rename(deserialize = "xt"))]
+   pub info_hash: String,
+
+   #[serde(rename(deserialize = "dn"))]
+   pub name: String,
+
+   #[serde(rename(deserialize = "xl"))]
+   pub length: Option<u32>,
+
+   #[serde(rename(deserialize = "tr"))]
+   pub announce_list: Option<Vec<AnnounceUri>>,
+
+   #[serde(rename(deserialize = "ws"))]
+   pub web_seed: String,
+
+   #[serde(rename(deserialize = "as"))]
+   pub source: Option<String>,
+
+   #[serde(rename(deserialize = "xs"))]
+   pub exact_source: Option<String>,
+
+   #[serde(rename(deserialize = "kt"))]
+   pub keywords: Option<Vec<String>>,
+
+   #[serde(rename(deserialize = "mt"))]
+   pub manifest_topic: Option<String>,
+
+   #[serde(rename(deserialize = "so"))]
+   pub select_only: Option<Vec<String>>,
+
+   #[serde(rename(deserialize = "x.pe"))]
+   pub peer: Option<String>,
+}
 
 pub async fn parse_magnet_uri(uri: String) -> Result<MetaInfo> {
    let qs = uri.split('?').last().unwrap(); // Turns magnet:?xt=... into xt=...
