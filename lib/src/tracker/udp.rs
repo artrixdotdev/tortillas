@@ -2,7 +2,8 @@
 /// https://en.wikipedia.org/wiki/User_Datagram_Protocol
 /// https://www.bittorrent.org/beps/bep_0015.html
 use anyhow::Result;
+use tokio::net::UdpSocket;
 
-pub async fn get() -> Result<()> {
-   Ok(())
+pub async fn get(uri: String) -> Result<()> {
+   let sock = UdpSocket::bind(uri).await?;
 }
