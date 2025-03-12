@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
-use super::{AnnounceUri, MetaInfo};
+use crate::{parser::MetaInfo, tracker::AnnounceUri};
+
 use anyhow::Result;
 use serde::Deserialize;
 use serde_qs;
