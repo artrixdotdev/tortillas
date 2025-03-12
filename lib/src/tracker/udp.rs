@@ -6,4 +6,5 @@ use tokio::net::UdpSocket;
 
 pub async fn get(uri: String) -> Result<()> {
    let sock = UdpSocket::bind(uri).await?;
+   Ok(())
 }
