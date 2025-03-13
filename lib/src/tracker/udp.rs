@@ -1,20 +1,23 @@
-/// 2 bytes for source port, 2 bytes for destination port, 2 bytes for length, and 2 bytes for checksum
+/// UDP protocol
 /// https://en.wikipedia.org/wiki/User_Datagram_Protocol
+///
+/// Please see the following for the UDP *tracker* protocol spec.
 /// https://www.bittorrent.org/beps/bep_0015.html
 /// https://xbtt.sourceforge.net/udp_tracker_protocol.html
-use anyhow::{Result, anyhow};
-use rand::RngCore;
-use serde::{Deserialize, Serialize};
-// use serde::{Deserialize, Serialize};
+use anyhow::{anyhow, Result};
 use num_enum::TryFromPrimitive;
+use rand::RngCore;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::net::UdpSocket;
+
+/// Types and constants
 pub type ConnectionId = u64;
 
 pub const MAGIC_CONSTANT: ConnectionId = 0x41727101980;
 
 pub type TransactionId = u32;
 
+/// Enum for UDP Tracker Protocol Action parameter. See this resource for more information: https://xbtt.sourceforge.net/udp_tracker_protocol.html
 #[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u32)]
 pub enum Action {
@@ -24,6 +27,7 @@ pub enum Action {
    Error = 3u32,
 }
 
+/// Enum for UDP Tracker Protocol Events parameter. See this resource for more information: https://xbtt.sourceforge.net/udp_tracker_protocol.html
 #[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u32)]
 pub enum Events {
@@ -33,22 +37,30 @@ pub enum Events {
    Stopped = 3u32,
 }
 
+/// Binary layout:
+/// - [Magic constant](MAGIC_CONSTANT) (8 bytes)
+/// - [Action](Action::Connect) (4 bytes)
+/// - [Transaction ID](TransactionId) (4 bytes)
+///
+/// Total: 16 bytes
+///
+/// | Magic constant | Action | Transaction ID |
+/// |----------------|--------|----------------|
+/// |    00000000    |  0000  |     0000       |
 enum TrackerRequest {
-   /// Binary layout:
-   /// - [Magic constant](MAGIC_CONSTANT) (8 bytes)
-   /// - [Action](Action::Connect) (4 bytes)
-   /// - [Transaction ID](TransactionId) (4 bytes)
-   ///
-   ///
-   /// Total: 16 bytes
-   ///
-   ///
-   /// | Magic constant | Action | Transaction ID |
-   /// |----------------|--------|----------------|
-   /// | 00000000       | 0000   | 0000           |
    Connect(ConnectionId, Action, TransactionId),
 }
 
+/// The response headers for TrackerResponse are somewhat different in comparison to TrackerRequest:
+/// Binary Layout:
+/// - [Action](Action::Connect) (4 bytes)
+/// - [Transaction ID](TransactionId) (4 bytes)
+/// - [Connection ID](ConnectionId) (8 bytes)
+///
+/// Total: 16 bytes
+/// | Action | Transaction ID | Connection ID |
+/// |--------|----------------|---------------|
+/// |  0000  |      0000      |   00000000    |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrackerResponse {
    Connect {
@@ -58,6 +70,7 @@ enum TrackerResponse {
    },
 }
 
+/// Formats the headers for a request in the UDP Tracker Protocol
 impl TrackerRequest {
    pub fn to_bytes(&self) -> Vec<u8> {
       let mut buf = Vec::new();
@@ -72,6 +85,7 @@ impl TrackerRequest {
    }
 }
 
+/// Accepts a response (in bytes) from a UDP [tracker request](TrackerRequest).
 impl TrackerResponse {
    pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
       println!("Received bytes: {:?}", bytes);
@@ -95,6 +109,7 @@ impl TrackerResponse {
    }
 }
 
+// Makes a request using the UDP tracker protocol
 pub async fn get(uri: String) -> Result<()> {
    let sock = UdpSocket::bind("0.0.0.0:0").await?;
    let uri = uri.replace("udp://", "");
