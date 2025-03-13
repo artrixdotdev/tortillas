@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::{parser::MetaInfo, tracker::AnnounceUri};
+use crate::{parser::MetaInfo, tracker::Tracker};
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -19,7 +19,7 @@ pub struct MagnetUri {
    pub length: Option<u32>,
 
    #[serde(rename(deserialize = "tr"))]
-   pub announce_list: Option<Vec<AnnounceUri>>,
+   pub announce_list: Option<Vec<Tracker>>,
 
    #[serde(rename(deserialize = "ws"))]
    pub web_seed: String,

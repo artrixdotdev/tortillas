@@ -21,7 +21,7 @@ pub struct Peer {
 /// https://www.bittorrent.org/beps/bep_0012.html
 /// Example: udp://tracker.opentrackr.org:1337/announce
 #[derive(Debug)]
-pub enum AnnounceUri {
+pub enum Tracker {
    /// HTTP Spec
    /// https://www.bittorrent.org/beps/bep_0003.html
    Http(String),
@@ -31,27 +31,27 @@ pub enum AnnounceUri {
    Websocket(String),
 }
 
-impl AnnounceUri {
+impl Tracker {
    pub async fn get(&self, info_hash: String) -> Result<TrackerResponse> {
       match self {
-         AnnounceUri::Http(_) => todo!(),
-         AnnounceUri::Udp(_) => todo!(),
-         AnnounceUri::Websocket(_) => todo!(),
+         Tracker::Http(_) => todo!(),
+         Tracker::Udp(_) => todo!(),
+         Tracker::Websocket(_) => todo!(),
       }
    }
 
    pub fn uri(&self) -> String {
       match self {
-         AnnounceUri::Http(uri) => uri.clone(),
-         AnnounceUri::Udp(uri) => uri.clone(),
-         AnnounceUri::Websocket(uri) => uri.clone(),
+         Tracker::Http(uri) => uri.clone(),
+         Tracker::Udp(uri) => uri.clone(),
+         Tracker::Websocket(uri) => uri.clone(),
       }
    }
 }
 
 struct AnnounceUriVisitor;
 
-impl<'de> Deserialize<'de> for AnnounceUri {
+impl<'de> Deserialize<'de> for Tracker {
    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
    where
       D: serde::Deserializer<'de>,
@@ -61,7 +61,7 @@ impl<'de> Deserialize<'de> for AnnounceUri {
 }
 
 impl Visitor<'_> for AnnounceUriVisitor {
-   type Value = AnnounceUri;
+   type Value = Tracker;
 
    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
       formatter.write_str("a string")
@@ -73,9 +73,9 @@ impl Visitor<'_> for AnnounceUriVisitor {
       E: de::Error,
    {
       Ok(match s.split("://").collect::<Vec<&str>>()[0] {
-         "http" | "https" => AnnounceUri::Http(s),
-         "udp" => AnnounceUri::Udp(s),
-         "ws" | "wss" => AnnounceUri::Websocket(s),
+         "http" | "https" => Tracker::Http(s),
+         "udp" => Tracker::Udp(s),
+         "ws" | "wss" => Tracker::Websocket(s),
          _ => panic!(),
       })
    }
@@ -85,9 +85,9 @@ impl Visitor<'_> for AnnounceUriVisitor {
       E: de::Error,
    {
       Ok(match s.split("://").collect::<Vec<&str>>()[0] {
-         "http" | "https" => AnnounceUri::Http(s.to_string()),
-         "udp" => AnnounceUri::Udp(s.to_string()),
-         "ws" | "wss" => AnnounceUri::Websocket(s.to_string()),
+         "http" | "https" => Tracker::Http(s.to_string()),
+         "udp" => Tracker::Udp(s.to_string()),
+         "ws" | "wss" => Tracker::Websocket(s.to_string()),
          _ => panic!(),
       })
    }

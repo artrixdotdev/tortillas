@@ -30,7 +30,7 @@ impl MetaInfo {
 #[cfg(test)]
 mod tests {
 
-   use crate::tracker::AnnounceUri;
+   use crate::tracker::Tracker;
 
    use super::*;
 
@@ -67,7 +67,7 @@ mod tests {
       let metainfo = MagnetUri::parse(contents).await.unwrap();
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
-            matches!(magnet.announce_list.unwrap()[0], AnnounceUri::Udp(_))
+            matches!(magnet.announce_list.unwrap()[0], Tracker::Udp(_))
          }
          _ => panic!("Expected MagnetUri"),
       };

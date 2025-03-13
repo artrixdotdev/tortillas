@@ -1,4 +1,4 @@
-use crate::{parser::MetaInfo, tracker::AnnounceUri};
+use crate::{parser::MetaInfo, tracker::Tracker};
 
 use anyhow::Result;
 use serde::{
@@ -14,10 +14,10 @@ use tokio::fs;
 #[derive(Debug, Deserialize)]
 pub struct TorrentFile {
    /// The primary announce URI for the torrent.
-   pub announce: AnnounceUri,
+   pub announce: Tracker,
    /// Secondary announce URIs for different trackers, and protocols. Also can be used as a backup
    #[serde(rename(deserialize = "announce-list"))]
-   pub announce_list: Option<Vec<Vec<AnnounceUri>>>, // Note: This is a list of lists
+   pub announce_list: Option<Vec<Vec<Tracker>>>, // Note: This is a list of lists
    pub comment: Option<String>,
    #[serde(rename(deserialize = "created by"))]
    pub created_by: Option<String>,
