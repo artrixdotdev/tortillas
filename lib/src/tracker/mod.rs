@@ -39,6 +39,14 @@ impl AnnounceUri {
          AnnounceUri::Websocket(_) => todo!(),
       }
    }
+
+   pub fn uri(&self) -> String {
+      match self {
+         AnnounceUri::Http(uri) => uri.clone(),
+         AnnounceUri::Udp(uri) => uri.clone(),
+         AnnounceUri::Websocket(uri) => uri.clone(),
+      }
+   }
 }
 
 struct AnnounceUriVisitor;
