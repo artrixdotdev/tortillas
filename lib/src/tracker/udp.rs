@@ -118,14 +118,31 @@ pub async fn get(uri: String) -> Result<()> {
    sock.connect(uri).await?;
 
    tokio::spawn(async move {
-      let buf = TrackerRequest::Connect(MAGIC_CONSTANT, Action::Connect, rand::rng().next_u32())
+      let original_transaction_id: TransactionId = rand::rng().next_u32();
+      let buf = TrackerRequest::Connect(MAGIC_CONSTANT, Action::Connect, original_transaction_id)
          .to_bytes();
       sock.send(&buf).await.unwrap();
       println!("Sent bytes: {:?}", buf);
       let mut recv = [0u8; 16];
 
       let len = sock.recv_from(&mut recv).await.unwrap();
-      let response = TrackerResponse::from_bytes(recv.into());
+      let response = TrackerResponse::from_bytes(recv.into()).unwrap();
+
+      // Checks (3, 4 and of BEP 15)
+      match response {
+         TrackerResponse::Connect {
+            action,
+            connection_id: _,
+            transaction_id,
+         } => {
+            if transaction_id != original_transaction_id {
+               panic!("Response transaction ID is not equal to original transaction ID!")
+            }
+            if action != Action::Connect {
+               panic!("Response action is not connect!")
+            }
+         }
+      }
       println!("Received {} bytes from {:?}", len.1, response);
    });
    Ok(())
