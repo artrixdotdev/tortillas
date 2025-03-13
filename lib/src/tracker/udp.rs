@@ -37,32 +37,34 @@ pub enum Events {
    Stopped = 3u32,
 }
 
-/// Binary layout:
-/// - [Magic constant](MAGIC_CONSTANT) (8 bytes)
-/// - [Action](Action::Connect) (4 bytes)
-/// - [Transaction ID](TransactionId) (4 bytes)
-///
-/// Total: 16 bytes
-///
-/// | Magic constant | Action | Transaction ID |
-/// |----------------|--------|----------------|
-/// |    00000000    |  0000  |     0000       |
+/// Headers for tracker request
 enum TrackerRequest {
+   /// Binary layout for the Connect variant:
+   /// - [Magic constant](MAGIC_CONSTANT) (8 bytes)
+   /// - [Action](Action::Connect) (4 bytes)
+   /// - [Transaction ID](TransactionId) (4 bytes)
+   ///
+   /// Total: 16 bytes
+   ///
+   /// | Magic constant | Action | Transaction ID |
+   /// |----------------|--------|----------------|
+   /// |    00000000    |  0000  |     0000       |
    Connect(ConnectionId, Action, TransactionId),
 }
 
-/// The response headers for TrackerResponse are somewhat different in comparison to TrackerRequest:
-/// Binary Layout:
-/// - [Action](Action::Connect) (4 bytes)
-/// - [Transaction ID](TransactionId) (4 bytes)
-/// - [Connection ID](ConnectionId) (8 bytes)
-///
-/// Total: 16 bytes
-/// | Action | Transaction ID | Connection ID |
-/// |--------|----------------|---------------|
-/// |  0000  |      0000      |   00000000    |
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrackerResponse {
+   /// Note that the response headers for TrackerResponse are somewhat different in comparison to TrackerRequest:
+   ///
+   /// Binary Layout for the Connect variant:
+   /// - [Action](Action::Connect) (4 bytes)
+   /// - [Transaction ID](TransactionId) (4 bytes)
+   /// - [Connection ID](ConnectionId) (8 bytes)
+   ///
+   /// Total: 16 bytes
+   /// | Action | Transaction ID | Connection ID |
+   /// |--------|----------------|---------------|
+   /// |  0000  |      0000      |   00000000    |
    Connect {
       action: Action,
       connection_id: ConnectionId,
