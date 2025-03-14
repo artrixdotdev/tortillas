@@ -144,7 +144,6 @@ impl TrackerTrait for UdpTracker {
    // Makes a request using the UDP tracker protocol to connect. Returns a u64 connection ID
    async fn connect(&mut self) -> Result<u64> {
       let uri = self.uri.replace("udp://", "");
-      self.socket.connect(uri).await.expect("Failed to connect");
 
       self.ready_state = ReadyState::Connected;
       let transaction_id: TransactionId = rand::random();
@@ -153,7 +152,7 @@ impl TrackerTrait for UdpTracker {
       let request = TrackerRequest::Connect(MAGIC_CONSTANT, Action::Connect, transaction_id);
 
       // Send the request
-      self.socket.send_to(&request.to_bytes(), uri).await?;
+      self.socket.send_to(&request.to_bytes(), &uri).await?;
 
       // Receive response
       let mut buffer = Vec::new();
