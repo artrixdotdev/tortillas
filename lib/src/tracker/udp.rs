@@ -129,8 +129,13 @@ pub struct UdpTracker {
 }
 
 impl UdpTracker {
-   pub async fn new(uri: String) -> Result<UdpTracker> {
-      let sock = UdpSocket::bind("0.0.0.0:0").await?;
+   ///
+   pub async fn new(uri: String, socket: Option<UdpSocket>) -> Result<UdpTracker> {
+      let sock = match socket {
+         Some(sock) => sock,
+         None => UdpSocket::bind("0.0.0.0:0").await?,
+      };
+
       Ok(UdpTracker {
          uri,
          connection_id: None,
@@ -142,8 +147,9 @@ impl UdpTracker {
 
 impl TrackerTrait for UdpTracker {
    // Makes a request using the UDP tracker protocol to connect. Returns a u64 connection ID
-   async fn connect(&mut self) -> Result<u64> {
+   async fn stream_peers(&mut self, info_hash: String) -> Result<u64> {
       let uri = self.uri.replace("udp://", "");
+      self.socket.connect(&uri).await?;
 
       self.ready_state = ReadyState::Connected;
       let transaction_id: TransactionId = rand::random();
@@ -181,10 +187,6 @@ impl TrackerTrait for UdpTracker {
          _ => Err(anyhow!("Invalid Response")),
       }
    }
-
-   async fn get_peers(&self, info_hash: String) -> Result<Vec<super::PeerAddr>> {
-      todo!()
-   }
 }
 
 #[cfg(test)]
@@ -210,7 +212,7 @@ mod tests {
          MetaInfo::MagnetUri(magnet) => {
             let announce_list = magnet.announce_list.unwrap();
             let announce_url = announce_list[0].uri();
-            let mut udp_tracker = UdpTracker::new(announce_url).await.unwrap();
+            let mut udp_tracker = UdpTracker::new(announce_url, None).await.unwrap();
             udp_tracker.connect().await.unwrap();
 
             assert_eq!(udp_tracker.ready_state, ReadyState::Ready);
