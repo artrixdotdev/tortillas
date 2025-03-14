@@ -38,12 +38,13 @@ pub enum Tracker {
 }
 
 impl Tracker {
-   pub async fn get(&self, info_hash: String) -> Result<impl TrackerTrait> {
-      match self {
-         Tracker::Http(_) => todo!(),
-         Tracker::Udp(_) => todo!(),
-         Tracker::Websocket(_) => todo!(),
-      }
+   pub async fn get(&self, info_hash: String) -> Result<()> {
+      // match self {
+      //    Tracker::Http(_) => todo!(),
+      //    Tracker::Udp(_) => todo!(),
+      //    Tracker::Websocket(_) => todo!(),
+      // }
+      todo!();
    }
 
    pub fn uri(&self) -> String {

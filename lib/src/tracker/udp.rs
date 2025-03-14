@@ -157,7 +157,7 @@ impl TrackerTrait for UdpTracker {
 
       // Receive response
       let mut buffer = Vec::new();
-      self.socket.recv(&mut buffer).await?;
+      self.socket.recv_buf(&mut buffer).await?;
 
       // Parse response
       let response = TrackerResponse::from_bytes(buffer.into())?;
@@ -204,11 +204,7 @@ mod tests {
             let mut udp_tracker = UdpTracker::new(announce_url).await.unwrap();
             udp_tracker.connect().await.unwrap();
 
-            sleep(Duration::from_secs(5)).await;
-
             assert_eq!(udp_tracker.ready_state, ReadyState::Ready);
-
-            panic!("Nice")
          }
          _ => panic!("Expected Torrent"),
       }
