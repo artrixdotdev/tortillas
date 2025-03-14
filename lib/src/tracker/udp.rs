@@ -1,14 +1,18 @@
+use std::sync::Arc;
+
 /// UDP protocol
 /// https://en.wikipedia.org/wiki/User_Datagram_Protocol
 ///
 /// Please see the following for the UDP *tracker* protocol spec.
 /// https://www.bittorrent.org/beps/bep_0015.html
 /// https://xbtt.sourceforge.net/udp_tracker_protocol.html
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use num_enum::TryFromPrimitive;
 use rand::RngCore;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::net::UdpSocket;
+
+use super::TrackerTrait;
 
 /// Types and constants
 pub type ConnectionId = u64;
@@ -110,42 +114,68 @@ impl TrackerResponse {
       }
    }
 }
+#[derive(Debug, PartialEq, Eq)]
+enum ReadyState {
+   Connected,
+   Ready,
+   Disconnected,
+}
 
-// Makes a request using the UDP tracker protocol
-pub async fn get(uri: String) -> Result<()> {
-   let sock = UdpSocket::bind("0.0.0.0:0").await?;
-   let uri = uri.replace("udp://", "");
-   sock.connect(uri).await?;
+pub struct UdpTracker {
+   uri: String,
+   connection_id: Option<ConnectionId>,
+   pub socket: Arc<UdpSocket>,
+   ready_state: ReadyState,
+}
 
-   tokio::spawn(async move {
-      let original_transaction_id: TransactionId = rand::rng().next_u32();
-      let buf = TrackerRequest::Connect(MAGIC_CONSTANT, Action::Connect, original_transaction_id)
-         .to_bytes();
-      sock.send(&buf).await.unwrap();
-      println!("Sent bytes: {:?}", buf);
-      let mut recv = [0u8; 16];
+impl UdpTracker {
+   pub async fn new(uri: String) -> Result<UdpTracker> {
+      let sock = UdpSocket::bind("0.0.0.0:0").await?;
+      Ok(UdpTracker {
+         uri,
+         connection_id: None,
+         socket: Arc::new(sock),
+         ready_state: ReadyState::Disconnected,
+      })
+   }
+}
 
-      let len = sock.recv_from(&mut recv).await.unwrap();
-      let response = TrackerResponse::from_bytes(recv.into()).unwrap();
+impl TrackerTrait for UdpTracker {
+   // Makes a request using the UDP tracker protocol to connect. Returns a u64 connection ID
+   async fn connect(&mut self) -> Result<u64> {
+      let uri = self.uri.replace("udp://", "");
+      self.socket.connect(uri).await.expect("Failed to connect");
 
-      // Checks (3, 4 and of BEP 15)
+      self.ready_state = ReadyState::Connected;
+      let transaction_id: TransactionId = rand::random();
+
+      // Send
+      let request = TrackerRequest::Connect(MAGIC_CONSTANT, Action::Connect, transaction_id);
+
+      // Send the request
+      self.socket.send(&request.to_bytes()).await?;
+
+      // Receive response
+      let mut buffer = Vec::new();
+      self.socket.recv(&mut buffer).await?;
+
+      // Parse response
+      let response = TrackerResponse::from_bytes(buffer.into())?;
+
+      // Check response
       match response {
-         TrackerResponse::Connect {
-            action,
-            connection_id: _,
-            transaction_id,
-         } => {
-            if transaction_id != original_transaction_id {
-               panic!("Response transaction ID is not equal to original transaction ID!")
-            }
-            if action != Action::Connect {
-               panic!("Response action is not connect!")
-            }
+         TrackerResponse::Connect { connection_id, .. } => {
+            self.connection_id = Some(connection_id);
+            self.ready_state = ReadyState::Ready;
+            Ok(connection_id)
          }
+         _ => Err(anyhow!("Invalid Response")),
       }
-      println!("Received {} bytes from {:?}", len.1, response);
-   });
-   Ok(())
+   }
+
+   async fn get_peers(&self, info_hash: String) -> Result<Vec<super::PeerAddr>> {
+      todo!()
+   }
 }
 
 #[cfg(test)]
@@ -171,9 +201,12 @@ mod tests {
          MetaInfo::MagnetUri(magnet) => {
             let announce_list = magnet.announce_list.unwrap();
             let announce_url = announce_list[0].uri();
-            println!("Announce URL: {}", announce_url);
-            get(announce_url).await.unwrap();
+            let mut udp_tracker = UdpTracker::new(announce_url).await.unwrap();
+            udp_tracker.connect().await.unwrap();
+
             sleep(Duration::from_secs(5)).await;
+
+            assert_eq!(udp_tracker.ready_state, ReadyState::Ready);
 
             panic!("Nice")
          }

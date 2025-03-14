@@ -4,6 +4,7 @@ use serde::{
    de::{self, Visitor},
 };
 use std::{fmt, net::Ipv4Addr};
+use tokio_stream::StreamExt;
 mod http;
 mod udp;
 // mod websocket;
@@ -12,9 +13,14 @@ use http::*;
 // use udp::*;
 
 #[derive(Debug, Deserialize)]
-pub struct Peer {
+pub struct PeerAddr {
    pub ip: Ipv4Addr,
    pub port: u16,
+}
+
+trait TrackerTrait {
+   async fn connect(&mut self) -> Result<u64>;
+   async fn get_peers(&self, info_hash: String) -> Result<Vec<PeerAddr>>;
 }
 
 /// An Announce URI from a torrent file or magnet URI.
@@ -32,7 +38,7 @@ pub enum Tracker {
 }
 
 impl Tracker {
-   pub async fn get(&self, info_hash: String) -> Result<TrackerResponse> {
+   pub async fn get(&self, info_hash: String) -> Result<impl TrackerTrait> {
       match self {
          Tracker::Http(_) => todo!(),
          Tracker::Udp(_) => todo!(),

@@ -2,13 +2,13 @@ use std::net::Ipv4Addr;
 
 use serde::{Deserialize, Serialize, de};
 
-use super::Peer;
+use super::PeerAddr;
 
 #[derive(Debug, Deserialize)]
 pub struct TrackerResponse {
    pub interval: usize,
    #[serde(deserialize_with = "deserialize_peers")]
-   pub peers: Vec<Peer>,
+   pub peers: Vec<PeerAddr>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -21,7 +21,7 @@ struct TrackerRequest {
    compact: u8,
 }
 
-fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<Peer>, D::Error>
+fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<PeerAddr>, D::Error>
 where
    D: serde::Deserializer<'de>,
 {
@@ -35,7 +35,7 @@ where
       let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
 
       let port = u16::from_be_bytes([chunk[4], chunk[5]]);
-      peers.push(Peer { ip, port });
+      peers.push(PeerAddr { ip, port });
    }
 
    Ok(peers)
