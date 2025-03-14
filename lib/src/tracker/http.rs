@@ -28,7 +28,6 @@ pub enum Event {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct TrackerRequest {
-   peer_id: String,
    ip: Option<Ipv4Addr>,
    port: u16,
    uploaded: u8,
@@ -40,7 +39,6 @@ struct TrackerRequest {
 impl TrackerRequest {
    pub fn new() -> TrackerRequest {
       TrackerRequest {
-         peer_id: Alphanumeric.sample_string(&mut rand::rng(), 20),
          ip: None,
          port: 6881,
          uploaded: 0,
@@ -55,16 +53,17 @@ impl TrackerRequest {
 struct HttpTracker {
    uri: String,
    peer_id: String,
+   info_hash: String,
    params: TrackerRequest,
 }
 
 impl HttpTracker {
-   pub fn new(uri: String) -> HttpTracker {
-      let tracker_request = TrackerRequest::new();
+   pub fn new(uri: String, info_hash: String) -> HttpTracker {
       HttpTracker {
          uri,
-         peer_id: tracker_request.peer_id.to_string(),
-         params: tracker_request,
+         peer_id: Alphanumeric.sample_string(&mut rand::rng(), 20),
+         params: TrackerRequest::new(),
+         info_hash,
       }
    }
 }
@@ -74,7 +73,11 @@ impl TrackerTrait for HttpTracker {
       &mut self,
       info_hash: String,
    ) -> anyhow::Result<impl tokio_stream::Stream<Item = PeerAddr>> {
-      let url_params = serde_qs::to_string(&self).unwrap();
+      let url_params = format!(
+         "{}{}",
+         serde_qs::to_string(&self.params).unwrap(),
+         serde_qs::to_string(&self.info_hash).unwrap()
+      );
       let uri = format!("{}{}", self.uri, url_params);
       let response = reqwest::get(uri).await?.text().await?;
       let response = serde_bencode::from_str(&response)?;
@@ -101,4 +104,35 @@ where
    }
 
    Ok(peers)
+}
+
+#[cfg(test)]
+mod tests {
+   use crate::{
+      parser::{MagnetUri, MetaInfo},
+      tracker::TrackerTrait,
+   };
+
+   use super::{HttpTracker, TrackerRequest};
+
+   #[tokio::test]
+   async fn test_stream_peers_with_http_tracker() {
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/big-buck-bunny.txt");
+      let contents = tokio::fs::read_to_string(path).await.unwrap();
+      let metainfo = MagnetUri::parse(contents).await.unwrap();
+      match metainfo {
+         MetaInfo::MagnetUri(magnet) => {
+            let announce_list = magnet.announce_list.unwrap();
+            let announce_uri = announce_list[0].uri();
+            let info_hash = magnet.info_hash;
+            let mut http_tracker = HttpTracker::new(announce_uri, info_hash);
+            HttpTracker::stream_peers(&mut http_tracker, "none".into())
+               .await
+               .unwrap();
+         }
+         _ => panic!("Expected Torrent"),
+      }
+   }
 }
