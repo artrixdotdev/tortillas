@@ -153,20 +153,30 @@ impl TrackerTrait for UdpTracker {
       let request = TrackerRequest::Connect(MAGIC_CONSTANT, Action::Connect, transaction_id);
 
       // Send the request
-      self.socket.send(&request.to_bytes()).await?;
+      self.socket.send_to(&request.to_bytes(), uri).await?;
 
       // Receive response
       let mut buffer = Vec::new();
-      self.socket.recv_buf(&mut buffer).await?;
+      self.socket.recv_buf_from(&mut buffer).await?;
 
       // Parse response
       let response = TrackerResponse::from_bytes(buffer.into())?;
 
       // Check response
       match response {
-         TrackerResponse::Connect { connection_id, .. } => {
+         TrackerResponse::Connect {
+            connection_id,
+            transaction_id: tid,
+            ..
+         } => {
+            // Transaction ID's have to be the same per request. If I send a request to the tracker,
+            // the tracker should respond with the same transaction ID. These should be unique per request though.
+            if tid != transaction_id {
+               return Err(anyhow!("Transaction ID mismatch"));
+            }
             self.connection_id = Some(connection_id);
             self.ready_state = ReadyState::Ready;
+
             Ok(connection_id)
          }
          _ => Err(anyhow!("Invalid Response")),
