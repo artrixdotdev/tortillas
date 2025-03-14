@@ -18,6 +18,7 @@ pub struct TrackerResponse {
    pub peers: Vec<PeerAddr>,
 }
 
+/// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
 #[derive(Debug, Deserialize, Serialize)]
 pub enum Event {
    Started,
@@ -26,6 +27,7 @@ pub enum Event {
    Empty,
 }
 
+/// Tracker request. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
 #[derive(Debug, Deserialize, Serialize)]
 struct TrackerRequest {
    ip: Option<Ipv4Addr>,
@@ -49,6 +51,7 @@ impl TrackerRequest {
    }
 }
 
+/// Struct for handling tracker over HTTP
 #[derive(Debug, Deserialize, Serialize)]
 struct HttpTracker {
    uri: String,
@@ -68,6 +71,7 @@ impl HttpTracker {
    }
 }
 
+/// Fetches peers from tracker over HTTP and returns a stream of [PeerAddr](PeerAddr)
 impl TrackerTrait for HttpTracker {
    async fn stream_peers(
       &mut self,
