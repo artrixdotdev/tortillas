@@ -1,7 +1,6 @@
 /// See https://www.bittorrent.org/beps/bep_0003.html
 use std::net::Ipv4Addr;
 
-use anyhow::Ok;
 use rand::{
    distr::{Alphanumeric, SampleString},
    random, RngCore,
@@ -90,7 +89,7 @@ impl TrackerTrait for HttpTracker {
    }
 }
 
-fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<PeerAddr>, D::Error>
+fn deserialize_peers<'de, D>(deserializer: D) -> anyhow::Result<Vec<PeerAddr>, D::Error>
 where
    D: serde::Deserializer<'de>,
 {
