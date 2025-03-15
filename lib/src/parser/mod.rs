@@ -1,16 +1,9 @@
 use serde::Deserialize;
-
 mod file;
 mod magnet;
 
 pub use file::*;
 pub use magnet::*;
-
-/// An Announce URI from a torrent file or magnet URI.
-/// https://www.bittorrent.org/beps/bep_0012.html
-/// Example: udp://tracker.opentrackr.org:1337/announce
-#[derive(Debug, Deserialize)]
-pub struct AnnounceUri(pub String);
 
 /// Always utilize MetaInfo instead of directly using TorrentFile or MagnetUri
 #[derive(Debug, Deserialize)]
@@ -37,6 +30,8 @@ impl MetaInfo {
 #[cfg(test)]
 mod tests {
 
+   use crate::tracker::Tracker;
+
    use super::*;
 
    #[tokio::test]
@@ -60,5 +55,21 @@ mod tests {
          .join("tests/torrents/big-buck-bunny.torrent");
       let file = TorrentFile::parse(path).await.unwrap();
       assert_eq!(file.info_hash(), "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c");
+   }
+
+   #[tokio::test]
+   async fn test_announce_uri() {
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/big-buck-bunny.txt");
+      let contents = tokio::fs::read_to_string(path).await.unwrap();
+
+      let metainfo = MagnetUri::parse(contents).await.unwrap();
+      match metainfo {
+         MetaInfo::MagnetUri(magnet) => {
+            matches!(magnet.announce_list.unwrap()[0], Tracker::Udp(_))
+         }
+         _ => panic!("Expected MagnetUri"),
+      };
    }
 }
