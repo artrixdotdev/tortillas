@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{
-   Deserialize,
    de::{self, Visitor},
+   Deserialize,
 };
 use std::{fmt, net::Ipv4Addr};
 use tokio_stream::Stream;
@@ -19,7 +19,7 @@ pub struct PeerAddr {
 }
 
 trait TrackerTrait {
-   async fn stream_peers(&mut self, info_hash: String) -> Result<impl Stream<Item = PeerAddr>>;
+   async fn stream_peers(&mut self) -> Result<impl Stream<Item = PeerAddr>>;
 }
 
 /// An Announce URI from a torrent file or magnet URI.

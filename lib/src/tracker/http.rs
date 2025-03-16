@@ -7,6 +7,7 @@ use rand::{
 };
 use reqwest::Url;
 use serde::{de, Deserialize, Serialize};
+use tokio_stream::Stream;
 
 use super::{PeerAddr, TrackerTrait};
 
@@ -72,20 +73,20 @@ impl HttpTracker {
 
 /// Fetches peers from tracker over HTTP and returns a stream of [PeerAddr](PeerAddr)
 impl TrackerTrait for HttpTracker {
-   async fn stream_peers(
-      &mut self,
-      info_hash: String,
-   ) -> anyhow::Result<impl tokio_stream::Stream<Item = PeerAddr>> {
-      let url_params = format!(
-         "{}{}",
-         serde_qs::to_string(&self.params).unwrap(),
-         serde_qs::to_string(&self.info_hash).unwrap()
-      );
-      let uri = format!("{}{}", self.uri, url_params);
+   async fn stream_peers(&mut self) -> anyhow::Result<impl tokio_stream::Stream<Item = PeerAddr>> {
+      // Construct URL
+      let params = serde_qs::to_string(&self.params).unwrap();
+      let url_params = format!("{}&info_hash={}", params, self.info_hash);
+      let uri = format!("{}?{}", self.uri, url_params);
+
+      // Make request
       let response = reqwest::get(uri).await?.text().await?;
-      let response = serde_bencode::from_str(&response)?;
-      panic!("{}", response);
-      Ok()
+      let response: String = serde_bencode::from_str(&response)?;
+      println!("{}", response);
+      anyhow::Ok(tokio_stream::iter(vec![PeerAddr {
+         ip: Ipv4Addr::new(0, 0, 0, 0),
+         port: 32,
+      }]))
    }
 }
 
@@ -131,9 +132,7 @@ mod tests {
             let announce_uri = announce_list[0].uri();
             let info_hash = magnet.info_hash;
             let mut http_tracker = HttpTracker::new(announce_uri, info_hash);
-            HttpTracker::stream_peers(&mut http_tracker, "none".into())
-               .await
-               .unwrap();
+            HttpTracker::stream_peers(&mut http_tracker).await.unwrap();
          }
          _ => panic!("Expected Torrent"),
       }
