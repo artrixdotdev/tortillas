@@ -1,13 +1,12 @@
 /// See https://www.bittorrent.org/beps/bep_0003.html
 use std::net::Ipv4Addr;
 
-use rand::{
-   distr::{Alphanumeric, SampleString},
-   random, RngCore,
+use anyhow::Context;
+use rand::distr::{Alphanumeric, SampleString};
+use serde::{
+   de::{self, Visitor},
+   Deserialize, Serialize,
 };
-use reqwest::Url;
-use serde::{de, Deserialize, Serialize};
-use tokio_stream::Stream;
 
 use super::{PeerAddr, TrackerTrait};
 
@@ -71,22 +70,77 @@ impl HttpTracker {
    }
 }
 
+fn urlencode(t: &[u8; 20]) -> String {
+   let mut encoded = String::with_capacity(3 * t.len());
+
+   for &byte in t {
+      encoded.push('%');
+
+      encoded.push_str(&hex::encode(&[byte]));
+   }
+
+   encoded
+}
+
 /// Fetches peers from tracker over HTTP and returns a stream of [PeerAddr](PeerAddr)
 impl TrackerTrait for HttpTracker {
    async fn stream_peers(&mut self) -> anyhow::Result<impl tokio_stream::Stream<Item = PeerAddr>> {
       // Construct URL
-      let params = serde_qs::to_string(&self.params).unwrap();
-      let url_params = format!("{}&info_hash={}", params, self.info_hash);
+      let params = serde_qs::to_string(&self.params).context("url-encode tracker parameters")?;
+
+      // Encode URL
+      let decoded = hex::decode(
+         self
+            .info_hash
+            .split("urn:btih:")
+            .last()
+            .expect("Error when unwrapping info_hash"),
+      )
+      .expect("Error when unwrapping info_hash")
+      .try_into()
+      .expect("Error when unwrapping info_hash");
+
+      let url_params = format!(
+         "{}&info_hash={}&peer_id={}&compact=1",
+         params,
+         &urlencode(&decoded),
+         &self.peer_id
+      );
       let uri = format!("{}?{}", self.uri, url_params);
 
       // Make request
-      let response = reqwest::get(uri).await?.text().await?;
-      let response: String = serde_bencode::from_str(&response)?;
-      println!("{}", response);
-      anyhow::Ok(tokio_stream::iter(vec![PeerAddr {
-         ip: Ipv4Addr::new(0, 0, 0, 0),
-         port: 32,
-      }]))
+      let response = reqwest::get(uri).await?.bytes().await?;
+      let response: TrackerResponse = serde_bencode::from_bytes(&response)?;
+
+      anyhow::Ok(tokio_stream::iter(response.peers))
+   }
+}
+
+struct PeerVisitor;
+
+impl<'de> Visitor<'de> for PeerVisitor {
+   type Value = Vec<PeerAddr>;
+
+   fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+      formatter.write_str("a byte array")
+   }
+
+   fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Self::Value, E>
+   where
+      E: de::Error,
+   {
+      let mut peers = Vec::new();
+      for chunk in bytes.chunks(6) {
+         if chunk.len() != 6 {
+            return Err(de::Error::custom("Invalid peer chunk length"));
+         }
+         let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
+
+         let port = u16::from_be_bytes([chunk[4], chunk[5]]);
+         peers.push(PeerAddr { ip, port });
+      }
+
+      Ok(peers)
    }
 }
 
@@ -94,36 +148,25 @@ fn deserialize_peers<'de, D>(deserializer: D) -> anyhow::Result<Vec<PeerAddr>, D
 where
    D: serde::Deserializer<'de>,
 {
-   let bytes = Vec::<u8>::deserialize(deserializer).expect("Invalid bytes");
-
-   let mut peers = Vec::new();
-   for chunk in bytes.chunks(6) {
-      if chunk.len() != 6 {
-         return Err(de::Error::custom("Invalid peer chunk length"));
-      }
-      let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
-
-      let port = u16::from_be_bytes([chunk[4], chunk[5]]);
-      peers.push(PeerAddr { ip, port });
-   }
-
-   Ok(peers)
+   deserializer.deserialize_bytes(PeerVisitor)
 }
 
 #[cfg(test)]
 mod tests {
+   use tokio_stream::StreamExt;
+
    use crate::{
       parser::{MagnetUri, MetaInfo},
       tracker::TrackerTrait,
    };
 
-   use super::{HttpTracker, TrackerRequest};
+   use super::HttpTracker;
 
    #[tokio::test]
    async fn test_stream_peers_with_http_tracker() {
       let path = std::env::current_dir()
          .unwrap()
-         .join("tests/magneturis/big-buck-bunny.txt");
+         .join("tests/magneturis/zenshuu.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
       let metainfo = MagnetUri::parse(contents).await.unwrap();
       match metainfo {
@@ -132,7 +175,13 @@ mod tests {
             let announce_uri = announce_list[0].uri();
             let info_hash = magnet.info_hash;
             let mut http_tracker = HttpTracker::new(announce_uri, info_hash);
-            HttpTracker::stream_peers(&mut http_tracker).await.unwrap();
+
+            // Make request
+            let mut res = HttpTracker::stream_peers(&mut http_tracker)
+               .await
+               .expect("Issue when unwrapping result of stream_peers");
+
+            assert!(!res.next().await.unwrap().ip.is_private());
          }
          _ => panic!("Expected Torrent"),
       }
