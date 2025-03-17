@@ -76,7 +76,7 @@ fn urlencode(t: &[u8; 20]) -> String {
    for &byte in t {
       encoded.push('%');
 
-      encoded.push_str(&hex::encode(&[byte]));
+      encoded.push_str(&hex::encode([byte]));
    }
 
    encoded
@@ -85,10 +85,7 @@ fn urlencode(t: &[u8; 20]) -> String {
 /// Fetches peers from tracker over HTTP and returns a stream of [PeerAddr](PeerAddr)
 impl TrackerTrait for HttpTracker {
    async fn stream_peers(&mut self) -> anyhow::Result<impl tokio_stream::Stream<Item = PeerAddr>> {
-      // Construct URL
-      let params = serde_qs::to_string(&self.params).context("url-encode tracker parameters")?;
-
-      // Encode URL
+      // Decode info_hash
       let decoded = hex::decode(
          self
             .info_hash
@@ -100,6 +97,9 @@ impl TrackerTrait for HttpTracker {
       .try_into()
       .expect("Error when unwrapping info_hash");
 
+      // Generate params + URL. Specifically using the compact format by adding "compact=1" to
+      // params.
+      let params = serde_qs::to_string(&self.params).context("url-encode tracker parameters")?;
       let url_params = format!(
          "{}&info_hash={}&peer_id={}&compact=1",
          params,
@@ -116,6 +116,7 @@ impl TrackerTrait for HttpTracker {
    }
 }
 
+/// Serde related code. Used for deserializing response from HTTP request made in stream_peers
 struct PeerVisitor;
 
 impl<'de> Visitor<'de> for PeerVisitor {
@@ -129,6 +130,7 @@ impl<'de> Visitor<'de> for PeerVisitor {
    where
       E: de::Error,
    {
+      // Decodes response from stream_peers' HTTP request according to BEP 23's compact form: <https://www.bittorrent.org/beps/bep_0023.html>
       let mut peers = Vec::new();
       for chunk in bytes.chunks(6) {
          if chunk.len() != 6 {
@@ -144,6 +146,7 @@ impl<'de> Visitor<'de> for PeerVisitor {
    }
 }
 
+/// Serde related code. Reference their documentation: <https://serde.rs/impl-deserialize.html>
 fn deserialize_peers<'de, D>(deserializer: D) -> anyhow::Result<Vec<PeerAddr>, D::Error>
 where
    D: serde::Deserializer<'de>,
