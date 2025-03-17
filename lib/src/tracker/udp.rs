@@ -1,4 +1,9 @@
-use std::sync::Arc;
+use std::{
+   net::Ipv4Addr,
+   pin::Pin,
+   sync::Arc,
+   task::{Context, Poll},
+};
 
 /// UDP protocol
 /// https://en.wikipedia.org/wiki/User_Datagram_Protocol
@@ -11,8 +16,9 @@ use num_enum::TryFromPrimitive;
 use rand::RngCore;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::net::UdpSocket;
+use tokio_stream::Stream;
 
-use super::TrackerTrait;
+use super::{PeerAddr, TrackerTrait};
 
 /// Types and constants
 pub type ConnectionId = u64;
@@ -54,9 +60,40 @@ enum TrackerRequest {
    /// |----------------|--------|----------------|
    /// |    00000000    |  0000  |     0000       |
    Connect(ConnectionId, Action, TransactionId),
+
+   /// Binary layout for the Announce variant:
+   /// - [Connection ID](ConnectionId) (8 bytes)
+   /// - [Action](Action::Announce) (4 bytes)
+   /// - [Transaction ID](TransactionId) (4 bytes)
+   /// - [Info Hash] (20 bytes)
+   /// - [Peer ID] (20 bytes)
+   /// - [Downloaded] (8 bytes)
+   /// - [Left] (8 bytes)
+   /// - [Uploaded] (8 bytes)
+   /// - [Event] (4 bytes)
+   /// - [IP Address] (4 bytes)
+   /// - [Key] (4 bytes)
+   /// - [Num Want] (4 bytes, -1 for default)
+   /// - [Port] (2 bytes)
+   ///
+   /// Total: 98 bytes
+   Announce {
+      connection_id: ConnectionId,
+      transaction_id: TransactionId,
+      info_hash: [u8; 20],
+      peer_id: [u8; 20],
+      downloaded: u64,
+      left: u64,
+      uploaded: u64,
+      event: Events,
+      ip_address: u32,
+      key: u32,
+      num_want: i32,
+      port: u16,
+   },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 enum TrackerResponse {
    /// Note that the response headers for TrackerResponse are somewhat different in comparison to TrackerRequest:
    ///
@@ -74,6 +111,37 @@ enum TrackerResponse {
       connection_id: ConnectionId,
       transaction_id: TransactionId,
    },
+
+   /// Binary Layout for the Announce variant:
+   /// - [Action](Action::Announce) (4 bytes)
+   /// - [Transaction ID](TransactionId) (4 bytes)
+   /// - [Interval] (4 bytes)
+   /// - [Leechers] (4 bytes)
+   /// - [Seeders] (4 bytes)
+   /// - [IP (4 bytes) + Port (2 bytes)] (6 bytes) * n
+   ///
+   /// Total: 20 + 6n bytes
+   Announce {
+      action: Action,
+      transaction_id: TransactionId,
+      /// The interval inwhich we should send another announce request
+      interval: u32,
+      leechers: u32,
+      seeders: u32,
+      peers: Vec<super::PeerAddr>,
+   },
+
+   /// Binary Layout for the Error variant:
+   /// - [Action](Action::Error) (4 bytes)
+   /// - [Transaction ID](TransactionId) (4 bytes)
+   /// - [Error Message] (variable)
+   ///
+   /// Total: 8 + message length bytes
+   Error {
+      action: Action,
+      transaction_id: TransactionId,
+      message: String,
+   },
 }
 
 /// Formats the headers for a request in the UDP Tracker Protocol
@@ -86,6 +154,35 @@ impl TrackerRequest {
             buf.extend_from_slice(&(*action as u32).to_be_bytes()); // Action
             buf.extend_from_slice(&transaction_id.to_be_bytes()); // Transaction ID
          }
+
+         TrackerRequest::Announce {
+            connection_id,
+            transaction_id,
+            info_hash,
+            peer_id,
+            downloaded,
+            left,
+            uploaded,
+            event,
+            ip_address,
+            key,
+            num_want,
+            port,
+         } => {
+            buf.extend_from_slice(&connection_id.to_be_bytes()); // Connection ID
+            buf.extend_from_slice(&(Action::Announce as u32).to_be_bytes()); // Action
+            buf.extend_from_slice(&transaction_id.to_be_bytes()); // Transaction ID
+            buf.extend_from_slice(info_hash); // Info Hash
+            buf.extend_from_slice(peer_id); // Peer ID
+            buf.extend_from_slice(&downloaded.to_be_bytes()); // Downloaded
+            buf.extend_from_slice(&left.to_be_bytes()); // Left
+            buf.extend_from_slice(&uploaded.to_be_bytes()); // Uploaded
+            buf.extend_from_slice(&(*event as u32).to_be_bytes()); // Event
+            buf.extend_from_slice(&ip_address.to_be_bytes()); // IP Address
+            buf.extend_from_slice(&key.to_be_bytes()); // Key
+            buf.extend_from_slice(&num_want.to_be_bytes()); // Num Want
+            buf.extend_from_slice(&port.to_be_bytes()); // Port
+         }
       }
       buf
    }
@@ -93,15 +190,19 @@ impl TrackerRequest {
 
 /// Accepts a response (in bytes) from a UDP [tracker request](TrackerRequest).
 impl TrackerResponse {
-   pub fn from_bytes(bytes: Vec<u8>) -> Result<Self> {
-      println!("Received bytes: {:?}", bytes);
-      let action = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
+   pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+      if bytes.len() < 4 {
+         return Err(anyhow!("Response too short"));
+      }
 
+      let action = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
       let action: Action = Action::try_from(action)?;
-      println!("{:?}", &bytes[4..8]);
 
       match action {
          Action::Connect => {
+            if bytes.len() < 16 {
+               return Err(anyhow!("Connect response too short"));
+            }
             let transaction_id = TransactionId::from_be_bytes(bytes[4..8].try_into().unwrap());
             let connection_id = ConnectionId::from_be_bytes(bytes[8..16].try_into().unwrap());
             Ok(TrackerResponse::Connect {
@@ -110,7 +211,59 @@ impl TrackerResponse {
                transaction_id,
             })
          }
-         _ => Err(anyhow!("Invalid action")),
+         Action::Announce => {
+            if bytes.len() < 20 {
+               return Err(anyhow!("Announce response too short"));
+            }
+            let transaction_id = TransactionId::from_be_bytes(bytes[4..8].try_into().unwrap());
+            let interval = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
+            let leechers = u32::from_be_bytes(bytes[12..16].try_into().unwrap());
+            let seeders = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+
+            // Parse peers (each peer is 6 bytes: 4 for IP, 2 for port)
+            let mut peers = Vec::new();
+            const PEER_SIZE: usize = 6;
+            // Subtract the size of the current bytes we've already dealt with (20) from the total length of the bytes, then divide by the size of a peer ip (6 bytes)
+            let num_peers = (bytes.len() - 20) / PEER_SIZE;
+
+            for i in 0..num_peers {
+               let offset = 20 + i * PEER_SIZE;
+               if offset + PEER_SIZE > bytes.len() {
+                  break;
+               }
+
+               let ip_bytes: [u8; 4] = bytes[offset..offset + 4].try_into().unwrap();
+               let ip = Ipv4Addr::from(ip_bytes);
+
+               let port_bytes: [u8; 2] = bytes[offset + 4..offset + PEER_SIZE].try_into().unwrap();
+               let port = u16::from_be_bytes(port_bytes);
+
+               peers.push(PeerAddr { ip, port });
+            }
+
+            Ok(TrackerResponse::Announce {
+               action,
+               transaction_id,
+               interval,
+               leechers,
+               seeders,
+               peers,
+            })
+         }
+         Action::Error => {
+            if bytes.len() < 8 {
+               return Err(anyhow!("Error response too short"));
+            }
+            let transaction_id = TransactionId::from_be_bytes(bytes[4..8].try_into().unwrap());
+            let message = String::from_utf8_lossy(&bytes[8..]).to_string();
+
+            Ok(TrackerResponse::Error {
+               action,
+               transaction_id,
+               message,
+            })
+         }
+         _ => Err(anyhow!("Unsupported action: {:?}", action)),
       }
    }
 }
@@ -126,28 +279,68 @@ pub struct UdpTracker {
    connection_id: Option<ConnectionId>,
    pub socket: Arc<UdpSocket>,
    ready_state: ReadyState,
+   peer_id: [u8; 20],
+   info_hash: [u8; 20],
 }
 
 impl UdpTracker {
-   ///
-   pub async fn new(uri: String, socket: Option<UdpSocket>) -> Result<UdpTracker> {
+   pub async fn new(
+      uri: String,
+      socket: Option<UdpSocket>,
+      info_hash: [u8; 20],
+   ) -> Result<UdpTracker> {
       let sock = match socket {
          Some(sock) => sock,
          None => UdpSocket::bind("0.0.0.0:0").await?,
       };
+      let mut peer_id = [0u8; 20];
+      rand::rng().fill_bytes(&mut peer_id);
 
       Ok(UdpTracker {
          uri,
          connection_id: None,
          socket: Arc::new(sock),
          ready_state: ReadyState::Disconnected,
+         peer_id,
+         info_hash,
       })
+   }
+   async fn announce(&self) -> Result<impl Stream<Item = PeerAddr>> {
+      if self.ready_state != ReadyState::Ready {
+         return Err(anyhow!("Tracker not ready"));
+      };
+      let transaction_id: TransactionId = rand::random();
+      // Perform announce logic here
+      let request = TrackerRequest::Announce {
+         connection_id: self.connection_id.unwrap(),
+         transaction_id,
+         info_hash: self.info_hash,
+         peer_id: self.peer_id,
+         downloaded: 0,
+         left: 0,
+         uploaded: 0,
+         event: Events::Started,
+         ip_address: 0,
+         key: 0,
+         num_want: -1,
+         port: 6881,
+      };
+
+      self.socket.send(&request.to_bytes()).await?;
+      let mut buf = Vec::new();
+      self.socket.recv_buf_from(&mut buf).await?;
+
+      let response = TrackerResponse::from_bytes(&buf)?;
+      match response {
+         TrackerResponse::Announce { peers, .. } => Ok(tokio_stream::iter(peers.into_iter())),
+         _ => Err(anyhow!("Unexpected response")),
+      }
    }
 }
 
 impl TrackerTrait for UdpTracker {
    // Makes a request using the UDP tracker protocol to connect. Returns a u64 connection ID
-   async fn stream_peers(&mut self, info_hash: String) -> Result<u64> {
+   async fn stream_peers(&mut self) -> Result<impl Stream<Item = PeerAddr>> {
       let uri = self.uri.replace("udp://", "");
       self.socket.connect(&uri).await?;
 
@@ -158,14 +351,14 @@ impl TrackerTrait for UdpTracker {
       let request = TrackerRequest::Connect(MAGIC_CONSTANT, Action::Connect, transaction_id);
 
       // Send the request
-      self.socket.send_to(&request.to_bytes(), &uri).await?;
+      self.socket.send(&request.to_bytes()).await?;
 
       // Receive response
       let mut buffer = Vec::new();
-      self.socket.recv_buf_from(&mut buffer).await?;
+      self.socket.recv_buf(&mut buffer).await?;
 
       // Parse response
-      let response = TrackerResponse::from_bytes(buffer.into())?;
+      let response = TrackerResponse::from_bytes(&buffer)?;
 
       // Check response
       match response {
@@ -181,8 +374,7 @@ impl TrackerTrait for UdpTracker {
             }
             self.connection_id = Some(connection_id);
             self.ready_state = ReadyState::Ready;
-
-            Ok(connection_id)
+            self.announce().await
          }
          _ => Err(anyhow!("Invalid Response")),
       }
@@ -194,13 +386,14 @@ mod tests {
    use std::time::Duration;
 
    use tokio::time::sleep;
+   use tokio_stream::StreamExt;
 
    use crate::parser::{MagnetUri, MetaInfo};
 
    use super::*;
 
    #[tokio::test]
-   async fn test_parse_magnet_uri() {
+   async fn test_stream_with_udp_peers() {
       let path = std::env::current_dir()
          .unwrap()
          .join("tests/magneturis/big-buck-bunny.txt");
@@ -212,10 +405,18 @@ mod tests {
          MetaInfo::MagnetUri(magnet) => {
             let announce_list = magnet.announce_list.unwrap();
             let announce_url = announce_list[0].uri();
-            let mut udp_tracker = UdpTracker::new(announce_url, None).await.unwrap();
-            udp_tracker.connect().await.unwrap();
+            let info_hash: [u8; 20] = hex::decode(magnet.info_hash.split(':').last().unwrap())
+               .unwrap()
+               .try_into()
+               .unwrap();
 
-            assert_eq!(udp_tracker.ready_state, ReadyState::Ready);
+            let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash)
+               .await
+               .unwrap();
+            let mut stream = udp_tracker.stream_peers().await.unwrap();
+
+            let peer = stream.next().await.unwrap();
+            assert!(!peer.ip.is_private())
          }
          _ => panic!("Expected Torrent"),
       }
