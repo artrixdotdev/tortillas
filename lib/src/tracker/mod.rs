@@ -1,10 +1,11 @@
 use anyhow::Result;
+use http::HttpTracker;
 use serde::{
-   de::{self, Visitor},
    Deserialize,
+   de::{self, Visitor},
 };
 use std::{fmt, net::Ipv4Addr};
-use tokio_stream::Stream;
+use udp::UdpTracker;
 mod http;
 mod udp;
 // mod websocket;
@@ -18,7 +19,7 @@ pub struct PeerAddr {
 }
 
 trait TrackerTrait {
-   async fn stream_peers(&mut self) -> Result<impl Stream<Item = PeerAddr>>;
+   async fn stream_peers(&mut self) -> Result<Vec<PeerAddr>>;
 }
 
 /// An Announce URI from a torrent file or magnet URI.
@@ -36,13 +37,26 @@ pub enum Tracker {
 }
 
 impl Tracker {
-   pub async fn get(&self, info_hash: String) -> Result<()> {
-      // match self {
-      //    Tracker::Http(_) => todo!(),
-      //    Tracker::Udp(_) => todo!(),
-      //    Tracker::Websocket(_) => todo!(),
-      // }
-      todo!();
+   pub async fn get_peers(&self, info_hash: String) -> Result<Vec<PeerAddr>> {
+      match self {
+         Tracker::Http(uri) => {
+            let mut tracker = HttpTracker::new(uri.clone(), info_hash);
+
+            Ok(tracker.stream_peers().await.unwrap())
+         }
+         Tracker::Udp(uri) => {
+            let mut tracker = UdpTracker::new(
+               uri.clone(),
+               None,
+               hex::decode(info_hash).unwrap().try_into().unwrap(),
+            )
+            .await
+            .unwrap();
+
+            Ok(tracker.stream_peers().await.unwrap())
+         }
+         Tracker::Websocket(_) => todo!(),
+      }
    }
 
    pub fn uri(&self) -> String {

@@ -1,16 +1,17 @@
 /// See https://www.bittorrent.org/beps/bep_0003.html
 use std::net::Ipv4Addr;
 
-use anyhow::Context;
+use anyhow::Result;
 use rand::distr::{Alphanumeric, SampleString};
 use serde::{
-   de::{self, Visitor},
    Deserialize, Serialize,
+   de::{self, Visitor},
 };
 
 use super::{PeerAddr, TrackerTrait};
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // REMOVE SOON
 pub struct TrackerResponse {
    pub interval: usize,
    #[serde(deserialize_with = "deserialize_peers")]
@@ -52,7 +53,7 @@ impl TrackerRequest {
 
 /// Struct for handling tracker over HTTP
 #[derive(Debug, Deserialize, Serialize)]
-struct HttpTracker {
+pub struct HttpTracker {
    uri: String,
    peer_id: String,
    info_hash: String,
@@ -84,7 +85,7 @@ fn urlencode(t: &[u8; 20]) -> String {
 
 /// Fetches peers from tracker over HTTP and returns a stream of [PeerAddr](PeerAddr)
 impl TrackerTrait for HttpTracker {
-   async fn stream_peers(&mut self) -> anyhow::Result<impl tokio_stream::Stream<Item = PeerAddr>> {
+   async fn stream_peers(&mut self) -> Result<Vec<PeerAddr>> {
       // Decode info_hash
       let decoded = hex::decode(
          self
@@ -99,7 +100,7 @@ impl TrackerTrait for HttpTracker {
 
       // Generate params + URL. Specifically using the compact format by adding "compact=1" to
       // params.
-      let params = serde_qs::to_string(&self.params).context("url-encode tracker parameters")?;
+      let params = serde_qs::to_string(&self.params).expect("url-encode tracker parameters");
       let url_params = format!(
          "{}&info_hash={}&peer_id={}&compact=1",
          params,
@@ -112,7 +113,7 @@ impl TrackerTrait for HttpTracker {
       let response = reqwest::get(uri).await?.bytes().await?;
       let response: TrackerResponse = serde_bencode::from_bytes(&response)?;
 
-      anyhow::Ok(tokio_stream::iter(response.peers))
+      Ok(response.peers)
    }
 }
 
@@ -147,7 +148,7 @@ impl Visitor<'_> for PeerVisitor {
 }
 
 /// Serde related code. Reference their documentation: <https://serde.rs/impl-deserialize.html>
-fn deserialize_peers<'de, D>(deserializer: D) -> anyhow::Result<Vec<PeerAddr>, D::Error>
+fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<PeerAddr>, D::Error>
 where
    D: serde::Deserializer<'de>,
 {
@@ -156,8 +157,6 @@ where
 
 #[cfg(test)]
 mod tests {
-   use tokio_stream::StreamExt;
-
    use crate::{
       parser::{MagnetUri, MetaInfo},
       tracker::TrackerTrait,
@@ -180,11 +179,11 @@ mod tests {
             let mut http_tracker = HttpTracker::new(announce_uri, info_hash);
 
             // Make request
-            let mut res = HttpTracker::stream_peers(&mut http_tracker)
+            let res = HttpTracker::stream_peers(&mut http_tracker)
                .await
                .expect("Issue when unwrapping result of stream_peers");
 
-            assert!(!res.next().await.unwrap().ip.is_private());
+            assert!(!res[0].ip.is_private());
          }
          _ => panic!("Expected Torrent"),
       }

@@ -1,7 +1,4 @@
-use std::{
-   net::Ipv4Addr,
-   sync::Arc,
-};
+use std::{net::Ipv4Addr, sync::Arc};
 
 /// UDP protocol
 /// https://en.wikipedia.org/wiki/User_Datagram_Protocol
@@ -14,16 +11,15 @@ use num_enum::TryFromPrimitive;
 use rand::RngCore;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::net::UdpSocket;
-use tokio_stream::Stream;
 
 use super::{PeerAddr, TrackerTrait};
 
 /// Types and constants
-pub type ConnectionId = u64;
+type ConnectionId = u64;
 
-pub const MAGIC_CONSTANT: ConnectionId = 0x41727101980;
+const MAGIC_CONSTANT: ConnectionId = 0x41727101980;
 
-pub type TransactionId = u32;
+type TransactionId = u32;
 
 /// Enum for UDP Tracker Protocol Action parameter. See this resource for more information: https://xbtt.sourceforge.net/udp_tracker_protocol.html
 #[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
@@ -92,6 +88,7 @@ enum TrackerRequest {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 enum TrackerResponse {
    /// Note that the response headers for TrackerResponse are somewhat different in comparison to TrackerRequest:
    ///
@@ -303,7 +300,7 @@ impl UdpTracker {
          info_hash,
       })
    }
-   async fn announce(&self) -> Result<impl Stream<Item = PeerAddr>> {
+   async fn announce(&self) -> Result<Vec<PeerAddr>> {
       if self.ready_state != ReadyState::Ready {
          return Err(anyhow!("Tracker not ready"));
       };
@@ -330,7 +327,7 @@ impl UdpTracker {
 
       let response = TrackerResponse::from_bytes(&buf)?;
       match response {
-         TrackerResponse::Announce { peers, .. } => Ok(tokio_stream::iter(peers.into_iter())),
+         TrackerResponse::Announce { peers, .. } => Ok(peers),
          _ => Err(anyhow!("Unexpected response")),
       }
    }
@@ -338,7 +335,7 @@ impl UdpTracker {
 
 impl TrackerTrait for UdpTracker {
    // Makes a request using the UDP tracker protocol to connect. Returns a u64 connection ID
-   async fn stream_peers(&mut self) -> Result<impl Stream<Item = PeerAddr>> {
+   async fn stream_peers(&mut self) -> Result<Vec<PeerAddr>> {
       let uri = self.uri.replace("udp://", "");
       self.socket.connect(&uri).await?;
 
@@ -381,10 +378,6 @@ impl TrackerTrait for UdpTracker {
 
 #[cfg(test)]
 mod tests {
-   
-
-   
-   use tokio_stream::StreamExt;
 
    use crate::parser::{MagnetUri, MetaInfo};
 
@@ -411,9 +404,9 @@ mod tests {
             let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash)
                .await
                .unwrap();
-            let mut stream = udp_tracker.stream_peers().await.unwrap();
+            let stream = udp_tracker.stream_peers().await.unwrap();
 
-            let peer = stream.next().await.unwrap();
+            let peer = &stream[0];
             assert!(!peer.ip.is_private())
          }
          _ => panic!("Expected Torrent"),
