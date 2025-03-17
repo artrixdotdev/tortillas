@@ -119,7 +119,7 @@ impl TrackerTrait for HttpTracker {
 /// Serde related code. Used for deserializing response from HTTP request made in stream_peers
 struct PeerVisitor;
 
-impl<'de> Visitor<'de> for PeerVisitor {
+impl Visitor<'_> for PeerVisitor {
    type Value = Vec<PeerAddr>;
 
    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {

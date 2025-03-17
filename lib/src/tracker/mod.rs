@@ -9,7 +9,6 @@ mod http;
 mod udp;
 // mod websocket;
 
-use http::*;
 // use udp::*;
 
 #[derive(Debug, Deserialize)]

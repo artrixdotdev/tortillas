@@ -1,8 +1,6 @@
 use std::{
    net::Ipv4Addr,
-   pin::Pin,
    sync::Arc,
-   task::{Context, Poll},
 };
 
 /// UDP protocol
@@ -383,9 +381,9 @@ impl TrackerTrait for UdpTracker {
 
 #[cfg(test)]
 mod tests {
-   use std::time::Duration;
+   
 
-   use tokio::time::sleep;
+   
    use tokio_stream::StreamExt;
 
    use crate::parser::{MagnetUri, MetaInfo};
