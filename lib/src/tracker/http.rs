@@ -1,13 +1,13 @@
 /// See https://www.bittorrent.org/beps/bep_0003.html
 use std::net::Ipv4Addr;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rand::distr::{Alphanumeric, SampleString};
 use serde::{
    Deserialize, Serialize,
    de::{self, Visitor},
 };
-use tracing::{Level, debug, error, event, span, trace, warn};
+use tracing::{debug, error, trace};
 
 use super::{PeerAddr, TrackerTrait};
 
