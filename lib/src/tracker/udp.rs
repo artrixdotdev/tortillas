@@ -11,6 +11,7 @@ use num_enum::TryFromPrimitive;
 use rand::RngCore;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::net::UdpSocket;
+use tracing::{debug, info, trace};
 
 use super::{PeerAddr, TrackerTrait};
 
@@ -42,6 +43,7 @@ pub enum Events {
 }
 
 /// Headers for tracker request
+#[derive(Debug)]
 enum TrackerRequest {
    /// Binary layout for the Connect variant:
    /// - [Magic constant](MAGIC_CONSTANT) (8 bytes)
@@ -284,12 +286,14 @@ impl UdpTracker {
       socket: Option<UdpSocket>,
       info_hash: [u8; 20],
    ) -> Result<UdpTracker> {
+      debug!("Creating new UDP tracker for {}", uri);
       let sock = match socket {
          Some(sock) => sock,
          None => UdpSocket::bind("0.0.0.0:0").await?,
       };
       let mut peer_id = [0u8; 20];
       rand::rng().fill_bytes(&mut peer_id);
+      debug!("Peer ID: {:?}", peer_id);
 
       Ok(UdpTracker {
          uri,
@@ -304,7 +308,9 @@ impl UdpTracker {
       if self.ready_state != ReadyState::Ready {
          return Err(anyhow!("Tracker not ready"));
       };
+
       let transaction_id: TransactionId = rand::random();
+
       // Perform announce logic here
       let request = TrackerRequest::Announce {
          connection_id: self.connection_id.unwrap(),
@@ -322,12 +328,18 @@ impl UdpTracker {
       };
 
       self.socket.send(&request.to_bytes()).await?;
+      trace!("Sent announce request to {}", self.uri);
       let mut buf = Vec::new();
+
       self.socket.recv_buf_from(&mut buf).await?;
 
       let response = TrackerResponse::from_bytes(&buf)?;
+      debug!("Received announce from {}", self.uri);
       match response {
-         TrackerResponse::Announce { peers, .. } => Ok(peers),
+         TrackerResponse::Announce { peers, .. } => {
+            debug!("Found {} peers from {}", peers.len(), self.uri);
+            Ok(peers)
+         }
          _ => Err(anyhow!("Unexpected response")),
       }
    }
@@ -339,11 +351,14 @@ impl TrackerTrait for UdpTracker {
       let uri = self.uri.replace("udp://", "");
       self.socket.connect(&uri).await?;
 
+      debug!("Connected to tracker {}", self.uri);
+
       self.ready_state = ReadyState::Connected;
       let transaction_id: TransactionId = rand::random();
 
       // Send
       let request = TrackerRequest::Connect(MAGIC_CONSTANT, Action::Connect, transaction_id);
+      trace!("Sending connect request to {}", self.uri);
 
       // Send the request
       self.socket.send(&request.to_bytes()).await?;
@@ -351,6 +366,7 @@ impl TrackerTrait for UdpTracker {
       // Receive response
       let mut buffer = Vec::new();
       self.socket.recv_buf(&mut buffer).await?;
+      trace!("Received connect response from {}", self.uri);
 
       // Parse response
       let response = TrackerResponse::from_bytes(&buffer)?;
@@ -368,6 +384,7 @@ impl TrackerTrait for UdpTracker {
                return Err(anyhow!("Transaction ID mismatch"));
             }
             self.connection_id = Some(connection_id);
+            info!("Tracker {} is ready", self.uri);
             self.ready_state = ReadyState::Ready;
             self.announce().await
          }
@@ -377,40 +394,40 @@ impl TrackerTrait for UdpTracker {
 }
 // UNCOMMENT WHEN TRACKER REQUEST RETRIES ARE IMPLEMENTED
 // BREAKS GITHUB ACTIONS AND LEAVES A HANGING RESPONSE IF THE TRACKER'S PACKET GETS DROPPED
-// #[cfg(test)]
-// mod tests {
+#[cfg(test)]
+mod tests {
 
-//    use crate::parser::{MagnetUri, MetaInfo};
+   use crate::parser::{MagnetUri, MetaInfo};
 
-//    use super::*;
+   use super::*;
 
-//    #[tokio::test]
-//    async fn test_stream_with_udp_peers() {
-//       let path = std::env::current_dir()
-//          .unwrap()
-//          .join("tests/magneturis/big-buck-bunny.txt");
-//       let contents = tokio::fs::read_to_string(path).await.unwrap();
+   #[tokio::test]
+   async fn test_stream_with_udp_peers() {
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/big-buck-bunny.txt");
+      let contents = tokio::fs::read_to_string(path).await.unwrap();
 
-//       let metainfo = MagnetUri::parse(contents).await.unwrap();
+      let metainfo = MagnetUri::parse(contents).await.unwrap();
 
-//       match metainfo {
-//          MetaInfo::MagnetUri(magnet) => {
-//             let announce_list = magnet.announce_list.unwrap();
-//             let announce_url = announce_list[0].uri();
-//             let info_hash: [u8; 20] = hex::decode(magnet.info_hash.split(':').last().unwrap())
-//                .unwrap()
-//                .try_into()
-//                .unwrap();
+      match metainfo {
+         MetaInfo::MagnetUri(magnet) => {
+            let announce_list = magnet.announce_list.unwrap();
+            let announce_url = announce_list[0].uri();
+            let info_hash: [u8; 20] = hex::decode(magnet.info_hash.split(':').last().unwrap())
+               .unwrap()
+               .try_into()
+               .unwrap();
 
-//             let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash)
-//                .await
-//                .unwrap();
-//             let stream = udp_tracker.stream_peers().await.unwrap();
+            let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash)
+               .await
+               .unwrap();
+            let stream = udp_tracker.stream_peers().await.unwrap();
 
-//             let peer = &stream[0];
-//             assert!(!peer.ip.is_private())
-//          }
-//          _ => panic!("Expected Torrent"),
-//       }
-//    }
-// }
+            let peer = &stream[0];
+            assert!(!peer.ip.is_private())
+         }
+         _ => panic!("Expected Torrent"),
+      }
+   }
+}

@@ -1,7 +1,7 @@
 /// See https://www.bittorrent.org/beps/bep_0003.html
 use std::net::Ipv4Addr;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rand::distr::{Alphanumeric, SampleString};
 use serde::{
    Deserialize, Serialize,
@@ -94,11 +94,13 @@ impl TrackerTrait for HttpTracker {
             .info_hash
             .split("urn:btih:")
             .last()
-            .expect("Error when unwrapping info_hash"),
+            .expect("Invalid info_hash"),
       )
-      .expect("Error when unwrapping info_hash")
+      .map_err(|err| error!("Failed to decode info_hash: {err}"))
+      .unwrap()
       .try_into()
-      .expect("Error when unwrapping info_hash");
+      .map_err(|_err| error!("Failed to convert info_hash to array"))
+      .unwrap();
 
       // Generate params + URL. Specifically using the compact format by adding "compact=1" to
       // params.
@@ -114,10 +116,20 @@ impl TrackerTrait for HttpTracker {
       trace!("Generated uri: {uri}");
 
       // Make request
-      let response = reqwest::get(&uri).await?.bytes().await?;
+      let response = reqwest::get(&uri)
+         .await
+         .map_err(|err| error!("Failed to request tracker: {err}"))
+         .unwrap()
+         .bytes()
+         .await
+         .unwrap();
+
       debug!("Made GET request to {}", &uri);
-      let response: TrackerResponse = serde_bencode::from_bytes(&response)?;
-      trace!("Decoded bencode result: {:?}", &response);
+      let response: TrackerResponse = serde_bencode::from_bytes(&response)
+         .map_err(|err| error!("Tracker {uri} returned invalid bencode: {err}"))
+         .unwrap();
+      trace!("Decoded bencode result for {}", &uri);
+      debug!("Found {} peers from {}", response.peers.len(), &uri);
 
       Ok(response.peers)
    }
@@ -148,7 +160,6 @@ impl Visitor<'_> for PeerVisitor {
 
          let port = u16::from_be_bytes([chunk[4], chunk[5]]);
          peers.push(PeerAddr { ip, port });
-         trace!("Deserialized PeerAddr {ip}:{port}");
       }
 
       Ok(peers)
