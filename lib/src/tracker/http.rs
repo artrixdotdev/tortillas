@@ -7,6 +7,7 @@ use serde::{
    Deserialize, Serialize,
    de::{self, Visitor},
 };
+use tracing::{Level, debug, error, event, span, trace, warn};
 
 use super::{PeerAddr, TrackerTrait};
 
@@ -77,7 +78,8 @@ fn urlencode(t: &[u8; 20]) -> String {
    for &byte in t {
       encoded.push('%');
 
-      encoded.push_str(&hex::encode([byte]));
+      let byte = hex::encode([byte]);
+      encoded.push_str(&byte);
    }
 
    encoded
@@ -87,7 +89,7 @@ fn urlencode(t: &[u8; 20]) -> String {
 impl TrackerTrait for HttpTracker {
    async fn stream_peers(&mut self) -> Result<Vec<PeerAddr>> {
       // Decode info_hash
-      let decoded = hex::decode(
+      let info_hash = hex::decode(
          self
             .info_hash
             .split("urn:btih:")
@@ -101,17 +103,21 @@ impl TrackerTrait for HttpTracker {
       // Generate params + URL. Specifically using the compact format by adding "compact=1" to
       // params.
       let params = serde_qs::to_string(&self.params).expect("url-encode tracker parameters");
-      let url_params = format!(
+      let info_hash = urlencode(&info_hash);
+      trace!("Created info hash: {}", info_hash);
+      let uri_params = format!(
          "{}&info_hash={}&peer_id={}&compact=1",
-         params,
-         &urlencode(&decoded),
-         &self.peer_id
+         params, info_hash, &self.peer_id
       );
-      let uri = format!("{}?{}", self.uri, url_params);
+
+      let uri = format!("{}?{}", self.uri, &uri_params);
+      trace!("Generated uri: {uri}");
 
       // Make request
-      let response = reqwest::get(uri).await?.bytes().await?;
+      let response = reqwest::get(&uri).await?.bytes().await?;
+      debug!("Made GET request to {}", &uri);
       let response: TrackerResponse = serde_bencode::from_bytes(&response)?;
+      trace!("Decoded bencode result: {:?}", &response);
 
       Ok(response.peers)
    }
@@ -133,6 +139,7 @@ impl Visitor<'_> for PeerVisitor {
    {
       // Decodes response from stream_peers' HTTP request according to BEP 23's compact form: <https://www.bittorrent.org/beps/bep_0023.html>
       let mut peers = Vec::new();
+
       for chunk in bytes.chunks(6) {
          if chunk.len() != 6 {
             return Err(de::Error::custom("Invalid peer chunk length"));
@@ -141,6 +148,7 @@ impl Visitor<'_> for PeerVisitor {
 
          let port = u16::from_be_bytes([chunk[4], chunk[5]]);
          peers.push(PeerAddr { ip, port });
+         trace!("Added PeerAddr {ip}:{port} to peers vec");
       }
 
       Ok(peers)
@@ -166,6 +174,7 @@ mod tests {
 
    #[tokio::test]
    async fn test_stream_peers_with_http_tracker() {
+      tracing_subscriber::fmt::init();
       let path = std::env::current_dir()
          .unwrap()
          .join("tests/magneturis/zenshuu.txt");
