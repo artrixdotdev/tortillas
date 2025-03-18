@@ -148,7 +148,7 @@ impl Visitor<'_> for PeerVisitor {
 
          let port = u16::from_be_bytes([chunk[4], chunk[5]]);
          peers.push(PeerAddr { ip, port });
-         trace!("Added PeerAddr {ip}:{port} to peers vec");
+         trace!("Deserialized PeerAddr {ip}:{port}");
       }
 
       Ok(peers)
@@ -165,6 +165,8 @@ where
 
 #[cfg(test)]
 mod tests {
+   use tracing_test::traced_test;
+
    use crate::{
       parser::{MagnetUri, MetaInfo},
       tracker::TrackerTrait,
@@ -173,8 +175,8 @@ mod tests {
    use super::HttpTracker;
 
    #[tokio::test]
+   #[traced_test]
    async fn test_stream_peers_with_http_tracker() {
-      tracing_subscriber::fmt::init();
       let path = std::env::current_dir()
          .unwrap()
          .join("tests/magneturis/zenshuu.txt");

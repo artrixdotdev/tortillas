@@ -137,8 +137,10 @@ impl Visitor<'_> for HashesVisitor {
 #[cfg(test)]
 mod tests {
    use super::*;
+   use tracing_test::traced_test;
 
    #[tokio::test]
+   #[traced_test]
    async fn test_parse_file() {
       let path = std::env::current_dir()
          .unwrap()

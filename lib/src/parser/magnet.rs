@@ -88,8 +88,10 @@ impl MagnetUri {
 mod tests {
 
    use super::*;
+   use tracing_test::traced_test;
 
    #[tokio::test]
+   #[traced_test]
    async fn test_parse_magnet_uri() {
       let path = std::env::current_dir()
          .unwrap()

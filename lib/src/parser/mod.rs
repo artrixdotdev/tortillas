@@ -29,12 +29,13 @@ impl MetaInfo {
 
 #[cfg(test)]
 mod tests {
-
    use crate::tracker::Tracker;
+   use tracing_test::traced_test;
 
    use super::*;
 
    #[tokio::test]
+   #[traced_test]
    async fn test_info_hash_with_magneturi() {
       let path = std::env::current_dir()
          .unwrap()
@@ -49,6 +50,7 @@ mod tests {
    }
 
    #[tokio::test]
+   #[traced_test]
    async fn test_info_hash_with_torrent() {
       let path = std::env::current_dir()
          .unwrap()
@@ -58,6 +60,7 @@ mod tests {
    }
 
    #[tokio::test]
+   #[traced_test]
    async fn test_announce_uri() {
       let path = std::env::current_dir()
          .unwrap()

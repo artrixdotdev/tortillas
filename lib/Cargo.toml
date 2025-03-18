@@ -20,4 +20,4 @@ thiserror = "2.0.12"
 tracing = "0.1.41"
 
 [dev-dependencies]
-tracing-subscriber = "0.3.19"
+tracing-test = "0.2.5"
