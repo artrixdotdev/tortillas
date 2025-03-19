@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 
-use crate::{parser::MetaInfo, tracker::Tracker};
+use crate::{
+   hashes::{Hash, InfoHash},
+   parser::MetaInfo,
+   tracker::Tracker,
+};
 
 use anyhow::Result;
 use serde::Deserialize;
@@ -9,8 +13,9 @@ use serde_qs;
 /// Magnet URI Spec: https://en.wikipedia.org/wiki/Magnet_URI_scheme or https://www.bittorrent.org/beps/bep_0053.html
 #[derive(Debug, Deserialize)]
 pub struct MagnetUri {
+   /// use `Self::info_hash` to get the info hash as a `Hash` struct.
    #[serde(rename(deserialize = "xt"))]
-   pub info_hash: String,
+   info_hash: String,
 
    #[serde(rename(deserialize = "dn"))]
    pub name: String,
@@ -81,6 +86,16 @@ impl MagnetUri {
 
       // Parse the modified query string
       Ok(MetaInfo::MagnetUri(serde_qs::from_str(&final_qs)?))
+   }
+   pub fn info_hash(&self) -> Result<InfoHash, anyhow::Error> {
+      let hex_part = self
+         .info_hash
+         .split(":")
+         .last()
+         .ok_or_else(|| anyhow::anyhow!("Invalid info_hash format: no colon found"))?;
+
+      Hash::from_hex(hex_part)
+         .map_err(|e| anyhow::anyhow!("Failed to parse info_hash from hex: {}", e))
    }
 }
 

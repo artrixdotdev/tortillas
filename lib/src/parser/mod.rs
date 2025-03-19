@@ -5,6 +5,8 @@ mod magnet;
 pub use file::*;
 pub use magnet::*;
 
+use crate::hashes::InfoHash;
+
 /// Always utilize MetaInfo instead of directly using TorrentFile or MagnetUri
 #[derive(Debug, Deserialize)]
 pub enum MetaInfo {
@@ -17,12 +19,15 @@ impl MetaInfo {
    /// function will calculate and return the hash. If the enum is a [MagnetUri](MagnetUri), then this
    /// function will grab the existing hash and return it, as the MagnetUri spec already contains
    /// the hash.
-   pub fn info_hash(&self) -> String {
+   pub fn info_hash(&self) -> Result<InfoHash, anyhow::Error> {
       match &self {
-         MetaInfo::Torrent(torrent) => torrent.info.hash().unwrap(),
-         MetaInfo::MagnetUri(magnet_uri) => {
-            String::from(magnet_uri.info_hash.split(":").last().unwrap())
-         }
+         MetaInfo::Torrent(torrent) => torrent
+            .info
+            .hash()
+            .map_err(|e| anyhow::anyhow!("Failed to compute torrent info hash: {}", e)),
+         MetaInfo::MagnetUri(magnet_uri) => magnet_uri
+            .info_hash()
+            .map_err(|e| anyhow::anyhow!("Failed to extract magnet URI info hash: {}", e)),
       }
    }
 }
@@ -43,8 +48,10 @@ mod tests {
       let contents = tokio::fs::read_to_string(path).await.unwrap();
 
       let metainfo = MagnetUri::parse(contents).await.unwrap();
+
+      let info_hash = metainfo.info_hash().unwrap();
       assert_eq!(
-         metainfo.info_hash(),
+         info_hash.to_hex(),
          "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
       );
    }
@@ -56,7 +63,12 @@ mod tests {
          .unwrap()
          .join("tests/torrents/big-buck-bunny.torrent");
       let file = TorrentFile::parse(path).await.unwrap();
-      assert_eq!(file.info_hash(), "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c");
+
+      let info_hash = file.info_hash().unwrap();
+      assert_eq!(
+         info_hash.to_hex(),
+         "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
+      );
    }
 
    #[tokio::test]

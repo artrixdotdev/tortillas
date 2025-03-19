@@ -1,5 +1,8 @@
 use super::{PeerAddr, TrackerTrait};
-use crate::errors::{HttpTrackerError, TrackerError};
+use crate::{
+   errors::{HttpTrackerError, TrackerError},
+   hashes::InfoHash,
+};
 use rand::distr::{Alphanumeric, SampleString};
 use serde::{
    Deserialize, Serialize,
@@ -55,13 +58,13 @@ impl TrackerRequest {
 pub struct HttpTracker {
    uri: String,
    peer_id: String,
-   info_hash: String,
+   info_hash: InfoHash,
    params: TrackerRequest,
 }
 
 impl HttpTracker {
    #[instrument(skip(info_hash), fields(uri = %uri))]
-   pub fn new(uri: String, info_hash: String) -> HttpTracker {
+   pub fn new(uri: String, info_hash: InfoHash) -> HttpTracker {
       let peer_id = Alphanumeric.sample_string(&mut rand::rng(), 20);
       debug!(peer_id = %peer_id, "Generated peer ID");
 
@@ -93,19 +96,6 @@ impl TrackerTrait for HttpTracker {
    async fn stream_peers(&mut self) -> anyhow::Result<Vec<PeerAddr>> {
       // Decode info_hash
       debug!("Decoding info hash");
-      let info_hash_part = self.info_hash.split("urn:btih:").last().ok_or_else(|| {
-         HttpTrackerError::InvalidInfoHash(format!("Invalid info_hash format: {}", self.info_hash))
-      })?;
-
-      let decoded_hash = hex::decode(info_hash_part).map_err(|e| {
-         error!(error = %e, "Failed to decode info_hash");
-         HttpTrackerError::InvalidInfoHash(format!("Failed to decode info_hash: {}", e))
-      })?;
-
-      let info_hash: [u8; 20] = decoded_hash.try_into().map_err(|_| {
-         error!("Info hash has incorrect length");
-         HttpTrackerError::InvalidInfoHash("Info hash must be 20 bytes".to_string())
-      })?;
 
       // Generate params + URL. Specifically using the compact format by adding "compact=1" to
       // params.
@@ -113,7 +103,7 @@ impl TrackerTrait for HttpTracker {
       let params = serde_qs::to_string(&self.params)
          .map_err(|e| HttpTrackerError::ParameterEncoding(e.to_string()))?;
 
-      let info_hash_encoded = urlencode(&info_hash);
+      let info_hash_encoded = urlencode(self.info_hash.as_bytes());
       trace!(encoded_hash = %info_hash_encoded, "URL-encoded info hash");
 
       let uri_params = format!(
@@ -238,10 +228,10 @@ mod tests {
       let metainfo = MagnetUri::parse(contents).await.unwrap();
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
+            let info_hash = magnet.info_hash();
             let announce_list = magnet.announce_list.unwrap();
             let announce_uri = announce_list[0].uri();
-            let info_hash = magnet.info_hash;
-            let mut http_tracker = HttpTracker::new(announce_uri, info_hash);
+            let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap());
 
             // Make request
             let res = HttpTracker::stream_peers(&mut http_tracker)
