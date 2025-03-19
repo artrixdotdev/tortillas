@@ -3,8 +3,8 @@ use std::net::Ipv4Addr;
 
 use rand::distr::{Alphanumeric, SampleString};
 use serde::{
-   Deserialize, Serialize,
    de::{self, Visitor},
+   Deserialize, Serialize,
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -106,7 +106,7 @@ impl TrackerTrait for HttpTracker {
 
       let info_hash: [u8; 20] = decoded_hash.try_into().map_err(|_| {
          error!("Info hash has incorrect length");
-         HttpTrackerError::InvalidInfoHash(format!("Info hash must be 20 bytes",))
+         HttpTrackerError::InvalidInfoHash("Info hash must be 20 bytes".to_string())
       })?;
 
       // Generate params + URL. Specifically using the compact format by adding "compact=1" to
