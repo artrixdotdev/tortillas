@@ -231,7 +231,7 @@ mod tests {
             let info_hash = magnet.info_hash();
             let announce_list = magnet.announce_list.unwrap();
             let announce_uri = announce_list[0].uri();
-            let mut http_tracker = HttpTracker::new(announce_uri, info_hash);
+            let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap());
 
             // Make request
             let res = HttpTracker::stream_peers(&mut http_tracker)

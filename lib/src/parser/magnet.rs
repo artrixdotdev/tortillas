@@ -87,8 +87,15 @@ impl MagnetUri {
       // Parse the modified query string
       Ok(MetaInfo::MagnetUri(serde_qs::from_str(&final_qs)?))
    }
-   pub fn info_hash(&self) -> InfoHash {
-      Hash::from_hex(self.info_hash.split(":").last().unwrap()).unwrap()
+   pub fn info_hash(&self) -> Result<InfoHash, anyhow::Error> {
+      let hex_part = self
+         .info_hash
+         .split(":")
+         .last()
+         .ok_or_else(|| anyhow::anyhow!("Invalid info_hash format: no colon found"))?;
+
+      Hash::from_hex(hex_part)
+         .map_err(|e| anyhow::anyhow!("Failed to parse info_hash from hex: {}", e))
    }
 }
 

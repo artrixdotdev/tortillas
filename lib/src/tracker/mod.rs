@@ -64,18 +64,18 @@ impl Tracker {
    }
 }
 
-struct AnnounceUriVisitor;
+struct TrackerVisitor;
 
 impl<'de> Deserialize<'de> for Tracker {
    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
    where
       D: serde::Deserializer<'de>,
    {
-      deserializer.deserialize_string(AnnounceUriVisitor)
+      deserializer.deserialize_string(TrackerVisitor)
    }
 }
 
-impl Visitor<'_> for AnnounceUriVisitor {
+impl Visitor<'_> for TrackerVisitor {
    type Value = Tracker;
 
    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {

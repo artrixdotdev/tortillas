@@ -589,7 +589,7 @@ mod tests {
             let announce_list = magnet.announce_list.unwrap();
             let announce_url = announce_list[0].uri();
 
-            let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash)
+            let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash.unwrap())
                .await
                .unwrap();
             let stream = udp_tracker.stream_peers().await.unwrap();
