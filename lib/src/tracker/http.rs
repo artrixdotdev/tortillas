@@ -1,15 +1,13 @@
-/// See https://www.bittorrent.org/beps/bep_0003.html
-use std::net::Ipv4Addr;
-
-use rand::distr::{Alphanumeric, SampleString};
-use serde::{
-   de::{self, Visitor},
-   Deserialize, Serialize,
-};
-use tracing::{debug, error, info, instrument, trace, warn};
-
 use super::{PeerAddr, TrackerTrait};
 use crate::errors::{HttpTrackerError, TrackerError};
+use rand::distr::{Alphanumeric, SampleString};
+use serde::{
+   Deserialize, Serialize,
+   de::{self, Visitor},
+};
+/// See https://www.bittorrent.org/beps/bep_0003.html
+use std::net::Ipv4Addr;
+use tracing::{debug, error, info, instrument, trace, warn};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)] // REMOVE SOON
