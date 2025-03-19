@@ -1,14 +1,13 @@
-/// See https://www.bittorrent.org/beps/bep_0003.html
-use std::net::Ipv4Addr;
-
-use anyhow::Result;
+use super::{PeerAddr, TrackerTrait};
+use crate::errors::{HttpTrackerError, TrackerError};
 use rand::distr::{Alphanumeric, SampleString};
 use serde::{
    Deserialize, Serialize,
    de::{self, Visitor},
 };
-
-use super::{PeerAddr, TrackerTrait};
+/// See https://www.bittorrent.org/beps/bep_0003.html
+use std::net::Ipv4Addr;
+use tracing::{debug, error, info, instrument, trace, warn};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)] // REMOVE SOON
@@ -61,10 +60,14 @@ pub struct HttpTracker {
 }
 
 impl HttpTracker {
+   #[instrument(skip(info_hash), fields(uri = %uri))]
    pub fn new(uri: String, info_hash: String) -> HttpTracker {
+      let peer_id = Alphanumeric.sample_string(&mut rand::rng(), 20);
+      debug!(peer_id = %peer_id, "Generated peer ID");
+
       HttpTracker {
          uri,
-         peer_id: Alphanumeric.sample_string(&mut rand::rng(), 20),
+         peer_id,
          params: TrackerRequest::new(),
          info_hash,
       }
@@ -77,7 +80,8 @@ fn urlencode(t: &[u8; 20]) -> String {
    for &byte in t {
       encoded.push('%');
 
-      encoded.push_str(&hex::encode([byte]));
+      let byte = hex::encode([byte]);
+      encoded.push_str(&byte);
    }
 
    encoded
@@ -85,33 +89,68 @@ fn urlencode(t: &[u8; 20]) -> String {
 
 /// Fetches peers from tracker over HTTP and returns a stream of [PeerAddr](PeerAddr)
 impl TrackerTrait for HttpTracker {
-   async fn stream_peers(&mut self) -> Result<Vec<PeerAddr>> {
+   #[instrument(skip(self))]
+   async fn stream_peers(&mut self) -> anyhow::Result<Vec<PeerAddr>> {
       // Decode info_hash
-      let decoded = hex::decode(
-         self
-            .info_hash
-            .split("urn:btih:")
-            .last()
-            .expect("Error when unwrapping info_hash"),
-      )
-      .expect("Error when unwrapping info_hash")
-      .try_into()
-      .expect("Error when unwrapping info_hash");
+      debug!("Decoding info hash");
+      let info_hash_part = self.info_hash.split("urn:btih:").last().ok_or_else(|| {
+         HttpTrackerError::InvalidInfoHash(format!("Invalid info_hash format: {}", self.info_hash))
+      })?;
+
+      let decoded_hash = hex::decode(info_hash_part).map_err(|e| {
+         error!(error = %e, "Failed to decode info_hash");
+         HttpTrackerError::InvalidInfoHash(format!("Failed to decode info_hash: {}", e))
+      })?;
+
+      let info_hash: [u8; 20] = decoded_hash.try_into().map_err(|_| {
+         error!("Info hash has incorrect length");
+         HttpTrackerError::InvalidInfoHash("Info hash must be 20 bytes".to_string())
+      })?;
 
       // Generate params + URL. Specifically using the compact format by adding "compact=1" to
       // params.
-      let params = serde_qs::to_string(&self.params).expect("url-encode tracker parameters");
-      let url_params = format!(
+      debug!("Generating request parameters");
+      let params = serde_qs::to_string(&self.params)
+         .map_err(|e| HttpTrackerError::ParameterEncoding(e.to_string()))?;
+
+      let info_hash_encoded = urlencode(&info_hash);
+      trace!(encoded_hash = %info_hash_encoded, "URL-encoded info hash");
+
+      let uri_params = format!(
          "{}&info_hash={}&peer_id={}&compact=1",
-         params,
-         &urlencode(&decoded),
-         &self.peer_id
+         params, info_hash_encoded, &self.peer_id
       );
-      let uri = format!("{}?{}", self.uri, url_params);
+
+      let uri = format!("{}?{}", self.uri, &uri_params);
+      debug!(request_uri = %uri, "Generated tracker request URI");
 
       // Make request
-      let response = reqwest::get(uri).await?.bytes().await?;
-      let response: TrackerResponse = serde_bencode::from_bytes(&response)?;
+      info!("Sending HTTP request to tracker");
+      let response = reqwest::get(&uri)
+         .await
+         .map_err(|e| {
+            error!(error = %e, "HTTP request to tracker failed");
+            HttpTrackerError::Request(e)
+         })?
+         .bytes()
+         .await
+         .map_err(|e| {
+            error!(error = %e, "Failed to read tracker response body");
+            HttpTrackerError::Request(e)
+         })?;
+
+      debug!(response_size = response.len(), "Received tracker response");
+
+      let response: TrackerResponse = serde_bencode::from_bytes(&response).map_err(|e| {
+         error!(error = %e, "Failed to decode bencode response");
+         HttpTrackerError::Tracker(TrackerError::BencodeError(e))
+      })?;
+
+      trace!("Successfully decoded bencode response");
+      info!(
+         peers_count = response.peers.len(),
+         "Found peers from tracker"
+      );
 
       Ok(response.peers)
    }
@@ -124,7 +163,7 @@ impl Visitor<'_> for PeerVisitor {
    type Value = Vec<PeerAddr>;
 
    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-      formatter.write_str("a byte array")
+      formatter.write_str("a byte array containing peer information")
    }
 
    fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Self::Value, E>
@@ -133,13 +172,36 @@ impl Visitor<'_> for PeerVisitor {
    {
       // Decodes response from stream_peers' HTTP request according to BEP 23's compact form: <https://www.bittorrent.org/beps/bep_0023.html>
       let mut peers = Vec::new();
-      for chunk in bytes.chunks(6) {
-         if chunk.len() != 6 {
-            return Err(de::Error::custom("Invalid peer chunk length"));
-         }
-         let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
+      const PEER_SIZE: usize = 6; // 4 bytes IP + 2 bytes port
 
+      if bytes.len() % PEER_SIZE != 0 {
+         return Err(de::Error::custom(format!(
+            "Peer data length ({}) is not a multiple of peer size ({})",
+            bytes.len(),
+            PEER_SIZE
+         )));
+      }
+
+      for (i, chunk) in bytes.chunks(PEER_SIZE).enumerate() {
+         if chunk.len() != PEER_SIZE {
+            warn!(
+               chunk_index = i,
+               chunk_size = chunk.len(),
+               "Invalid peer chunk length, skipping"
+            );
+            continue;
+         }
+
+         let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
          let port = u16::from_be_bytes([chunk[4], chunk[5]]);
+
+         trace!(
+            peer_index = i,
+            ip = %ip,
+            port = port,
+            "Parsed peer address"
+         );
+
          peers.push(PeerAddr { ip, port });
       }
 
@@ -157,6 +219,8 @@ where
 
 #[cfg(test)]
 mod tests {
+   use tracing_test::traced_test;
+
    use crate::{
       parser::{MagnetUri, MetaInfo},
       tracker::TrackerTrait,
@@ -165,6 +229,7 @@ mod tests {
    use super::HttpTracker;
 
    #[tokio::test]
+   #[traced_test]
    async fn test_stream_peers_with_http_tracker() {
       let path = std::env::current_dir()
          .unwrap()
