@@ -15,7 +15,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use super::{PeerAddr, TrackerTrait};
 use crate::{
    errors::{TrackerError, UdpTrackerError},
-   hashes::InfoHash,
+   hashes::{Hash, InfoHash},
 };
 
 /// Types and constants
@@ -84,7 +84,7 @@ enum TrackerRequest {
       connection_id: ConnectionId,
       transaction_id: TransactionId,
       info_hash: InfoHash,
-      peer_id: [u8; 20],
+      peer_id: Hash<20>,
       downloaded: u64,
       left: u64,
       uploaded: u64,
@@ -177,7 +177,7 @@ impl TrackerRequest {
             buf.extend_from_slice(&(Action::Announce as u32).to_be_bytes()); // Action
             buf.extend_from_slice(&transaction_id.to_be_bytes()); // Transaction ID
             buf.extend_from_slice(info_hash.as_bytes()); // Info Hash
-            buf.extend_from_slice(peer_id); // Peer ID
+            buf.extend_from_slice(peer_id.as_bytes()); // Peer ID
             buf.extend_from_slice(&downloaded.to_be_bytes()); // Downloaded
             buf.extend_from_slice(&left.to_be_bytes()); // Left
             buf.extend_from_slice(&uploaded.to_be_bytes()); // Uploaded
@@ -336,7 +336,7 @@ pub struct UdpTracker {
    connection_id: Option<ConnectionId>,
    pub socket: Arc<UdpSocket>,
    ready_state: ReadyState,
-   peer_id: [u8; 20],
+   peer_id: Hash<20>,
    info_hash: InfoHash,
 }
 
@@ -363,7 +363,8 @@ impl UdpTracker {
 
       let mut peer_id = [0u8; 20];
       rand::rng().fill_bytes(&mut peer_id);
-      debug!(peer_id = ?peer_id, "Generated peer ID");
+      let peer_id = Hash::from_bytes(peer_id);
+      debug!(peer_id = %peer_id, "Generated peer ID");
 
       Ok(UdpTracker {
          uri,

@@ -15,6 +15,10 @@ impl<const N: usize> Hash<N> {
       Hash(bytes)
    }
 
+   pub fn from_bytes(bytes: [u8; N]) -> Self {
+      Hash(bytes)
+   }
+
    pub fn as_bytes(&self) -> &[u8; N] {
       &self.0
    }
