@@ -13,7 +13,7 @@ use serde::{
 /// # Examples
 ///
 /// ```
-/// use tortillas::hashes::Hash;
+/// use libtortillas::hashes::Hash;
 ///
 /// // Create a hash from a byte array
 /// let hash = Hash::new([0; 5]);
@@ -38,7 +38,7 @@ impl<const N: usize> Hash<N> {
    /// # Examples
    ///
    /// ```
-   /// use tortillas::hashes::Hash;
+   /// use libtortillas::hashes::Hash;
    ///
    /// let hash = Hash::new([1, 2, 3, 4, 5]);
    /// ```
@@ -52,7 +52,7 @@ impl<const N: usize> Hash<N> {
    /// # Examples
    ///
    /// ```
-   /// use tortillas::hashes::Hash;
+   /// use libtortillas::hashes::Hash;
    ///
    /// let hash = Hash::from_bytes([1, 2, 3, 4, 5]);
    /// ```
@@ -65,7 +65,7 @@ impl<const N: usize> Hash<N> {
    /// # Examples
    ///
    /// ```
-   /// use tortillas::hashes::Hash;
+   /// use libtortillas::hashes::Hash;
    ///
    /// let hash = Hash::new([1, 2, 3, 4, 5]);
    /// assert_eq!(hash.as_bytes(), &[1, 2, 3, 4, 5]);
@@ -79,7 +79,7 @@ impl<const N: usize> Hash<N> {
    /// # Examples
    ///
    /// ```
-   /// use tortillas::hashes::Hash;
+   /// use libtortillas::hashes::Hash;
    ///
    /// let hash = Hash::new([0x12, 0x34, 0x56]);
    /// assert_eq!(hash.to_hex(), "123456");
@@ -99,7 +99,7 @@ impl<const N: usize> Hash<N> {
    /// # Examples
    ///
    /// ```
-   /// use tortillas::hashes::Hash;
+   /// use libtortillas::hashes::Hash;
    ///
    /// let hash = Hash::<3>::from_hex("123456").unwrap();
    /// assert_eq!(hash.as_bytes(), &[0x12, 0x34, 0x56]);
@@ -128,7 +128,7 @@ impl<const N: usize> Hash<N> {
 /// # Examples
 ///
 /// ```
-/// use tortillas::hashes::Hash;
+/// use libtortillas::hashes::Hash;
 ///
 /// let hash = Hash::new([0x12, 0x34, 0x56]);
 /// println!("Hash: {}", hash); // Outputs: Hash: 123456
@@ -193,7 +193,7 @@ impl<const N: usize> Visitor<'_> for HashVisitor<N> {
 /// # Examples
 ///
 /// ```
-/// use tortillas::hashes::{Hash, HashVec};
+/// use libtortillas::hashes::{Hash, HashVec};
 ///
 /// // Create a new empty collection
 /// let mut hashes: HashVec<4> = HashVec::new();
@@ -226,7 +226,7 @@ impl<const N: usize> HashVec<N> {
    /// # Examples
    ///
    /// ```
-   /// use tortillas::hashes::HashVec;
+   /// use libtortillas::hashes::HashVec;
    ///
    /// let hashes: HashVec<20> = HashVec::new();
    /// assert!(hashes.is_empty());
@@ -240,7 +240,7 @@ impl<const N: usize> HashVec<N> {
    /// # Examples
    ///
    /// ```
-   /// use tortillas::hashes::{Hash, HashVec};
+   /// use libtortillas::hashes::{Hash, HashVec};
    ///
    /// let mut hashes = HashVec::new();
    /// hashes.push(Hash::new([1, 2, 3]));
@@ -255,7 +255,7 @@ impl<const N: usize> HashVec<N> {
    /// # Examples
    ///
    /// ```
-   /// use tortillas::hashes::{Hash, HashVec};
+   /// use libtortillas::hashes::{Hash, HashVec};
    ///
    /// let mut hashes = HashVec::new();
    /// assert_eq!(hashes.len(), 0);
@@ -273,7 +273,7 @@ impl<const N: usize> HashVec<N> {
    /// # Examples
    ///
    /// ```
-   /// use tortillas::hashes::{Hash, HashVec};
+   /// use libtortillas::hashes::{Hash, HashVec};
    ///
    /// let mut hashes = HashVec::new();
    /// assert!(hashes.is_empty());
@@ -293,7 +293,7 @@ impl<const N: usize> HashVec<N> {
    /// # Examples
    ///
    /// ```
-   /// use tortillas::hashes::{Hash, HashVec};
+   /// use libtortillas::hashes::{Hash, HashVec};
    ///
    /// let mut hashes = HashVec::new();
    /// hashes.push(Hash::new([0, 1, 2]));
@@ -316,7 +316,7 @@ impl<const N: usize> HashVec<N> {
 /// # Examples
 ///
 /// ```
-/// use tortillas::hashes::{Hash, HashVec};
+/// use libtortillas::hashes::{Hash, HashVec};
 ///
 /// let mut hashes = HashVec::new();
 /// hashes.push(Hash::new([1, 2, 3]));
