@@ -6,6 +6,8 @@ use serde::{
 };
 use std::{fmt, net::Ipv4Addr};
 use udp::UdpTracker;
+
+use crate::hashes::InfoHash;
 pub mod http;
 pub mod udp;
 // mod websocket;
@@ -37,7 +39,7 @@ pub enum Tracker {
 }
 
 impl Tracker {
-   pub async fn get_peers(&self, info_hash: String) -> Result<Vec<PeerAddr>> {
+   pub async fn get_peers(&self, info_hash: InfoHash) -> Result<Vec<PeerAddr>> {
       match self {
          Tracker::Http(uri) => {
             let mut tracker = HttpTracker::new(uri.clone(), info_hash);
@@ -45,13 +47,7 @@ impl Tracker {
             Ok(tracker.stream_peers().await.unwrap())
          }
          Tracker::Udp(uri) => {
-            let mut tracker = UdpTracker::new(
-               uri.clone(),
-               None,
-               hex::decode(info_hash).unwrap().try_into().unwrap(),
-            )
-            .await
-            .unwrap();
+            let mut tracker = UdpTracker::new(uri.clone(), None, info_hash).await.unwrap();
 
             Ok(tracker.stream_peers().await.unwrap())
          }

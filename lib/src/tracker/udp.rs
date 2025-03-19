@@ -13,7 +13,10 @@ use tokio::net::UdpSocket;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use super::{PeerAddr, TrackerTrait};
-use crate::errors::{TrackerError, UdpTrackerError};
+use crate::{
+   errors::{TrackerError, UdpTrackerError},
+   hashes::InfoHash,
+};
 
 /// Types and constants
 type ConnectionId = u64;
@@ -65,7 +68,7 @@ enum TrackerRequest {
    /// - [Connection ID](ConnectionId) (8 bytes)
    /// - [Action](Action::Announce) (4 bytes)
    /// - [Transaction ID](TransactionId) (4 bytes)
-   /// - [Info Hash] (20 bytes)
+   /// - [Info Hash](crate::hashes::Hash) (20 bytes)
    /// - [Peer ID] (20 bytes)
    /// - [Downloaded] (8 bytes)
    /// - [Left] (8 bytes)
@@ -80,7 +83,7 @@ enum TrackerRequest {
    Announce {
       connection_id: ConnectionId,
       transaction_id: TransactionId,
-      info_hash: [u8; 20],
+      info_hash: InfoHash,
       peer_id: [u8; 20],
       downloaded: u64,
       left: u64,
@@ -173,7 +176,7 @@ impl TrackerRequest {
             buf.extend_from_slice(&connection_id.to_be_bytes()); // Connection ID
             buf.extend_from_slice(&(Action::Announce as u32).to_be_bytes()); // Action
             buf.extend_from_slice(&transaction_id.to_be_bytes()); // Transaction ID
-            buf.extend_from_slice(info_hash); // Info Hash
+            buf.extend_from_slice(info_hash.as_bytes()); // Info Hash
             buf.extend_from_slice(peer_id); // Peer ID
             buf.extend_from_slice(&downloaded.to_be_bytes()); // Downloaded
             buf.extend_from_slice(&left.to_be_bytes()); // Left
@@ -334,7 +337,7 @@ pub struct UdpTracker {
    pub socket: Arc<UdpSocket>,
    ready_state: ReadyState,
    peer_id: [u8; 20],
-   info_hash: [u8; 20],
+   info_hash: InfoHash,
 }
 
 impl UdpTracker {
@@ -342,7 +345,7 @@ impl UdpTracker {
    pub async fn new(
       uri: String,
       socket: Option<UdpSocket>,
-      info_hash: [u8; 20],
+      info_hash: InfoHash,
    ) -> Result<UdpTracker> {
       debug!("Creating new UDP tracker");
       let sock = match socket {
@@ -581,12 +584,9 @@ mod tests {
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
+            let info_hash = magnet.info_hash();
             let announce_list = magnet.announce_list.unwrap();
             let announce_url = announce_list[0].uri();
-            let info_hash: [u8; 20] = hex::decode(magnet.info_hash.split(':').last().unwrap())
-               .unwrap()
-               .try_into()
-               .unwrap();
 
             let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash)
                .await
