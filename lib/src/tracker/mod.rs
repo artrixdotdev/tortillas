@@ -4,24 +4,15 @@ use serde::{
    Deserialize,
    de::{self, Visitor},
 };
-use std::{fmt, net::Ipv4Addr};
+use std::fmt;
 use udp::UdpTracker;
 
-use crate::hashes::InfoHash;
+use crate::{hashes::InfoHash, peers::Peer};
 pub mod http;
 pub mod udp;
-// mod websocket;
-
-// use udp::*;
-
-#[derive(Debug, Deserialize)]
-pub struct PeerAddr {
-   pub ip: Ipv4Addr,
-   pub port: u16,
-}
 
 trait TrackerTrait {
-   async fn stream_peers(&mut self) -> Result<Vec<PeerAddr>>;
+   async fn stream_peers(&mut self) -> Result<Vec<Peer>>;
 }
 
 /// An Announce URI from a torrent file or magnet URI.
@@ -39,7 +30,7 @@ pub enum Tracker {
 }
 
 impl Tracker {
-   pub async fn get_peers(&self, info_hash: InfoHash) -> Result<Vec<PeerAddr>> {
+   pub async fn get_peers(&self, info_hash: InfoHash) -> Result<Vec<Peer>> {
       match self {
          Tracker::Http(uri) => {
             let mut tracker = HttpTracker::new(uri.clone(), info_hash);

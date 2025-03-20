@@ -1,4 +1,4 @@
-use super::{PeerAddr, TrackerTrait};
+use super::{Peer, TrackerTrait};
 use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::InfoHash,
@@ -17,7 +17,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 pub struct TrackerResponse {
    pub interval: usize,
    #[serde(deserialize_with = "deserialize_peers")]
-   pub peers: Vec<PeerAddr>,
+   pub peers: Vec<Peer>,
 }
 
 /// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
@@ -93,7 +93,7 @@ fn urlencode(t: &[u8; 20]) -> String {
 /// Fetches peers from tracker over HTTP and returns a stream of [PeerAddr](PeerAddr)
 impl TrackerTrait for HttpTracker {
    #[instrument(skip(self))]
-   async fn stream_peers(&mut self) -> anyhow::Result<Vec<PeerAddr>> {
+   async fn stream_peers(&mut self) -> anyhow::Result<Vec<Peer>> {
       // Decode info_hash
       debug!("Decoding info hash");
 
@@ -150,7 +150,7 @@ impl TrackerTrait for HttpTracker {
 struct PeerVisitor;
 
 impl Visitor<'_> for PeerVisitor {
-   type Value = Vec<PeerAddr>;
+   type Value = Vec<Peer>;
 
    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
       formatter.write_str("a byte array containing peer information")
@@ -192,7 +192,7 @@ impl Visitor<'_> for PeerVisitor {
             "Parsed peer address"
          );
 
-         peers.push(PeerAddr { ip, port });
+         peers.push(Peer { ip, port });
       }
 
       Ok(peers)
@@ -200,7 +200,7 @@ impl Visitor<'_> for PeerVisitor {
 }
 
 /// Serde related code. Reference their documentation: <https://serde.rs/impl-deserialize.html>
-fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<PeerAddr>, D::Error>
+fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<Peer>, D::Error>
 where
    D: serde::Deserializer<'de>,
 {
