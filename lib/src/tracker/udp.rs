@@ -12,7 +12,7 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use super::{PeerAddr, TrackerTrait};
+use super::{Peer, TrackerTrait};
 use crate::{
    errors::{TrackerError, UdpTrackerError},
    hashes::{Hash, InfoHash},
@@ -132,7 +132,7 @@ enum TrackerResponse {
       interval: u32,
       leechers: u32,
       seeders: u32,
-      peers: Vec<super::PeerAddr>,
+      peers: Vec<super::Peer>,
    },
 
    /// Binary Layout for the Error variant:
@@ -282,7 +282,7 @@ impl TrackerResponse {
                   "Parsed peer address"
                );
 
-               peers.push(PeerAddr { ip, port });
+               peers.push(Peer::from_ipv4(ip, port));
             }
 
             Ok(TrackerResponse::Announce {
@@ -377,7 +377,7 @@ impl UdpTracker {
    }
 
    #[instrument(skip(self))]
-   async fn announce(&self) -> Result<Vec<PeerAddr>> {
+   async fn announce(&self) -> Result<Vec<Peer>> {
       if self.ready_state != ReadyState::Ready {
          return Err(UdpTrackerError::Tracker(TrackerError::NotReady(
             "Tracker not ready for announce request".to_string(),
@@ -478,7 +478,7 @@ impl UdpTracker {
 impl TrackerTrait for UdpTracker {
    // Makes a request using the UDP tracker protocol to connect. Returns a u64 connection ID
    #[instrument(skip(self))]
-   async fn stream_peers(&mut self) -> std::result::Result<Vec<PeerAddr>, anyhow::Error> {
+   async fn stream_peers(&mut self) -> std::result::Result<Vec<Peer>, anyhow::Error> {
       let uri = self.uri.replace("udp://", "");
       debug!(target_uri = %uri, "Connecting to tracker");
 
@@ -595,7 +595,7 @@ mod tests {
             let stream = udp_tracker.stream_peers().await.unwrap();
 
             let peer = &stream[0];
-            assert!(!peer.ip.is_private())
+            assert!(peer.ip.is_ipv4())
          }
          _ => panic!("Expected Torrent"),
       }
