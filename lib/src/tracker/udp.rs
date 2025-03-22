@@ -282,7 +282,7 @@ impl TrackerResponse {
                   "Parsed peer address"
                );
 
-               peers.push(Peer::new(ip, port));
+               peers.push(Peer::from_ipv4(ip, port));
             }
 
             Ok(TrackerResponse::Announce {
@@ -595,7 +595,7 @@ mod tests {
             let stream = udp_tracker.stream_peers().await.unwrap();
 
             let peer = &stream[0];
-            assert!(!peer.ip.is_private())
+            assert!(peer.ip.is_ipv4())
          }
          _ => panic!("Expected Torrent"),
       }

@@ -1,21 +1,34 @@
-use std::{fmt::Display, net::Ipv4Addr};
+use std::{
+   fmt::Display,
+   net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+   sync::Arc,
+};
 
 use serde::Serialize;
 use tokio::time::Instant;
+
+use crate::hashes::InfoHash;
 pub mod utp;
 
-#[derive(Debug, Clone, PartialEq)]
+/// Represents a BitTorrent peer with connection state and statistics
+#[derive(Debug, Clone)]
 pub struct Peer {
-   pub ip: Ipv4Addr,
+   pub ip: IpAddr,
    pub port: u16,
-   chocked: bool,
-   interested: bool,
-   download_rate: f32,
-   upload_rate: f32,
-   pieces: Vec<bool>,
-   last_optimistic_unchock: Option<Instant>,
+   pub choked: bool,
+   pub interested: bool,
+   pub am_choking: bool,
+   pub am_interested: bool,
+   pub download_rate: f32,
+   pub upload_rate: f32,
+   pub pieces: Vec<bool>,
+   pub last_optimistic_unchoke: Option<Instant>,
+   pub info_hash: Option<Arc<InfoHash>>,
+   pub peer_id: Option<[u8; 20]>,
+   pub last_seen: Instant,
+   pub bytes_downloaded: u64,
+   pub bytes_uploaded: u64,
 }
-
 impl Display for Peer {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
       write!(f, "{}:{}", self.ip, self.port)
@@ -60,17 +73,40 @@ impl Serialize for PeerMessages {
 }
 
 impl Peer {
-   pub fn new(ip: Ipv4Addr, port: u16) -> Self {
+   /// Create a new peer with the given IP address and port
+   pub fn new(ip: IpAddr, port: u16) -> Self {
       Peer {
          ip,
          port,
-         chocked: true,
+         choked: true,
          interested: false,
+         am_choking: true,
+         am_interested: false,
          download_rate: 0.0,
          upload_rate: 0.0,
          pieces: vec![],
-         last_optimistic_unchock: None,
+         last_optimistic_unchoke: None,
+         info_hash: None,
+         peer_id: None,
+         last_seen: Instant::now(),
+         bytes_downloaded: 0,
+         bytes_uploaded: 0,
       }
+   }
+
+   /// Create a new peer from an IPv4 address and port
+   pub fn from_ipv4(ip: Ipv4Addr, port: u16) -> Self {
+      Self::new(IpAddr::V4(ip), port)
+   }
+
+   /// Create a new peer from an IPv6 address and port
+   pub fn from_ipv6(ip: Ipv6Addr, port: u16) -> Self {
+      Self::new(IpAddr::V6(ip), port)
+   }
+
+   /// Get the socket address of the peer
+   pub fn socket_addr(&self) -> SocketAddr {
+      SocketAddr::new(self.ip, self.port)
    }
 }
 

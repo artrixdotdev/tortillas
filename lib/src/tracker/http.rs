@@ -192,7 +192,7 @@ impl Visitor<'_> for PeerVisitor {
             "Parsed peer address"
          );
 
-         peers.push(Peer::new(ip, port));
+         peers.push(Peer::from_ipv4(ip, port));
       }
 
       Ok(peers)
@@ -238,7 +238,7 @@ mod tests {
                .await
                .expect("Issue when unwrapping result of stream_peers");
 
-            assert!(!res[0].ip.is_private());
+            assert!(res[0].ip.is_ipv4());
          }
          _ => panic!("Expected Torrent"),
       }
