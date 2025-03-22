@@ -107,7 +107,7 @@ impl TrackerTrait for HttpTracker {
       trace!(encoded_hash = %info_hash_encoded, "URL-encoded info hash");
 
       let uri_params = format!(
-         "{}&info_hash={}&peer_id={}&compact=1",
+         "{}&info_hash={}&peer_id={}",
          params, info_hash_encoded, &self.peer_id
       );
 
@@ -192,7 +192,7 @@ impl Visitor<'_> for PeerVisitor {
             "Parsed peer address"
          );
 
-         peers.push(Peer { ip, port });
+         peers.push(Peer::new(ip, port));
       }
 
       Ok(peers)

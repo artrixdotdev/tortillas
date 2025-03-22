@@ -282,7 +282,7 @@ impl TrackerResponse {
                   "Parsed peer address"
                );
 
-               peers.push(Peer { ip, port });
+               peers.push(Peer::new(ip, port));
             }
 
             Ok(TrackerResponse::Announce {
