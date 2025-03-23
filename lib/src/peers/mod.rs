@@ -7,6 +7,7 @@ use std::{
    sync::Arc,
 };
 use tokio::time::{Duration, Instant};
+use utp_rs::cid::ConnectionPeer;
 
 use crate::hashes::{Hash, InfoHash};
 pub mod utp;
