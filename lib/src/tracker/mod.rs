@@ -11,7 +11,7 @@ use crate::{hashes::InfoHash, peers::Peer};
 pub mod http;
 pub mod udp;
 
-trait TrackerTrait {
+pub trait TrackerTrait {
    async fn stream_peers(&mut self) -> Result<Vec<Peer>>;
 }
 
