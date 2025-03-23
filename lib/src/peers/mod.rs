@@ -7,7 +7,6 @@ use std::{
    sync::Arc,
 };
 use tokio::time::{Duration, Instant};
-use utp_rs::cid::ConnectionPeer;
 
 use crate::hashes::{Hash, InfoHash};
 pub mod utp;
@@ -52,6 +51,7 @@ pub trait Transport: Send + Sync {
 
    fn is_connected(&self) -> bool;
 }
+
 /// A peer with a specific transport implementation.
 /// The point of this struct is to provide a way to interact with a peer using a specific transport implementation.
 pub struct ConnectedPeer<T: Transport> {
@@ -168,29 +168,52 @@ impl Peer {
    }
 }
 
-pub enum PeerTransport {
-   Utp(utp::UtpTransport),
-   // Tcp,
-}
+#[cfg(test)]
+mod tests {
+   use tracing_test::traced_test;
 
-impl PeerTransport {
-   pub async fn send(&self, _data: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
-      match self {
-         PeerTransport::Utp(transport) => todo!(), // transport.send(data).await,
-                                                   // PeerTransport::Tcp(transport) => transport.send(data).await,
-      }
+   use crate::{
+      parser::{MagnetUri, MetaInfo},
+      tracker::{Tracker, TrackerTrait, udp::UdpTracker},
+   };
+
+   use super::*;
+
+   #[tokio::test]
+   #[traced_test]
+   async fn test_peer_creation() {
+      let peer = Peer::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 6881);
+      assert_eq!(peer.ip, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+      assert_eq!(peer.port, 6881);
    }
 
-   pub async fn receive(&self) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-      match self {
-         PeerTransport::Utp(transport) => todo!(), // transport.receive().await,
-                                                   // PeerTransport::Tcp(transport) => transport.receive().await,
-      }
-   }
-   pub async fn handshake(&self) -> Result<(), Box<dyn std::error::Error>> {
-      match self {
-         PeerTransport::Utp(transport) => todo!(), // transport.handshake().await,
-                                                   // PeerTransport::Tcp(transport) => transport.handshake().await,
+   #[tokio::test]
+   #[traced_test]
+   async fn test_stream_with_udp_peers() {
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/big-buck-bunny.txt");
+      let contents = tokio::fs::read_to_string(path).await.unwrap();
+
+      let metainfo = MagnetUri::parse(contents).await.unwrap();
+
+      match metainfo {
+         MetaInfo::MagnetUri(magnet) => {
+            let info_hash = magnet.info_hash();
+            let announce_list = magnet.announce_list.unwrap();
+            let announce_url = announce_list[0].uri();
+
+            let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash.unwrap())
+               .await
+               .unwrap();
+
+            let stream = udp_tracker.stream_peers().await.unwrap();
+            udp_tracker;
+
+            let peer = &stream[0];
+            assert!(peer.ip.is_ipv4())
+         }
+         _ => panic!("Expected Torrent"),
       }
    }
 }

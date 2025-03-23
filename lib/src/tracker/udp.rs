@@ -336,7 +336,7 @@ pub struct UdpTracker {
    connection_id: Option<ConnectionId>,
    pub socket: Arc<UdpSocket>,
    ready_state: ReadyState,
-   peer_id: Hash<20>,
+   pub peer_id: Hash<20>,
    info_hash: InfoHash,
 }
 
