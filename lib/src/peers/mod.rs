@@ -24,7 +24,6 @@ pub struct Peer {
    pub upload_rate: f32,
    pub pieces: Vec<bool>,
    pub last_optimistic_unchoke: Option<Instant>,
-   pub info_hash: Option<Arc<InfoHash>>,
    pub id: Option<Hash<20>>,
    pub last_seen: Instant,
    pub bytes_downloaded: u64,
@@ -39,58 +38,29 @@ impl Display for Peer {
 
 #[async_trait] // Async in traits are typically not allowed so we need this crate to make it work
 pub trait Transport: Send + Sync {
-   async fn connect(&mut self) -> Result<()>;
-   /// Should return the remote peer's ID
-   async fn handshake(&mut self, info_hash: Arc<InfoHash>, peer_id: Hash<20>) -> Result<Hash<20>>;
+   /// Connects to the peer using the transport's implementation and adds it to its internal list of peers.
+   /// Returns the connected peer's ID
+   async fn connect(&mut self, peer: &mut Peer) -> Result<Hash<20>>;
 
-   async fn send(&mut self, message: &PeerMessages) -> Result<()>;
+   /// Sends a handshake message to the peer with the given ID.
+   /// As shown in <https://wiki.theory.org/BitTorrentSpecification#Handshake>
+   async fn handshake(&mut self, peer: Hash<20>) -> Result<Hash<20>>;
+
+   /// Sends a message to a specific peer with the given ID.
+   async fn send(&mut self, to: Hash<20>, message: &PeerMessages) -> Result<()>;
+
+   async fn broadcast(&mut self, message: &PeerMessages) -> Result<()>;
 
    async fn recv(&mut self, timeout: Option<Duration>) -> Result<PeerMessages>;
 
    async fn close(&mut self) -> Result<()>;
 
+   /// Our current peer ID
+   fn id(&self) -> Arc<Hash<20>>;
+
+   fn info_hash(&self) -> Arc<InfoHash>;
+
    fn is_connected(&self) -> bool;
-}
-
-/// A peer with a specific transport implementation.
-/// The point of this struct is to provide a way to interact with a peer using a specific transport implementation.
-pub struct ConnectedPeer<T: Transport> {
-   pub peer: Peer,
-   transport: T,
-}
-
-impl<T: Transport> ConnectedPeer<T> {
-   pub fn new(peer: Peer, transport: T) -> Self {
-      ConnectedPeer { peer, transport }
-   }
-
-   pub async fn connect(&mut self) -> Result<()> {
-      self.transport.connect().await
-   }
-
-   pub async fn handshake(
-      &mut self,
-      info_hash: Arc<InfoHash>,
-      peer_id: Hash<20>,
-   ) -> Result<Hash<20>> {
-      let remote_id = self.transport.handshake(info_hash.clone(), peer_id).await?;
-      self.peer.info_hash = Some(info_hash);
-      self.peer.id = Some(remote_id);
-
-      Ok(remote_id)
-   }
-
-   pub async fn send(&mut self, message: &PeerMessages) -> Result<()> {
-      self.transport.send(message).await
-   }
-
-   pub async fn recv(&mut self, timeout: Option<Duration>) -> Result<PeerMessages> {
-      self.transport.recv(timeout).await
-   }
-
-   pub async fn close(&mut self) -> Result<()> {
-      self.transport.close().await
-   }
 }
 
 pub enum PeerMessages {
@@ -144,7 +114,6 @@ impl Peer {
          upload_rate: 0.0,
          pieces: vec![],
          last_optimistic_unchoke: None,
-         info_hash: None,
          id: None,
          last_seen: Instant::now(),
          bytes_downloaded: 0,
