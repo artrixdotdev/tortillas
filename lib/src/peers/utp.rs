@@ -38,6 +38,7 @@ impl<'a> UtpTransport<'a> {
 }
 
 #[async_trait]
+#[allow(unused_variables)]
 impl<'a> Transport for UtpTransport<'a> {
    fn id(&self) -> Arc<Hash<20>> {
       self.id.clone()

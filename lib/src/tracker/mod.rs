@@ -1,4 +1,5 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use http::HttpTracker;
 use serde::{
    Deserialize,
@@ -11,6 +12,7 @@ use crate::{hashes::InfoHash, peers::Peer};
 pub mod http;
 pub mod udp;
 
+#[async_trait]
 pub trait TrackerTrait {
    async fn stream_peers(&mut self) -> Result<Vec<Peer>>;
 }

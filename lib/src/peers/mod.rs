@@ -141,11 +141,6 @@ impl Peer {
 mod tests {
    use tracing_test::traced_test;
 
-   use crate::{
-      parser::{MagnetUri, MetaInfo},
-      tracker::{Tracker, TrackerTrait, udp::UdpTracker},
-   };
-
    use super::*;
 
    #[tokio::test]

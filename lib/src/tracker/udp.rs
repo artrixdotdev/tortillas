@@ -1,5 +1,6 @@
 use std::{net::Ipv4Addr, sync::Arc};
 
+use async_trait::async_trait;
 /// UDP protocol
 /// https://en.wikipedia.org/wiki/User_Datagram_Protocol
 ///
@@ -475,6 +476,7 @@ impl UdpTracker {
    }
 }
 
+#[async_trait]
 impl TrackerTrait for UdpTracker {
    // Makes a request using the UDP tracker protocol to connect. Returns a u64 connection ID
    #[instrument(skip(self))]

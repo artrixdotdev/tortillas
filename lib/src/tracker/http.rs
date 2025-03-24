@@ -3,6 +3,7 @@ use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::InfoHash,
 };
+use async_trait::async_trait;
 use rand::distr::{Alphanumeric, SampleString};
 use serde::{
    Deserialize, Serialize,
@@ -91,6 +92,7 @@ fn urlencode(t: &[u8; 20]) -> String {
 }
 
 /// Fetches peers from tracker over HTTP and returns a stream of [PeerAddr](PeerAddr)
+#[async_trait]
 impl TrackerTrait for HttpTracker {
    #[instrument(skip(self))]
    async fn stream_peers(&mut self) -> anyhow::Result<Vec<Peer>> {
