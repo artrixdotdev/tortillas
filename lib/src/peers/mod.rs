@@ -6,7 +6,10 @@ use std::{
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::Arc,
 };
-use tokio::time::{Duration, Instant};
+use tokio::{
+   io::AsyncWrite,
+   time::{Duration, Instant},
+};
 
 use crate::{
    errors::PeerTransportError,

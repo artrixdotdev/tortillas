@@ -15,15 +15,15 @@ use tracing::{error, instrument, trace};
 
 const MAGIC_STRING: &[u8; 19] = b"BitTorrent protocol";
 
-pub struct UtpTransport<'a> {
+pub struct UtpTransport {
    pub socket: Arc<UtpSocketUdp>,
    pub id: Arc<Hash<20>>,
    pub info_hash: Arc<InfoHash>,
-   pub peers: HashMap<Hash<20>, (&'a mut Peer, &'a mut UtpStream)>,
+   pub peers: HashMap<Hash<20>, Box<(Peer, UtpStream)>>,
 }
 
-impl<'a> UtpTransport<'a> {
-   pub async fn new(id: Arc<Hash<20>>, info_hash: Arc<InfoHash>) -> UtpTransport<'a> {
+impl UtpTransport {
+   pub async fn new(id: Arc<Hash<20>>, info_hash: Arc<InfoHash>) -> UtpTransport {
       let socket = UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").unwrap())
          .await
          .unwrap();
@@ -39,7 +39,7 @@ impl<'a> UtpTransport<'a> {
 
 #[async_trait]
 #[allow(unused_variables)]
-impl<'a> Transport for UtpTransport<'a> {
+impl Transport for UtpTransport {
    fn id(&self) -> Arc<Hash<20>> {
       self.id.clone()
    }
@@ -63,12 +63,13 @@ impl<'a> Transport for UtpTransport<'a> {
    /// <https://www.bittorrent.org/beps/bep_0003.html>
    #[instrument(skip(self), fields(peer = %peer))]
    async fn connect(&mut self, peer: &mut Peer) -> Result<Hash<20>, PeerTransportError> {
-      trace!("Attmepting connection...");
+      trace!("Attempting connection...");
 
       let mut stream = self.socket.connect(peer.socket_addr()).await.map_err(|e| {
          error!("Failed to connect to peer {}: {}", peer.socket_addr(), e);
          PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
       })?;
+
       trace!("Connected to new peer");
 
       // Create headers
@@ -87,6 +88,7 @@ impl<'a> Transport for UtpTransport<'a> {
       trace!("Sent headers to peer");
 
       let mut buf = [0u8; 68];
+
       stream.read_exact(&mut buf).await.map_err(|e| {
          error!("Failed to read headers from peer: {}", e);
          PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
@@ -107,6 +109,7 @@ impl<'a> Transport for UtpTransport<'a> {
       let info_hash: InfoHash = Hash::new(buf[28..48].try_into().unwrap());
       if info_hash.to_hex() != self.info_hash.to_hex() {
          error!("Invalid info hash received from peer");
+         drop(stream);
          return Err(PeerTransportError::InvalidInfoHash {
             received: info_hash.to_hex(),
             expected: self.info_hash.to_hex(),
@@ -117,6 +120,8 @@ impl<'a> Transport for UtpTransport<'a> {
 
       peer.id = Some(peer_id);
       peer.last_seen = Instant::now();
+
+      self.peers.insert(peer_id, Box::new((peer.clone(), stream)));
 
       Ok(peer_id)
    }
