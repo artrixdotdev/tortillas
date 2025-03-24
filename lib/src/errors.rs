@@ -82,6 +82,33 @@ pub enum HttpTrackerError {
    Other(#[from] anyhow::Error),
 }
 
+#[derive(Error, Debug)]
+pub enum PeerTransportError {
+   #[error("Invalid response: {0}")]
+   InvalidPeerResponse(String),
+
+   #[error("Connection failed: {0}")]
+   ConnectionFailed(String),
+
+   #[error("Response too short: expected at least {expected} bytes, got {actual}")]
+   ResponseTooShort { expected: usize, actual: usize },
+
+   #[error("Invalid magic string")]
+   InvalidMagicString,
+
+   #[error("Invalid peer ID: {0}")]
+   InvalidId(String),
+
+   #[error("Received info hash {received} expected {expected}")]
+   InvalidInfoHash { received: String, expected: String },
+
+   #[error("Peer {0} not found")]
+   NotFound(String),
+
+   #[error(transparent)]
+   Other(#[from] anyhow::Error),
+}
+
 impl From<num_enum::TryFromPrimitiveError<super::tracker::udp::Action>> for TrackerError {
    fn from(err: num_enum::TryFromPrimitiveError<super::tracker::udp::Action>) -> Self {
       TrackerError::InvalidAction(err.number)
