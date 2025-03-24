@@ -23,10 +23,15 @@ pub struct UtpTransport {
 }
 
 impl UtpTransport {
-   pub async fn new(id: Arc<Hash<20>>, info_hash: Arc<InfoHash>) -> UtpTransport {
-      let socket = UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").unwrap())
-         .await
-         .unwrap();
+   pub async fn new(
+      id: Arc<Hash<20>>,
+      info_hash: Arc<InfoHash>,
+      socket_addr: Option<SocketAddr>,
+   ) -> UtpTransport {
+      let socket =
+         UtpSocket::new_udp(socket_addr.unwrap_or(SocketAddr::from_str("0.0.0.0:6881").unwrap()))
+            .await
+            .unwrap();
 
       UtpTransport {
          socket,
@@ -109,7 +114,6 @@ impl Transport for UtpTransport {
       let info_hash: InfoHash = Hash::new(buf[28..48].try_into().unwrap());
       if info_hash.to_hex() != self.info_hash.to_hex() {
          error!("Invalid info hash received from peer");
-         drop(stream);
          return Err(PeerTransportError::InvalidInfoHash {
             received: info_hash.to_hex(),
             expected: self.info_hash.to_hex(),
@@ -159,7 +163,7 @@ mod tests {
 
    use super::*;
 
-   #[tokio::test]
+   #[tokio::test(flavor = "multi_thread", worker_threads = 7)]
    #[traced_test]
    async fn test_utp_peer_handshake() {
       let path = std::env::current_dir()
@@ -175,7 +179,7 @@ mod tests {
             let announce_list = magnet.announce_list.unwrap();
             let announce_url = announce_list[0].uri();
 
-            let mut tracker = UdpTracker::new(announce_url, None, info_hash)
+            let mut tracker = UdpTracker::new(announce_url, None, info_hash, None)
                .await
                .unwrap();
             let peer_id = tracker.peer_id;
@@ -198,7 +202,7 @@ mod tests {
                   // Create a timeout for the connection attempt
                   let result = tokio::time::timeout(std::time::Duration::from_secs(1), async {
                      let mut utp_transport =
-                        UtpTransport::new(peer_id.into(), info_hash_clone).await;
+                        UtpTransport::new(peer_id.into(), info_hash_clone, None).await;
 
                      utp_transport.connect(&mut peer).await
                   })

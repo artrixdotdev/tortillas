@@ -10,7 +10,11 @@ use serde::{
    de::{self, Visitor},
 };
 /// See https://www.bittorrent.org/beps/bep_0003.html
-use std::net::Ipv4Addr;
+use std::{
+   net::{Ipv4Addr, SocketAddr},
+   str::FromStr,
+};
+
 use tracing::{debug, error, info, instrument, trace, warn};
 
 #[derive(Debug, Deserialize)]
@@ -39,10 +43,11 @@ struct TrackerRequest {
    downloaded: u8,
    left: Option<u8>,
    event: Event,
+   peer_tracker_addr: SocketAddr,
 }
 
 impl TrackerRequest {
-   pub fn new() -> TrackerRequest {
+   pub fn new(peer_tracker_addr: Option<SocketAddr>) -> TrackerRequest {
       TrackerRequest {
          ip: None,
          port: 6881,
@@ -50,6 +55,8 @@ impl TrackerRequest {
          downloaded: 0,
          left: None,
          event: Event::Stopped,
+         peer_tracker_addr: peer_tracker_addr
+            .unwrap_or(SocketAddr::from_str("0.0.0.0:6881").unwrap()),
       }
    }
 }
@@ -65,14 +72,18 @@ pub struct HttpTracker {
 
 impl HttpTracker {
    #[instrument(skip(info_hash), fields(uri = %uri))]
-   pub fn new(uri: String, info_hash: InfoHash) -> HttpTracker {
+   pub fn new(
+      uri: String,
+      info_hash: InfoHash,
+      peer_tracker_addr: Option<SocketAddr>,
+   ) -> HttpTracker {
       let peer_id = Alphanumeric.sample_string(&mut rand::rng(), 20);
       debug!(peer_id = %peer_id, "Generated peer ID");
 
       HttpTracker {
          uri,
          peer_id,
-         params: TrackerRequest::new(),
+         params: TrackerRequest::new(peer_tracker_addr),
          info_hash,
       }
    }
@@ -233,7 +244,7 @@ mod tests {
             let info_hash = magnet.info_hash();
             let announce_list = magnet.announce_list.unwrap();
             let announce_uri = announce_list[0].uri();
-            let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap());
+            let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None);
 
             // Make request
             let res = HttpTracker::stream_peers(&mut http_tracker)

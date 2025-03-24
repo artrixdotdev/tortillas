@@ -1,4 +1,8 @@
-use std::{net::Ipv4Addr, sync::Arc};
+use std::{
+   net::{Ipv4Addr, SocketAddr},
+   str::FromStr,
+   sync::Arc,
+};
 
 use async_trait::async_trait;
 /// UDP protocol
@@ -339,6 +343,8 @@ pub struct UdpTracker {
    ready_state: ReadyState,
    pub peer_id: Hash<20>,
    info_hash: InfoHash,
+   /// The address of our peer handler
+   peer_socket_addr: SocketAddr,
 }
 
 impl UdpTracker {
@@ -347,6 +353,7 @@ impl UdpTracker {
       uri: String,
       socket: Option<UdpSocket>,
       info_hash: InfoHash,
+      peer_socket_addr: Option<SocketAddr>,
    ) -> Result<UdpTracker> {
       debug!("Creating new UDP tracker");
       let sock = match socket {
@@ -374,6 +381,8 @@ impl UdpTracker {
          ready_state: ReadyState::Disconnected,
          peer_id,
          info_hash,
+         peer_socket_addr: peer_socket_addr
+            .unwrap_or(SocketAddr::from_str("0.0.0.0:6881").unwrap()),
       })
    }
 
@@ -404,7 +413,7 @@ impl UdpTracker {
          ip_address: 0,
          key: 0,
          num_want: -1,
-         port: 6881,
+         port: self.peer_socket_addr.port(),
       };
 
       trace!("Sending announce request");
@@ -591,7 +600,7 @@ mod tests {
             let announce_list = magnet.announce_list.unwrap();
             let announce_url = announce_list[0].uri();
 
-            let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash.unwrap())
+            let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash.unwrap(), None)
                .await
                .unwrap();
             let stream = udp_tracker.stream_peers().await.unwrap();

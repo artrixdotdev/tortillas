@@ -35,12 +35,14 @@ impl Tracker {
    pub async fn get_peers(&self, info_hash: InfoHash) -> Result<Vec<Peer>> {
       match self {
          Tracker::Http(uri) => {
-            let mut tracker = HttpTracker::new(uri.clone(), info_hash);
+            let mut tracker = HttpTracker::new(uri.clone(), info_hash, None);
 
             Ok(tracker.stream_peers().await.unwrap())
          }
          Tracker::Udp(uri) => {
-            let mut tracker = UdpTracker::new(uri.clone(), None, info_hash).await.unwrap();
+            let mut tracker = UdpTracker::new(uri.clone(), None, info_hash, None)
+               .await
+               .unwrap();
 
             Ok(tracker.stream_peers().await.unwrap())
          }
