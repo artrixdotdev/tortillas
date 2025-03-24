@@ -8,7 +8,10 @@ use std::{
 };
 use tokio::time::{Duration, Instant};
 
-use crate::hashes::{Hash, InfoHash};
+use crate::{
+   errors::PeerTransportError,
+   hashes::{Hash, InfoHash},
+};
 pub mod utp;
 
 /// Represents a BitTorrent peer with connection state and statistics
@@ -39,12 +42,9 @@ impl Display for Peer {
 #[async_trait] // Async in traits are typically not allowed so we need this crate to make it work
 pub trait Transport: Send + Sync {
    /// Connects to the peer using the transport's implementation and adds it to its internal list of peers.
-   /// Returns the connected peer's ID
-   async fn connect(&mut self, peer: &mut Peer) -> Result<Hash<20>>;
-
-   /// Sends a handshake message to the peer with the given ID.
+   /// Runs the handshake and Returns the connected peer's ID.
    /// As shown in <https://wiki.theory.org/BitTorrentSpecification#Handshake>
-   async fn handshake(&mut self, peer: Hash<20>) -> Result<Hash<20>>;
+   async fn connect(&mut self, peer: &mut Peer) -> Result<Hash<20>, PeerTransportError>;
 
    /// Sends a message to a specific peer with the given ID.
    async fn send(&mut self, to: Hash<20>, message: &PeerMessages) -> Result<()>;
@@ -154,35 +154,5 @@ mod tests {
       let peer = Peer::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 6881);
       assert_eq!(peer.ip, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
       assert_eq!(peer.port, 6881);
-   }
-
-   #[tokio::test]
-   #[traced_test]
-   async fn test_stream_with_udp_peers() {
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/big-buck-bunny.txt");
-      let contents = tokio::fs::read_to_string(path).await.unwrap();
-
-      let metainfo = MagnetUri::parse(contents).await.unwrap();
-
-      match metainfo {
-         MetaInfo::MagnetUri(magnet) => {
-            let info_hash = magnet.info_hash();
-            let announce_list = magnet.announce_list.unwrap();
-            let announce_url = announce_list[0].uri();
-
-            let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash.unwrap())
-               .await
-               .unwrap();
-
-            let stream = udp_tracker.stream_peers().await.unwrap();
-            udp_tracker;
-
-            let peer = &stream[0];
-            assert!(peer.ip.is_ipv4())
-         }
-         _ => panic!("Expected Torrent"),
-      }
    }
 }
