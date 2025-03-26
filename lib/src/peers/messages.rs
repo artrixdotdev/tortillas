@@ -1,8 +1,128 @@
-use std::sync::Arc;
+use bitvec::prelude::*;
 
 use crate::hashes::Hash;
+use std::sync::Arc;
 
 pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[repr(u8)]
+/// Represents messages exchanged between peers in the BitTorrent protocol.
+///
+/// See the "peer messages" section of the BitTorrent specification:
+/// <https://www.bittorrent.org/beps/bep_0003.html#peer-messages>
+pub enum PeerMessages {
+   /// Refers to peer choke status. Choking occurs when a peer is "throttled" in order to maintain a constant download rate, among other reasons.
+   Choke = 0u8,
+   /// Refers to the inverse of the choke status. See `Self::Choke`
+   Unchoke = 1u8,
+   /// Refers to the interest state of the peer. Data transfer occurs when one side is interested and the other side is not choking (<https://www.bittorrent.org/beps/bep_0003.html>)
+   Interested = 2u8,
+   /// Indicates that the peer is not interested in receiving data.
+   ///
+   /// This is the opposite of [Interested](Self::Interested).
+   NotInterested = 3u8,
+   /// Indicates that a peer has successfully downloaded and verified a piece.
+   ///
+   /// Includes the index of the completed piece. The index refers to the
+   /// piece within the torrent file.
+   Have(u8) = 4u8,
+
+   /// A bitfield representing the pieces that the peer has.
+   ///
+   /// Each boolean in the vector corresponds to a piece in the torrent. A
+   /// `true` value indicates that the peer has the piece, while `false`
+   /// indicates that it does not. This is typically sent after the handshake.
+   Bitfield(BitVec<u8>) = 5u8,
+   /// A request for a specific block of data from a piece.
+   /// Length is usually a power of 2.
+   ///
+   ///
+   /// # Binary Layout
+   ///
+   /// |   0-4   |   4-8   |   8-12   |
+   /// |---------|---------|----------|
+   /// |  index  |  begin  |  length  |
+   Request(u8, u8, u8) = 6u8,
+
+   /// A block of data corresponding to a previously sent `Request` message.
+   ///
+   /// # Binary Layout
+   ///
+   /// |   0-4   |   4-8   |   8-N   |
+   /// |---------|---------|---------|
+   /// |  index  |  begin  |  piece  |
+   ///
+   /// Unexpected pieces might arrive; refer to the [specification](https://www.bittorrent.org/beps/bep_0003.html) for details.
+   Piece(u8, u8, Vec<u8>) = 7u8,
+   /// Cancels a pending `Request` message.
+   ///
+   /// Sent to indicate that a requested block is no longer needed. Typically
+   /// used towards the end of a download to optimize the acquisition of the
+   /// last few pieces.
+   ///
+   /// # Binary Layout
+   ///
+   /// |  0-4   |   4-8  |  8-12  |
+   /// |--------|--------|--------|
+   /// |  index |  begin | length |
+   Cancel(u8, u8, u8) = 8u8,
+
+   /// This message is special, as it is not technically part of the standard [BitTorrent peer messages](https://www.bittorrent.org/beps/bep_0003.html#peer-messages),
+   /// And does not have a specified Message ID, unlike the other messages that have a defined ID.
+   /// This message should only be sent on the initial connection to a new peer.
+   ///
+   /// Refer to this paper for more information about the handshake:
+   /// <https://netfuture.ch/wp-content/uploads/2015/02/zink2012efficient.pdf>
+   ///
+   /// # Binary layout
+   ///
+   /// |       0-1       |      1-20     |   20-28  |    28-48  |   48-68  |
+   /// |-----------------|---------------|----------|-----------|----------|
+   /// | Protocol Length | Protocol Name | Reserved | Info Hash | Peer ID  |
+   Handshake(Handshake),
+}
+
+impl PeerMessages {
+   pub fn to_bytes(&self) -> Vec<u8> {
+      match self {
+         PeerMessages::Choke => vec![0],
+         PeerMessages::Unchoke => vec![1],
+         PeerMessages::Interested => vec![2],
+         PeerMessages::NotInterested => vec![3],
+         PeerMessages::Have(index) => vec![4, *index],
+         PeerMessages::Bitfield(bits) => {
+            let mut bytes = vec![5];
+            bytes.extend_from_slice(&bits.len().to_be_bytes());
+            bytes.extend_from_slice(bits.as_raw_slice());
+            bytes
+         }
+         PeerMessages::Request(index, begin, length) => {
+            let mut bytes = vec![6];
+            bytes.extend_from_slice(&index.to_be_bytes());
+            bytes.extend_from_slice(&begin.to_be_bytes());
+            bytes.extend_from_slice(&length.to_be_bytes());
+            bytes
+         }
+         PeerMessages::Piece(index, begin, data) => {
+            let mut bytes = vec![6];
+            bytes.extend_from_slice(&index.to_be_bytes());
+            bytes.extend_from_slice(&begin.to_be_bytes());
+            bytes.extend_from_slice(&data.len().to_be_bytes());
+            bytes.extend_from_slice(data);
+            bytes
+         }
+         PeerMessages::Cancel(index, begin, length) => {
+            let mut bytes = vec![6];
+            bytes.extend_from_slice(&index.to_be_bytes());
+            bytes.extend_from_slice(&begin.to_be_bytes());
+            bytes.extend_from_slice(&length.to_be_bytes());
+            bytes
+         }
+         PeerMessages::Handshake(handshake) => handshake.to_bytes(),
+      }
+   }
+}
 
 /// BitTorrent Handshake message structure
 #[derive(Debug, Clone, PartialEq, Eq)]

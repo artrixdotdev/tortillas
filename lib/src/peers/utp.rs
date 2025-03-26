@@ -1,13 +1,13 @@
-use super::{Peer, PeerMessages, Transport};
+use super::{Peer, Transport};
 use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
    peers::messages::{Handshake, MAGIC_STRING},
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
-use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{debug, error, info, instrument, trace};
 
@@ -174,19 +174,22 @@ impl Transport for UtpTransport {
       Ok(peer)
    }
 
-   async fn broadcast(&mut self, message: &PeerMessages) -> Result<()> {
+   async fn send_raw(&mut self, to: Hash<20>, message: Vec<u8>) -> Result<(), PeerTransportError> {
+      trace!("Attemping to send message...");
+      let (_, socket) = &mut **self.peers.get_mut(&to).unwrap();
+      socket.write_all(&message).await.map_err(|e| {
+         error!("Failed to send message to peer: {}", e);
+         PeerTransportError::Other(anyhow!("Failed to send message to peer: {e}"))
+      })?;
+
       Ok(())
    }
 
-   async fn send(&mut self, to: Hash<20>, message: &PeerMessages) -> Result<()> {
-      Ok(())
+   async fn broadcast_raw(&mut self, message: Vec<u8>) -> Vec<Result<(), PeerTransportError>> {
+      vec![]
    }
 
-   async fn recv(&mut self, timeout: Option<Duration>) -> Result<PeerMessages> {
-      Ok(PeerMessages::Choke)
-   }
-
-   async fn close(&mut self) -> Result<()> {
+   async fn close(&mut self, peer_id: Hash<20>) -> Result<()> {
       Ok(())
    }
 

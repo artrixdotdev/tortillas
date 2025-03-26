@@ -772,6 +772,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bitvec",
  "hex",
  "librqbit-utp",
  "num_enum",

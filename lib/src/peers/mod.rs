@@ -1,18 +1,18 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::Serialize;
+use messages::PeerMessages;
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::Arc,
 };
-use tokio::time::{Duration, Instant};
+use tokio::time::Instant;
 
 use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
 };
-mod messages;
+pub mod messages;
 pub mod utp;
 
 /// Represents a BitTorrent peer with connection state and statistics
@@ -41,6 +41,7 @@ impl Display for Peer {
 }
 
 #[async_trait] // Async in traits are typically not allowed so we need this crate to make it work
+#[allow(unused_variables)]
 pub trait Transport: Send + Sync {
    /// Connects to the peer using the transport's implementation and adds it to its internal list of peers.
    /// Runs the handshake and Returns the connected peer's ID.
@@ -48,15 +49,21 @@ pub trait Transport: Send + Sync {
    async fn connect(&mut self, peer: &mut Peer) -> Result<Hash<20>, PeerTransportError>;
 
    /// Sends a message to a specific peer with the given ID.
-   async fn send(&mut self, to: Hash<20>, message: &PeerMessages) -> Result<()>;
+   async fn send_raw(&mut self, to: Hash<20>, message: Vec<u8>) -> Result<(), PeerTransportError>;
 
-   async fn broadcast(&mut self, message: &PeerMessages) -> Result<()>;
+   async fn send(&mut self, to: Hash<20>, message: PeerMessages) -> Result<(), PeerTransportError> {
+      Ok(())
+   }
+
+   async fn broadcast_raw(&mut self, message: Vec<u8>) -> Vec<Result<(), PeerTransportError>>;
+
+   async fn broadcast(&mut self, message: &PeerMessages) -> Vec<Result<(), PeerTransportError>> {
+      vec![]
+   }
 
    async fn accept_incoming(&mut self) -> Result<Peer, PeerTransportError>;
 
-   async fn recv(&mut self, timeout: Option<Duration>) -> Result<PeerMessages>;
-
-   async fn close(&mut self) -> Result<()>;
+   async fn close(&mut self, peer_id: Hash<20>) -> Result<()>;
 
    /// Our current peer ID
    fn id(&self) -> Arc<Hash<20>>;
@@ -64,43 +71,6 @@ pub trait Transport: Send + Sync {
    fn info_hash(&self) -> Arc<InfoHash>;
 
    fn is_connected(&self) -> bool;
-}
-
-pub enum PeerMessages {
-   Choke,
-   Unchoke,
-   Interested,
-   NotInterested,
-   Have(u32),
-   Bitfield(Vec<bool>),
-   Request(u32, u32, u32),
-   Piece(u32, u32, Vec<u8>),
-   Cancel(u32, u32, u32),
-}
-
-impl Serialize for PeerMessages {
-   fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-   where
-      S: serde::Serializer,
-   {
-      match self {
-         PeerMessages::Choke => serializer.serialize_str("choke"),
-         PeerMessages::Unchoke => serializer.serialize_str("unchoke"),
-         PeerMessages::Interested => serializer.serialize_str("interested"),
-         PeerMessages::NotInterested => serializer.serialize_str("not_interested"),
-         PeerMessages::Have(index) => serializer.serialize_str(&format!("have {}", index)),
-         PeerMessages::Bitfield(bits) => serializer.serialize_str(&format!("bitfield {:?}", bits)),
-         PeerMessages::Request(index, begin, length) => {
-            serializer.serialize_str(&format!("request {} {} {}", index, begin, length))
-         }
-         PeerMessages::Piece(index, begin, data) => {
-            serializer.serialize_str(&format!("piece {} {} {:?}", index, begin, data))
-         }
-         PeerMessages::Cancel(index, begin, length) => {
-            serializer.serialize_str(&format!("cancel {} {} {}", index, begin, length))
-         }
-      }
-   }
 }
 
 impl Peer {
