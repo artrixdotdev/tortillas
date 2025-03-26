@@ -2,18 +2,14 @@ use super::{Peer, PeerMessages, Transport};
 use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
+   peers::messages::{Handshake, MAGIC_STRING},
 };
 use anyhow::Result;
 use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
-use tokio::{
-   io::{AsyncReadExt, AsyncWriteExt},
-   time::Instant,
-};
-use tracing::{error, instrument, trace};
-
-const MAGIC_STRING: &[u8; 19] = b"BitTorrent protocol";
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tracing::{error, info, instrument, trace};
 
 pub struct UtpTransport {
    pub socket: Arc<UtpSocketUdp>,
@@ -70,6 +66,7 @@ impl Transport for UtpTransport {
    async fn connect(&mut self, peer: &mut Peer) -> Result<Hash<20>, PeerTransportError> {
       trace!("Attempting connection...");
 
+      // Connect to the peer
       let mut stream = self.socket.connect(peer.socket_addr()).await.map_err(|e| {
          error!("Failed to connect to peer {}: {}", peer.socket_addr(), e);
          PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
@@ -77,57 +74,100 @@ impl Transport for UtpTransport {
 
       trace!("Connected to new peer");
 
-      // Create headers
-      let mut headers = Vec::with_capacity(68);
-
-      headers.extend_from_slice(&[MAGIC_STRING.len() as u8]); // length of MAGIC_STRING as a single raw byte
-      headers.extend_from_slice(MAGIC_STRING);
-      headers.extend_from_slice(&[0u8; 8]); // Reserved bytes
-      headers.extend_from_slice(self.info_hash.as_bytes());
-      headers.extend_from_slice(self.id.as_bytes());
-
-      stream.write_all(&headers).await.map_err(|e| {
-         error!("Failed to write headers to peer:  {}", e);
+      // Create and send handshake
+      let handshake = Handshake::new(self.info_hash.clone(), self.id.clone());
+      let handshake_bytes = stream.write_all(&handshake.to_bytes()).await.map_err(|e| {
+         error!("Failed to write handshake to peer: {}", e);
          PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
       })?;
-      trace!("Sent headers to peer");
+      trace!("Sent handshake to peer");
 
-      let mut buf = [0u8; 68];
+      // Calculate expected size for response
+      let expected_size = 1 + MAGIC_STRING.len() + 8 + 40; // 1 byte + protocol + reserved + hashes
+      let mut buf = vec![0u8; expected_size];
 
+      // Read response handshake
       stream.read_exact(&mut buf).await.map_err(|e| {
-         error!("Failed to read headers from peer: {}", e);
+         error!("Failed to read handshake from peer: {}", e);
          PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
       })?;
 
-      // +1 byte for the length of MAGIC_STRING
-      let name_length = buf[0] as usize;
-      let magic = &buf[1..name_length + 1];
-      trace!(
-         "Received magic string: {:?}",
-         String::from_utf8_lossy(magic)
-      );
-      if magic != MAGIC_STRING {
-         error!("Invalid magic string received from peer");
-         return Err(PeerTransportError::InvalidMagicString);
+      // Deserialize and validate handshake
+      let received_handshake: Handshake = Handshake::from_bytes(&buf).map_err(|e| {
+         error!("Failed to deserialize handshake: {}", e);
+         PeerTransportError::DeserializationFailed
+      })?;
+
+      // Validate protocol string
+      if received_handshake.protocol != MAGIC_STRING {
+         error!("Invalid protocol string received from peer");
+         return Err(PeerTransportError::InvalidMagicString {
+            received: String::from_utf8_lossy(&received_handshake.protocol).into(),
+            expected: String::from_utf8_lossy(MAGIC_STRING).into(),
+         });
       }
 
-      let info_hash: InfoHash = Hash::new(buf[28..48].try_into().unwrap());
-      if info_hash.to_hex() != self.info_hash.to_hex() {
+      // Validate info hash
+      if received_handshake.info_hash.to_hex() != self.info_hash.to_hex() {
          error!("Invalid info hash received from peer");
          return Err(PeerTransportError::InvalidInfoHash {
-            received: info_hash.to_hex(),
+            received: received_handshake.info_hash.to_hex(),
             expected: self.info_hash.to_hex(),
          });
       }
 
-      let peer_id: Hash<20> = Hash::new(buf[48..68].try_into().unwrap());
+      // Store peer information
+      let peer_id = received_handshake.peer_id;
+      peer.id = Some(*peer_id);
 
-      peer.id = Some(peer_id);
-      peer.last_seen = Instant::now();
+      self
+         .peers
+         .insert(*peer_id, Box::new((peer.clone(), stream)));
 
-      self.peers.insert(peer_id, Box::new((peer.clone(), stream)));
+      Ok(*peer_id)
+   }
 
-      Ok(peer_id)
+   async fn accept_incoming(&mut self) -> Result<Peer, PeerTransportError> {
+      let mut socket = self.socket.accept().await.unwrap();
+      let peer_addr = socket.remote_addr();
+      info!("Accepted incoming connection from {}", peer_addr);
+
+      let mut buf = [0u8; 68];
+      socket.read_exact(&mut buf).await.unwrap();
+
+      let received_handshake = Handshake::from_bytes(&buf).unwrap();
+
+      let peer_id = received_handshake.peer_id;
+
+      if MAGIC_STRING != &received_handshake.protocol {
+         error!("Invalid magic string received from peer {}", peer_addr);
+         return Err(PeerTransportError::InvalidMagicString {
+            received: String::from_utf8_lossy(&received_handshake.protocol).into(),
+            expected: String::from_utf8_lossy(MAGIC_STRING).into(),
+         });
+      }
+
+      if self.info_hash != received_handshake.info_hash {
+         error!("Invalid info hash received from peer {}", peer_addr);
+         return Err(PeerTransportError::InvalidInfoHash {
+            received: received_handshake.info_hash.to_hex(),
+            expected: self.info_hash.to_hex(),
+         });
+      }
+
+      trace!("Received valid handshake from {}", peer_addr);
+
+      let mut peer = Peer::from_socket_addr(peer_addr);
+      peer.id = Some(*peer_id);
+      // Create our handshake and send it off
+      let handshake = Handshake::new(self.info_hash.clone(), self.id.clone());
+      socket.write_all(&handshake.to_bytes()).await.unwrap();
+
+      self
+         .peers
+         .insert(*peer_id, Box::new((peer.clone(), socket)));
+
+      Ok(peer)
    }
 
    async fn broadcast(&mut self, message: &PeerMessages) -> Result<()> {

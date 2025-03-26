@@ -90,11 +90,11 @@ pub enum PeerTransportError {
    #[error("Connection failed: {0}")]
    ConnectionFailed(String),
 
-   #[error("Response too short: expected at least {expected} bytes, got {actual}")]
-   ResponseTooShort { expected: usize, actual: usize },
+   #[error("Response too short: expected at least {expected} bytes, got {received}")]
+   ResponseTooShort { expected: usize, received: usize },
 
-   #[error("Invalid magic string")]
-   InvalidMagicString,
+   #[error("Invalid magic string: expected {expected}, got {received}")]
+   InvalidMagicString { expected: String, received: String },
 
    #[error("Invalid peer ID: {0}")]
    InvalidId(String),
@@ -104,6 +104,9 @@ pub enum PeerTransportError {
 
    #[error("Peer {0} not found")]
    NotFound(String),
+
+   #[error("Failed to deserialize handshake ")]
+   DeserializationFailed,
 
    #[error(transparent)]
    Other(#[from] anyhow::Error),

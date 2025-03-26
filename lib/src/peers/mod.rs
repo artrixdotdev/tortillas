@@ -12,6 +12,7 @@ use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
 };
+mod messages;
 pub mod utp;
 
 /// Represents a BitTorrent peer with connection state and statistics
@@ -50,6 +51,8 @@ pub trait Transport: Send + Sync {
    async fn send(&mut self, to: Hash<20>, message: &PeerMessages) -> Result<()>;
 
    async fn broadcast(&mut self, message: &PeerMessages) -> Result<()>;
+
+   async fn accept_incoming(&mut self) -> Result<Peer, PeerTransportError>;
 
    async fn recv(&mut self, timeout: Option<Duration>) -> Result<PeerMessages>;
 
@@ -134,6 +137,11 @@ impl Peer {
    /// Get the socket address of the peer
    pub fn socket_addr(&self) -> SocketAddr {
       SocketAddr::new(self.ip, self.port)
+   }
+
+   /// Create a new peer from a socket address
+   pub fn from_socket_addr(peer_addr: SocketAddr) -> Self {
+      Self::new(peer_addr.ip(), peer_addr.port())
    }
 }
 
