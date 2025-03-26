@@ -343,7 +343,7 @@ pub struct UdpTracker {
    ready_state: ReadyState,
    pub peer_id: Hash<20>,
    info_hash: InfoHash,
-   /// The address of our peer handler
+   ///  The address that our TCP or uTP socket is bound to
    peer_socket_addr: SocketAddr,
 }
 
