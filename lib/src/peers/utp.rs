@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{error, info, instrument, trace};
+use tracing::{debug, error, info, instrument, trace};
 
 pub struct UtpTransport {
    pub socket: Arc<UtpSocketUdp>,
@@ -124,13 +124,15 @@ impl Transport for UtpTransport {
          .peers
          .insert(*peer_id, Box::new((peer.clone(), stream)));
 
+      info!(%peer, "Peer connected");
+
       Ok(*peer_id)
    }
 
    async fn accept_incoming(&mut self) -> Result<Peer, PeerTransportError> {
       let mut socket = self.socket.accept().await.unwrap();
       let peer_addr = socket.remote_addr();
-      info!("Accepted incoming connection from {}", peer_addr);
+      debug!("Accepted incoming connection from {}", peer_addr);
 
       let mut buf = [0u8; 68];
       socket.read_exact(&mut buf).await.unwrap();
@@ -166,6 +168,8 @@ impl Transport for UtpTransport {
       self
          .peers
          .insert(*peer_id, Box::new((peer.clone(), socket)));
+
+      info!(%peer, "Peer connected");
 
       Ok(peer)
    }
@@ -320,5 +324,113 @@ mod tests {
          }
          _ => panic!("Expected Torrent"),
       }
+   }
+
+   #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+   #[traced_test]
+   async fn test_utp_incoming_handshake() {
+      // Generate random info hash and peer IDs
+      let info_hash = InfoHash::new(rand::random::<[u8; 20]>());
+      let server_peer_id = Hash::new(rand::random::<[u8; 20]>());
+      let client_peer_id = Hash::new(rand::random::<[u8; 20]>());
+
+      // Use different ports for server and client
+      let server_port: u16 = random_range(10000..20000);
+      let client_port: u16 = random_range(20001..30000);
+
+      let server_addr = SocketAddr::from(([127, 0, 0, 1], server_port));
+      let client_addr = SocketAddr::from(([127, 0, 0, 1], client_port));
+
+      // Create shared info hash for both sides
+      let info_hash_arc = Arc::new(info_hash);
+      let info_hash_clone = Arc::clone(&info_hash_arc);
+
+      // Spawn the server in a separate task
+      let server_handle = tokio::spawn(async move {
+         // Create server transport
+         let mut server_transport =
+            UtpTransport::new(Arc::new(server_peer_id), info_hash_arc, Some(server_addr)).await;
+
+         info!("Server listening on {}", server_addr);
+
+         // Accept incoming connection
+         match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            server_transport.accept_incoming(),
+         )
+         .await
+         {
+            Ok(Ok(peer)) => {
+               info!(?peer, "Server accepted connection",);
+               assert!(
+                  peer.id.is_some(),
+                  "Peer ID should be present after handshake"
+               );
+               assert_eq!(
+                  peer.id.unwrap(),
+                  client_peer_id,
+                  "Received peer ID should match client's"
+               );
+               Ok(peer)
+            }
+            Ok(Err(e)) => Err(format!("Server error accepting connection: {}", e)),
+            Err(_) => Err("Server timed out waiting for connection".to_string()),
+         }
+      });
+
+      // Give the server a moment to start up
+      tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+      // Create client and connect to server
+      let client_handle = tokio::spawn(async move {
+         // Create client transport
+         let mut client_transport =
+            UtpTransport::new(Arc::new(client_peer_id), info_hash_clone, Some(client_addr)).await;
+
+         info!("Client connecting from {} to {}", client_addr, server_addr);
+
+         // Create a peer representation of the server
+         let mut server_peer = Peer::from_socket_addr(server_addr);
+
+         // Connect to server
+         match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client_transport.connect(&mut server_peer),
+         )
+         .await
+         {
+            Ok(Ok(peer_id)) => {
+               info!(
+                  "Client connected to server, received peer ID: {:?}",
+                  peer_id
+               );
+               assert_eq!(
+                  peer_id, server_peer_id,
+                  "Received peer ID should match server's"
+               );
+               Ok(peer_id)
+            }
+            Ok(Err(e)) => Err(format!("Client error connecting: {}", e)),
+            Err(_) => Err("Client timed out connecting to server".to_string()),
+         }
+      });
+
+      // Wait for both operations to complete
+      let server_result = server_handle.await.expect("Server task panicked");
+      let client_result = client_handle.await.expect("Client task panicked");
+
+      // Verify both sides completed successfully
+      assert!(
+         server_result.is_ok(),
+         "Server error: {:?}",
+         server_result.err()
+      );
+      assert!(
+         client_result.is_ok(),
+         "Client error: {:?}",
+         client_result.err()
+      );
+
+      info!("uTP handshake test completed successfully");
    }
 }
