@@ -193,7 +193,9 @@ impl Transport for UtpTransport {
 
 #[cfg(test)]
 mod tests {
+
    use rand::random_range;
+   use tokio::sync::Mutex;
    use tracing::info;
    use tracing_test::traced_test;
 
@@ -238,25 +240,31 @@ mod tests {
                return;
             }
 
+            let info_hash_clone = Arc::new(info_hash);
+
+            // Create a single uTP transport instance and wrap it in Arc<Mutex<>>
+            let utp_transport = Arc::new(Mutex::new(
+               UtpTransport::new(
+                  peer_id.into(),
+                  info_hash_clone,
+                  Some(SocketAddr::from(([0, 0, 0, 0], port))),
+               )
+               .await,
+            ));
+
             // Create a vector to hold all the join handles
             let mut handles = Vec::new();
 
             // For each peer, spawn a task to connect
             for mut peer in peers {
-               let info_hash_clone = Arc::new(info_hash);
+               let transport_clone = Arc::clone(&utp_transport);
 
                let handle = tokio::spawn(async move {
-                  let port = random_range(1024..65535);
                   // Create a timeout for the connection attempt
-                  let result = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-                     let mut utp_transport = UtpTransport::new(
-                        peer_id.into(),
-                        info_hash_clone,
-                        Some(SocketAddr::from(([0, 0, 0, 0], port))),
-                     )
-                     .await;
-
-                     utp_transport.connect(&mut peer).await
+                  let result = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+                     // Acquire the mutex to use the transport
+                     let mut transport = transport_clone.lock().await;
+                     transport.connect(&mut peer).await
                   })
                   .await;
 
@@ -292,18 +300,18 @@ mod tests {
                (success_rate * 100.0) as u32
             );
 
+            // Print the errors for debugging
+            for (i, result) in results.iter().enumerate() {
+               if let Err(e) = result {
+                  error!("Peer {} error: {}", i, e);
+               }
+            }
+
             // Test passes if more than 10% of connections succeeded
             if success_rate > 0.1 {
                // Test passed
                return;
             } else {
-               // Print the errors for debugging
-               for (i, result) in results.iter().enumerate() {
-                  if let Err(e) = result {
-                     error!("Peer {} error: {}", i, e);
-                  }
-               }
-
                panic!(
                   "Less than 10% of peer connections succeeded ({}/{})",
                   successful_peers, total_peers
