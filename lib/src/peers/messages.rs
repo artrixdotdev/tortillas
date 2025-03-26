@@ -49,7 +49,7 @@ impl Handshake {
 
    /// Deserialize a handshake from bytes
    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
-      if bytes.len() < 1 {
+      if bytes.is_empty() {
          return Err("handshake too short");
       }
 

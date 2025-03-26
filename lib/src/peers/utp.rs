@@ -139,7 +139,7 @@ impl Transport for UtpTransport {
 
       let peer_id = received_handshake.peer_id;
 
-      if MAGIC_STRING != &received_handshake.protocol {
+      if MAGIC_STRING != received_handshake.protocol {
          error!("Invalid magic string received from peer {}", peer_addr);
          return Err(PeerTransportError::InvalidMagicString {
             received: String::from_utf8_lossy(&received_handshake.protocol).into(),
@@ -295,7 +295,7 @@ mod tests {
             // Test passes if more than 10% of connections succeeded
             if success_rate > 0.1 {
                // Test passed
-               assert!(true);
+               return;
             } else {
                // Print the errors for debugging
                for (i, result) in results.iter().enumerate() {
