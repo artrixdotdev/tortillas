@@ -193,6 +193,7 @@ impl Transport for UtpTransport {
 
 #[cfg(test)]
 mod tests {
+   use rand::random_range;
    use tracing::info;
    use tracing_test::traced_test;
 
@@ -218,10 +219,16 @@ mod tests {
             let info_hash = magnet.info_hash().unwrap();
             let announce_list = magnet.announce_list.unwrap();
             let announce_url = announce_list[0].uri();
+            let port: u16 = random_range(1024..65535);
 
-            let mut tracker = UdpTracker::new(announce_url, None, info_hash, None)
-               .await
-               .unwrap();
+            let mut tracker = UdpTracker::new(
+               announce_url,
+               None,
+               info_hash,
+               Some(SocketAddr::from(([0, 0, 0, 0], port))),
+            )
+            .await
+            .unwrap();
             let peer_id = tracker.peer_id;
             let peers = tracker.stream_peers().await.unwrap();
 
@@ -239,10 +246,15 @@ mod tests {
                let info_hash_clone = Arc::new(info_hash);
 
                let handle = tokio::spawn(async move {
+                  let port = random_range(1024..65535);
                   // Create a timeout for the connection attempt
                   let result = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-                     let mut utp_transport =
-                        UtpTransport::new(peer_id.into(), info_hash_clone, None).await;
+                     let mut utp_transport = UtpTransport::new(
+                        peer_id.into(),
+                        info_hash_clone,
+                        Some(SocketAddr::from(([0, 0, 0, 0], port))),
+                     )
+                     .await;
 
                      utp_transport.connect(&mut peer).await
                   })

@@ -1,11 +1,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use http::HttpTracker;
+use rand::random_range;
 use serde::{
    Deserialize,
    de::{self, Visitor},
 };
-use std::fmt;
+use std::{fmt, net::SocketAddr};
 use udp::UdpTracker;
 
 use crate::{hashes::InfoHash, peers::Peer};
@@ -40,9 +41,15 @@ impl Tracker {
             Ok(tracker.stream_peers().await.unwrap())
          }
          Tracker::Udp(uri) => {
-            let mut tracker = UdpTracker::new(uri.clone(), None, info_hash, None)
-               .await
-               .unwrap();
+            let port: u16 = random_range(1024..65535);
+            let mut tracker = UdpTracker::new(
+               uri.clone(),
+               None,
+               info_hash,
+               Some(SocketAddr::from(([0, 0, 0, 0], port))),
+            )
+            .await
+            .unwrap();
 
             Ok(tracker.stream_peers().await.unwrap())
          }

@@ -582,6 +582,7 @@ impl TrackerTrait for UdpTracker {
 mod tests {
    use super::*;
    use crate::parser::{MagnetUri, MetaInfo};
+   use rand::random_range;
    use tracing_test::traced_test;
 
    #[tokio::test]
@@ -600,9 +601,15 @@ mod tests {
             let announce_list = magnet.announce_list.unwrap();
             let announce_url = announce_list[0].uri();
 
-            let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash.unwrap(), None)
-               .await
-               .unwrap();
+            let port: u16 = random_range(1024..65535);
+            let mut udp_tracker = UdpTracker::new(
+               announce_url,
+               None,
+               info_hash.unwrap(),
+               Some(SocketAddr::from(([0, 0, 0, 0], port))),
+            )
+            .await
+            .unwrap();
             let stream = udp_tracker.stream_peers().await.unwrap();
 
             let peer = &stream[0];
