@@ -9,14 +9,17 @@ use anyhow::Result;
 use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::{
+   io::{AsyncReadExt, AsyncWriteExt},
+   sync::Mutex,
+};
 use tracing::{debug, error, info, instrument, trace};
 
 pub struct UtpTransport {
    pub socket: Arc<UtpSocketUdp>,
    pub id: Arc<Hash<20>>,
    pub info_hash: Arc<InfoHash>,
-   pub peers: HashMap<Hash<20>, Box<(Peer, UtpStream)>>,
+   pub peers: HashMap<Hash<20>, Arc<Mutex<(Peer, UtpStream)>>>,
 }
 
 impl UtpTransport {
@@ -100,7 +103,9 @@ impl Transport for UtpTransport {
       let peer_id = new_peer.id.unwrap();
       peer.id = Some(peer_id);
 
-      self.peers.insert(peer_id, Box::new((peer.clone(), stream)));
+      self
+         .peers
+         .insert(peer_id, Arc::new(Mutex::new((peer.clone(), stream))));
 
       info!(%peer, "Peer connected");
 
@@ -126,7 +131,9 @@ impl Transport for UtpTransport {
       trace!("Successfully validated handshake");
 
       // Creates a new handshake and sends it
-      self.peers.insert(peer_id, Box::new((peer.clone(), socket)));
+      self
+         .peers
+         .insert(peer_id, Arc::new(Mutex::new((peer.clone(), socket))));
       self
          .send(peer_id, PeerMessages::Handshake(handshake))
          .await?;
@@ -138,7 +145,8 @@ impl Transport for UtpTransport {
 
    async fn send_raw(&mut self, to: Hash<20>, message: Vec<u8>) -> Result<(), PeerTransportError> {
       trace!("Attemping to send message...");
-      let (_, socket) = &mut **self.peers.get_mut(&to).unwrap();
+
+      let (_, socket) = &mut *self.peers.get_mut(&to).unwrap().lock().await;
       socket.write_all(&message).await.map_err(|e| {
          error!("Failed to send message to peer: {e}");
          PeerTransportError::MessageFailed
@@ -148,7 +156,15 @@ impl Transport for UtpTransport {
    }
 
    async fn broadcast_raw(&mut self, message: Vec<u8>) -> Vec<Result<(), PeerTransportError>> {
-      vec![]
+      let mut results = vec![];
+
+      // Collect the keys first to avoid the borrowing conflict
+      let peer_ids: Vec<Hash<20>> = self.peers.keys().cloned().collect();
+
+      for id in peer_ids {
+         results.push(self.send_raw(id, message.clone()).await);
+      }
+      results
    }
 
    /// Drops peer from memory and closes the connection to it.

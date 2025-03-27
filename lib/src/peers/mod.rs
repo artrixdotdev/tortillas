@@ -59,7 +59,7 @@ pub trait Transport: Send + Sync {
    async fn broadcast_raw(&mut self, message: Vec<u8>) -> Vec<Result<(), PeerTransportError>>;
 
    async fn broadcast(&mut self, message: &PeerMessages) -> Vec<Result<(), PeerTransportError>> {
-      vec![]
+      self.broadcast_raw(message.to_bytes()).await
    }
 
    fn validate_handshake(
