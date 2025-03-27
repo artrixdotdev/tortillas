@@ -75,7 +75,7 @@ impl Transport for UtpTransport {
 
       trace!("Connected to new peer");
 
-      // Create and send handshake
+      // Create and send handshake. We are unable to use self.send() because the entry in the hashtable with the current peers peer_id does not yet exist
       let handshake = Handshake::new(self.info_hash.clone(), self.id.clone());
       let handshake_bytes = stream.write_all(&handshake.to_bytes()).await.map_err(|e| {
          error!("Failed to write handshake to peer: {}", e);
@@ -84,8 +84,9 @@ impl Transport for UtpTransport {
       trace!("Sent handshake to peer");
 
       // Calculate expected size for response
-      let expected_size = 1 + MAGIC_STRING.len() + 8 + 40; // 1 byte + protocol + reserved + hashes
-      let mut buf = vec![0u8; expected_size];
+      // 1 byte + protocol + reserved + hashes
+      const EXPECTED_SIZE: usize = 1 + MAGIC_STRING.len() + 8 + 40;
+      let mut buf = [0u8; EXPECTED_SIZE];
 
       // Read response handshake
       stream.read_exact(&mut buf).await.map_err(|e| {
@@ -93,41 +94,17 @@ impl Transport for UtpTransport {
          PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
       })?;
 
-      // Deserialize and validate handshake
-      let received_handshake: Handshake = Handshake::from_bytes(&buf).map_err(|e| {
-         error!("Failed to deserialize handshake: {}", e);
-         PeerTransportError::DeserializationFailed
-      })?;
-
-      // Validate protocol string
-      if received_handshake.protocol != MAGIC_STRING {
-         error!("Invalid protocol string received from peer");
-         return Err(PeerTransportError::InvalidMagicString {
-            received: String::from_utf8_lossy(&received_handshake.protocol).into(),
-            expected: String::from_utf8_lossy(MAGIC_STRING).into(),
-         });
-      }
-
-      // Validate info hash
-      if received_handshake.info_hash.to_hex() != self.info_hash.to_hex() {
-         error!("Invalid info hash received from peer");
-         return Err(PeerTransportError::InvalidInfoHash {
-            received: received_handshake.info_hash.to_hex(),
-            expected: self.info_hash.to_hex(),
-         });
-      }
+      let (_, new_peer) = self.validate_handshake(buf, peer.socket_addr()).unwrap();
 
       // Store peer information
-      let peer_id = received_handshake.peer_id;
-      peer.id = Some(*peer_id);
+      let peer_id = new_peer.id.unwrap();
+      peer.id = Some(peer_id);
 
-      self
-         .peers
-         .insert(*peer_id, Box::new((peer.clone(), stream)));
+      self.peers.insert(peer_id, Box::new((peer.clone(), stream)));
 
       info!(%peer, "Peer connected");
 
-      Ok(*peer_id)
+      Ok(peer_id)
    }
 
    async fn accept_incoming(&mut self) -> Result<Peer, PeerTransportError> {

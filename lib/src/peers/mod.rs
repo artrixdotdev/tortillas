@@ -67,10 +67,14 @@ pub trait Transport: Send + Sync {
       buf: [u8; 68],
       peer_addr: SocketAddr,
    ) -> Result<(Handshake, Peer), PeerTransportError> {
-      let received_handshake = Handshake::from_bytes(&buf).unwrap();
+      let received_handshake: Handshake = Handshake::from_bytes(&buf).map_err(|e| {
+         error!("Failed to deserialize handshake: {}", e);
+         PeerTransportError::DeserializationFailed
+      })?;
 
       let peer_id = received_handshake.peer_id;
 
+      // Validate protocol string
       if MAGIC_STRING != received_handshake.protocol {
          error!("Invalid magic string received from peer {}", peer_addr);
          return Err(PeerTransportError::InvalidMagicString {
@@ -79,6 +83,7 @@ pub trait Transport: Send + Sync {
          });
       }
 
+      // Validate info hash
       if self.info_hash() != received_handshake.info_hash {
          error!("Invalid info hash received from peer {}", peer_addr);
          return Err(PeerTransportError::InvalidInfoHash {

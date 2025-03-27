@@ -108,7 +108,7 @@ pub enum PeerTransportError {
    #[error("Peer {0} not found")]
    NotFound(String),
 
-   #[error("Failed to deserialize handshake ")]
+   #[error("Failed to deserialize handshake")]
    DeserializationFailed,
 
    #[error(transparent)]
