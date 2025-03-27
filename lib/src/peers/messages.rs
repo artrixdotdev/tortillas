@@ -63,9 +63,9 @@ pub enum PeerMessages {
    ///
    /// # Binary Layout
    ///
-   /// |  0-4   |   4-8  |  8-12  |
-   /// |--------|--------|--------|
-   /// |  index |  begin | length |
+   /// |  0-4  |   4-8   |  8-12  |
+   /// |-------|---------|--------|
+   /// | index |  begin  | length |
    Cancel(u8, u8, u8) = 8u8,
 
    /// This message is special, as it is not technically part of the standard [BitTorrent peer messages](https://www.bittorrent.org/beps/bep_0003.html#peer-messages),
@@ -77,9 +77,9 @@ pub enum PeerMessages {
    ///
    /// # Binary layout
    ///
-   /// |       0-1       |      1-20     |   20-28  |    28-48  |   48-68  |
-   /// |-----------------|---------------|----------|-----------|----------|
-   /// | Protocol Length | Protocol Name | Reserved | Info Hash | Peer ID  |
+   /// |       0-1       |      1-20     |   20-28  |    28-48  |  48-68  |
+   /// |-----------------|---------------|----------|-----------|---------|
+   /// | Protocol Length | Protocol Name | Reserved | Info Hash | Peer ID |
    Handshake(Handshake),
 }
 

@@ -2,10 +2,10 @@ use super::{Peer, Transport};
 use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
-   peers::messages::{Handshake, MAGIC_STRING},
    peers::PeerMessages,
+   peers::messages::{Handshake, MAGIC_STRING},
 };
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
@@ -56,7 +56,7 @@ impl Transport for UtpTransport {
    /// 'BitTorrent protocol'."
    /// All integers should be encoded as four bytes big-endian.
    /// After fixed headers, reserved bytes (0).
-   /// 20 byte sha1 hash of bencoded form of info value (info_hash). If both sides don't send the
+   /// 20 byte sha1 hash of bencoded form of info value ([info_hash](InfoHash)). If both sides don't send the
    /// same value, sever the connection.
    /// 20 byte peer id. If receiving side's id doesn't match the one the initiating side expects sever the connection.
    ///
@@ -107,22 +107,25 @@ impl Transport for UtpTransport {
       Ok(peer_id)
    }
 
+   /// Accepts an incoming request (the first 68 bytes), and sends a handshake in response.
    async fn accept_incoming(&mut self) -> Result<Peer, PeerTransportError> {
       let mut socket = self.socket.accept().await.unwrap();
       let peer_addr = socket.remote_addr();
       debug!("Accepted incoming connection from {}", peer_addr);
 
+      // Reads first 68 bytes
       let mut buf = [0u8; 68];
       socket.read_exact(&mut buf).await.map_err(|e| {
          error!("Error reading first 68 bytes from peer: {e}");
          PeerTransportError::InvalidPeerResponse("Invalid response".into())
       })?;
 
+      // Validates handshake
       let (handshake, peer) = self.validate_handshake(buf, peer_addr)?;
       let peer_id = peer.id.unwrap();
       trace!("Successfully validated handshake");
 
-      // Create our handshake and send it off
+      // Creates a new handshake and sends it
       self.peers.insert(peer_id, Box::new((peer.clone(), socket)));
       self
          .send(peer_id, PeerMessages::Handshake(handshake))
@@ -137,8 +140,8 @@ impl Transport for UtpTransport {
       trace!("Attemping to send message...");
       let (_, socket) = &mut **self.peers.get_mut(&to).unwrap();
       socket.write_all(&message).await.map_err(|e| {
-         error!("Failed to send message to peer: {}", e);
-         PeerTransportError::Other(anyhow!("Failed to send message to peer: {e}"))
+         error!("Failed to send message to peer: {e}");
+         PeerTransportError::MessageFailed
       })?;
 
       Ok(())
@@ -148,12 +151,16 @@ impl Transport for UtpTransport {
       vec![]
    }
 
-   async fn close(&mut self, peer_id: Hash<20>) -> Result<()> {
+   /// Drops peer from memory and closes the connection to it.
+   ///
+   /// Note: Does not send any peer message, only removes peer & stream from memory.
+   fn close(&mut self, peer_id: Hash<20>) -> Result<()> {
+      self.peers.remove(&peer_id);
       Ok(())
    }
 
-   fn is_connected(&self) -> bool {
-      false
+   fn is_connected(&self, peer_id: Arc<Hash<20>>) -> bool {
+      self.peers.contains_key(&peer_id)
    }
 }
 
@@ -167,7 +174,7 @@ mod tests {
 
    use crate::{
       parser::{MagnetUri, MetaInfo},
-      tracker::{udp::UdpTracker, TrackerTrait},
+      tracker::{TrackerTrait, udp::UdpTracker},
    };
 
    use super::*;

@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use messages::{Handshake, PeerMessages, MAGIC_STRING};
+use messages::{Handshake, MAGIC_STRING, PeerMessages};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -103,14 +103,14 @@ pub trait Transport: Send + Sync {
 
    async fn accept_incoming(&mut self) -> Result<Peer, PeerTransportError>;
 
-   async fn close(&mut self, peer_id: Hash<20>) -> Result<()>;
+   fn close(&mut self, peer_id: Hash<20>) -> Result<()>;
 
    /// Our current peer ID
    fn id(&self) -> Arc<Hash<20>>;
 
    fn info_hash(&self) -> Arc<InfoHash>;
 
-   fn is_connected(&self) -> bool;
+   fn is_connected(&self, peer_id: Arc<Hash<20>>) -> bool;
 }
 
 impl Peer {
