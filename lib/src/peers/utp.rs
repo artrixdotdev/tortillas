@@ -3,8 +3,9 @@ use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
    peers::messages::{Handshake, MAGIC_STRING},
+   peers::PeerMessages,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
@@ -135,39 +136,20 @@ impl Transport for UtpTransport {
       debug!("Accepted incoming connection from {}", peer_addr);
 
       let mut buf = [0u8; 68];
-      socket.read_exact(&mut buf).await.unwrap();
+      socket.read_exact(&mut buf).await.map_err(|e| {
+         error!("Error reading first 68 bytes from peer: {e}");
+         PeerTransportError::InvalidPeerResponse("Invalid response".into())
+      })?;
 
-      let received_handshake = Handshake::from_bytes(&buf).unwrap();
+      let (handshake, peer) = self.validate_handshake(buf, peer_addr)?;
+      let peer_id = peer.id.unwrap();
+      trace!("Successfully validated handshake");
 
-      let peer_id = received_handshake.peer_id;
-
-      if MAGIC_STRING != received_handshake.protocol {
-         error!("Invalid magic string received from peer {}", peer_addr);
-         return Err(PeerTransportError::InvalidMagicString {
-            received: String::from_utf8_lossy(&received_handshake.protocol).into(),
-            expected: String::from_utf8_lossy(MAGIC_STRING).into(),
-         });
-      }
-
-      if self.info_hash != received_handshake.info_hash {
-         error!("Invalid info hash received from peer {}", peer_addr);
-         return Err(PeerTransportError::InvalidInfoHash {
-            received: received_handshake.info_hash.to_hex(),
-            expected: self.info_hash.to_hex(),
-         });
-      }
-
-      trace!("Received valid handshake from {}", peer_addr);
-
-      let mut peer = Peer::from_socket_addr(peer_addr);
-      peer.id = Some(*peer_id);
       // Create our handshake and send it off
-      let handshake = Handshake::new(self.info_hash.clone(), self.id.clone());
-      socket.write_all(&handshake.to_bytes()).await.unwrap();
-
+      self.peers.insert(peer_id, Box::new((peer.clone(), socket)));
       self
-         .peers
-         .insert(*peer_id, Box::new((peer.clone(), socket)));
+         .send(peer_id, PeerMessages::Handshake(handshake))
+         .await?;
 
       info!(%peer, "Peer connected");
 
@@ -208,7 +190,7 @@ mod tests {
 
    use crate::{
       parser::{MagnetUri, MetaInfo},
-      tracker::{TrackerTrait, udp::UdpTracker},
+      tracker::{udp::UdpTracker, TrackerTrait},
    };
 
    use super::*;

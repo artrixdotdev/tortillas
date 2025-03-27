@@ -1,12 +1,13 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use messages::PeerMessages;
+use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::Arc,
 };
 use tokio::time::Instant;
+use tracing::{error, trace};
 
 use crate::{
    errors::PeerTransportError,
@@ -52,13 +53,47 @@ pub trait Transport: Send + Sync {
    async fn send_raw(&mut self, to: Hash<20>, message: Vec<u8>) -> Result<(), PeerTransportError>;
 
    async fn send(&mut self, to: Hash<20>, message: PeerMessages) -> Result<(), PeerTransportError> {
-      Ok(())
+      self.send_raw(to, message.to_bytes()).await
    }
 
    async fn broadcast_raw(&mut self, message: Vec<u8>) -> Vec<Result<(), PeerTransportError>>;
 
    async fn broadcast(&mut self, message: &PeerMessages) -> Vec<Result<(), PeerTransportError>> {
       vec![]
+   }
+
+   fn validate_handshake(
+      &mut self,
+      buf: [u8; 68],
+      peer_addr: SocketAddr,
+   ) -> Result<(Handshake, Peer), PeerTransportError> {
+      let received_handshake = Handshake::from_bytes(&buf).unwrap();
+
+      let peer_id = received_handshake.peer_id;
+
+      if MAGIC_STRING != received_handshake.protocol {
+         error!("Invalid magic string received from peer {}", peer_addr);
+         return Err(PeerTransportError::InvalidMagicString {
+            received: String::from_utf8_lossy(&received_handshake.protocol).into(),
+            expected: String::from_utf8_lossy(MAGIC_STRING).into(),
+         });
+      }
+
+      if self.info_hash() != received_handshake.info_hash {
+         error!("Invalid info hash received from peer {}", peer_addr);
+         return Err(PeerTransportError::InvalidInfoHash {
+            received: received_handshake.info_hash.to_hex(),
+            expected: self.info_hash().to_hex(),
+         });
+      }
+
+      trace!("Received valid handshake from {}", peer_addr);
+
+      let mut peer = Peer::from_socket_addr(peer_addr);
+      peer.id = Some(*peer_id);
+
+      let handshake = Handshake::new(self.info_hash(), self.id());
+      Ok((handshake, peer))
    }
 
    async fn accept_incoming(&mut self) -> Result<Peer, PeerTransportError>;

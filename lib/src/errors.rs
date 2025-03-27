@@ -87,6 +87,9 @@ pub enum PeerTransportError {
    #[error("Invalid response: {0}")]
    InvalidPeerResponse(String),
 
+   #[error("Message failed")]
+   MessageFailed,
+
    #[error("Connection failed: {0}")]
    ConnectionFailed(String),
 
