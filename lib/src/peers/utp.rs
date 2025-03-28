@@ -12,6 +12,7 @@ use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
 use tokio::{
    io::{AsyncReadExt, AsyncWriteExt},
    sync::Mutex,
+   time::Instant,
 };
 use tracing::{debug, error, info, instrument, trace};
 
@@ -143,7 +144,7 @@ impl Transport for UtpTransport {
 
       Ok(peer)
    }
-
+   // async fn recv_from_stream()
    async fn recv_raw(&mut self) -> Result<(PeerKey, Vec<u8>), PeerTransportError> {
       let mut socket = self.socket.accept().await.unwrap();
       // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
@@ -173,27 +174,73 @@ impl Transport for UtpTransport {
          error!("Error occurred when reading the peer's response: {e}");
          PeerTransportError::InvalidPeerResponse("Error occured".into())
       })?;
+      let full_length = length + buf.len() as u32;
 
       debug!(
          "Read {} action ({} bytes) from {} ",
-         buf[4],
-         length + 5,
-         addr
+         buf[4], full_length, addr
       );
       buf.extend_from_slice(&rest);
+
+      if let Some(mutex) = self.peers.get_mut(&socket.remote_addr()) {
+         let peer = &mut mutex.lock().await.0;
+
+         // Completely chat gippity generated code, do not trust
+         // Update total bytes uploaded
+         peer.bytes_uploaded += full_length as u64;
+
+         // Calculate upload rate based on a time window
+         let now = Instant::now();
+         if let Some(last_time) = peer.last_message_received {
+            let elapsed_secs = last_time.elapsed().as_secs_f64();
+            if elapsed_secs > 0.0 {
+               // Use an exponential moving average for smoother rate calculation
+               const ALPHA: f64 = 0.3; // Smoothing factor (0.0-1.0)
+               let current_rate = full_length as f64 / elapsed_secs;
+               peer.download_rate = if peer.download_rate > 0.0 {
+                  (ALPHA * current_rate) + ((1.0 - ALPHA) * peer.download_rate)
+               } else {
+                  current_rate
+               };
+            }
+         }
+
+         peer.last_message_received = Some(now);
+      };
 
       Ok((socket.remote_addr(), buf))
    }
 
    async fn send_raw(&mut self, to: PeerKey, message: Vec<u8>) -> Result<(), PeerTransportError> {
-      trace!("Attemping to send message...");
+      trace!("Attempting to send message...");
 
-      let (_, socket) = &mut *self.peers.get_mut(&to).unwrap().lock().await;
+      let (peer, socket) = &mut *self.peers.get_mut(&to).unwrap().lock().await;
       socket.write_all(&message).await.map_err(|e| {
          error!("Failed to send message to peer: {e}");
          PeerTransportError::MessageFailed
       })?;
 
+      // Completely chat gippity generated code, do not trust
+      // Update total bytes uploaded
+      peer.bytes_uploaded += message.len() as u64;
+
+      // Calculate upload rate based on a time window
+      let now = Instant::now();
+      if let Some(last_time) = peer.last_message_sent {
+         let elapsed_secs = last_time.elapsed().as_secs_f64();
+         if elapsed_secs > 0.0 {
+            // Use an exponential moving average for smoother rate calculation
+            const ALPHA: f64 = 0.3; // Smoothing factor (0.0-1.0)
+            let current_rate = message.len() as f64 / elapsed_secs;
+            peer.upload_rate = if peer.upload_rate > 0.0 {
+               (ALPHA * current_rate) + ((1.0 - ALPHA) * peer.upload_rate)
+            } else {
+               current_rate
+            };
+         }
+      }
+
+      peer.last_message_sent = Some(now);
       Ok(())
    }
 
