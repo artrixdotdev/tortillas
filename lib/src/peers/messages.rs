@@ -1,6 +1,7 @@
+use anyhow::{Result, anyhow};
 use bitvec::prelude::*;
 
-use crate::hashes::Hash;
+use crate::{errors::PeerTransportError, hashes::Hash};
 use std::sync::Arc;
 
 pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
@@ -26,7 +27,7 @@ pub enum PeerMessages {
    ///
    /// Includes the index of the completed piece. The index refers to the
    /// piece within the torrent file.
-   Have(u8) = 4u8,
+   Have(u32) = 4u8,
 
    /// A bitfield representing the pieces that the peer has.
    ///
@@ -43,7 +44,7 @@ pub enum PeerMessages {
    /// |   0-4   |   4-8   |   8-12   |
    /// |---------|---------|----------|
    /// |  index  |  begin  |  length  |
-   Request(u8, u8, u8) = 6u8,
+   Request(u32, u32, u32) = 6u8,
 
    /// A block of data corresponding to a previously sent `Request` message.
    ///
@@ -54,7 +55,7 @@ pub enum PeerMessages {
    /// |  index  |  begin  |  piece  |
    ///
    /// Unexpected pieces might arrive; refer to the [specification](https://www.bittorrent.org/beps/bep_0003.html) for details.
-   Piece(u8, u8, Vec<u8>) = 7u8,
+   Piece(u32, u32, Vec<u8>) = 7u8,
    /// Cancels a pending `Request` message.
    ///
    /// Sent to indicate that a requested block is no longer needed. Typically
@@ -66,7 +67,7 @@ pub enum PeerMessages {
    /// |  0-4  |   4-8   |  8-12  |
    /// |-------|---------|--------|
    /// | index |  begin  | length |
-   Cancel(u8, u8, u8) = 8u8,
+   Cancel(u32, u32, u32) = 8u8,
 
    /// This message is special, as it is not technically part of the standard [BitTorrent peer messages](https://www.bittorrent.org/beps/bep_0003.html#peer-messages),
    /// And does not have a specified Message ID, unlike the other messages that have a defined ID.
@@ -81,45 +82,135 @@ pub enum PeerMessages {
    /// |-----------------|---------------|----------|-----------|---------|
    /// | Protocol Length | Protocol Name | Reserved | Info Hash | Peer ID |
    Handshake(Handshake),
+
+   /// Just a ping message, used to keep the connection alive.
+   KeepAlive,
 }
 
 impl PeerMessages {
-   pub fn to_bytes(&self) -> Vec<u8> {
-      match self {
-         PeerMessages::Choke => vec![0],
-         PeerMessages::Unchoke => vec![1],
-         PeerMessages::Interested => vec![2],
-         PeerMessages::NotInterested => vec![3],
-         PeerMessages::Have(index) => vec![4, *index],
-         PeerMessages::Bitfield(bits) => {
-            let mut bytes = vec![5];
-            bytes.extend_from_slice(&bits.len().to_be_bytes());
-            bytes.extend_from_slice(bits.as_raw_slice());
-            bytes
-         }
+   pub fn to_bytes(&self) -> Result<Vec<u8>, PeerTransportError> {
+      Ok(match self {
+         PeerMessages::Handshake(handshake) => handshake.to_bytes(),
+         PeerMessages::Choke => Self::create_message_with_id(0, &[]),
+         PeerMessages::Unchoke => Self::create_message_with_id(1, &[]),
+         PeerMessages::Interested => Self::create_message_with_id(2, &[]),
+         PeerMessages::NotInterested => Self::create_message_with_id(3, &[]),
+         PeerMessages::Have(index) => Self::create_message_with_id(4, &index.to_be_bytes()),
+         PeerMessages::Bitfield(bits) => Self::create_message_with_id(5, bits.as_raw_slice()),
          PeerMessages::Request(index, begin, length) => {
-            let mut bytes = vec![6];
-            bytes.extend_from_slice(&index.to_be_bytes());
-            bytes.extend_from_slice(&begin.to_be_bytes());
-            bytes.extend_from_slice(&length.to_be_bytes());
-            bytes
+            let mut payload = Vec::with_capacity(12);
+            payload.extend_from_slice(&index.to_be_bytes());
+            payload.extend_from_slice(&begin.to_be_bytes());
+            payload.extend_from_slice(&length.to_be_bytes());
+            Self::create_message_with_id(6, &payload)
          }
          PeerMessages::Piece(index, begin, data) => {
-            let mut bytes = vec![6];
-            bytes.extend_from_slice(&index.to_be_bytes());
-            bytes.extend_from_slice(&begin.to_be_bytes());
-            bytes.extend_from_slice(&data.len().to_be_bytes());
-            bytes.extend_from_slice(data);
-            bytes
+            let mut payload = Vec::with_capacity(8 + data.len());
+            payload.extend_from_slice(&index.to_be_bytes());
+            payload.extend_from_slice(&begin.to_be_bytes());
+            payload.extend_from_slice(data);
+            Self::create_message_with_id(7, &payload)
          }
          PeerMessages::Cancel(index, begin, length) => {
-            let mut bytes = vec![6];
-            bytes.extend_from_slice(&index.to_be_bytes());
-            bytes.extend_from_slice(&begin.to_be_bytes());
-            bytes.extend_from_slice(&length.to_be_bytes());
-            bytes
+            let mut payload = Vec::with_capacity(12);
+            payload.extend_from_slice(&index.to_be_bytes());
+            payload.extend_from_slice(&begin.to_be_bytes());
+            payload.extend_from_slice(&length.to_be_bytes());
+            Self::create_message_with_id(8, &payload)
          }
-         PeerMessages::Handshake(handshake) => handshake.to_bytes(),
+         _ => return Err(PeerTransportError::Other(anyhow!("Unknown message type"))),
+      })
+   }
+
+   // Helper method to create a message with length prefix, ID, and payload
+   fn create_message_with_id(id: u8, payload: &[u8]) -> Vec<u8> {
+      let length = 1 + payload.len() as u32; // ID (1 byte) + payload length
+      let mut message = Vec::with_capacity(4 + length as usize);
+
+      // Length prefix (4 bytes)
+      message.extend_from_slice(&length.to_be_bytes());
+      // Message ID (1 byte)
+      message.push(id);
+      // Payload
+      message.extend_from_slice(payload);
+
+      message
+   }
+
+   pub fn from_bytes(bytes: Vec<u8>) -> Result<PeerMessages, PeerTransportError> {
+      // Check if it's a handshake (handshakes don't have length prefix)
+      if bytes.len() >= 68 && bytes[0] == 19 && &bytes[1..20] == b"BitTorrent protocol" {
+         return Ok(PeerMessages::Handshake(
+            Handshake::from_bytes(&bytes).map_err(|e| PeerTransportError::Other(anyhow!("{e}")))?,
+         ));
+      }
+
+      // For regular messages, we need at least 4 bytes for the length prefix
+      if bytes.len() < 4 {
+         return Err(PeerTransportError::MessageTooShort);
+      }
+
+      let length = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+
+      // Check if we have enough bytes for the full message
+      if bytes.len() < 4 + length {
+         return Err(PeerTransportError::MessageTooShort);
+      }
+
+      // Empty message (keep-alive)
+      if length == 0 {
+         return Ok(PeerMessages::KeepAlive);
+      }
+
+      // Regular message with ID
+      if length < 1 {
+         return Err(PeerTransportError::MessageFailed);
+      }
+
+      let id = bytes[4];
+      let payload = &bytes[5..4 + length];
+
+      match id {
+         0 => Ok(PeerMessages::Choke),
+         1 => Ok(PeerMessages::Unchoke),
+         2 => Ok(PeerMessages::Interested),
+         3 => Ok(PeerMessages::NotInterested),
+         4 => {
+            if payload.len() != 4 {
+               return Err(PeerTransportError::MessageFailed);
+            }
+            let index = u32::from_be_bytes(payload[0..4].try_into().unwrap());
+            Ok(PeerMessages::Have(index))
+         }
+         5 => Ok(PeerMessages::Bitfield(BitVec::from_slice(payload))),
+         6 => {
+            if payload.len() != 12 {
+               return Err(PeerTransportError::MessageFailed);
+            }
+            let index = u32::from_be_bytes(payload[0..4].try_into().unwrap());
+            let begin = u32::from_be_bytes(payload[4..8].try_into().unwrap());
+            let length = u32::from_be_bytes(payload[8..12].try_into().unwrap());
+            Ok(PeerMessages::Request(index, begin, length))
+         }
+         7 => {
+            if payload.len() < 8 {
+               return Err(PeerTransportError::MessageFailed);
+            }
+            let index = u32::from_be_bytes(payload[0..4].try_into().unwrap());
+            let begin = u32::from_be_bytes(payload[4..8].try_into().unwrap());
+            let data = payload[8..].to_vec();
+            Ok(PeerMessages::Piece(index, begin, data))
+         }
+         8 => {
+            if payload.len() != 12 {
+               return Err(PeerTransportError::MessageFailed);
+            }
+            let index = u32::from_be_bytes(payload[0..4].try_into().unwrap());
+            let begin = u32::from_be_bytes(payload[4..8].try_into().unwrap());
+            let length = u32::from_be_bytes(payload[8..12].try_into().unwrap());
+            Ok(PeerMessages::Cancel(index, begin, length))
+         }
+         _ => Err(PeerTransportError::Other(anyhow!("Unknown message type"))),
       }
    }
 }

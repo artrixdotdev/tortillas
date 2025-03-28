@@ -53,13 +53,13 @@ pub trait Transport: Send + Sync {
    async fn send_raw(&mut self, to: Hash<20>, message: Vec<u8>) -> Result<(), PeerTransportError>;
 
    async fn send(&mut self, to: Hash<20>, message: PeerMessages) -> Result<(), PeerTransportError> {
-      self.send_raw(to, message.to_bytes()).await
+      self.send_raw(to, message.to_bytes()?).await
    }
 
    async fn broadcast_raw(&mut self, message: Vec<u8>) -> Vec<Result<(), PeerTransportError>>;
 
    async fn broadcast(&mut self, message: &PeerMessages) -> Vec<Result<(), PeerTransportError>> {
-      self.broadcast_raw(message.to_bytes()).await
+      self.broadcast_raw(message.to_bytes().unwrap()).await
    }
 
    fn validate_handshake(
@@ -102,6 +102,15 @@ pub trait Transport: Send + Sync {
    }
 
    async fn accept_incoming(&mut self) -> Result<Peer, PeerTransportError>;
+
+   async fn recv_raw(&mut self) -> Result<Vec<u8>, PeerTransportError>;
+
+   async fn recv(&mut self) -> Result<(Hash<20>, PeerMessages), PeerTransportError> {
+      let raw = self.recv_raw().await?;
+      let message = PeerMessages::from_bytes(raw)?;
+
+      Ok((Hash::new([0; 20]), message))
+   }
 
    fn close(&mut self, peer_id: Hash<20>) -> Result<()>;
 

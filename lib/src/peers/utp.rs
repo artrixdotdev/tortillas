@@ -72,7 +72,7 @@ impl Transport for UtpTransport {
 
       // Connect to the peer
       let mut stream = self.socket.connect(peer.socket_addr()).await.map_err(|e| {
-         error!("Failed to connect to peer {}: {}", peer.socket_addr(), e);
+         error!("Failed to connect to peer {e}: {}", peer.socket_addr());
          PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
       })?;
 
@@ -141,6 +141,47 @@ impl Transport for UtpTransport {
       info!(%peer, "Peer connected");
 
       Ok(peer)
+   }
+
+   async fn recv_raw(&mut self) -> Result<Vec<u8>, PeerTransportError> {
+      let mut socket = self.socket.accept().await.unwrap();
+      // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
+      let mut buf = vec![0; 5];
+
+      socket.read_exact(&mut buf).await.map_err(|e| {
+         error!("Error occurred when reading the peer's response: {e}");
+         PeerTransportError::InvalidPeerResponse("Error occured".into())
+      })?;
+      let addr = socket.remote_addr();
+      trace!(message_type = buf[4], ip = %addr, "Recieved message headers, requesting rest...");
+
+      let length = if buf[0] as usize == MAGIC_STRING.len() && buf[1..5] == MAGIC_STRING[0..4] {
+         // This is a handshake.
+         // The length of a handshake is always 68 and we already have the
+         // first 5 bytes of it, so we need 68 - 5 bytes (the current buffer length)
+         68 - buf.len() as u32
+      } else {
+         // This is not a handshake
+         // Non handshake messages have a length field from bytes 0-4
+         u32::from_be_bytes(buf[..4].try_into().unwrap())
+      };
+
+      let mut rest = vec![0; length as usize];
+
+      socket.read_exact(&mut rest).await.map_err(|e| {
+         error!("Error occurred when reading the peer's response: {e}");
+         PeerTransportError::InvalidPeerResponse("Error occured".into())
+      })?;
+
+      debug!(
+         "Read {} action ({} bytes) from {} ",
+         buf[4],
+         length + 5,
+         addr
+      );
+      buf.extend_from_slice(&rest);
+
+      Ok(buf)
    }
 
    async fn send_raw(&mut self, to: Hash<20>, message: Vec<u8>) -> Result<(), PeerTransportError> {

@@ -1,3 +1,4 @@
+/// See https://www.bittorrent.org/beps/bep_0003.html
 use super::{Peer, TrackerTrait};
 use crate::{
    errors::{HttpTrackerError, TrackerError},
@@ -9,7 +10,6 @@ use serde::{
    Deserialize, Serialize,
    de::{self, Visitor},
 };
-/// See https://www.bittorrent.org/beps/bep_0003.html
 use std::{
    net::{Ipv4Addr, SocketAddr},
    str::FromStr,

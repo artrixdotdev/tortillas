@@ -111,6 +111,9 @@ pub enum PeerTransportError {
    #[error("Failed to deserialize handshake")]
    DeserializationFailed,
 
+   #[error("Message was too short")]
+   MessageTooShort,
+
    #[error(transparent)]
    Other(#[from] anyhow::Error),
 }
