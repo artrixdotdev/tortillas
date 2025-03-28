@@ -5,7 +5,7 @@ use crate::{
    peers::PeerMessages,
    peers::messages::{Handshake, MAGIC_STRING},
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
@@ -98,7 +98,12 @@ impl Transport for UtpTransport {
          PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
       })?;
 
-      let (_, new_peer) = self.validate_handshake(buf, peer.socket_addr()).unwrap();
+      let handshake =
+         Handshake::from_bytes(&buf).map_err(|e| PeerTransportError::Other(anyhow!("{e}")))?;
+
+      let (_, new_peer) = self
+         .validate_handshake(handshake, peer.socket_addr())
+         .unwrap();
 
       // Store peer information
       let peer_id = new_peer.id.unwrap();
@@ -114,37 +119,8 @@ impl Transport for UtpTransport {
       Ok(peer.socket_addr())
    }
 
-   /// Accepts an incoming request (the first 68 bytes), and sends a handshake in response.
-   async fn accept_incoming(&mut self) -> Result<Peer, PeerTransportError> {
-      let mut socket = self.socket.accept().await.unwrap();
-      let peer_addr = socket.remote_addr();
-      debug!("Accepted incoming connection from {}", peer_addr);
-
-      // Reads first 68 bytes
-      let mut buf = [0u8; 68];
-      socket.read_exact(&mut buf).await.map_err(|e| {
-         error!("Error reading first 68 bytes from peer: {e}");
-         PeerTransportError::InvalidPeerResponse("Invalid response".into())
-      })?;
-
-      // Validates handshake
-      let (handshake, peer) = self.validate_handshake(buf, peer_addr)?;
-      let peer_id = peer.id.unwrap();
-      trace!("Successfully validated handshake");
-
-      // Creates a new handshake and sends it
-      self
-         .peers
-         .insert(peer_addr, Arc::new(Mutex::new((peer.clone(), socket))));
-      self
-         .send(peer_addr, PeerMessages::Handshake(handshake))
-         .await?;
-
-      info!(%peer, "Peer connected");
-
-      Ok(peer)
-   }
    // async fn recv_from_stream()
+
    async fn recv_raw(&mut self) -> Result<(PeerKey, Vec<u8>), PeerTransportError> {
       let mut socket = self.socket.accept().await.unwrap();
       // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
@@ -156,11 +132,12 @@ impl Transport for UtpTransport {
       })?;
       let addr = socket.remote_addr();
       trace!(message_type = buf[4], ip = %addr, "Recieved message headers, requesting rest...");
-
+      let mut is_handshake = false;
       let length = if buf[0] as usize == MAGIC_STRING.len() && buf[1..5] == MAGIC_STRING[0..4] {
          // This is a handshake.
          // The length of a handshake is always 68 and we already have the
          // first 5 bytes of it, so we need 68 - 5 bytes (the current buffer length)
+         is_handshake = true;
          68 - buf.len() as u32
       } else {
          // This is not a handshake
@@ -182,7 +159,7 @@ impl Transport for UtpTransport {
       );
       buf.extend_from_slice(&rest);
 
-      if let Some(mutex) = self.peers.get_mut(&socket.remote_addr()) {
+      if let Some(mutex) = self.peers.get_mut(&addr) {
          let peer = &mut mutex.lock().await.0;
 
          // Completely chat gippity generated code, do not trust
@@ -208,7 +185,23 @@ impl Transport for UtpTransport {
          peer.last_message_received = Some(now);
       };
 
-      Ok((socket.remote_addr(), buf))
+      if is_handshake {
+         let handshake =
+            Handshake::from_bytes(&buf).map_err(|e| PeerTransportError::Other(anyhow!("{e}")))?;
+         let (handshake, peer) = self.validate_handshake(handshake, addr)?;
+
+         trace!(peer_id = %peer.id.unwrap(), "Successfully validated handshake");
+
+         // Creates a new handshake and sends it
+         self
+            .peers
+            .insert(addr, Arc::new(Mutex::new((peer.clone(), socket))));
+         self.send(addr, PeerMessages::Handshake(handshake)).await?;
+
+         info!(%peer, "Peer connected");
+      }
+
+      Ok((addr, buf))
    }
 
    async fn send_raw(&mut self, to: PeerKey, message: Vec<u8>) -> Result<(), PeerTransportError> {
@@ -254,6 +247,12 @@ impl Transport for UtpTransport {
          results.push(self.send_raw(id, message.clone()).await);
       }
       results
+   }
+
+   async fn get_peer(&self, peer_key: PeerKey) -> Option<Peer> {
+      let mutex = self.peers.get(&peer_key)?;
+      let (peer, _) = &mut *mutex.lock().await;
+      Some(peer.clone())
    }
 
    /// Drops peer from memory and closes the connection to it.
@@ -428,14 +427,16 @@ mod tests {
          info!("Server listening on {}", server_addr);
 
          // Accept incoming connection
-         match tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            server_transport.accept_incoming(),
-         )
-         .await
+         match tokio::time::timeout(std::time::Duration::from_secs(5), server_transport.recv())
+            .await
          {
-            Ok(Ok(peer)) => {
-               info!(?peer, "Server accepted connection",);
+            Ok(Ok((key, _))) => {
+               let peer = server_transport.get_peer(key).await;
+               assert!(peer.is_some(), "Peer should exist");
+
+               let peer = peer.unwrap();
+
+               info!(%peer, "Server accepted connection",);
                assert!(
                   peer.id.is_some(),
                   "Peer ID should be present after handshake"

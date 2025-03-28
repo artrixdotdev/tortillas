@@ -65,16 +65,12 @@ pub trait Transport: Send + Sync {
       self.broadcast_raw(message.to_bytes().unwrap()).await
    }
 
+   /// Takes in a received handshake and returns the handshake we should respond with as well as the new peer. It preassigns the peer_id to the peer.
    fn validate_handshake(
       &mut self,
-      buf: [u8; 68],
+      received_handshake: Handshake,
       peer_addr: SocketAddr,
    ) -> Result<(Handshake, Peer), PeerTransportError> {
-      let received_handshake: Handshake = Handshake::from_bytes(&buf).map_err(|e| {
-         error!("Failed to deserialize handshake: {}", e);
-         PeerTransportError::DeserializationFailed
-      })?;
-
       let peer_id = received_handshake.peer_id;
 
       // Validate protocol string
@@ -104,8 +100,6 @@ pub trait Transport: Send + Sync {
       Ok((handshake, peer))
    }
 
-   async fn accept_incoming(&mut self) -> Result<Peer, PeerTransportError>;
-
    async fn recv_raw(&mut self) -> Result<(PeerKey, Vec<u8>), PeerTransportError>;
 
    async fn recv(&mut self) -> Result<(PeerKey, PeerMessages), PeerTransportError> {
@@ -123,6 +117,8 @@ pub trait Transport: Send + Sync {
    fn info_hash(&self) -> Arc<InfoHash>;
 
    fn is_connected(&self, peer_id: PeerKey) -> bool;
+
+   async fn get_peer(&self, peer_key: PeerKey) -> Option<Peer>;
 }
 
 impl Peer {
