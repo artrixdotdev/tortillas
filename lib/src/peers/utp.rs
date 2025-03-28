@@ -1,4 +1,4 @@
-use super::{Peer, Transport};
+use super::{Peer, PeerKey, Transport};
 use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
@@ -19,7 +19,7 @@ pub struct UtpTransport {
    pub socket: Arc<UtpSocketUdp>,
    pub id: Arc<Hash<20>>,
    pub info_hash: Arc<InfoHash>,
-   pub peers: HashMap<Hash<20>, Arc<Mutex<(Peer, UtpStream)>>>,
+   pub peers: HashMap<PeerKey, Arc<Mutex<(Peer, UtpStream)>>>,
 }
 
 impl UtpTransport {
@@ -67,7 +67,7 @@ impl Transport for UtpTransport {
    ///
    /// <https://www.bittorrent.org/beps/bep_0003.html>
    #[instrument(skip(self), fields(peer = %peer))]
-   async fn connect(&mut self, peer: &mut Peer) -> Result<Hash<20>, PeerTransportError> {
+   async fn connect(&mut self, peer: &mut Peer) -> Result<PeerKey, PeerTransportError> {
       trace!("Attempting connection...");
 
       // Connect to the peer
@@ -103,13 +103,14 @@ impl Transport for UtpTransport {
       let peer_id = new_peer.id.unwrap();
       peer.id = Some(peer_id);
 
-      self
-         .peers
-         .insert(peer_id, Arc::new(Mutex::new((peer.clone(), stream))));
+      self.peers.insert(
+         peer.socket_addr(),
+         Arc::new(Mutex::new((peer.clone(), stream))),
+      );
 
       info!(%peer, "Peer connected");
 
-      Ok(peer_id)
+      Ok(peer.socket_addr())
    }
 
    /// Accepts an incoming request (the first 68 bytes), and sends a handshake in response.
@@ -133,9 +134,9 @@ impl Transport for UtpTransport {
       // Creates a new handshake and sends it
       self
          .peers
-         .insert(peer_id, Arc::new(Mutex::new((peer.clone(), socket))));
+         .insert(peer_addr, Arc::new(Mutex::new((peer.clone(), socket))));
       self
-         .send(peer_id, PeerMessages::Handshake(handshake))
+         .send(peer_addr, PeerMessages::Handshake(handshake))
          .await?;
 
       info!(%peer, "Peer connected");
@@ -143,7 +144,7 @@ impl Transport for UtpTransport {
       Ok(peer)
    }
 
-   async fn recv_raw(&mut self) -> Result<Vec<u8>, PeerTransportError> {
+   async fn recv_raw(&mut self) -> Result<(PeerKey, Vec<u8>), PeerTransportError> {
       let mut socket = self.socket.accept().await.unwrap();
       // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
       let mut buf = vec![0; 5];
@@ -181,10 +182,10 @@ impl Transport for UtpTransport {
       );
       buf.extend_from_slice(&rest);
 
-      Ok(buf)
+      Ok((socket.remote_addr(), buf))
    }
 
-   async fn send_raw(&mut self, to: Hash<20>, message: Vec<u8>) -> Result<(), PeerTransportError> {
+   async fn send_raw(&mut self, to: PeerKey, message: Vec<u8>) -> Result<(), PeerTransportError> {
       trace!("Attemping to send message...");
 
       let (_, socket) = &mut *self.peers.get_mut(&to).unwrap().lock().await;
@@ -200,7 +201,7 @@ impl Transport for UtpTransport {
       let mut results = vec![];
 
       // Collect the keys first to avoid the borrowing conflict
-      let peer_ids: Vec<Hash<20>> = self.peers.keys().cloned().collect();
+      let peer_ids: Vec<PeerKey> = self.peers.keys().cloned().collect();
 
       for id in peer_ids {
          results.push(self.send_raw(id, message.clone()).await);
@@ -210,14 +211,14 @@ impl Transport for UtpTransport {
 
    /// Drops peer from memory and closes the connection to it.
    ///
-   /// Note: Does not send any peer message, only removes peer & stream from memory.
-   fn close(&mut self, peer_id: Hash<20>) -> Result<()> {
-      self.peers.remove(&peer_id);
+   /// Note: Does not send a close message, only removes peer & stream from memory.
+   fn close(&mut self, peer_key: PeerKey) -> Result<()> {
+      self.peers.remove(&peer_key);
       Ok(())
    }
 
-   fn is_connected(&self, peer_id: Arc<Hash<20>>) -> bool {
-      self.peers.contains_key(&peer_id)
+   fn is_connected(&self, peer_key: PeerKey) -> bool {
+      self.peers.contains_key(&peer_key)
    }
 }
 
@@ -431,7 +432,8 @@ mod tests {
                   peer_id
                );
                assert_eq!(
-                  peer_id, server_peer_id,
+                  peer_id,
+                  server_peer.socket_addr(),
                   "Received peer ID should match server's"
                );
                Ok(peer_id)

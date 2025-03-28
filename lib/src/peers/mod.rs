@@ -16,6 +16,8 @@ use crate::{
 pub mod messages;
 pub mod utp;
 
+pub type PeerKey = SocketAddr;
+
 /// Represents a BitTorrent peer with connection state and statistics
 #[derive(Debug, Clone)]
 pub struct Peer {
@@ -47,12 +49,12 @@ pub trait Transport: Send + Sync {
    /// Connects to the peer using the transport's implementation and adds it to its internal list of peers.
    /// Runs the handshake and Returns the connected peer's ID.
    /// As shown in <https://wiki.theory.org/BitTorrentSpecification#Handshake>
-   async fn connect(&mut self, peer: &mut Peer) -> Result<Hash<20>, PeerTransportError>;
+   async fn connect(&mut self, peer: &mut Peer) -> Result<PeerKey, PeerTransportError>;
 
    /// Sends a message to a specific peer with the given ID.
-   async fn send_raw(&mut self, to: Hash<20>, message: Vec<u8>) -> Result<(), PeerTransportError>;
+   async fn send_raw(&mut self, to: PeerKey, message: Vec<u8>) -> Result<(), PeerTransportError>;
 
-   async fn send(&mut self, to: Hash<20>, message: PeerMessages) -> Result<(), PeerTransportError> {
+   async fn send(&mut self, to: PeerKey, message: PeerMessages) -> Result<(), PeerTransportError> {
       self.send_raw(to, message.to_bytes()?).await
    }
 
@@ -103,23 +105,23 @@ pub trait Transport: Send + Sync {
 
    async fn accept_incoming(&mut self) -> Result<Peer, PeerTransportError>;
 
-   async fn recv_raw(&mut self) -> Result<Vec<u8>, PeerTransportError>;
+   async fn recv_raw(&mut self) -> Result<(PeerKey, Vec<u8>), PeerTransportError>;
 
-   async fn recv(&mut self) -> Result<(Hash<20>, PeerMessages), PeerTransportError> {
-      let raw = self.recv_raw().await?;
+   async fn recv(&mut self) -> Result<(PeerKey, PeerMessages), PeerTransportError> {
+      let (key, raw) = self.recv_raw().await?;
       let message = PeerMessages::from_bytes(raw)?;
 
-      Ok((Hash::new([0; 20]), message))
+      Ok((key, message))
    }
 
-   fn close(&mut self, peer_id: Hash<20>) -> Result<()>;
+   fn close(&mut self, peer_id: PeerKey) -> Result<()>;
 
    /// Our current peer ID
    fn id(&self) -> Arc<Hash<20>>;
 
    fn info_hash(&self) -> Arc<InfoHash>;
 
-   fn is_connected(&self, peer_id: Arc<Hash<20>>) -> bool;
+   fn is_connected(&self, peer_id: PeerKey) -> bool;
 }
 
 impl Peer {
