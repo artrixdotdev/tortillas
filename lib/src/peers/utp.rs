@@ -278,17 +278,17 @@ mod tests {
 
    use crate::{
       parser::{MagnetUri, MetaInfo},
-      tracker::{TrackerTrait, udp::UdpTracker},
+      tracker::{Tracker, TrackerTrait, http::HttpTracker},
    };
 
    use super::*;
 
-   #[tokio::test(flavor = "multi_thread", worker_threads = 7)]
+   #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
    #[traced_test]
    async fn test_utp_peer_handshake() {
       let path = std::env::current_dir()
          .unwrap()
-         .join("tests/magneturis/big-buck-bunny.txt");
+         .join("tests/magneturis/zenshuu.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
 
       let metainfo = MagnetUri::parse(contents).await.unwrap();
@@ -296,18 +296,25 @@ mod tests {
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
             let info_hash = magnet.info_hash().unwrap();
-            let announce_list = magnet.announce_list.unwrap();
+
+            let announce_list: Vec<Tracker> = magnet
+               .announce_list
+               .unwrap_or_default()
+               .into_iter()
+               .filter_map(|e| match e {
+                  Tracker::Http(_) => Some(e),
+                  _ => None,
+               })
+               .collect();
+
             let announce_url = announce_list[0].uri();
             let port: u16 = random_range(1024..65535);
 
-            let mut tracker = UdpTracker::new(
+            let mut tracker = HttpTracker::new(
                announce_url,
-               None,
                info_hash,
                Some(SocketAddr::from(([0, 0, 0, 0], port))),
-            )
-            .await
-            .unwrap();
+            );
             let peer_id = tracker.peer_id;
             let peers = tracker.stream_peers().await.unwrap();
 
