@@ -7,8 +7,8 @@ use crate::{
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{
-   de::{self, Visitor},
    Deserialize, Serialize,
+   de::{self, Visitor},
 };
 use std::{
    net::{Ipv4Addr, SocketAddr},

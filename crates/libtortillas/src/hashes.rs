@@ -1,8 +1,8 @@
 use std::fmt::{self, Display};
 
 use serde::{
-   de::{self, Visitor},
    Deserialize, Deserializer, Serialize, Serializer,
+   de::{self, Visitor},
 };
 
 /// A fixed-length byte array that can represent various hash values or identifiers.

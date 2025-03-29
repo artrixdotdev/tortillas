@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use http::HttpTracker;
 use rand::random_range;
 use serde::{
-   de::{self, Visitor},
    Deserialize,
+   de::{self, Visitor},
 };
 use std::{fmt, net::SocketAddr};
 use udp::UdpTracker;
