@@ -271,8 +271,10 @@ impl Transport for UtpTransport {
 #[cfg(test)]
 mod tests {
 
+   use std::time::Duration;
+
    use rand::random_range;
-   use tokio::sync::Mutex;
+   use tokio::{sync::Mutex, time::timeout};
    use tracing::info;
    use tracing_test::traced_test;
 
@@ -344,13 +346,10 @@ mod tests {
                let transport_clone = Arc::clone(&utp_transport);
 
                let handle = tokio::spawn(async move {
+                  let mut transport = transport_clone.lock().await;
                   // Create a timeout for the connection attempt
-                  let result = tokio::time::timeout(std::time::Duration::from_secs(4), async {
-                     // Acquire the mutex to use the transport
-                     let mut transport = transport_clone.lock().await;
-                     transport.connect(&mut peer).await
-                  })
-                  .await;
+                  let result =
+                     timeout(Duration::from_millis(1000), transport.connect(&mut peer)).await;
 
                   // If timeout occurred or connection failed, return Err
                   match result {
