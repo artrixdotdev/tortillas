@@ -31,8 +31,14 @@ jobs:
       - name: 🔨 Build
         run: cargo build --verbose
 
+      - name: Install latest nextest release
+        uses: taiki-e/install-action@nextest
+
       - name: 🧪 Run tests
-        run: cargo test --verbose
+        uses: actions-rs/cargo@v1
+        with:
+          command: nextest
+          args: run --nocapture
 
   lint:
     runs-on: ubuntu-latest
