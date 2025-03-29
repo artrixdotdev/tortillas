@@ -1,15 +1,19 @@
-use super::{PeerAddr, TrackerTrait};
+/// See https://www.bittorrent.org/beps/bep_0003.html
+use super::{Peer, TrackerTrait};
 use crate::{
    errors::{HttpTrackerError, TrackerError},
-   hashes::InfoHash,
+   hashes::{Hash, InfoHash},
 };
-use rand::distr::{Alphanumeric, SampleString};
+use async_trait::async_trait;
 use serde::{
    Deserialize, Serialize,
    de::{self, Visitor},
 };
-/// See https://www.bittorrent.org/beps/bep_0003.html
-use std::net::Ipv4Addr;
+use std::{
+   net::{Ipv4Addr, SocketAddr},
+   str::FromStr,
+};
+
 use tracing::{debug, error, info, instrument, trace, warn};
 
 #[derive(Debug, Deserialize)]
@@ -17,7 +21,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 pub struct TrackerResponse {
    pub interval: usize,
    #[serde(deserialize_with = "deserialize_peers")]
-   pub peers: Vec<PeerAddr>,
+   pub peers: Vec<Peer>,
 }
 
 /// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
@@ -38,10 +42,11 @@ struct TrackerRequest {
    downloaded: u8,
    left: Option<u8>,
    event: Event,
+   peer_tracker_addr: SocketAddr,
 }
 
 impl TrackerRequest {
-   pub fn new() -> TrackerRequest {
+   pub fn new(peer_tracker_addr: Option<SocketAddr>) -> TrackerRequest {
       TrackerRequest {
          ip: None,
          port: 6881,
@@ -49,6 +54,8 @@ impl TrackerRequest {
          downloaded: 0,
          left: None,
          event: Event::Stopped,
+         peer_tracker_addr: peer_tracker_addr
+            .unwrap_or(SocketAddr::from_str("0.0.0.0:6881").unwrap()),
       }
    }
 }
@@ -57,21 +64,27 @@ impl TrackerRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct HttpTracker {
    uri: String,
-   peer_id: String,
+   pub peer_id: Hash<20>,
    info_hash: InfoHash,
    params: TrackerRequest,
 }
 
 impl HttpTracker {
    #[instrument(skip(info_hash), fields(uri = %uri))]
-   pub fn new(uri: String, info_hash: InfoHash) -> HttpTracker {
-      let peer_id = Alphanumeric.sample_string(&mut rand::rng(), 20);
+   pub fn new(
+      uri: String,
+      info_hash: InfoHash,
+      peer_tracker_addr: Option<SocketAddr>,
+   ) -> HttpTracker {
+      let mut peer_id_bytes = [0u8; 20];
+      rand::fill(&mut peer_id_bytes);
+      let peer_id = Hash::new(peer_id_bytes);
       debug!(peer_id = %peer_id, "Generated peer ID");
 
       HttpTracker {
          uri,
          peer_id,
-         params: TrackerRequest::new(),
+         params: TrackerRequest::new(peer_tracker_addr),
          info_hash,
       }
    }
@@ -91,9 +104,10 @@ fn urlencode(t: &[u8; 20]) -> String {
 }
 
 /// Fetches peers from tracker over HTTP and returns a stream of [PeerAddr](PeerAddr)
+#[async_trait]
 impl TrackerTrait for HttpTracker {
    #[instrument(skip(self))]
-   async fn stream_peers(&mut self) -> anyhow::Result<Vec<PeerAddr>> {
+   async fn stream_peers(&mut self) -> anyhow::Result<Vec<Peer>> {
       // Decode info_hash
       debug!("Decoding info hash");
 
@@ -107,8 +121,10 @@ impl TrackerTrait for HttpTracker {
       trace!(encoded_hash = %info_hash_encoded, "URL-encoded info hash");
 
       let uri_params = format!(
-         "{}&info_hash={}&peer_id={}&compact=1",
-         params, info_hash_encoded, &self.peer_id
+         "{}&info_hash={}&peer_id={}",
+         params,
+         info_hash_encoded,
+         urlencode(self.peer_id.as_bytes())
       );
 
       let uri = format!("{}?{}", self.uri, &uri_params);
@@ -150,7 +166,7 @@ impl TrackerTrait for HttpTracker {
 struct PeerVisitor;
 
 impl Visitor<'_> for PeerVisitor {
-   type Value = Vec<PeerAddr>;
+   type Value = Vec<Peer>;
 
    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
       formatter.write_str("a byte array containing peer information")
@@ -192,7 +208,7 @@ impl Visitor<'_> for PeerVisitor {
             "Parsed peer address"
          );
 
-         peers.push(PeerAddr { ip, port });
+         peers.push(Peer::from_ipv4(ip, port));
       }
 
       Ok(peers)
@@ -200,7 +216,7 @@ impl Visitor<'_> for PeerVisitor {
 }
 
 /// Serde related code. Reference their documentation: <https://serde.rs/impl-deserialize.html>
-fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<PeerAddr>, D::Error>
+fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<Peer>, D::Error>
 where
    D: serde::Deserializer<'de>,
 {
@@ -231,14 +247,14 @@ mod tests {
             let info_hash = magnet.info_hash();
             let announce_list = magnet.announce_list.unwrap();
             let announce_uri = announce_list[0].uri();
-            let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap());
+            let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None);
 
             // Make request
             let res = HttpTracker::stream_peers(&mut http_tracker)
                .await
                .expect("Issue when unwrapping result of stream_peers");
 
-            assert!(!res[0].ip.is_private());
+            assert!(res[0].ip.is_ipv4());
          }
          _ => panic!("Expected Torrent"),
       }

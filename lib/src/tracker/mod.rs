@@ -1,27 +1,21 @@
 use anyhow::Result;
+use async_trait::async_trait;
 use http::HttpTracker;
+use rand::random_range;
 use serde::{
    Deserialize,
    de::{self, Visitor},
 };
-use std::{fmt, net::Ipv4Addr};
+use std::{fmt, net::SocketAddr};
 use udp::UdpTracker;
 
-use crate::hashes::InfoHash;
+use crate::{hashes::InfoHash, peers::Peer};
 pub mod http;
 pub mod udp;
-// mod websocket;
 
-// use udp::*;
-
-#[derive(Debug, Deserialize)]
-pub struct PeerAddr {
-   pub ip: Ipv4Addr,
-   pub port: u16,
-}
-
-trait TrackerTrait {
-   async fn stream_peers(&mut self) -> Result<Vec<PeerAddr>>;
+#[async_trait]
+pub trait TrackerTrait {
+   async fn stream_peers(&mut self) -> Result<Vec<Peer>>;
 }
 
 /// An Announce URI from a torrent file or magnet URI.
@@ -39,15 +33,23 @@ pub enum Tracker {
 }
 
 impl Tracker {
-   pub async fn get_peers(&self, info_hash: InfoHash) -> Result<Vec<PeerAddr>> {
+   pub async fn get_peers(&self, info_hash: InfoHash) -> Result<Vec<Peer>> {
       match self {
          Tracker::Http(uri) => {
-            let mut tracker = HttpTracker::new(uri.clone(), info_hash);
+            let mut tracker = HttpTracker::new(uri.clone(), info_hash, None);
 
             Ok(tracker.stream_peers().await.unwrap())
          }
          Tracker::Udp(uri) => {
-            let mut tracker = UdpTracker::new(uri.clone(), None, info_hash).await.unwrap();
+            let port: u16 = random_range(1024..65535);
+            let mut tracker = UdpTracker::new(
+               uri.clone(),
+               None,
+               info_hash,
+               Some(SocketAddr::from(([0, 0, 0, 0], port))),
+            )
+            .await
+            .unwrap();
 
             Ok(tracker.stream_peers().await.unwrap())
          }

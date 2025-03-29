@@ -26,7 +26,7 @@ use serde::{
 /// // Display a hash (automatically converts to hex)
 /// println!("Hash: {}", hash); // Outputs: Hash: 0000000000
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Hash<const N: usize>([u8; N]);
 
 /// A specialized Hash type for BitTorrent info hashes (20 bytes/160 bits)

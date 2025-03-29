@@ -1,5 +1,10 @@
-use std::{net::Ipv4Addr, sync::Arc};
+use std::{
+   net::{Ipv4Addr, SocketAddr},
+   str::FromStr,
+   sync::Arc,
+};
 
+use async_trait::async_trait;
 /// UDP protocol
 /// https://en.wikipedia.org/wiki/User_Datagram_Protocol
 ///
@@ -12,7 +17,7 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::net::UdpSocket;
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use super::{PeerAddr, TrackerTrait};
+use super::{Peer, TrackerTrait};
 use crate::{
    errors::{TrackerError, UdpTrackerError},
    hashes::{Hash, InfoHash},
@@ -132,7 +137,7 @@ enum TrackerResponse {
       interval: u32,
       leechers: u32,
       seeders: u32,
-      peers: Vec<super::PeerAddr>,
+      peers: Vec<super::Peer>,
    },
 
    /// Binary Layout for the Error variant:
@@ -282,7 +287,7 @@ impl TrackerResponse {
                   "Parsed peer address"
                );
 
-               peers.push(PeerAddr { ip, port });
+               peers.push(Peer::from_ipv4(ip, port));
             }
 
             Ok(TrackerResponse::Announce {
@@ -336,8 +341,10 @@ pub struct UdpTracker {
    connection_id: Option<ConnectionId>,
    pub socket: Arc<UdpSocket>,
    ready_state: ReadyState,
-   peer_id: Hash<20>,
+   pub peer_id: Hash<20>,
    info_hash: InfoHash,
+   ///  The address that our TCP or uTP socket is bound to
+   peer_socket_addr: SocketAddr,
 }
 
 impl UdpTracker {
@@ -346,6 +353,7 @@ impl UdpTracker {
       uri: String,
       socket: Option<UdpSocket>,
       info_hash: InfoHash,
+      peer_socket_addr: Option<SocketAddr>,
    ) -> Result<UdpTracker> {
       debug!("Creating new UDP tracker");
       let sock = match socket {
@@ -373,11 +381,13 @@ impl UdpTracker {
          ready_state: ReadyState::Disconnected,
          peer_id,
          info_hash,
+         peer_socket_addr: peer_socket_addr
+            .unwrap_or(SocketAddr::from_str("0.0.0.0:6881").unwrap()),
       })
    }
 
    #[instrument(skip(self))]
-   async fn announce(&self) -> Result<Vec<PeerAddr>> {
+   async fn announce(&self) -> Result<Vec<Peer>> {
       if self.ready_state != ReadyState::Ready {
          return Err(UdpTrackerError::Tracker(TrackerError::NotReady(
             "Tracker not ready for announce request".to_string(),
@@ -403,7 +413,7 @@ impl UdpTracker {
          ip_address: 0,
          key: 0,
          num_want: -1,
-         port: 6881,
+         port: self.peer_socket_addr.port(),
       };
 
       trace!("Sending announce request");
@@ -475,10 +485,11 @@ impl UdpTracker {
    }
 }
 
+#[async_trait]
 impl TrackerTrait for UdpTracker {
    // Makes a request using the UDP tracker protocol to connect. Returns a u64 connection ID
    #[instrument(skip(self))]
-   async fn stream_peers(&mut self) -> std::result::Result<Vec<PeerAddr>, anyhow::Error> {
+   async fn stream_peers(&mut self) -> std::result::Result<Vec<Peer>, anyhow::Error> {
       let uri = self.uri.replace("udp://", "");
       debug!(target_uri = %uri, "Connecting to tracker");
 
@@ -571,6 +582,7 @@ impl TrackerTrait for UdpTracker {
 mod tests {
    use super::*;
    use crate::parser::{MagnetUri, MetaInfo};
+   use rand::random_range;
    use tracing_test::traced_test;
 
    #[tokio::test]
@@ -589,13 +601,19 @@ mod tests {
             let announce_list = magnet.announce_list.unwrap();
             let announce_url = announce_list[0].uri();
 
-            let mut udp_tracker = UdpTracker::new(announce_url, None, info_hash.unwrap())
-               .await
-               .unwrap();
+            let port: u16 = random_range(1024..65535);
+            let mut udp_tracker = UdpTracker::new(
+               announce_url,
+               None,
+               info_hash.unwrap(),
+               Some(SocketAddr::from(([0, 0, 0, 0], port))),
+            )
+            .await
+            .unwrap();
             let stream = udp_tracker.stream_peers().await.unwrap();
 
             let peer = &stream[0];
-            assert!(!peer.ip.is_private())
+            assert!(peer.ip.is_ipv4())
          }
          _ => panic!("Expected Torrent"),
       }

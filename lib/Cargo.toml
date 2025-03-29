@@ -18,6 +18,9 @@ num_enum = "0.7.3"
 tokio-stream = "0.1"
 thiserror = "2.0.12"
 tracing = "0.1.41"
+async-trait = "0.1.88"
+librqbit-utp = "0.2.3"
+bitvec = "1.0.1"
 
 [dev-dependencies]
 tracing-test = "0.2.5"
