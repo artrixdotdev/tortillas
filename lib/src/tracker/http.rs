@@ -2,10 +2,9 @@
 use super::{Peer, TrackerTrait};
 use crate::{
    errors::{HttpTrackerError, TrackerError},
-   hashes::InfoHash,
+   hashes::{Hash, InfoHash},
 };
 use async_trait::async_trait;
-use rand::distr::{Alphanumeric, SampleString};
 use serde::{
    Deserialize, Serialize,
    de::{self, Visitor},
@@ -65,7 +64,7 @@ impl TrackerRequest {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct HttpTracker {
    uri: String,
-   peer_id: String,
+   pub peer_id: Hash<20>,
    info_hash: InfoHash,
    params: TrackerRequest,
 }
@@ -77,7 +76,9 @@ impl HttpTracker {
       info_hash: InfoHash,
       peer_tracker_addr: Option<SocketAddr>,
    ) -> HttpTracker {
-      let peer_id = Alphanumeric.sample_string(&mut rand::rng(), 20);
+      let mut peer_id_bytes = [0u8; 20];
+      rand::fill(&mut peer_id_bytes);
+      let peer_id = Hash::new(peer_id_bytes);
       debug!(peer_id = %peer_id, "Generated peer ID");
 
       HttpTracker {
@@ -121,7 +122,9 @@ impl TrackerTrait for HttpTracker {
 
       let uri_params = format!(
          "{}&info_hash={}&peer_id={}",
-         params, info_hash_encoded, &self.peer_id
+         params,
+         info_hash_encoded,
+         urlencode(self.peer_id.as_bytes())
       );
 
       let uri = format!("{}?{}", self.uri, &uri_params);
