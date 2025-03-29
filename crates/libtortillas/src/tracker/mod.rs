@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use http::HttpTracker;
 use rand::random_range;
 use serde::{
-   Deserialize,
    de::{self, Visitor},
+   Deserialize,
 };
 use std::{fmt, net::SocketAddr};
 use udp::UdpTracker;
@@ -19,15 +19,15 @@ pub trait TrackerTrait {
 }
 
 /// An Announce URI from a torrent file or magnet URI.
-/// https://www.bittorrent.org/beps/bep_0012.html
-/// Example: udp://tracker.opentrackr.org:1337/announce
+/// <https://www.bittorrent.org/beps/bep_0012.html>
+/// Example: <udp://tracker.opentrackr.org:1337/announce>
 #[derive(Debug)]
 pub enum Tracker {
    /// HTTP Spec
-   /// https://www.bittorrent.org/beps/bep_0003.html
+   /// <https://www.bittorrent.org/beps/bep_0003.html>
    Http(String),
    /// UDP Spec
-   /// https://www.bittorrent.org/beps/bep_0015.html
+   /// <https://www.bittorrent.org/beps/bep_0015.html>
    Udp(String),
    Websocket(String),
 }

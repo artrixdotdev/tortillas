@@ -4,10 +4,11 @@ use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::{Hash, InfoHash},
 };
+use anyhow::Result;
 use async_trait::async_trait;
 use serde::{
-   Deserialize, Serialize,
    de::{self, Visitor},
+   Deserialize, Serialize,
 };
 use std::{
    net::{Ipv4Addr, SocketAddr},
@@ -103,11 +104,11 @@ fn urlencode(t: &[u8; 20]) -> String {
    encoded
 }
 
-/// Fetches peers from tracker over HTTP and returns a stream of [PeerAddr](PeerAddr)
+/// Fetches peers from tracker over HTTP and returns a stream of [Peers](Peer)
 #[async_trait]
 impl TrackerTrait for HttpTracker {
    #[instrument(skip(self))]
-   async fn stream_peers(&mut self) -> anyhow::Result<Vec<Peer>> {
+   async fn stream_peers(&mut self) -> Result<Vec<Peer>> {
       // Decode info_hash
       debug!("Decoding info hash");
 

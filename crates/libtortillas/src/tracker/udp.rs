@@ -34,7 +34,7 @@ const MIN_ANNOUNCE_RESPONSE_SIZE: usize = 20;
 const MIN_ERROR_RESPONSE_SIZE: usize = 8;
 const PEER_SIZE: usize = 6;
 
-/// Enum for UDP Tracker Protocol Action parameter. See this resource for more information: https://xbtt.sourceforge.net/udp_tracker_protocol.html
+/// Enum for UDP Tracker Protocol Action parameter. See this resource for more information: <https://xbtt.sourceforge.net/udp_tracker_protocol.html>
 #[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u32)]
 pub enum Action {
@@ -44,7 +44,7 @@ pub enum Action {
    Error = 3u32,
 }
 
-/// Enum for UDP Tracker Protocol Events parameter. See this resource for more information: https://xbtt.sourceforge.net/udp_tracker_protocol.html
+/// Enum for UDP Tracker Protocol Events parameter. See this resource for more information: <https://xbtt.sourceforge.net/udp_tracker_protocol.html>
 #[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
 #[repr(u32)]
 pub enum Events {

@@ -10,7 +10,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use serde_qs;
 
-/// Magnet URI Spec: https://en.wikipedia.org/wiki/Magnet_URI_scheme or https://www.bittorrent.org/beps/bep_0053.html
+/// Magnet URI Spec: <https://en.wikipedia.org/wiki/Magnet_URI_scheme> or <https://www.bittorrent.org/beps/bep_0053.html>
 #[derive(Debug, Deserialize)]
 pub struct MagnetUri {
    /// use `Self::info_hash` to get the info hash as a `Hash` struct.
