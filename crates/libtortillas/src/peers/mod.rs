@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use messages::{Handshake, MAGIC_STRING, PeerMessages};
+use messages::{Handshake, MAGIC_STRING, PeerMessages, TransportRequest};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -109,7 +109,7 @@ pub trait Transport: Send + Sync {
       Ok((key, message))
    }
 
-   fn close(&mut self, peer_id: PeerKey) -> Result<()>;
+   fn close(&mut self, peer_id: PeerKey) -> Result<(), anyhow::Error>;
 
    /// Our current peer ID
    fn id(&self) -> Arc<Hash<20>>;

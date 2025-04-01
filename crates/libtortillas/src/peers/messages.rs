@@ -1,8 +1,14 @@
 use anyhow::{Result, anyhow};
 use bitvec::prelude::*;
+use tokio::sync::oneshot;
 
-use crate::{errors::PeerTransportError, hashes::Hash};
+use crate::{
+   errors::PeerTransportError,
+   hashes::{Hash, InfoHash},
+};
 use std::sync::Arc;
+
+use super::{Peer, PeerKey};
 
 pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
 
@@ -299,4 +305,41 @@ impl Handshake {
          peer_id,
       })
    }
+}
+
+pub enum TransportRequest {
+   Connect {
+      peer: Peer,
+      response: oneshot::Sender<Result<PeerKey, PeerTransportError>>,
+   },
+   SendRaw {
+      to: PeerKey,
+      message: Vec<u8>,
+      response: oneshot::Sender<Result<(), PeerTransportError>>,
+   },
+   BroadcastRaw {
+      message: Vec<u8>,
+      response: oneshot::Sender<Vec<Result<(), PeerTransportError>>>,
+   },
+   RecvRaw {
+      response: oneshot::Sender<Result<(PeerKey, Vec<u8>), PeerTransportError>>,
+   },
+   GetPeer {
+      peer_key: PeerKey,
+      response: oneshot::Sender<Option<Peer>>,
+   },
+   Close {
+      peer_key: PeerKey,
+      response: oneshot::Sender<Result<(), anyhow::Error>>,
+   },
+   IsConnected {
+      peer_key: PeerKey,
+      response: oneshot::Sender<bool>,
+   },
+   GetId {
+      response: oneshot::Sender<Arc<Hash<20>>>,
+   },
+   GetInfoHash {
+      response: oneshot::Sender<Arc<InfoHash>>,
+   },
 }

@@ -114,6 +114,12 @@ pub enum PeerTransportError {
    #[error("Message was too short")]
    MessageTooShort,
 
+   #[error("Transport has been closed")]
+   TransportClosed,
+
+   #[error("Peer not found: {0}")]
+   PeerNotFound(String),
+
    #[error(transparent)]
    Other(#[from] anyhow::Error),
 }
