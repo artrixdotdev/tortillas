@@ -13,7 +13,7 @@ use tokio::{
    io::{AsyncReadExt, AsyncWriteExt},
    sync::{
       mpsc::{self, Receiver, Sender},
-      oneshot, Mutex,
+      Mutex,
    },
    time::{timeout, Instant},
 };
@@ -55,7 +55,8 @@ impl UtpTransportHandler {
             TransportCommand::Connect { mut peer } => {
                trace!("Connecting to peer: {}", peer.ip);
                tokio::spawn(async move {
-                  const TIMEOUT_DURATION: u64 = 5;
+                  // Peers should be able to finish their handshake after two seconds
+                  const TIMEOUT_DURATION: u64 = 2;
                   let connect = transport_clone.connect(&mut peer);
                   let res = timeout(Duration::from_secs(TIMEOUT_DURATION), connect)
                      .await
@@ -339,7 +340,7 @@ impl Transport for UtpTransport {
 mod tests {
 
    use rand::random_range;
-   use tokio::{sync::oneshot, task::JoinSet};
+   use tokio::{task::JoinSet, time::sleep};
    use tracing::info;
    use tracing_test::traced_test;
 
@@ -421,23 +422,26 @@ mod tests {
 
             let (tx, mut rx) = mpsc::channel(100);
 
+            // Start handling mpsc messages from the join set
             tokio::spawn(async move {
-               let _ = utp_transport_handler.handle_message(tx).await;
+               utp_transport_handler.handle_message(tx).await.unwrap();
             });
 
-            // The results of the join_set.spawn() commands
-            let results = join_set.join_all().await;
+            // Await the join_set.spawn()
+            join_set.join_all().await;
 
-            // The total number of peers that had a successful handshake
-            let mut success = 0;
-
-            while let Some(res) = rx.recv().await {
-               if res.is_ok() {
-                  success += 1;
+            // Collect responses from handle_message
+            tokio::spawn(async move {
+               let mut total_peers_seen = 0;
+               while let Some(res) = rx.recv().await {
+                  total_peers_seen += 1;
+                  if announce_list.len() == total_peers_seen {
+                     break;
+                  }
                }
-            }
-
-            trace!("# of peers with successful handshakes: {}", success);
+            })
+            .await
+            .unwrap();
          }
          _ => panic!("Expected Torrent"),
       }
