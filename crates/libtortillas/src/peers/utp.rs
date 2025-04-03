@@ -8,14 +8,14 @@ use crate::{
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
-use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
+use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
 use tokio::{
    io::{AsyncReadExt, AsyncWriteExt},
    sync::{
       mpsc::{self, Receiver, Sender},
-      Mutex,
+      oneshot, Mutex,
    },
-   time::Instant,
+   time::{timeout, Instant},
 };
 use tracing::{debug, error, info, instrument, trace};
 
@@ -44,17 +44,36 @@ impl UtpTransportHandler {
       }
    }
 
-   async fn handle_message(&mut self) -> Result<()> {
+   pub async fn handle_message(
+      &mut self,
+      tx: mpsc::Sender<Result<SocketAddr, PeerTransportError>>,
+   ) -> Result<()> {
       while let Some(cmd) = self.rx.recv().await {
          let mut transport_clone = self.transport.clone();
+         let tx_clone = tx.clone();
          match cmd {
             TransportCommand::Connect { mut peer } => {
                trace!("Connecting to peer: {}", peer.ip);
                tokio::spawn(async move {
-                  let res = transport_clone
-                     .connect(&mut peer)
+                  const TIMEOUT_DURATION: u64 = 5;
+                  let connect = transport_clone.connect(&mut peer);
+                  let res = timeout(Duration::from_secs(TIMEOUT_DURATION), connect)
                      .await
-                     .map_err(|e| error!("Error connecting to peer"));
+                     .map_err(|e| error!("Error connecting to peer: {e}"));
+
+                  // Handle error from timeout
+                  if res.is_err() {
+                     error!(%peer, "Peer timed out.");
+                     if tx_clone
+                        .send(Err(PeerTransportError::MessageFailed))
+                        .await
+                        .is_err()
+                     {
+                        error!("Error occured when sending result back");
+                     };
+                  } else if tx_clone.send(res.unwrap()).await.is_err() {
+                     error!("Error occured when sending result back");
+                  }
                });
             }
          }
@@ -320,7 +339,7 @@ impl Transport for UtpTransport {
 mod tests {
 
    use rand::random_range;
-   use tokio::task::JoinSet;
+   use tokio::{sync::oneshot, task::JoinSet};
    use tracing::info;
    use tracing_test::traced_test;
 
@@ -400,44 +419,25 @@ mod tests {
                });
             }
 
+            let (tx, mut rx) = mpsc::channel(100);
+
             tokio::spawn(async move {
-               let _ = utp_transport_handler.handle_message().await;
+               let _ = utp_transport_handler.handle_message(tx).await;
             });
 
-            let result = join_set.join_all().await;
+            // The results of the join_set.spawn() commands
+            let results = join_set.join_all().await;
 
-            // let mut results = Vec::new();
-            // let x = join_all(handles).await;
+            // The total number of peers that had a successful handshake
+            let mut success = 0;
 
-            // Calculate success rate
-            // let total_peers = results.len();
-            // let successful_peers = results.iter().filter(|r| r.is_ok()).count();
-            // let success_rate = (successful_peers as f64) / (total_peers as f64);
-            //
-            // info!(
-            //    "Connected to {}/{} peers ({}%)",
-            //    successful_peers,
-            //    total_peers,
-            //    (success_rate * 100.0) as u32
-            // );
-            //
-            // Print the errors for debugging
-            // for (i, result) in results.iter().enumerate() {
-            //    if let Err(e) = result {
-            //       error!("Peer {} error: {}", i, e);
-            //    }
-            // }
-            //
-            // Test passes if more than 10% of connections succeeded
-            // if success_rate > 0.1 {
-            //    // Test passed
-            //    return;
-            // } else {
-            //    panic!(
-            //       "Less than 10% of peer connections succeeded ({}/{})",
-            //       successful_peers, total_peers
-            //    );
-            // }
+            while let Some(res) = rx.recv().await {
+               if res.is_ok() {
+                  success += 1;
+               }
+            }
+
+            trace!("# of peers with successful handshakes: {}", success);
          }
          _ => panic!("Expected Torrent"),
       }
