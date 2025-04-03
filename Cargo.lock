@@ -1442,7 +1442,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bitvec",
- "futures",
  "hex",
  "librqbit-utp",
  "num_enum",
