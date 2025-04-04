@@ -1,21 +1,26 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use messages::{Handshake, PeerMessages, MAGIC_STRING};
+use messages::{Handshake, MAGIC_STRING, PeerMessages};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::Arc,
+   time::Duration,
 };
-use tokio::time::Instant;
+use tokio::{
+   sync::mpsc::{self, Receiver},
+   time::{Instant, timeout},
+};
 use tracing::{error, trace};
+use transport_messages::TransportCommand;
 
 use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
 };
 pub mod messages;
+mod transport_messages;
 pub mod utp;
-
 pub type PeerKey = SocketAddr;
 
 /// Represents a BitTorrent peer with connection state and statistics
@@ -41,6 +46,57 @@ pub struct Peer {
 impl Display for Peer {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
       write!(f, "{}:{}", self.ip, self.port)
+   }
+}
+
+#[async_trait]
+pub trait TransportHandler: Send + Sync {
+   async fn new(
+      id: Arc<Hash<20>>,
+      info_hash: Arc<InfoHash>,
+      socket_addr: Option<SocketAddr>,
+   ) -> impl TransportHandler;
+
+   fn get_rx(&mut self) -> &mut Receiver<TransportCommand>;
+
+   fn get_transport(&self) -> impl Transport;
+
+   async fn handle_message(
+      &mut self,
+      tx: mpsc::Sender<Result<SocketAddr, PeerTransportError>>,
+   ) -> Result<()> {
+      while let Some(cmd) = self.get_rx().recv().await {
+         let mut transport_clone = self.get_transport();
+         let tx_clone = tx.clone();
+         match cmd {
+            TransportCommand::Connect { mut peer } => {
+               trace!("Connecting to peer: {}", peer.ip);
+               tokio::spawn(async move {
+                  // Peers should be able to finish their handshake after two seconds
+                  const TIMEOUT_DURATION: u64 = 2;
+                  let connect = transport_clone.connect(&mut peer);
+                  let res = timeout(Duration::from_secs(TIMEOUT_DURATION), connect)
+                     .await
+                     .map_err(|e| error!("Error connecting to peer: {e}"));
+
+                  // Handle error from timeout
+                  if res.is_err() {
+                     error!(%peer, "Peer timed out.");
+                     if tx_clone
+                        .send(Err(PeerTransportError::MessageFailed))
+                        .await
+                        .is_err()
+                     {
+                        error!("Error occured when sending result back");
+                     };
+                  } else if tx_clone.send(res.unwrap()).await.is_err() {
+                     error!("Error occured when sending result back");
+                  }
+               });
+            }
+         }
+      }
+      Ok(())
    }
 }
 
@@ -119,6 +175,8 @@ pub trait Transport: Send + Sync {
    fn is_connected(&self, peer_id: PeerKey) -> bool;
 
    async fn get_peer(&self, peer_key: PeerKey) -> Option<Peer>;
+
+   async fn handshake(transport: impl Transport, peers: Vec<Peer>) -> Option<Peer>;
 }
 
 impl Peer {

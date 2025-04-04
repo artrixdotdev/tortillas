@@ -1,28 +1,28 @@
-use super::{Peer, PeerKey, Transport};
+use super::{Peer, PeerKey, Transport, TransportHandler, transport_messages::TransportCommand};
 use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
-   peers::messages::{Handshake, MAGIC_STRING},
    peers::PeerMessages,
+   peers::messages::{Handshake, MAGIC_STRING},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
-use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
+use std::{
+   collections::HashMap,
+   net::{Ipv4Addr, SocketAddr},
+   str::FromStr,
+   sync::Arc,
+};
 use tokio::{
    io::{AsyncReadExt, AsyncWriteExt},
    sync::{
-      mpsc::{self, Receiver, Sender},
       Mutex,
+      mpsc::{self, Receiver, Sender},
    },
-   time::{timeout, Instant},
+   time::Instant,
 };
 use tracing::{debug, error, info, instrument, trace};
-
-#[derive(Debug, Clone)]
-pub enum TransportCommand {
-   Connect { peer: Peer },
-}
 
 pub struct UtpTransportHandler {
    pub transport: UtpTransport,
@@ -30,8 +30,17 @@ pub struct UtpTransportHandler {
    pub rx: Receiver<TransportCommand>,
 }
 
-impl UtpTransportHandler {
-   pub async fn new(
+#[async_trait]
+impl TransportHandler for UtpTransportHandler {
+   fn get_rx(&mut self) -> &mut Receiver<TransportCommand> {
+      &mut self.rx
+   }
+
+   fn get_transport(&self) -> &impl Transport {
+      &self.transport
+   }
+
+   async fn new(
       id: Arc<Hash<20>>,
       info_hash: Arc<InfoHash>,
       socket_addr: Option<SocketAddr>,
@@ -42,44 +51,6 @@ impl UtpTransportHandler {
          tx,
          rx,
       }
-   }
-
-   pub async fn handle_message(
-      &mut self,
-      tx: mpsc::Sender<Result<SocketAddr, PeerTransportError>>,
-   ) -> Result<()> {
-      while let Some(cmd) = self.rx.recv().await {
-         let mut transport_clone = self.transport.clone();
-         let tx_clone = tx.clone();
-         match cmd {
-            TransportCommand::Connect { mut peer } => {
-               trace!("Connecting to peer: {}", peer.ip);
-               tokio::spawn(async move {
-                  // Peers should be able to finish their handshake after two seconds
-                  const TIMEOUT_DURATION: u64 = 2;
-                  let connect = transport_clone.connect(&mut peer);
-                  let res = timeout(Duration::from_secs(TIMEOUT_DURATION), connect)
-                     .await
-                     .map_err(|e| error!("Error connecting to peer: {e}"));
-
-                  // Handle error from timeout
-                  if res.is_err() {
-                     error!(%peer, "Peer timed out.");
-                     if tx_clone
-                        .send(Err(PeerTransportError::MessageFailed))
-                        .await
-                        .is_err()
-                     {
-                        error!("Error occured when sending result back");
-                     };
-                  } else if tx_clone.send(res.unwrap()).await.is_err() {
-                     error!("Error occured when sending result back");
-                  }
-               });
-            }
-         }
-      }
-      Ok(())
    }
 }
 
@@ -116,6 +87,13 @@ impl UtpTransport {
 impl Transport for UtpTransport {
    fn id(&self) -> Arc<Hash<20>> {
       self.id.clone()
+   }
+
+   async fn handshake(transport: impl Transport, peers: Vec<Peer>) -> Option<Peer> {
+      Some(Peer::from_ipv4(
+         Ipv4Addr::from_str("123.123.123").unwrap(),
+         1234,
+      ))
    }
 
    fn info_hash(&self) -> Arc<InfoHash> {
@@ -346,7 +324,7 @@ mod tests {
 
    use crate::{
       parser::{MagnetUri, MetaInfo},
-      tracker::{http::HttpTracker, Tracker, TrackerTrait},
+      tracker::{Tracker, TrackerTrait, http::HttpTracker},
    };
 
    use super::*;
