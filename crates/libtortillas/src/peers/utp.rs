@@ -340,7 +340,7 @@ impl Transport for UtpTransport {
 mod tests {
 
    use rand::random_range;
-   use tokio::{task::JoinSet, time::sleep};
+   use tokio::task::JoinSet;
    use tracing::info;
    use tracing_test::traced_test;
 
@@ -407,6 +407,7 @@ mod tests {
             let mut join_set = JoinSet::new();
 
             // For each peer, spawn a task to connect
+            let num_of_peers = peers.len();
             for peer in peers {
                // Clone tx (see Tokio docs on why we need to clone tx: <https://tokio.rs/tokio/tutorial/channels>)
                let tx = tx.clone();
@@ -423,7 +424,7 @@ mod tests {
             let (tx, mut rx) = mpsc::channel(100);
 
             // Start handling mpsc messages from the join set
-            tokio::spawn(async move {
+            let transport_handler = tokio::spawn(async move {
                utp_transport_handler.handle_message(tx).await.unwrap();
             });
 
@@ -434,14 +435,25 @@ mod tests {
             tokio::spawn(async move {
                let mut total_peers_seen = 0;
                while let Some(res) = rx.recv().await {
+                  match res {
+                     Ok(_) => {
+                        trace!("Peer connected successfully!")
+                     }
+                     Err(_) => {
+                        error!("Peer did not connect succesfully.")
+                     }
+                  }
                   total_peers_seen += 1;
-                  if announce_list.len() == total_peers_seen {
+                  // Once we've received a response from all peers, go ahead and end the loop.
+                  if num_of_peers == total_peers_seen {
                      break;
                   }
                }
             })
             .await
             .unwrap();
+
+            transport_handler.abort();
          }
          _ => panic!("Expected Torrent"),
       }
