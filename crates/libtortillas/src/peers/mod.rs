@@ -1,18 +1,13 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use messages::{Handshake, MAGIC_STRING, PeerMessages};
+use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::Arc,
-   time::Duration,
 };
-use tokio::{
-   sync::mpsc::{self, Receiver},
-   time::{Instant, timeout},
-};
+use tokio::time::Instant;
 use tracing::{error, trace};
-use transport_messages::TransportCommand;
 
 use crate::{
    errors::PeerTransportError,
@@ -49,56 +44,58 @@ impl Display for Peer {
    }
 }
 
-#[async_trait]
-pub trait TransportHandler: Send + Sync {
-   async fn new(
-      id: Arc<Hash<20>>,
-      info_hash: Arc<InfoHash>,
-      socket_addr: Option<SocketAddr>,
-   ) -> impl TransportHandler;
-
-   fn get_rx(&mut self) -> &mut Receiver<TransportCommand>;
-
-   fn get_transport(&self) -> impl Transport;
-
-   async fn handle_message(
-      &mut self,
-      tx: mpsc::Sender<Result<SocketAddr, PeerTransportError>>,
-   ) -> Result<()> {
-      while let Some(cmd) = self.get_rx().recv().await {
-         let mut transport_clone = self.get_transport();
-         let tx_clone = tx.clone();
-         match cmd {
-            TransportCommand::Connect { mut peer } => {
-               trace!("Connecting to peer: {}", peer.ip);
-               tokio::spawn(async move {
-                  // Peers should be able to finish their handshake after two seconds
-                  const TIMEOUT_DURATION: u64 = 2;
-                  let connect = transport_clone.connect(&mut peer);
-                  let res = timeout(Duration::from_secs(TIMEOUT_DURATION), connect)
-                     .await
-                     .map_err(|e| error!("Error connecting to peer: {e}"));
-
-                  // Handle error from timeout
-                  if res.is_err() {
-                     error!(%peer, "Peer timed out.");
-                     if tx_clone
-                        .send(Err(PeerTransportError::MessageFailed))
-                        .await
-                        .is_err()
-                     {
-                        error!("Error occured when sending result back");
-                     };
-                  } else if tx_clone.send(res.unwrap()).await.is_err() {
-                     error!("Error occured when sending result back");
-                  }
-               });
-            }
-         }
-      }
-      Ok(())
-   }
-}
+// This could (and should) be used in the future. self.get_rx() and self.get_transport() are
+// causing too many lifetime/borrow checker errors at the moment though.
+// #[async_trait]
+// pub trait TransportHandler: Send + Sync {
+//    async fn new(
+//       id: Arc<Hash<20>>,
+//       info_hash: Arc<InfoHash>,
+//       socket_addr: Option<SocketAddr>,
+//    ) -> impl TransportHandler;
+//
+//    fn get_rx(&mut self) -> &mut Receiver<TransportCommand>;
+//
+//    fn get_transport(&self) -> impl Transport;
+//
+//    async fn handle_message(
+//       &mut self,
+//       tx: mpsc::Sender<Result<SocketAddr, PeerTransportError>>,
+//    ) -> Result<()> {
+//       while let Some(cmd) = self.get_rx().recv().await {
+//          let mut transport_clone = self.get_transport();
+//          let tx_clone = tx.clone();
+//          match cmd {
+//             TransportCommand::Connect { mut peer } => {
+//                trace!("Connecting to peer: {}", peer.ip);
+//                tokio::spawn(async move {
+//                   // Peers should be able to finish their handshake after two seconds
+//                   const TIMEOUT_DURATION: u64 = 2;
+//                   let connect = transport_clone.connect(&mut peer);
+//                   let res = timeout(Duration::from_secs(TIMEOUT_DURATION), connect)
+//                      .await
+//                      .map_err(|e| error!("Error connecting to peer: {e}"));
+//
+//                   // Handle error from timeout
+//                   if res.is_err() {
+//                      error!(%peer, "Peer timed out.");
+//                      if tx_clone
+//                         .send(Err(PeerTransportError::MessageFailed))
+//                         .await
+//                         .is_err()
+//                      {
+//                         error!("Error occured when sending result back");
+//                      };
+//                   } else if tx_clone.send(res.unwrap()).await.is_err() {
+//                      error!("Error occured when sending result back");
+//                   }
+//                });
+//             }
+//          }
+//       }
+//       Ok(())
+//    }
+// }
 
 #[async_trait] // Async in traits are typically not allowed so we need this crate to make it work
 #[allow(unused_variables)]

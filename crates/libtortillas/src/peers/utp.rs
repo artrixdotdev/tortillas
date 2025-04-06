@@ -1,11 +1,11 @@
-use super::{Peer, PeerKey, Transport, TransportHandler, transport_messages::TransportCommand};
+use super::{transport_messages::TransportCommand, Peer, PeerKey, Transport};
 use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
-   peers::PeerMessages,
    peers::messages::{Handshake, MAGIC_STRING},
+   peers::PeerMessages,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
 use std::{
@@ -13,14 +13,15 @@ use std::{
    net::{Ipv4Addr, SocketAddr},
    str::FromStr,
    sync::Arc,
+   time::Duration,
 };
 use tokio::{
    io::{AsyncReadExt, AsyncWriteExt},
    sync::{
-      Mutex,
       mpsc::{self, Receiver, Sender},
+      Mutex,
    },
-   time::Instant,
+   time::{timeout, Instant},
 };
 use tracing::{debug, error, info, instrument, trace};
 
@@ -30,16 +31,8 @@ pub struct UtpTransportHandler {
    pub rx: Receiver<TransportCommand>,
 }
 
-#[async_trait]
-impl TransportHandler for UtpTransportHandler {
-   fn get_rx(&mut self) -> &mut Receiver<TransportCommand> {
-      &mut self.rx
-   }
-
-   fn get_transport(&self) -> &impl Transport {
-      &self.transport
-   }
-
+#[allow(dead_code)]
+impl UtpTransportHandler {
    async fn new(
       id: Arc<Hash<20>>,
       info_hash: Arc<InfoHash>,
@@ -51,6 +44,44 @@ impl TransportHandler for UtpTransportHandler {
          tx,
          rx,
       }
+   }
+
+   async fn handle_message(
+      &mut self,
+      tx: mpsc::Sender<Result<SocketAddr, PeerTransportError>>,
+   ) -> Result<()> {
+      while let Some(cmd) = self.rx.recv().await {
+         let mut transport_clone = self.transport.clone();
+         let tx_clone = tx.clone();
+         match cmd {
+            TransportCommand::Connect { mut peer } => {
+               trace!("Connecting to peer: {}", peer.ip);
+               tokio::spawn(async move {
+                  // Peers should be able to finish their handshake after two seconds
+                  const TIMEOUT_DURATION: u64 = 2;
+                  let connect = transport_clone.connect(&mut peer);
+                  let res = timeout(Duration::from_secs(TIMEOUT_DURATION), connect)
+                     .await
+                     .map_err(|e| error!("Error connecting to peer: {e}"));
+
+                  // Handle error from timeout
+                  if res.is_err() {
+                     error!(%peer, "Peer timed out.");
+                     if tx_clone
+                        .send(Err(PeerTransportError::MessageFailed))
+                        .await
+                        .is_err()
+                     {
+                        error!("Error occured when sending result back");
+                     };
+                  } else if tx_clone.send(res.unwrap()).await.is_err() {
+                     error!("Error occured when sending result back");
+                  }
+               });
+            }
+         }
+      }
+      Ok(())
    }
 }
 
@@ -324,7 +355,7 @@ mod tests {
 
    use crate::{
       parser::{MagnetUri, MetaInfo},
-      tracker::{Tracker, TrackerTrait, http::HttpTracker},
+      tracker::{http::HttpTracker, Tracker, TrackerTrait},
    };
 
    use super::*;
@@ -402,7 +433,7 @@ mod tests {
             let (tx, mut rx) = mpsc::channel(100);
 
             // Start handling mpsc messages from the join set
-            let transport_handler = tokio::spawn(async move {
+            tokio::spawn(async move {
                utp_transport_handler.handle_message(tx).await.unwrap();
             });
 
@@ -412,17 +443,8 @@ mod tests {
             // Collect responses from handle_message
             tokio::spawn(async move {
                let mut total_peers_seen = 0;
-               while let Some(res) = rx.recv().await {
-                  match res {
-                     Ok(_) => {
-                        trace!("Peer connected successfully!")
-                     }
-                     Err(_) => {
-                        error!("Peer did not connect succesfully.")
-                     }
-                  }
+               while let Some(_res) = rx.recv().await {
                   total_peers_seen += 1;
-                  // Once we've received a response from all peers, go ahead and end the loop.
                   if num_of_peers == total_peers_seen {
                      break;
                   }
@@ -430,8 +452,6 @@ mod tests {
             })
             .await
             .unwrap();
-
-            transport_handler.abort();
          }
          _ => panic!("Expected Torrent"),
       }
