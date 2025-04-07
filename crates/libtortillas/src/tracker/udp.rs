@@ -2,6 +2,7 @@ use std::{
    net::{Ipv4Addr, SocketAddr},
    str::FromStr,
    sync::Arc,
+   time::Duration,
 };
 
 use async_trait::async_trait;
@@ -14,7 +15,7 @@ use async_trait::async_trait;
 use num_enum::TryFromPrimitive;
 use rand::RngCore;
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tokio::net::UdpSocket;
+use tokio::{net::UdpSocket, sync::mpsc, time::sleep};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use super::{Peer, TrackerTrait};
@@ -345,6 +346,7 @@ pub struct UdpTracker {
    info_hash: InfoHash,
    ///  The address that our TCP or uTP socket is bound to
    peer_socket_addr: SocketAddr,
+   interval: u32,
 }
 
 impl UdpTracker {
@@ -376,6 +378,7 @@ impl UdpTracker {
 
       Ok(UdpTracker {
          uri,
+         interval: u32::MAX,
          connection_id: None,
          socket: Arc::new(sock),
          ready_state: ReadyState::Disconnected,
@@ -387,7 +390,7 @@ impl UdpTracker {
    }
 
    #[instrument(skip(self))]
-   async fn announce(&self) -> Result<Vec<Peer>> {
+   async fn announce(&mut self) -> Result<Vec<Peer>> {
       if self.ready_state != ReadyState::Ready {
          return Err(UdpTrackerError::Tracker(TrackerError::NotReady(
             "Tracker not ready for announce request".to_string(),
@@ -457,6 +460,8 @@ impl UdpTracker {
                "Announce successful"
             );
 
+            self.interval = interval;
+
             Ok(peers)
          }
          TrackerResponse::Error {
@@ -487,9 +492,26 @@ impl UdpTracker {
 
 #[async_trait]
 impl TrackerTrait for UdpTracker {
+   async fn stream_peers(&mut self, tx: mpsc::Sender<Vec<Peer>>) -> anyhow::Result<()> {
+      loop {
+         let peers = self.get_peers().await.unwrap();
+         trace!(
+            "Successfully made request to get peers: {}",
+            peers.last().unwrap()
+         );
+         tx.send(peers)
+            .await
+            .map_err(|e| {
+               error!("Failed to send peers to receiver: {}", e);
+            })
+            .unwrap();
+         sleep(Duration::from_secs(self.interval.into())).await;
+      }
+   }
+
    // Makes a request using the UDP tracker protocol to connect. Returns a u64 connection ID
    #[instrument(skip(self))]
-   async fn stream_peers(&mut self) -> std::result::Result<Vec<Peer>, anyhow::Error> {
+   async fn get_peers(&mut self) -> anyhow::Result<Vec<Peer>, anyhow::Error> {
       let uri = self.uri.replace("udp://", "");
       debug!(target_uri = %uri, "Connecting to tracker");
 
@@ -610,9 +632,17 @@ mod tests {
             )
             .await
             .unwrap();
-            let stream = udp_tracker.stream_peers().await.unwrap();
 
-            let peer = &stream[0];
+            let (tx, mut rx) = mpsc::channel(100);
+
+            // Spawn a task to re-fetch the latest list of peers at a given interval
+            tokio::spawn(async move {
+               udp_tracker.stream_peers(tx).await.unwrap();
+            });
+
+            let peers = rx.recv().await.unwrap();
+
+            let peer = &peers[0];
             assert!(peer.ip.is_ipv4())
          }
          _ => panic!("Expected Torrent"),

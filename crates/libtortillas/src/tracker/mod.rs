@@ -3,10 +3,11 @@ use async_trait::async_trait;
 use http::HttpTracker;
 use rand::random_range;
 use serde::{
-   Deserialize,
    de::{self, Visitor},
+   Deserialize,
 };
 use std::{fmt, net::SocketAddr};
+use tokio::sync::mpsc;
 use udp::UdpTracker;
 
 use crate::{hashes::InfoHash, peers::Peer};
@@ -15,7 +16,10 @@ pub mod udp;
 
 #[async_trait]
 pub trait TrackerTrait {
-   async fn stream_peers(&mut self) -> Result<Vec<Peer>>;
+   /// Acts as a wrapper function for get_peers. Should be spawned with tokio::spawn.
+   async fn stream_peers(&mut self, tx: mpsc::Sender<Vec<Peer>>) -> Result<()>;
+
+   async fn get_peers(&mut self) -> Result<Vec<Peer>>;
 }
 
 /// An Announce URI from a torrent file or magnet URI.
@@ -38,7 +42,7 @@ impl Tracker {
          Tracker::Http(uri) => {
             let mut tracker = HttpTracker::new(uri.clone(), info_hash, None);
 
-            Ok(tracker.stream_peers().await.unwrap())
+            Ok(tracker.get_peers().await.unwrap())
          }
          Tracker::Udp(uri) => {
             let port: u16 = random_range(1024..65535);
@@ -51,7 +55,7 @@ impl Tracker {
             .await
             .unwrap();
 
-            Ok(tracker.stream_peers().await.unwrap())
+            Ok(tracker.get_peers().await.unwrap())
          }
          Tracker::Websocket(_) => todo!(),
       }

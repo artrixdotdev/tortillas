@@ -392,7 +392,7 @@ mod tests {
                Some(SocketAddr::from(([0, 0, 0, 0], port))),
             );
             let peer_id = tracker.peer_id;
-            let peers = tracker.stream_peers().await.unwrap();
+            let peers = tracker.get_peers().await.unwrap();
 
             // Skip if no peers found
             if peers.is_empty() {

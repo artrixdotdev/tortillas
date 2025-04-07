@@ -7,13 +7,15 @@ use crate::{
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{
-   Deserialize, Serialize,
    de::{self, Visitor},
+   Deserialize, Serialize,
 };
 use std::{
    net::{Ipv4Addr, SocketAddr},
    str::FromStr,
+   time::Duration,
 };
+use tokio::{sync::mpsc, time::sleep};
 
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -62,12 +64,14 @@ impl TrackerRequest {
 }
 
 /// Struct for handling tracker over HTTP
+/// Interval is set to `u32::MAX` by default.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct HttpTracker {
    uri: String,
    pub peer_id: Hash<20>,
    info_hash: InfoHash,
    params: TrackerRequest,
+   interval: u32,
 }
 
 impl HttpTracker {
@@ -83,6 +87,7 @@ impl HttpTracker {
       debug!(peer_id = %peer_id, "Generated peer ID");
 
       HttpTracker {
+         interval: u32::MAX,
          uri,
          peer_id,
          params: TrackerRequest::new(peer_tracker_addr),
@@ -107,8 +112,25 @@ fn urlencode(t: &[u8; 20]) -> String {
 /// Fetches peers from tracker over HTTP and returns a stream of [Peers](Peer)
 #[async_trait]
 impl TrackerTrait for HttpTracker {
+   async fn stream_peers(&mut self, tx: mpsc::Sender<Vec<Peer>>) -> Result<()> {
+      loop {
+         let peers = self.get_peers().await.unwrap();
+         trace!(
+            "Successfully made request to get peers: {}",
+            peers.last().unwrap()
+         );
+         tx.send(peers)
+            .await
+            .map_err(|e| {
+               error!("Failed to send peers to receiver: {}", e);
+            })
+            .unwrap();
+         sleep(Duration::from_secs(self.interval.into())).await;
+      }
+   }
+
    #[instrument(skip(self))]
-   async fn stream_peers(&mut self) -> Result<Vec<Peer>> {
+   async fn get_peers(&mut self) -> Result<Vec<Peer>> {
       // Decode info_hash
       debug!("Decoding info hash");
 
@@ -159,11 +181,13 @@ impl TrackerTrait for HttpTracker {
          "Found peers from tracker"
       );
 
+      self.interval = response.interval as u32;
+
       Ok(response.peers)
    }
 }
 
-/// Serde related code. Used for deserializing response from HTTP request made in stream_peers
+/// Serde related code. Used for deserializing response from HTTP request made in get_peers
 struct PeerVisitor;
 
 impl Visitor<'_> for PeerVisitor {
@@ -177,7 +201,7 @@ impl Visitor<'_> for PeerVisitor {
    where
       E: de::Error,
    {
-      // Decodes response from stream_peers' HTTP request according to BEP 23's compact form: <https://www.bittorrent.org/beps/bep_0023.html>
+      // Decodes response from get_peers' HTTP request according to BEP 23's compact form: <https://www.bittorrent.org/beps/bep_0023.html>
       let mut peers = Vec::new();
       const PEER_SIZE: usize = 6; // 4 bytes IP + 2 bytes port
 
@@ -226,6 +250,7 @@ where
 
 #[cfg(test)]
 mod tests {
+   use tokio::sync::mpsc;
    use tracing_test::traced_test;
 
    use crate::{
@@ -237,7 +262,7 @@ mod tests {
 
    #[tokio::test]
    #[traced_test]
-   async fn test_stream_peers_with_http_tracker() {
+   async fn test_get_peers_with_http_tracker() {
       let path = std::env::current_dir()
          .unwrap()
          .join("tests/magneturis/zenshuu.txt");
@@ -251,11 +276,21 @@ mod tests {
             let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None);
 
             // Make request
-            let res = HttpTracker::stream_peers(&mut http_tracker)
-               .await
-               .expect("Issue when unwrapping result of stream_peers");
+            // let res = HttpTracker::get_peers(&mut http_tracker)
+            //    .await
+            //    .expect("Issue when unwrapping result of get_peers");
 
-            assert!(res[0].ip.is_ipv4());
+            let (tx, mut rx) = mpsc::channel(100);
+
+            // Spawn a task to re-fetch the latest list of peers at a given interval
+            tokio::spawn(async move {
+               http_tracker.stream_peers(tx).await.unwrap();
+            });
+
+            let peers = rx.recv().await.unwrap();
+
+            let peer = &peers[0];
+            assert!(peer.ip.is_ipv4());
          }
          _ => panic!("Expected Torrent"),
       }
