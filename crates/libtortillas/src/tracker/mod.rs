@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use http::HttpTracker;
 use rand::random_range;
 use serde::{
-   de::{self, Visitor},
    Deserialize,
+   de::{self, Visitor},
 };
 use std::{fmt, net::SocketAddr};
 use tokio::sync::mpsc;
@@ -15,9 +15,9 @@ pub mod http;
 pub mod udp;
 
 #[async_trait]
-pub trait TrackerTrait {
+pub trait TrackerTrait: Clone {
    /// Acts as a wrapper function for get_peers. Should be spawned with tokio::spawn.
-   async fn stream_peers(&mut self, tx: mpsc::Sender<Vec<Peer>>) -> Result<()>;
+   async fn stream_peers(&mut self) -> Result<mpsc::Receiver<Vec<Peer>>>;
 
    async fn get_peers(&mut self) -> Result<Vec<Peer>>;
 }

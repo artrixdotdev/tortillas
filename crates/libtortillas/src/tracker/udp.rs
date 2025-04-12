@@ -5,6 +5,11 @@ use std::{
    time::Duration,
 };
 
+use super::{Peer, TrackerTrait};
+use crate::{
+   errors::{TrackerError, UdpTrackerError},
+   hashes::{Hash, InfoHash},
+};
 use async_trait::async_trait;
 /// UDP protocol
 /// https://en.wikipedia.org/wiki/User_Datagram_Protocol
@@ -18,16 +23,10 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::{net::UdpSocket, sync::mpsc, time::sleep};
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use super::{Peer, TrackerTrait};
-use crate::{
-   errors::{TrackerError, UdpTrackerError},
-   hashes::{Hash, InfoHash},
-};
-
 /// Types and constants
 type ConnectionId = u64;
 type TransactionId = u32;
-type Result<T> = std::result::Result<T, UdpTrackerError>;
+type Result<T> = anyhow::Result<T, UdpTrackerError>;
 
 const MAGIC_CONSTANT: ConnectionId = 0x41727101980;
 const MIN_CONNECT_RESPONSE_SIZE: usize = 16;
@@ -330,13 +329,14 @@ impl TrackerResponse {
    }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum ReadyState {
    Connected,
    Ready,
    Disconnected,
 }
 
+#[derive(Clone)]
 pub struct UdpTracker {
    uri: String,
    connection_id: Option<ConnectionId>,
@@ -492,21 +492,32 @@ impl UdpTracker {
 
 #[async_trait]
 impl TrackerTrait for UdpTracker {
-   async fn stream_peers(&mut self, tx: mpsc::Sender<Vec<Peer>>) -> anyhow::Result<()> {
-      loop {
-         let peers = self.get_peers().await.unwrap();
-         trace!(
-            "Successfully made request to get peers: {}",
-            peers.last().unwrap()
-         );
-         tx.send(peers)
-            .await
-            .map_err(|e| {
-               error!("Failed to send peers to receiver: {}", e);
-            })
-            .unwrap();
-         sleep(Duration::from_secs(self.interval.into())).await;
-      }
+   async fn stream_peers(&mut self) -> anyhow::Result<mpsc::Receiver<Vec<Peer>>> {
+      let (tx, rx) = mpsc::channel(100);
+
+      // Clone any data needed by the spawned task
+      let interval = self.interval;
+      let tx = tx.clone();
+      let mut tracker = self.clone();
+
+      tokio::spawn(async move {
+         loop {
+            let peers = tracker.get_peers().await.unwrap();
+
+            trace!(
+               "Successfully made request to get peers: {}",
+               peers.last().unwrap()
+            );
+
+            if tx.send(peers).await.is_err() {
+               error!("Failed to send peers to receiver");
+               break;
+            }
+
+            sleep(Duration::from_secs(interval.into())).await;
+         }
+      });
+      Ok(rx)
    }
 
    // Makes a request using the UDP tracker protocol to connect. Returns a u64 connection ID
@@ -514,13 +525,14 @@ impl TrackerTrait for UdpTracker {
    async fn get_peers(&mut self) -> anyhow::Result<Vec<Peer>, anyhow::Error> {
       let uri = self.uri.replace("udp://", "");
       debug!(target_uri = %uri, "Connecting to tracker");
+      if self.ready_state != ReadyState::Connected {
+         self.socket.connect(&uri).await.map_err(|e| {
+            UdpTrackerError::ConnectionFailed(format!("Failed to connect to tracker: {}", e))
+         })?;
 
-      self.socket.connect(&uri).await.map_err(|e| {
-         UdpTrackerError::ConnectionFailed(format!("Failed to connect to tracker: {}", e))
-      })?;
-
-      debug!("Socket connected");
-      self.ready_state = ReadyState::Connected;
+         debug!("Socket connected");
+         self.ready_state = ReadyState::Connected;
+      }
 
       let transaction_id: TransactionId = rand::random();
       debug!(transaction_id = transaction_id, "Preparing connect request");
@@ -633,12 +645,8 @@ mod tests {
             .await
             .unwrap();
 
-            let (tx, mut rx) = mpsc::channel(100);
-
             // Spawn a task to re-fetch the latest list of peers at a given interval
-            tokio::spawn(async move {
-               udp_tracker.stream_peers(tx).await.unwrap();
-            });
+            let mut rx = udp_tracker.stream_peers().await.unwrap();
 
             let peers = rx.recv().await.unwrap();
 

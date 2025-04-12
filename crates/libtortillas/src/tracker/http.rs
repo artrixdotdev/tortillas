@@ -7,8 +7,8 @@ use crate::{
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{
-   de::{self, Visitor},
    Deserialize, Serialize,
+   de::{self, Visitor},
 };
 use std::{
    net::{Ipv4Addr, SocketAddr},
@@ -28,7 +28,7 @@ pub struct TrackerResponse {
 }
 
 /// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum Event {
    Started,
    Completed,
@@ -37,7 +37,7 @@ pub enum Event {
 }
 
 /// Tracker request. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct TrackerRequest {
    ip: Option<Ipv4Addr>,
    port: u16,
@@ -65,7 +65,7 @@ impl TrackerRequest {
 
 /// Struct for handling tracker over HTTP
 /// Interval is set to `u32::MAX` by default.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HttpTracker {
    uri: String,
    pub peer_id: Hash<20>,
@@ -112,21 +112,28 @@ fn urlencode(t: &[u8; 20]) -> String {
 /// Fetches peers from tracker over HTTP and returns a stream of [Peers](Peer)
 #[async_trait]
 impl TrackerTrait for HttpTracker {
-   async fn stream_peers(&mut self, tx: mpsc::Sender<Vec<Peer>>) -> Result<()> {
-      loop {
-         let peers = self.get_peers().await.unwrap();
-         trace!(
-            "Successfully made request to get peers: {}",
-            peers.last().unwrap()
-         );
-         tx.send(peers)
-            .await
-            .map_err(|e| {
-               error!("Failed to send peers to receiver: {}", e);
-            })
-            .unwrap();
-         sleep(Duration::from_secs(self.interval.into())).await;
-      }
+   async fn stream_peers(&mut self) -> Result<mpsc::Receiver<Vec<Peer>>> {
+      let (tx, rx) = mpsc::channel(100);
+      let mut tracker = self.clone();
+      let tx = tx.clone();
+      let interval = self.interval;
+      tokio::spawn(async move {
+         loop {
+            let peers = tracker.get_peers().await.unwrap();
+            trace!(
+               "Successfully made request to get peers: {}",
+               peers.last().unwrap()
+            );
+            tx.send(peers)
+               .await
+               .map_err(|e| {
+                  error!("Failed to send peers to receiver: {}", e);
+               })
+               .unwrap();
+            sleep(Duration::from_secs(interval.into())).await;
+         }
+      });
+      Ok(rx)
    }
 
    #[instrument(skip(self))]
@@ -250,7 +257,6 @@ where
 
 #[cfg(test)]
 mod tests {
-   use tokio::sync::mpsc;
    use tracing_test::traced_test;
 
    use crate::{
@@ -280,12 +286,8 @@ mod tests {
             //    .await
             //    .expect("Issue when unwrapping result of get_peers");
 
-            let (tx, mut rx) = mpsc::channel(100);
-
             // Spawn a task to re-fetch the latest list of peers at a given interval
-            tokio::spawn(async move {
-               http_tracker.stream_peers(tx).await.unwrap();
-            });
+            let mut rx = http_tracker.stream_peers().await.unwrap();
 
             let peers = rx.recv().await.unwrap();
 
