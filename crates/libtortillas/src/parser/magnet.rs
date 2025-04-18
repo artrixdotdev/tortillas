@@ -50,7 +50,7 @@ pub struct MagnetUri {
 
 impl MagnetUri {
    pub async fn parse(uri: String) -> Result<MetaInfo> {
-      let qs = uri.split('?').last().unwrap(); // Turns magnet:?xt=... into xt=...
+      let qs = uri.split('?').next_back().unwrap(); // Turns magnet:?xt=... into xt=...
 
       // First pass: collect all key-value pairs, grouping repeating keys
       let mut grouped_params: HashMap<String, Vec<String>> = HashMap::new();
