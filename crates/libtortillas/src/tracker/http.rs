@@ -116,7 +116,7 @@ impl TrackerTrait for HttpTracker {
       let (tx, rx) = mpsc::channel(100);
       let mut tracker = self.clone();
       let tx = tx.clone();
-      let interval = self.interval;
+      // no pre‑captured interval – always read the latest value
       tokio::spawn(async move {
          loop {
             let peers = tracker.get_peers().await.unwrap();
@@ -124,17 +124,21 @@ impl TrackerTrait for HttpTracker {
                "Successfully made request to get peers: {}",
                peers.last().unwrap()
             );
-            tx.send(peers)
-               .await
-               .map_err(|e| {
-                  error!("Failed to send peers to receiver: {}", e);
-               })
-               .unwrap();
-            sleep(Duration::from_secs(interval.into())).await;
+
+            // stop gracefully if the receiver was dropped
+            if tx.send(peers).await.is_err() {
+               warn!("Receiver dropped – stopping peer stream");
+               break;
+            }
+
+            // pick up possibly updated interval (never sleep 0s)
+            let delay = tracker.interval.max(1);
+            sleep(Duration::from_secs(delay as u64)).await;
          }
       });
       Ok(rx)
    }
+}
 
    #[instrument(skip(self))]
    async fn get_peers(&mut self) -> Result<Vec<Peer>> {
