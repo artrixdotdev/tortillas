@@ -138,7 +138,6 @@ impl TrackerTrait for HttpTracker {
       });
       Ok(rx)
    }
-}
 
    #[instrument(skip(self))]
    async fn get_peers(&mut self) -> Result<Vec<Peer>> {
