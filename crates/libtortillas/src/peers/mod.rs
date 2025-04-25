@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use messages::{Handshake, MAGIC_STRING, PeerMessages};
+use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -9,7 +9,7 @@ use std::{
 };
 use tokio::{
    sync::mpsc::{self, Receiver, Sender},
-   time::{Instant, timeout},
+   time::{timeout, Instant},
 };
 use tracing::{error, trace};
 use transport_messages::TransportCommand;
@@ -19,6 +19,7 @@ use crate::{
    hashes::{Hash, InfoHash},
 };
 pub mod messages;
+pub mod tcp;
 mod transport_messages;
 pub mod utp;
 pub type PeerKey = SocketAddr;
