@@ -249,7 +249,7 @@ mod tests {
    async fn test_tcp_peer_handshake() {
       let path = std::env::current_dir()
          .unwrap()
-         .join("tests/magneturis/zenshuu.txt");
+         .join("tests/magneturis/test1.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
 
       let metainfo = MagnetUri::parse(contents).await.unwrap();

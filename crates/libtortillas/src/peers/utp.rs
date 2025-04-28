@@ -58,7 +58,7 @@ impl TransportProtocol for UtpProtocol {
       id: Arc<Hash<20>>,
       info_hash: Arc<InfoHash>,
    ) -> Result<PeerKey, PeerTransportError> {
-      trace!("Attempting connection...");
+      trace!("Attemping connection to {}", peer.socket_addr());
 
       // Connect to the peer
       let mut stream = self.socket.connect(peer.socket_addr()).await.map_err(|e| {
@@ -268,7 +268,7 @@ mod tests {
    async fn test_utp_peer_handshake() {
       let path = std::env::current_dir()
          .unwrap()
-         .join("tests/magneturis/zenshuu.txt");
+         .join("tests/magneturis/test1.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
 
       let metainfo = MagnetUri::parse(contents).await.unwrap();
