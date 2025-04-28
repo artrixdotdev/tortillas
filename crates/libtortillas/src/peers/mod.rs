@@ -232,7 +232,7 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
                tokio::spawn(async move {
                   // Peers should be able to finish their handshake after two seconds
                   const TIMEOUT_DURATION: u64 = 2;
-                  let connect = transport_clone.connect_peer(&mut peer, info_hash, id);
+                  let connect = transport_clone.connect_peer(&mut peer, id, info_hash);
                   let res = timeout(Duration::from_secs(TIMEOUT_DURATION), connect)
                      .await
                      .map_err(|e| error!("Error connecting to peer: {e}"));
