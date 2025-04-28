@@ -2,10 +2,10 @@ use super::{Peer, PeerKey, TransportProtocol};
 use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
-   peers::PeerMessages,
    peers::messages::{Handshake, MAGIC_STRING},
+   peers::PeerMessages,
 };
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
@@ -258,8 +258,8 @@ mod tests {
 
    use crate::{
       parser::{MagnetUri, MetaInfo},
-      peers::{Transport, TransportHandler, transport_messages::TransportCommand},
-      tracker::{Tracker, TrackerTrait, http::HttpTracker},
+      peers::{transport_messages::TransportCommand, Transport, TransportHandler},
+      tracker::{http::HttpTracker, Tracker, TrackerTrait},
    };
 
    use super::*;
