@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use messages::{Handshake, MAGIC_STRING, PeerMessages};
+use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -9,7 +9,7 @@ use std::{
 };
 use tokio::{
    sync::mpsc::{self, Receiver, Sender},
-   time::{Instant, timeout},
+   time::{timeout, Instant},
 };
 use tracing::{error, trace};
 use transport_messages::TransportCommand;
@@ -19,6 +19,7 @@ use crate::{
    hashes::{Hash, InfoHash},
 };
 pub mod messages;
+pub mod tcp;
 mod transport_messages;
 pub mod utp;
 pub type PeerKey = SocketAddr;
@@ -231,7 +232,7 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
                tokio::spawn(async move {
                   // Peers should be able to finish their handshake after two seconds
                   const TIMEOUT_DURATION: u64 = 2;
-                  let connect = transport_clone.connect_peer(&mut peer, info_hash, id);
+                  let connect = transport_clone.connect_peer(&mut peer, id, info_hash);
                   let res = timeout(Duration::from_secs(TIMEOUT_DURATION), connect)
                      .await
                      .map_err(|e| error!("Error connecting to peer: {e}"));

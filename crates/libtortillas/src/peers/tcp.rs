@@ -1,35 +1,39 @@
-use super::{Peer, PeerKey, TransportProtocol};
-use crate::{
-   errors::PeerTransportError,
-   hashes::{Hash, InfoHash},
-   peers::messages::{Handshake, MAGIC_STRING},
-   peers::PeerMessages,
-};
+// Note to reader:
+// This is almost a 1:1 copy of utp.rs
+
+use std::str::FromStr;
+use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
-use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
-use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::Instant;
 use tokio::{
-   io::{AsyncReadExt, AsyncWriteExt},
+   net::{TcpListener, TcpStream},
    sync::Mutex,
-   time::Instant,
 };
-use tracing::{debug, error, info, instrument, trace};
+use tracing::{debug, error, info, trace};
+
+use crate::errors::PeerTransportError;
+use crate::hashes::{Hash, InfoHash};
+use crate::peers::messages::{Handshake, MAGIC_STRING};
+
+use super::{Peer, PeerKey, PeerMessages, TransportProtocol};
 
 #[derive(Clone)]
-pub struct UtpProtocol {
-   pub socket: Arc<UtpSocketUdp>,
-   pub peers: HashMap<PeerKey, Arc<Mutex<(Peer, UtpStream)>>>,
+pub struct TcpProtocol {
+   pub listener: Arc<TcpListener>,
+   pub peers: HashMap<PeerKey, Arc<Mutex<(Peer, TcpStream)>>>,
 }
 
-impl UtpProtocol {
-   pub async fn new(socket_addr: Option<SocketAddr>) -> UtpProtocol {
+impl TcpProtocol {
+   pub async fn new(socket_addr: Option<SocketAddr>) -> TcpProtocol {
       let socket_addr = socket_addr.unwrap_or(SocketAddr::from_str("0.0.0.0:6881").unwrap());
-      trace!("Creating UTP socket at {}", socket_addr);
-      let socket = UtpSocket::new_udp(socket_addr).await.unwrap();
+      trace!("Creating TCP socket at {}", socket_addr);
+      let listener = Arc::new(TcpListener::bind(socket_addr).await.unwrap());
 
-      UtpProtocol {
-         socket,
+      TcpProtocol {
+         listener,
          peers: HashMap::new(),
       }
    }
@@ -37,21 +41,7 @@ impl UtpProtocol {
 
 #[async_trait]
 #[allow(unused_variables)]
-impl TransportProtocol for UtpProtocol {
-   /// Connects to & Handshakes a peer using the UTP protocol.
-   ///
-   /// Handshake should start with "character nineteen (decimal) followed by the string
-   /// 'BitTorrent protocol'."
-   /// All integers should be encoded as four bytes big-endian.
-   /// After fixed headers, reserved bytes (0).
-   /// 20 byte sha1 hash of bencoded form of info value ([info_hash](InfoHash)). If both sides don't send the
-   /// same value, sever the connection.
-   /// 20 byte peer id. If receiving side's id doesn't match the one the initiating side expects sever the connection.
-   ///
-   /// <https://wiki.theory.org/BitTorrentSpecification#Handshake>
-   ///
-   /// <https://www.bittorrent.org/beps/bep_0003.html>
-   #[instrument(skip(self), fields(peer = %peer, id = %id, info_hash = %info_hash))]
+impl TransportProtocol for TcpProtocol {
    async fn connect_peer(
       &mut self,
       peer: &mut Peer,
@@ -59,21 +49,15 @@ impl TransportProtocol for UtpProtocol {
       info_hash: Arc<InfoHash>,
    ) -> Result<PeerKey, PeerTransportError> {
       trace!("Attemping connection to {}", peer.socket_addr());
+      let mut stream = TcpStream::connect(peer.socket_addr().to_string())
+         .await
+         .map_err(|e| {
+            error!("Failed to connect to peer: {e}: {}", peer.socket_addr());
+            PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
+         })?;
 
-      // Connect to the peer
-      let mut stream = self.socket.connect(peer.socket_addr()).await.map_err(|e| {
-         error!("Failed to connect to peer {e}: {}", peer.socket_addr());
-         PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
-      })?;
-
-      trace!("Connected to new peer");
-
-      // Create and send handshake. We are unable to use self.send() because the entry in the hashtable with the current peers peer_id does not yet exist
       let handshake = Handshake::new(info_hash.clone(), id.clone());
-      let handshake_bytes = stream.write_all(&handshake.to_bytes()).await.map_err(|e| {
-         error!("Failed to write handshake to peer: {}", e);
-         PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
-      })?;
+      let handshake_bytes = stream.write_all(&handshake.to_bytes()).await.unwrap();
       trace!("Sent handshake to peer");
 
       // Calculate expected size for response
@@ -108,20 +92,53 @@ impl TransportProtocol for UtpProtocol {
       Ok(peer.socket_addr())
    }
 
+   async fn send_data(&mut self, to: PeerKey, data: Vec<u8>) -> Result<(), PeerTransportError> {
+      trace!("Attempting to send message...");
+
+      let (peer, socket) = &mut *self.peers.get_mut(&to).unwrap().lock().await;
+      socket.write_all(&data).await.map_err(|e| {
+         error!("Failed to send message to peer: {e}");
+         PeerTransportError::MessageFailed
+      })?;
+
+      // Completely chat gippity generated code, do not trust
+      // Update total bytes uploaded
+      peer.bytes_uploaded += data.len() as u64;
+
+      // Calculate upload rate based on a time window
+      let now = Instant::now();
+      if let Some(last_time) = peer.last_message_sent {
+         let elapsed_secs = last_time.elapsed().as_secs_f64();
+         if elapsed_secs > 0.0 {
+            // Use an exponential moving average for smoother rate calculation
+            const ALPHA: f64 = 0.3; // Smoothing factor (0.0-1.0)
+            let current_rate = data.len() as f64 / elapsed_secs;
+            peer.upload_rate = if peer.upload_rate > 0.0 {
+               (ALPHA * current_rate) + ((1.0 - ALPHA) * peer.upload_rate)
+            } else {
+               current_rate
+            };
+         }
+      }
+
+      peer.last_message_sent = Some(now);
+      Ok(())
+   }
+
    async fn receive_data(
       &mut self,
       info_hash: Arc<InfoHash>,
       id: Arc<Hash<20>>,
    ) -> Result<(PeerKey, Vec<u8>), PeerTransportError> {
-      let mut socket = self.socket.accept().await.unwrap();
+      let mut tcp_stream = self.listener.accept().await.unwrap().0;
       // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
       let mut buf = vec![0; 5];
 
-      socket.read_exact(&mut buf).await.map_err(|e| {
+      tcp_stream.read_exact(&mut buf).await.map_err(|e| {
          error!("Error occurred when reading the peer's response: {e}");
          PeerTransportError::InvalidPeerResponse("Error occured".into())
       })?;
-      let addr = socket.remote_addr();
+      let addr = tcp_stream.peer_addr().unwrap();
       trace!(message_type = buf[4], ip = %addr, "Recieved message headers, requesting rest...");
       let mut is_handshake = false;
       let length = if buf[0] as usize == MAGIC_STRING.len() && buf[1..5] == MAGIC_STRING[0..4] {
@@ -138,7 +155,7 @@ impl TransportProtocol for UtpProtocol {
 
       let mut rest = vec![0; length as usize];
 
-      socket.read_exact(&mut rest).await.map_err(|e| {
+      tcp_stream.read_exact(&mut rest).await.map_err(|e| {
          error!("Error occurred when reading the peer's response: {e}");
          PeerTransportError::InvalidPeerResponse("Error occured".into())
       })?;
@@ -186,7 +203,7 @@ impl TransportProtocol for UtpProtocol {
          // Creates a new handshake and sends it
          self
             .peers
-            .insert(addr, Arc::new(Mutex::new((peer.clone(), socket))));
+            .insert(addr, Arc::new(Mutex::new((peer.clone(), tcp_stream))));
          let message = PeerMessages::Handshake(handshake);
          self.send_data(addr, message.to_bytes().unwrap()).await?;
 
@@ -196,48 +213,6 @@ impl TransportProtocol for UtpProtocol {
       Ok((addr, buf))
    }
 
-   async fn send_data(&mut self, to: PeerKey, message: Vec<u8>) -> Result<(), PeerTransportError> {
-      trace!("Attempting to send message...");
-
-      let (peer, socket) = &mut *self.peers.get_mut(&to).unwrap().lock().await;
-      socket.write_all(&message).await.map_err(|e| {
-         error!("Failed to send message to peer: {e}");
-         PeerTransportError::MessageFailed
-      })?;
-
-      // Completely chat gippity generated code, do not trust
-      // Update total bytes uploaded
-      peer.bytes_uploaded += message.len() as u64;
-
-      // Calculate upload rate based on a time window
-      let now = Instant::now();
-      if let Some(last_time) = peer.last_message_sent {
-         let elapsed_secs = last_time.elapsed().as_secs_f64();
-         if elapsed_secs > 0.0 {
-            // Use an exponential moving average for smoother rate calculation
-            const ALPHA: f64 = 0.3; // Smoothing factor (0.0-1.0)
-            let current_rate = message.len() as f64 / elapsed_secs;
-            peer.upload_rate = if peer.upload_rate > 0.0 {
-               (ALPHA * current_rate) + ((1.0 - ALPHA) * peer.upload_rate)
-            } else {
-               current_rate
-            };
-         }
-      }
-
-      peer.last_message_sent = Some(now);
-      Ok(())
-   }
-
-   async fn get_connected_peer(&self, peer_key: PeerKey) -> Option<Peer> {
-      let mutex = self.peers.get(&peer_key)?;
-      let (peer, _) = &mut *mutex.lock().await;
-      Some(peer.clone())
-   }
-
-   /// Drops peer from memory and closes the connection to it.
-   ///
-   /// Note: Does not send a close message, only removes peer & stream from memory.
    fn close_connection(&mut self, peer_key: PeerKey) -> Result<()> {
       self.peers.remove(&peer_key);
       Ok(())
@@ -245,6 +220,12 @@ impl TransportProtocol for UtpProtocol {
 
    fn is_peer_connected(&self, peer_key: PeerKey) -> bool {
       self.peers.contains_key(&peer_key)
+   }
+
+   async fn get_connected_peer(&self, peer_key: PeerKey) -> Option<Peer> {
+      let mutex = self.peers.get(&peer_key)?;
+      let (peer, _) = &mut *mutex.lock().await;
+      Some(peer.clone())
    }
 }
 
@@ -265,7 +246,7 @@ mod tests {
    use super::*;
    #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
    #[traced_test]
-   async fn test_utp_peer_handshake() {
+   async fn test_tcp_peer_handshake() {
       let path = std::env::current_dir()
          .unwrap()
          .join("tests/magneturis/test1.txt");
@@ -306,20 +287,20 @@ mod tests {
 
             let info_hash_clone = Arc::new(info_hash);
 
-            // Create a single uTP transport instance
+            // Create a single TCP transport instance
             let client_peer_id = Hash::new(rand::random::<[u8; 20]>());
             let client_port: u16 = random_range(20001..30000);
             let client_addr = SocketAddr::from(([127, 0, 0, 1], client_port));
 
             info!("Running transport on {client_addr}");
 
-            let protocol = UtpProtocol::new(Some(client_addr)).await;
-            let mut utp_transport_handler =
+            let protocol = TcpProtocol::new(Some(client_addr)).await;
+            let mut tcp_transport_handler =
                TransportHandler::new(protocol, Arc::new(client_peer_id), info_hash_clone);
 
-            let tx = utp_transport_handler.tx.clone();
+            let tx = tcp_transport_handler.tx.clone();
 
-            // This is how UtpTransports should be handled async
+            // This is how TcpTransports should be handled async
 
             // Create a vector to hold all the join handles
             let mut join_set = JoinSet::new();
@@ -343,7 +324,7 @@ mod tests {
 
             // Start handling mpsc messages from the join set
             tokio::spawn(async move {
-               utp_transport_handler.handle_commands(tx).await.unwrap();
+               tcp_transport_handler.handle_commands(tx).await.unwrap();
             });
 
             // Await the join_set.spawn()
@@ -368,14 +349,14 @@ mod tests {
 
    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
    #[traced_test]
-   async fn test_utp_incoming_handshake() {
+   async fn test_tcp_incoming_handshake() {
       // Generate random info hash and peer IDs
       let info_hash = InfoHash::new(rand::random::<[u8; 20]>());
       let server_peer_id = Hash::new(rand::random::<[u8; 20]>());
       let client_peer_id = Hash::new(rand::random::<[u8; 20]>());
 
-      let server_addr = SocketAddr::from(([127, 0, 0, 1], 9881));
-      let client_addr = SocketAddr::from(([127, 0, 0, 1], 9882));
+      let server_addr = SocketAddr::from(([127, 0, 0, 1], 9883));
+      let client_addr = SocketAddr::from(([127, 0, 0, 1], 9884));
 
       // Create shared info hash for both sides
       let info_hash_arc = Arc::new(info_hash);
@@ -387,7 +368,7 @@ mod tests {
       set.spawn(async move {
          // Create server transport
          info!("Server listening on {}", server_addr);
-         let protocol = UtpProtocol::new(Some(server_addr)).await;
+         let protocol = TcpProtocol::new(Some(server_addr)).await;
          let mut server_transport =
             TransportHandler::new(protocol, Arc::new(server_peer_id), info_hash_arc);
          // Accept incoming connection
@@ -423,7 +404,7 @@ mod tests {
          tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
          // Create client transport
-         let protocol = UtpProtocol::new(Some(client_addr)).await;
+         let protocol = TcpProtocol::new(Some(client_addr)).await;
          let mut client_transport =
             TransportHandler::new(protocol, Arc::new(client_peer_id), info_hash_clone);
 
@@ -473,6 +454,6 @@ mod tests {
          client_result.clone().err()
       );
 
-      info!("uTP handshake test completed successfully");
+      info!("TCP handshake test completed successfully");
    }
 }
