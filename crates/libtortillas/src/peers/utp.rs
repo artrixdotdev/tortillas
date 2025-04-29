@@ -51,7 +51,6 @@ impl TransportProtocol for UtpProtocol {
    /// <https://wiki.theory.org/BitTorrentSpecification#Handshake>
    ///
    /// <https://www.bittorrent.org/beps/bep_0003.html>
-   #[instrument(skip(self), fields(peer = %peer, id = %id, info_hash = %info_hash))]
    async fn connect_peer(
       &mut self,
       peer: &mut Peer,
@@ -309,7 +308,7 @@ mod tests {
             // Create a single uTP transport instance
             let client_peer_id = Hash::new(rand::random::<[u8; 20]>());
             let client_port: u16 = random_range(20001..30000);
-            let client_addr = SocketAddr::from(([127, 0, 0, 1], client_port));
+            let client_addr = SocketAddr::from(([0, 0, 0, 0], client_port));
 
             info!("Running transport on {client_addr}");
 
