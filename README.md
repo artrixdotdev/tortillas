@@ -10,17 +10,18 @@ We plan to support:
 
 - uTP peer connections
 - TCP peer connections
-- Webtorrent (WSS) peer connections
+- WebTorrent (WebRTC) peer connections
 
 We currently support:
 
 - Handling Magnet URIs
 - Handling Torrent files
+- uTP peer handshakes
+- TCP peer handshakes
 
 We are currently working on (this may be a little bit out of date, feel free to ask/open an issue):
 
-- uTP peer connections
-- TCP peer connections
+- Webtorrent (WebRTC) peer handshakes/initial connections
 
 ## Testing
 
