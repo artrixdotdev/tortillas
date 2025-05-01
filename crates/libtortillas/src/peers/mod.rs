@@ -22,6 +22,7 @@ pub mod messages;
 pub mod tcp;
 mod transport_messages;
 pub mod utp;
+pub mod webrtc;
 pub type PeerKey = SocketAddr;
 
 /// Represents a BitTorrent peer with connection state and statistics
