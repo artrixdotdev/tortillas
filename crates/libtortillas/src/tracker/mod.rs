@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use http::HttpTracker;
 use rand::random_range;
 use serde::{
-   Deserialize,
    de::{self, Visitor},
+   Deserialize,
 };
 use std::{fmt, net::SocketAddr};
 use tokio::sync::mpsc;
@@ -13,6 +13,7 @@ use udp::UdpTracker;
 use crate::{hashes::InfoHash, peers::Peer};
 pub mod http;
 pub mod udp;
+pub mod wss;
 
 #[async_trait]
 pub trait TrackerTrait: Clone {
