@@ -9,7 +9,7 @@ anyhow = "1.0"
 serde_bencode = "^0.2.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_qs = "0.14.0"
-sha1 = {version = "0.10.6", optional = true}
+sha1 = {version = "0.10.6" }
 hex = "0.4.3"
 reqwest = "0.12.13"
 serde_repr = "0.1.20"
@@ -23,14 +23,8 @@ librqbit-utp = "0.2.3"
 bitvec = "1.0.1"
 webrtc = "0.12.0"
 tokio-tungstenite = {version = "0.26.2", features=["rustls-tls-native-roots"]}
-rustls = {version = "0.23.26", optional = true}
-
-[features]
-rustls-tls-native-roots = ["__rustls-tls", "rustls-native-certs"]
-rustls-tls-webpki-roots = ["__rustls-tls", "webpki-roots"]
-__rustls-tls = ["rustls", "rustls-pki-types", "tokio-rustls", "stream", "tokio-tungstenite/__rustls-tls", "handshake"]
-stream = []
-handshake = ["tokio-tungstenite/handshake"]
+rustls = { version = "0.23.26"  }
+tokio-rustls = "0.26.2"
 
 [dependencies.rustls-native-certs]
 optional = true
@@ -43,11 +37,6 @@ version = "0.26.0"
 [dependencies.rustls-pki-types]
 optional = true
 version = "1.0"
-
-[dependencies.tokio-rustls]
-optional = true
-version = "0.26.0"
-default-features = false
 
 [dev-dependencies]
 tracing-test = "0.2.5"

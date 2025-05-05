@@ -1,16 +1,18 @@
-use std::{collections::HashMap, net::IpAddr, str::FromStr, sync::Arc};
-
 use anyhow::Result;
 use async_trait::async_trait;
+use std::{collections::HashMap, net::IpAddr, str::FromStr, sync::Arc};
 use tokio::sync::Mutex;
+use tracing::error;
 use webrtc::{
    api::{
       interceptor_registry::register_default_interceptors, media_engine::MediaEngine, APIBuilder,
    },
-   data_channel::RTCDataChannel,
+   data_channel::{data_channel_init::RTCDataChannelInit, RTCDataChannel},
    ice_transport::ice_server::RTCIceServer,
    interceptor::registry::Registry,
-   peer_connection::{configuration::RTCConfiguration, RTCPeerConnection},
+   peer_connection::{
+      configuration::RTCConfiguration, offer_answer_options::RTCOfferOptions, RTCPeerConnection,
+   },
 };
 
 use crate::{
@@ -22,7 +24,7 @@ use super::{Peer, PeerKey, TransportProtocol};
 
 #[derive(Clone)]
 pub struct WebRTCProtocol {
-   pub socket: Arc<RTCPeerConnection>,
+   pub connection: Arc<RTCPeerConnection>,
    pub peers: HashMap<PeerKey, Arc<Mutex<(Peer, RTCDataChannel)>>>,
 }
 
@@ -57,7 +59,7 @@ impl WebRTCProtocol {
       };
       let peer_connection = Arc::new(api.new_peer_connection(config).await.unwrap());
       WebRTCProtocol {
-         socket: peer_connection,
+         connection: peer_connection,
          peers: HashMap::new(),
       }
    }
@@ -66,13 +68,37 @@ impl WebRTCProtocol {
 #[async_trait]
 #[allow(unused_variables)]
 impl TransportProtocol for WebRTCProtocol {
+   /// Some helpful information:
+   /// <https://w3c.github.io/webrtc-pc/#dom-rtcdatachannelinit>
+   /// <https://webrtc.org/getting-started/peer-connections-advanced>
    async fn connect_peer(
       &mut self,
       peer: &mut Peer,
       id: Arc<Hash<20>>,
       info_hash: Arc<InfoHash>,
    ) -> Result<PeerKey, PeerTransportError> {
-      Ok(PeerKey::new(IpAddr::from_str("192.168.1.0").unwrap(), 1234))
+      // let options = Some(RTCDataChannelInit {
+      //    ordered: Some(true),
+      //    ..Default::default()
+      // });
+      // let data_channel = self
+      //    .connection
+      //    .create_data_channel("data", options)
+      //    .await
+      //    .map_err(|e| error!("Failed to create data channel!"))
+      //    .unwrap();
+
+      let offer_options = Some(RTCOfferOptions {
+         voice_activity_detection: false,
+         ice_restart: true,
+      });
+
+      let sdp_description = self.connection.create_offer(offer_options).await.unwrap();
+      self
+         .connection
+         .set_local_description(sdp_description)
+         .await
+         .unwrap();
    }
    async fn send_data(&mut self, to: PeerKey, data: Vec<u8>) -> Result<(), PeerTransportError> {
       Ok(())
