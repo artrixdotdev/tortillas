@@ -4,9 +4,13 @@ use http::HttpTracker;
 use rand::random_range;
 use serde::{
    de::{self, Visitor},
-   Deserialize,
+   Deserialize, Serialize,
 };
-use std::{fmt, net::SocketAddr};
+use std::{
+   fmt,
+   net::{Ipv4Addr, SocketAddr},
+   str::FromStr,
+};
 use tokio::sync::mpsc;
 use udp::UdpTracker;
 
@@ -21,6 +25,42 @@ pub trait TrackerTrait: Clone {
    async fn stream_peers(&mut self) -> Result<mpsc::Receiver<Vec<Peer>>>;
 
    async fn get_peers(&mut self) -> Result<Vec<Peer>>;
+}
+
+/// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum Event {
+   Started,
+   Completed,
+   Stopped,
+   Empty,
+}
+
+/// Tracker request. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TrackerRequest {
+   ip: Option<Ipv4Addr>,
+   port: u16,
+   uploaded: u8,
+   downloaded: u8,
+   left: Option<u8>,
+   event: Event,
+   peer_tracker_addr: SocketAddr,
+}
+
+impl TrackerRequest {
+   pub fn new(peer_tracker_addr: Option<SocketAddr>) -> TrackerRequest {
+      TrackerRequest {
+         ip: None,
+         port: 6881,
+         uploaded: 0,
+         downloaded: 0,
+         left: None,
+         event: Event::Stopped,
+         peer_tracker_addr: peer_tracker_addr
+            .unwrap_or(SocketAddr::from_str("0.0.0.0:6881").unwrap()),
+      }
+   }
 }
 
 /// An Announce URI from a torrent file or magnet URI.

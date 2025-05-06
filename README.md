@@ -33,6 +33,10 @@ We use [Nextest](https://nexte.st/) for testing. You may have to install Nextest
 
 Please keep in mind that as of April 6th, 2025, this library is not complete.
 
+### A small note about WebSocket (WS) trackers
+
+Generally speaking, this project refers to WebSockets as WSS (Web Sockets Secured), not WS. Consequently, you'll see files/structs/etc. with names such as `wss.rs`, `WssTracker`, and so on. Keep in mind that these files/structs/etc. refer to both secure and unsecured WebSockets.
+
 ### Handshaking with peers
 
 #### uTP

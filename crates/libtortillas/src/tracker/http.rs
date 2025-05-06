@@ -1,5 +1,5 @@
 /// See https://www.bittorrent.org/beps/bep_0003.html
-use super::{Peer, TrackerTrait};
+use super::{Peer, TrackerRequest, TrackerTrait};
 use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::{Hash, InfoHash},
@@ -7,12 +7,11 @@ use crate::{
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{
-   Deserialize, Serialize,
    de::{self, Visitor},
+   Deserialize, Serialize,
 };
 use std::{
    net::{Ipv4Addr, SocketAddr},
-   str::FromStr,
    time::Duration,
 };
 use tokio::{sync::mpsc, time::sleep};
@@ -20,47 +19,10 @@ use tokio::{sync::mpsc, time::sleep};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // REMOVE SOON
 pub struct TrackerResponse {
    pub interval: usize,
    #[serde(deserialize_with = "deserialize_peers")]
    pub peers: Vec<Peer>,
-}
-
-/// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Event {
-   Started,
-   Completed,
-   Stopped,
-   Empty,
-}
-
-/// Tracker request. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct TrackerRequest {
-   ip: Option<Ipv4Addr>,
-   port: u16,
-   uploaded: u8,
-   downloaded: u8,
-   left: Option<u8>,
-   event: Event,
-   peer_tracker_addr: SocketAddr,
-}
-
-impl TrackerRequest {
-   pub fn new(peer_tracker_addr: Option<SocketAddr>) -> TrackerRequest {
-      TrackerRequest {
-         ip: None,
-         port: 6881,
-         uploaded: 0,
-         downloaded: 0,
-         left: None,
-         event: Event::Stopped,
-         peer_tracker_addr: peer_tracker_addr
-            .unwrap_or(SocketAddr::from_str("0.0.0.0:6881").unwrap()),
-      }
-   }
 }
 
 /// Struct for handling tracker over HTTP
