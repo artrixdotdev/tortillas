@@ -10,9 +10,12 @@ use std::{
    fmt,
    net::{Ipv4Addr, SocketAddr},
    str::FromStr,
+   time::Duration,
 };
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::sleep};
+use tracing::{trace, warn};
 use udp::UdpTracker;
+use wss::WssTracker;
 
 use crate::{hashes::InfoHash, peers::Peer};
 pub mod http;
@@ -20,9 +23,41 @@ pub mod udp;
 pub mod wss;
 
 #[async_trait]
-pub trait TrackerTrait: Clone {
+pub trait TrackerTrait: Clone + 'static {
    /// Acts as a wrapper function for get_peers. Should be spawned with tokio::spawn.
-   async fn stream_peers(&mut self) -> Result<mpsc::Receiver<Vec<Peer>>>;
+   async fn stream_peers(&mut self) -> Result<mpsc::Receiver<Vec<Peer>>> {
+      let (tx, rx) = mpsc::channel(100);
+
+      // Not *super* cheap clone, but not awful
+      let mut tracker = self.clone();
+      // Very cheap clone
+      let interval = self.get_interval().clone();
+
+      let tx = tx.clone();
+      // no pre‑captured interval – always read the latest value
+      tokio::spawn(async move {
+         loop {
+            let peers = tracker.get_peers().await.unwrap();
+            trace!(
+               "Successfully made request to get peers: {}",
+               peers.last().unwrap()
+            );
+
+            // stop gracefully if the receiver was dropped
+            if tx.send(peers).await.is_err() {
+               warn!("Receiver dropped – stopping peer stream");
+               break;
+            }
+
+            // pick up possibly updated interval (never sleep 0s)
+            let delay = interval.max(1);
+            sleep(Duration::from_secs(delay as u64)).await;
+         }
+      });
+      Ok(rx)
+   }
+
+   fn get_interval(&self) -> u32;
 
    async fn get_peers(&mut self) -> Result<Vec<Peer>>;
 }
@@ -98,7 +133,15 @@ impl Tracker {
 
             Ok(tracker.get_peers().await.unwrap())
          }
-         Tracker::Websocket(_) => todo!(),
+         Tracker::Websocket(uri) => {
+            let port: u16 = random_range(1024..65535);
+            let mut tracker = WssTracker::new(
+               uri.clone(),
+               info_hash,
+               Some(SocketAddr::from(([0, 0, 0, 0], port))),
+            );
+            Ok(tracker.get_peers().await.unwrap())
+         }
       }
    }
 

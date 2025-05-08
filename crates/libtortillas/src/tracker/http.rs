@@ -10,11 +10,7 @@ use serde::{
    de::{self, Visitor},
    Deserialize, Serialize,
 };
-use std::{
-   net::{Ipv4Addr, SocketAddr},
-   time::Duration,
-};
-use tokio::{sync::mpsc, time::sleep};
+use std::net::{Ipv4Addr, SocketAddr};
 
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -74,31 +70,8 @@ fn urlencode(t: &[u8; 20]) -> String {
 /// Fetches peers from tracker over HTTP and returns a stream of [Peers](Peer)
 #[async_trait]
 impl TrackerTrait for HttpTracker {
-   async fn stream_peers(&mut self) -> Result<mpsc::Receiver<Vec<Peer>>> {
-      let (tx, rx) = mpsc::channel(100);
-      let mut tracker = self.clone();
-      let tx = tx.clone();
-      // no pre‑captured interval – always read the latest value
-      tokio::spawn(async move {
-         loop {
-            let peers = tracker.get_peers().await.unwrap();
-            trace!(
-               "Successfully made request to get peers: {}",
-               peers.last().unwrap()
-            );
-
-            // stop gracefully if the receiver was dropped
-            if tx.send(peers).await.is_err() {
-               warn!("Receiver dropped – stopping peer stream");
-               break;
-            }
-
-            // pick up possibly updated interval (never sleep 0s)
-            let delay = tracker.interval.max(1);
-            sleep(Duration::from_secs(delay as u64)).await;
-         }
-      });
-      Ok(rx)
+   fn get_interval(&self) -> u32 {
+      self.interval
    }
 
    #[instrument(skip(self))]

@@ -2,12 +2,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use std::{collections::HashMap, net::IpAddr, str::FromStr, sync::Arc};
 use tokio::sync::Mutex;
-use tracing::error;
 use webrtc::{
    api::{
       interceptor_registry::register_default_interceptors, media_engine::MediaEngine, APIBuilder,
    },
-   data_channel::{data_channel_init::RTCDataChannelInit, RTCDataChannel},
+   data_channel::RTCDataChannel,
    ice_transport::ice_server::RTCIceServer,
    interceptor::registry::Registry,
    peer_connection::{
