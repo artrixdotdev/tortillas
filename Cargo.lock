@@ -1836,6 +1836,7 @@ dependencies = [
  "async-trait",
  "bitvec",
  "futures",
+ "futures-channel",
  "hex",
  "librqbit-utp",
  "num_enum",

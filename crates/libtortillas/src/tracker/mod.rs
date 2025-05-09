@@ -31,7 +31,7 @@ pub trait TrackerTrait: Clone + 'static {
       // Not *super* cheap clone, but not awful
       let mut tracker = self.clone();
       // Very cheap clone
-      let interval = self.get_interval().clone();
+      let interval = self.get_interval();
 
       let tx = tx.clone();
       // no pre‑captured interval – always read the latest value
@@ -64,6 +64,7 @@ pub trait TrackerTrait: Clone + 'static {
 
 /// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Event {
    Started,
    Completed,

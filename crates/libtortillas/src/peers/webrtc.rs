@@ -87,17 +87,18 @@ impl TransportProtocol for WebRTCProtocol {
       //    .map_err(|e| error!("Failed to create data channel!"))
       //    .unwrap();
 
-      let offer_options = Some(RTCOfferOptions {
-         voice_activity_detection: false,
-         ice_restart: true,
-      });
-
-      let sdp_description = self.connection.create_offer(offer_options).await.unwrap();
-      self
-         .connection
-         .set_local_description(sdp_description)
-         .await
-         .unwrap();
+      // let offer_options = Some(RTCOfferOptions {
+      //    voice_activity_detection: false,
+      //    ice_restart: true,
+      // });
+      //
+      // let sdp_description = self.connection.create_offer(offer_options).await.unwrap();
+      // self
+      //    .connection
+      //    .set_local_description(sdp_description)
+      //    .await
+      //    .unwrap();
+      Ok(PeerKey::new(IpAddr::from_str("192.168.1.1").unwrap(), 1234))
    }
    async fn send_data(&mut self, to: PeerKey, data: Vec<u8>) -> Result<(), PeerTransportError> {
       Ok(())

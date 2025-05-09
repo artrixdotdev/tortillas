@@ -27,6 +27,7 @@ tokio-tungstenite = {version = "0.26.2", features=["rustls-tls-native-roots"]}
 rustls = { version = "0.23.26"  }
 tokio-rustls = "0.26.2"
 futures = "0.3.31"
+futures-channel = "0.3.31"
 
 [dependencies.rustls-native-certs]
 optional = true

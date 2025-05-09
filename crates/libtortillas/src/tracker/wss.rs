@@ -8,7 +8,7 @@ use futures::SinkExt;
 use serde_json::Value;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
-use tracing::{debug, trace};
+use tracing::{debug, error, trace};
 
 use crate::hashes::Hash;
 use crate::{hashes::InfoHash, peers::Peer};
@@ -47,7 +47,12 @@ impl TrackerTrait for WssTracker {
    /// It should be noted that WebSockets are supposed to communicate in JSON. (This makes our
    /// lives very easy though)
    async fn get_peers(&mut self) -> Result<Vec<Peer>> {
-      let (stream, _) = connect_async(&self.uri).await.unwrap();
+      let (stream, _) = connect_async(&self.uri)
+         .await
+         .map_err(|e| {
+            error!("Error connecting to peer: {}", e);
+         })
+         .unwrap();
       let (mut write, mut read) = stream.split();
       trace!("Connected to WSS tracker at {}", self.uri);
 
@@ -57,35 +62,58 @@ impl TrackerTrait for WssTracker {
       // {tracker_request_as_json,info_hash:"xyz",peer_id:"abc"}
       tracker_request_as_json.pop();
       let request = format!(
-         "{},\"info_hash\":\"{}\",\"peer_id\":\"{}\"}}",
+         "{},\"info_hash\":\"{}\",\"peer_id\":\"{}\",\"action\":\"announce\"}}",
          tracker_request_as_json, self.info_hash, self.peer_id
       );
 
       trace!("Request json generated: {}", request);
-      let message = Message::text(tracker_request_as_json);
+      let message = Message::from(request);
 
       trace!("Sending message to tracker");
-      write.send(message).await;
+      write
+         .send(message)
+         .await
+         .map_err(|e| {
+            error!("Error sending message: {e}");
+         })
+         .unwrap();
+      write
+         .flush()
+         .await
+         .map_err(|e| {
+            error!("Error sending message: {e}");
+         })
+         .unwrap();
 
       trace!("Recieving message from tracker");
 
       // This section of code is completely and utterly scuffed. self.read.collect() refuses to
       // work, so this is what we're stuck with for now.
-      let mut output = "".to_string();
-      while let Some(message) = read.next().await {
-         let data = message.unwrap().into_text().unwrap().to_string();
-         output += &data;
-      }
+      let output = read
+         .next()
+         .await
+         .unwrap()
+         .unwrap()
+         .into_text()
+         .unwrap()
+         .to_string();
+
+      trace!("Message recieved: {}", output);
 
       // Output should be a vec of peers
       let res_json: Value = serde_json::from_str(&output).unwrap();
 
+      let json = res_json.as_object().unwrap();
+      if json.contains_key("failure reason") {
+         panic!("Error: {}", json.get("failure reason").unwrap());
+      }
+
       let arr = res_json.as_array().unwrap();
       let mut res = vec![];
-      for i in 0..(arr.len()) {
-         let ip = IpAddr::from_str(arr[i]["ip"].as_str().unwrap()).unwrap();
+      for peer in arr {
+         let ip = IpAddr::from_str(peer["ip"].as_str().unwrap()).unwrap();
 
-         let port = arr[i]["port"].as_u64().unwrap();
+         let port = peer["port"].as_u64().unwrap();
          let peer = Peer::new(ip, port.try_into().unwrap());
          res.push(peer);
       }
@@ -94,5 +122,51 @@ impl TrackerTrait for WssTracker {
 
    fn get_interval(&self) -> u32 {
       self.interval
+   }
+}
+
+#[cfg(test)]
+mod tests {
+
+   use crate::tracker::TrackerTrait;
+   use tracing_test::traced_test;
+
+   use crate::{
+      parser::{MagnetUri, MetaInfo},
+      tracker::wss::WssTracker,
+   };
+
+   // Support for WSS trackers still needs to be tested
+   #[tokio::test]
+   #[traced_test]
+   async fn test_get_peers_with_ws_tracker() {
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/zenshuu.txt");
+      let contents = tokio::fs::read_to_string(path).await.unwrap();
+      let metainfo = MagnetUri::parse(contents).await.unwrap();
+      match metainfo {
+         MetaInfo::MagnetUri(magnet) => {
+            let info_hash = magnet.info_hash();
+            // From <https://github.com/ngosang/trackerslist/blob/master/trackers_all_ws.txt>
+            let uri = "ws://tracker.files.fm:7072/announce".into();
+
+            let mut wss_tracker = WssTracker::new(uri, info_hash.unwrap(), None);
+
+            // Make request
+            let res = WssTracker::get_peers(&mut wss_tracker)
+               .await
+               .expect("Issue when unwrapping result of get_peers");
+
+            // Spawn a task to re-fetch the latest list of peers at a given interval
+            // let mut rx = wss_tracker.stream_peers().await.unwrap();
+            //
+            // let peers = rx.recv().await.unwrap();
+            //
+            // let peer = &peers[0];
+            // assert!(peer.ip.is_ipv4());
+         }
+         _ => panic!("Expected Torrent"),
+      }
    }
 }
