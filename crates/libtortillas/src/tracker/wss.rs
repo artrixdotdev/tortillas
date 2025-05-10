@@ -5,6 +5,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use futures::SinkExt;
+use rustls::crypto::CryptoProvider;
+use rustls::SupportedCipherSuite;
 use serde_json::Value;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
@@ -47,6 +49,7 @@ impl TrackerTrait for WssTracker {
    /// It should be noted that WebSockets are supposed to communicate in JSON. (This makes our
    /// lives very easy though)
    async fn get_peers(&mut self) -> Result<Vec<Peer>> {
+      trace!("Attemping connection to WSS tracker: {}", self.uri);
       let (stream, _) = connect_async(&self.uri)
          .await
          .map_err(|e| {
@@ -128,27 +131,58 @@ impl TrackerTrait for WssTracker {
 #[cfg(test)]
 mod tests {
 
-   use crate::tracker::TrackerTrait;
+   use crate::{parser::TorrentFile, tracker::TrackerTrait};
    use tracing_test::traced_test;
 
-   use crate::{
-      parser::{MagnetUri, MetaInfo},
-      tracker::wss::WssTracker,
-   };
+   use crate::{parser::MetaInfo, tracker::wss::WssTracker};
 
-   // Support for WSS trackers still needs to be tested
+   // TO TEST:
+   // Using stream_peers()
+
+   #[tokio::test]
+   #[traced_test]
+   async fn test_get_peers_with_wss_tracker() {
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/torrents/big-buck-bunny.torrent");
+
+      let metainfo = TorrentFile::parse(path).await.unwrap();
+      match metainfo {
+         MetaInfo::Torrent(torrent) => {
+            let info_hash = torrent.info.hash();
+            let uri = "wss://tracker.btorrent.xyz".into();
+
+            let mut wss_tracker = WssTracker::new(uri, info_hash.unwrap(), None);
+
+            // Make request
+            let res = WssTracker::get_peers(&mut wss_tracker)
+               .await
+               .expect("Issue when unwrapping result of get_peers");
+
+            // Spawn a task to re-fetch the latest list of peers at a given interval
+            // let mut rx = wss_tracker.stream_peers().await.unwrap();
+            //
+            // let peers = rx.recv().await.unwrap();
+            //
+            // let peer = &peers[0];
+            // assert!(peer.ip.is_ipv4());
+         }
+         _ => panic!("Expected Torrent"),
+      }
+   }
+
    #[tokio::test]
    #[traced_test]
    async fn test_get_peers_with_ws_tracker() {
       let path = std::env::current_dir()
          .unwrap()
-         .join("tests/magneturis/zenshuu.txt");
-      let contents = tokio::fs::read_to_string(path).await.unwrap();
-      let metainfo = MagnetUri::parse(contents).await.unwrap();
+         .join("tests/torrents/big-buck-bunny.torrent");
+
+      let metainfo = TorrentFile::parse(path).await.unwrap();
       match metainfo {
-         MetaInfo::MagnetUri(magnet) => {
-            let info_hash = magnet.info_hash();
-            // From <https://github.com/ngosang/trackerslist/blob/master/trackers_all_ws.txt>
+         MetaInfo::Torrent(torrent) => {
+            let info_hash = torrent.info.hash();
+            // From https://github.com/ngosang/trackerslist/blob/master/trackers_all_ws.txt
             let uri = "ws://tracker.files.fm:7072/announce".into();
 
             let mut wss_tracker = WssTracker::new(uri, info_hash.unwrap(), None);
