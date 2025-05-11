@@ -5,14 +5,13 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::StreamExt;
 use futures::SinkExt;
-use rustls::crypto::CryptoProvider;
-use rustls::SupportedCipherSuite;
 use serde_json::Value;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, trace};
 
 use crate::hashes::Hash;
+use crate::tracker::urlencode;
 use crate::{hashes::InfoHash, peers::Peer};
 
 use super::{TrackerRequest, TrackerTrait};
@@ -136,15 +135,12 @@ mod tests {
 
    use crate::{parser::MetaInfo, tracker::wss::WssTracker};
 
-   // TO TEST:
-   // Using stream_peers()
-
    #[tokio::test]
    #[traced_test]
    async fn test_get_peers_with_wss_tracker() {
       let path = std::env::current_dir()
          .unwrap()
-         .join("tests/torrents/big-buck-bunny.torrent");
+         .join("tests/torrents/sintel.torrent");
 
       let metainfo = TorrentFile::parse(path).await.unwrap();
       match metainfo {
@@ -154,18 +150,13 @@ mod tests {
 
             let mut wss_tracker = WssTracker::new(uri, info_hash.unwrap(), None);
 
-            // Make request
-            let res = WssTracker::get_peers(&mut wss_tracker)
-               .await
-               .expect("Issue when unwrapping result of get_peers");
-
             // Spawn a task to re-fetch the latest list of peers at a given interval
-            // let mut rx = wss_tracker.stream_peers().await.unwrap();
-            //
-            // let peers = rx.recv().await.unwrap();
-            //
-            // let peer = &peers[0];
-            // assert!(peer.ip.is_ipv4());
+            let mut rx = wss_tracker.stream_peers().await.unwrap();
+
+            let peers = rx.recv().await.unwrap();
+
+            let peer = &peers[0];
+            assert!(peer.ip.is_ipv4());
          }
          _ => panic!("Expected Torrent"),
       }
@@ -182,23 +173,19 @@ mod tests {
       match metainfo {
          MetaInfo::Torrent(torrent) => {
             let info_hash = torrent.info.hash();
-            // From https://github.com/ngosang/trackerslist/blob/master/trackers_all_ws.txt
+            // From https://github.com/ngosang/trackerslist/blob/master/trackers_all_ws.txt. May
+            // not be consistently present, as this repo is automatically updated/changed
             let uri = "ws://tracker.files.fm:7072/announce".into();
 
             let mut wss_tracker = WssTracker::new(uri, info_hash.unwrap(), None);
 
-            // Make request
-            let res = WssTracker::get_peers(&mut wss_tracker)
-               .await
-               .expect("Issue when unwrapping result of get_peers");
-
             // Spawn a task to re-fetch the latest list of peers at a given interval
-            // let mut rx = wss_tracker.stream_peers().await.unwrap();
-            //
-            // let peers = rx.recv().await.unwrap();
-            //
-            // let peer = &peers[0];
-            // assert!(peer.ip.is_ipv4());
+            let mut rx = wss_tracker.stream_peers().await.unwrap();
+
+            let peers = rx.recv().await.unwrap();
+
+            let peer = &peers[0];
+            assert!(peer.ip.is_ipv4());
          }
          _ => panic!("Expected Torrent"),
       }

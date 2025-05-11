@@ -22,6 +22,19 @@ pub mod http;
 pub mod udp;
 pub mod wss;
 
+fn urlencode(t: &[u8; 20]) -> String {
+   let mut encoded = String::with_capacity(3 * t.len());
+
+   for &byte in t {
+      encoded.push('%');
+
+      let byte = hex::encode([byte]);
+      encoded.push_str(&byte);
+   }
+
+   encoded
+}
+
 #[async_trait]
 pub trait TrackerTrait: Clone + 'static {
    /// Acts as a wrapper function for get_peers. Should be spawned with tokio::spawn.

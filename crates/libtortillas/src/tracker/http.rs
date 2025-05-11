@@ -3,6 +3,7 @@ use super::{Peer, TrackerRequest, TrackerTrait};
 use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::{Hash, InfoHash},
+   tracker::urlencode,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -52,19 +53,6 @@ impl HttpTracker {
          info_hash,
       }
    }
-}
-
-fn urlencode(t: &[u8; 20]) -> String {
-   let mut encoded = String::with_capacity(3 * t.len());
-
-   for &byte in t {
-      encoded.push('%');
-
-      let byte = hex::encode([byte]);
-      encoded.push_str(&byte);
-   }
-
-   encoded
 }
 
 /// Fetches peers from tracker over HTTP and returns a stream of [Peers](Peer)
