@@ -17,10 +17,33 @@ use tracing::{trace, warn};
 use udp::UdpTracker;
 use wss::WssTracker;
 
-use crate::{hashes::InfoHash, peers::Peer};
+use crate::{
+   hashes::{Hash, InfoHash},
+   peers::Peer,
+};
 pub mod http;
 pub mod udp;
 pub mod wss;
+
+// To be completely frank, I don't completely understand what we're doing here.
+// Courtesy of <https://github.com/greatest-ape/aquatic/blob/master/crates/ws_protocol/src/common.rs>
+fn hash_to_utf8(hash: Hash<20>) -> String {
+   let mut arr = [0u8; 20];
+   let info_hash_string = hash.to_string();
+   let mut char_iter = info_hash_string.chars();
+   for a in arr.iter_mut() {
+      if let Some(c) = char_iter.next() {
+         if c as u32 > 255 {
+            panic!("Character not in single byte range")
+         }
+
+         *a = c as u8;
+      } else {
+         panic!("Info hash was not 20 bytes");
+      }
+   }
+   String::from_utf8(arr.to_vec()).unwrap()
+}
 
 fn urlencode(t: &[u8; 20]) -> String {
    let mut encoded = String::with_capacity(3 * t.len());

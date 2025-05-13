@@ -11,7 +11,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, trace};
 
 use crate::hashes::Hash;
-use crate::tracker::urlencode;
+use crate::tracker::hash_to_utf8;
 use crate::{hashes::InfoHash, peers::Peer};
 
 use super::{TrackerRequest, TrackerTrait};
@@ -49,6 +49,7 @@ impl TrackerTrait for WssTracker {
    /// lives very easy though)
    async fn get_peers(&mut self) -> Result<Vec<Peer>> {
       trace!("Attemping connection to WSS tracker: {}", self.uri);
+
       let (stream, _) = connect_async(&self.uri)
          .await
          .map_err(|e| {
@@ -58,14 +59,16 @@ impl TrackerTrait for WssTracker {
       let (mut write, mut read) = stream.split();
       trace!("Connected to WSS tracker at {}", self.uri);
 
-      trace!("Generated request parameters");
       let mut tracker_request_as_json = serde_json::to_string(&self.params).unwrap();
+      trace!("Generated request parameters");
 
       // {tracker_request_as_json,info_hash:"xyz",peer_id:"abc"}
       tracker_request_as_json.pop();
       let request = format!(
          "{},\"info_hash\":\"{}\",\"peer_id\":\"{}\",\"action\":\"announce\"}}",
-         tracker_request_as_json, self.info_hash, self.peer_id
+         tracker_request_as_json,
+         hash_to_utf8(self.info_hash),
+         hash_to_utf8(self.peer_id)
       );
 
       trace!("Request json generated: {}", request);
