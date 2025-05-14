@@ -176,7 +176,8 @@ impl Tracker {
                uri.clone(),
                info_hash,
                Some(SocketAddr::from(([0, 0, 0, 0], port))),
-            );
+            )
+            .await;
             Ok(tracker.get_peers().await.unwrap())
          }
       }
