@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -8,6 +9,7 @@ use futures::SinkExt;
 use serde_json::Value;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, trace};
@@ -136,6 +138,49 @@ impl TrackerTrait for WssTracker {
 
       self.interval = res_json.get("interval").unwrap().as_u64().unwrap() as u32;
 
+      // SDP offer & answer
+      // See <https://www.rfc-editor.org/rfc/rfc8866.html#name-sdp-specification> for more
+      // information
+
+      let timestamp = UNIX_EPOCH.elapsed().unwrap().as_secs();
+      let raw_sdp_offer = format!(
+         "{{\"offer\":\"\
+         v=0\
+         o=- {} {} IN IP4 127.0.0.1\
+         s=-\
+         \"}}",
+         timestamp, timestamp
+      );
+
+      trace!("Sending SDP message: {}", raw_sdp_offer);
+
+      let sdp_offer = Message::from(raw_sdp_offer);
+
+      self
+         .write
+         .lock()
+         .await
+         .send(sdp_offer)
+         .await
+         .map_err(|e| {
+            error!("Error sending message: {e}");
+         })
+         .unwrap();
+
+      let sdp_answer = self
+         .read
+         .lock()
+         .await
+         .next()
+         .await
+         .unwrap()
+         .unwrap()
+         .into_text()
+         .unwrap()
+         .to_string();
+
+      trace!("SDP message result: {}", sdp_answer);
+
       // let arr = res_json.as_array().unwrap();
       // let mut res = vec![];
       // for peer in arr {
@@ -146,6 +191,8 @@ impl TrackerTrait for WssTracker {
       //    res.push(peer);
       // }
       // Ok(res)
+
+      // tmp
       let res: Vec<Peer> = vec![];
       Ok(res)
    }
