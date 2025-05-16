@@ -1,15 +1,15 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use futures::stream::{SplitSink, SplitStream, StreamExt};
 use futures::SinkExt;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
-use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, trace};
@@ -29,6 +29,57 @@ pub struct WssTracker {
    interval: u32,
    write: Arc<Mutex<SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>>>,
    read: Arc<Mutex<SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>>>,
+}
+
+/// This is primarily used for serializing offers. Try torrenting a file with
+/// <https://instant.webtorrent.dev/> and check out how the offers are "shaped" in the network tab.
+#[derive(Serialize, Deserialize)]
+struct WssOffer {
+   #[serde(rename(deserialize = "type"))]
+   offer_type: String,
+   sdp: String,
+   offer_id: String,
+}
+
+impl WssOffer {
+   pub fn new(sdp: String) -> Self {
+      let mut offer_id_bytes = [0u8; 20];
+      rand::fill(&mut offer_id_bytes);
+      let offer_id = Hash::new(offer_id_bytes);
+      WssOffer {
+         offer_type: "offer".into(),
+         sdp,
+         offer_id: hash_to_utf8(offer_id),
+      }
+   }
+}
+
+/// Again, please try torrenting using a site like <https://instant.webtorrent.dev/> and examine
+/// the format that offers are sent in. We need to serialize offers in a format like this:
+/// [
+///    {
+///      "offer": {
+///         ...
+///      }
+///    }
+///    {
+///      "offer": {
+///         ...
+///      }
+///    }
+/// ]
+/// Hence, the easiest thing to do is use a wrapper.
+#[derive(Serialize, Deserialize)]
+struct WssOfferWrapper {
+   offer: WssOffer,
+}
+
+impl WssOfferWrapper {
+   pub fn new(sdp: String) -> Self {
+      WssOfferWrapper {
+         offer: WssOffer::new(sdp),
+      }
+   }
 }
 
 impl WssTracker {
@@ -64,23 +115,51 @@ impl WssTracker {
          read: arc_read,
       }
    }
+
+   /// Prototype. Headers will be changed.
+   pub async fn recv_peers(&mut self) -> bool {
+      true
+   }
 }
 
 #[async_trait]
 impl TrackerTrait for WssTracker {
-   /// It should be noted that WebSockets are supposed to communicate in JSON. (This makes our
+   /// It should be noted that WebSockets are intended to communicate in JSON. (This makes our
    /// lives very easy though)
+   ///
+   /// This does not initially return a list of peers, so to speak. Instead, it sends an SDP offer
+   /// to the tracker, and the tracker forwards that SDP offer to relevant peers. Those peers then
+   /// return an SDP answer to the tracker, which forwards the answer to us.
    async fn get_peers(&mut self) -> Result<Vec<Peer>> {
       let mut tracker_request_as_json = serde_json::to_string(&self.params).unwrap();
       trace!("Generated request parameters");
 
-      // {tracker_request_as_json,info_hash:"xyz",peer_id:"abc"}
+      // Generate offers
+      let numwant = 5;
+      let mut offers = vec![];
+      let timestamp = UNIX_EPOCH.elapsed()?.as_secs();
+      let raw_sdp_offer = format!(
+         "{{\"offer\":\"\
+         v=0\
+         o=- {} {} IN IP4 127.0.0.1\
+         s=-\
+         \"}}",
+         timestamp, timestamp
+      );
+      for _i in 0..numwant {
+         let offer = WssOffer::new(raw_sdp_offer.clone());
+         offers.push(offer);
+      }
+
+      // {tracker_request_as_json,info_hash:"xyz",peer_id:"abc",numwant:5}
       tracker_request_as_json.pop();
       let request = format!(
-         "{},\"info_hash\":\"{}\",\"peer_id\":\"{}\",\"action\":\"announce\"}}",
+         "{},\"info_hash\":\"{}\",\"peer_id\":\"{}\",\"action\":\"announce\",\"numwant\":{}, \"offer\": {} }}",
          tracker_request_as_json,
          hash_to_utf8(self.info_hash),
-         hash_to_utf8(self.peer_id)
+         hash_to_utf8(self.peer_id),
+         numwant,
+         serde_json::to_string(&offers)?
       );
 
       trace!("Request json generated: {}", request);
@@ -142,55 +221,7 @@ impl TrackerTrait for WssTracker {
       // See <https://www.rfc-editor.org/rfc/rfc8866.html#name-sdp-specification> for more
       // information
 
-      let timestamp = UNIX_EPOCH.elapsed().unwrap().as_secs();
-      let raw_sdp_offer = format!(
-         "{{\"offer\":\"\
-         v=0\
-         o=- {} {} IN IP4 127.0.0.1\
-         s=-\
-         \"}}",
-         timestamp, timestamp
-      );
-
-      trace!("Sending SDP message: {}", raw_sdp_offer);
-
-      let sdp_offer = Message::from(raw_sdp_offer);
-
-      self
-         .write
-         .lock()
-         .await
-         .send(sdp_offer)
-         .await
-         .map_err(|e| {
-            error!("Error sending message: {e}");
-         })
-         .unwrap();
-
-      let sdp_answer = self
-         .read
-         .lock()
-         .await
-         .next()
-         .await
-         .unwrap()
-         .unwrap()
-         .into_text()
-         .unwrap()
-         .to_string();
-
-      trace!("SDP message result: {}", sdp_answer);
-
-      // let arr = res_json.as_array().unwrap();
-      // let mut res = vec![];
-      // for peer in arr {
-      //    let ip = IpAddr::from_str(peer["ip"].as_str().unwrap()).unwrap();
-      //
-      //    let port = peer["port"].as_u64().unwrap();
-      //    let peer = Peer::new(ip, port.try_into().unwrap());
-      //    res.push(peer);
-      // }
-      // Ok(res)
+      // ???
 
       // tmp
       let res: Vec<Peer> = vec![];

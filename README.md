@@ -33,9 +33,13 @@ We use [Nextest](https://nexte.st/) for testing. You may have to install Nextest
 
 Please keep in mind that as of April 6th, 2025, this library is not complete.
 
-### A small note about WebSocket (WS) trackers
+### A few notes about WebSocket (WS) trackers
 
 Generally speaking, this project refers to WebSockets as WSS (Web Sockets Secured), not WS. Consequently, you'll see files/structs/etc. with names such as `wss.rs`, `WssTracker`, and so on. Keep in mind that these files/structs/etc. refer to both secure and unsecured WebSockets.
+
+Additionally, WebSocket peers/trackers act in a very different manner in comparison to HTTPS/UDP peers/trackers. The general workflow for this process can be found in this very helpful diagram posted by [Akshat Schan on LinkedIn.](https://www.linkedin.com/pulse/edition-2-diving-deep-webrtc-webtorrent-p2p-streaming-akshat-sachan-bbtrc/)
+
+![Diagram of WSS peers/trackers](https://media.licdn.com/dms/image/v2/D5612AQG1-HvLrx6lAQ/article-inline_image-shrink_1000_1488/B56ZYjsOvSGUAY-/0/1744355520685?e=1752710400&v=beta&t=y9C53nrL8sl5aTjmhSdj20_8idD0PEzBMkhLiJGhvCE)
 
 ### Handshaking with peers
 
