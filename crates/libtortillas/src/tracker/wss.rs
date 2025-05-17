@@ -35,21 +35,16 @@ pub struct WssTracker {
 /// <https://instant.webtorrent.dev/> and check out how the offers are "shaped" in the network tab.
 #[derive(Serialize, Deserialize)]
 struct WssOffer {
-   #[serde(rename(deserialize = "type"))]
+   #[serde(rename = "type")]
    offer_type: String,
    sdp: String,
-   offer_id: String,
 }
 
 impl WssOffer {
    pub fn new(sdp: String) -> Self {
-      let mut offer_id_bytes = [0u8; 20];
-      rand::fill(&mut offer_id_bytes);
-      let offer_id = Hash::new(offer_id_bytes);
       WssOffer {
          offer_type: "offer".into(),
          sdp,
-         offer_id: hash_to_utf8(offer_id),
       }
    }
 }
@@ -61,23 +56,30 @@ impl WssOffer {
 ///      "offer": {
 ///         ...
 ///      }
+///      "offer_id": ...
 ///    }
 ///    {
 ///      "offer": {
 ///         ...
 ///      }
+///      "offer_id": ...
 ///    }
 /// ]
 /// Hence, the easiest thing to do is use a wrapper.
 #[derive(Serialize, Deserialize)]
 struct WssOfferWrapper {
    offer: WssOffer,
+   offer_id: String,
 }
 
 impl WssOfferWrapper {
    pub fn new(sdp: String) -> Self {
+      let mut offer_id_bytes = [0u8; 20];
+      rand::fill(&mut offer_id_bytes);
+      let offer_id = Hash::new(offer_id_bytes);
       WssOfferWrapper {
          offer: WssOffer::new(sdp),
+         offer_id: hash_to_utf8(offer_id),
       }
    }
 }
@@ -139,22 +141,20 @@ impl TrackerTrait for WssTracker {
       let mut offers = vec![];
       let timestamp = UNIX_EPOCH.elapsed()?.as_secs();
       let raw_sdp_offer = format!(
-         "{{\"offer\":\"\
-         v=0\
-         o=- {} {} IN IP4 127.0.0.1\
-         s=-\
-         \"}}",
+         "v=0\
+         o=- {} {} IN IP4 0.0.0.0\
+         s=-\"",
          timestamp, timestamp
       );
       for _i in 0..numwant {
-         let offer = WssOffer::new(raw_sdp_offer.clone());
+         let offer = WssOfferWrapper::new(raw_sdp_offer.clone());
          offers.push(offer);
       }
 
       // {tracker_request_as_json,info_hash:"xyz",peer_id:"abc",numwant:5}
       tracker_request_as_json.pop();
       let request = format!(
-         "{},\"info_hash\":\"{}\",\"peer_id\":\"{}\",\"action\":\"announce\",\"numwant\":{}, \"offer\": {} }}",
+         "{},\"info_hash\":\"{}\",\"peer_id\":\"{}\",\"action\":\"announce\",\"numwant\":{}, \"offers\": {} }}",
          tracker_request_as_json,
          hash_to_utf8(self.info_hash),
          hash_to_utf8(self.peer_id),
@@ -217,13 +217,18 @@ impl TrackerTrait for WssTracker {
 
       self.interval = res_json.get("interval").unwrap().as_u64().unwrap() as u32;
 
-      // SDP offer & answer
-      // See <https://www.rfc-editor.org/rfc/rfc8866.html#name-sdp-specification> for more
-      // information
+      let answers = self
+         .read
+         .lock()
+         .await
+         .next()
+         .await
+         .unwrap()
+         .unwrap()
+         .into_text()
+         .unwrap()
+         .to_string();
 
-      // ???
-
-      // tmp
       let res: Vec<Peer> = vec![];
       Ok(res)
    }
