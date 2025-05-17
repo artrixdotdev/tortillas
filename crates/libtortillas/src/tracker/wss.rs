@@ -15,7 +15,7 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, trace};
 
 use crate::hashes::Hash;
-use crate::tracker::hash_to_utf8;
+use crate::tracker::{hash_to_utf8, Event};
 use crate::{hashes::InfoHash, peers::Peer};
 
 use super::{TrackerRequest, TrackerTrait};
@@ -133,6 +133,7 @@ impl TrackerTrait for WssTracker {
    /// to the tracker, and the tracker forwards that SDP offer to relevant peers. Those peers then
    /// return an SDP answer to the tracker, which forwards the answer to us.
    async fn get_peers(&mut self) -> Result<Vec<Peer>> {
+      self.params.event = Event::Started;
       let mut tracker_request_as_json = serde_json::to_string(&self.params).unwrap();
       trace!("Generated request parameters");
 
