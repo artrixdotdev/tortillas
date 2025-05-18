@@ -45,6 +45,24 @@ fn hash_to_utf8(hash: Hash<20>) -> String {
    String::from_utf8(arr.to_vec()).unwrap()
 }
 
+fn encode_to_byte_string(arr: &[u8; 20]) -> String {
+   let mut result = String::new();
+   for c in arr {
+      // If it's a valid character, do this.
+      if 32 <= *c && *c <= 196 {
+         result.push(*c as char);
+      }
+      // Otherwise, just escape it
+      else {
+         let mut tmp = String::new();
+         tmp.push_str("\\u00");
+         tmp.push_str(&c.to_string());
+         result.push_str(&tmp);
+      }
+   }
+   result
+}
+
 fn urlencode(t: &[u8; 20]) -> String {
    let mut encoded = String::with_capacity(3 * t.len());
 
