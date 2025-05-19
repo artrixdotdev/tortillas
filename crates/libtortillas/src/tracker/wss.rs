@@ -159,7 +159,7 @@ impl TrackerTrait for WssTracker {
       let request = format!(
          "{},\"info_hash\":\"{}\",\"peer_id\":\"{}\",\"action\":\"announce\",\"numwant\":{}, \"offers\": {} }}",
          tracker_request_as_json,
-         String::from_utf8_lossy(self.info_hash.as_bytes()),
+         encode_to_byte_string(self.info_hash.as_bytes()),
          hash_to_utf8(self.peer_id),
          numwant,
          serde_json::to_string(&offers)?

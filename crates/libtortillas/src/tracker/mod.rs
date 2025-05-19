@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use core::str;
 use http::HttpTracker;
 use rand::random_range;
 use serde::{
@@ -48,8 +49,8 @@ fn hash_to_utf8(hash: Hash<20>) -> String {
 fn encode_to_byte_string(arr: &[u8; 20]) -> String {
    let mut result = String::new();
    for c in arr {
-      // If it's a valid character, do this.
-      if 32 <= *c && *c <= 196 {
+      // If it's a valid character (not a control character), do this.
+      if *c > 31 && *c < 127 {
          result.push(*c as char);
       }
       // Otherwise, just escape it
