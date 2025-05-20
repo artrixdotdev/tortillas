@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use core::str;
+use hex::FromHex;
 use http::HttpTracker;
 use rand::random_range;
 use serde::{
@@ -26,42 +27,44 @@ pub mod http;
 pub mod udp;
 pub mod wss;
 
-// To be completely frank, I don't completely understand what we're doing here.
-// Courtesy of <https://github.com/greatest-ape/aquatic/blob/master/crates/ws_protocol/src/common.rs>
-fn hash_to_utf8(hash: Hash<20>) -> String {
-   let mut arr = [0u8; 20];
-   let info_hash_string = hash.to_string();
-   let mut char_iter = info_hash_string.chars();
-   for a in arr.iter_mut() {
-      if let Some(c) = char_iter.next() {
-         if c as u32 > 255 {
-            panic!("Character not in single byte range")
+// This is AI generated. But it works.
+fn hash_to_byte_string(hex_str: &str) -> String {
+   // 1) decode hex → raw bytes
+   let bytes = Vec::from_hex(hex_str).expect("invalid hex input");
+
+   // 2) build the escaped string
+   let mut out = String::new();
+   for &b in &bytes {
+      match b {
+         // common C-style escapes
+         0x00 => out.push_str(r"\0"),
+         0x07 => out.push_str(r"\a"),
+         0x08 => out.push_str(r"\b"),
+         0x09 => out.push_str(r"\t"),
+         0x0A => out.push_str(r"\n"),
+         0x0B => out.push_str(r"\v"),
+         0x0C => out.push_str(r"\f"),
+         0x0D => out.push_str(r"\r"),
+
+         // any other C0 control → \u00XX
+         0x01..=0x06 | 0x0E..=0x1F => {
+            out.push_str(&format!(r"\u{:04x}", b));
          }
 
-         *a = c as u8;
-      } else {
-         panic!("Info hash was not 20 bytes");
-      }
-   }
-   String::from_utf8(arr.to_vec()).unwrap()
-}
+         // printable ASCII
+         0x20..=0x7E => {
+            out.push(b as char);
+         }
 
-fn encode_to_byte_string(arr: &[u8; 20]) -> String {
-   let mut result = String::new();
-   for c in arr {
-      // If it's a valid character (not a control character), do this.
-      if *c > 31 && *c < 127 {
-         result.push(*c as char);
-      }
-      // Otherwise, just escape it
-      else {
-         let mut tmp = String::new();
-         tmp.push_str("\\u00");
-         tmp.push_str(&c.to_string());
-         result.push_str(&tmp);
+         // high-bit set → ISO-8859-1 codepoint
+         _ => {
+            let ch = char::from_u32(b as u32).expect("byte → char failed");
+            out.push(ch);
+         }
       }
    }
-   result
+
+   out
 }
 
 fn urlencode(t: &[u8; 20]) -> String {

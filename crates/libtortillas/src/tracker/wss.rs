@@ -15,7 +15,7 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, trace};
 
 use crate::hashes::Hash;
-use crate::tracker::{encode_to_byte_string, hash_to_utf8, Event};
+use crate::tracker::{hash_to_byte_string, Event};
 use crate::{hashes::InfoHash, peers::Peer};
 
 use super::{TrackerRequest, TrackerTrait};
@@ -79,7 +79,7 @@ impl WssOfferWrapper {
       let offer_id = Hash::new(offer_id_bytes);
       WssOfferWrapper {
          offer: WssOffer::new(sdp),
-         offer_id: hash_to_utf8(offer_id),
+         offer_id: hash_to_byte_string(&offer_id.to_string()),
       }
    }
 }
@@ -152,15 +152,13 @@ impl TrackerTrait for WssTracker {
          offers.push(offer);
       }
 
-      trace!("{}", encode_to_byte_string(self.info_hash.as_bytes()));
-
-      // {tracker_request_as_json,info_hash:"xyz",peer_id:"abc",numwant:5}
+      // {tracker_request_as_json,info_hash:"xyz",peer_id:"abc",action:"announce",numwant:5,offers:{...}}
       tracker_request_as_json.pop();
       let request = format!(
          "{},\"info_hash\":\"{}\",\"peer_id\":\"{}\",\"action\":\"announce\",\"numwant\":{}, \"offers\": {} }}",
          tracker_request_as_json,
-         encode_to_byte_string(self.info_hash.as_bytes()),
-         hash_to_utf8(self.peer_id),
+         hash_to_byte_string(&self.info_hash.to_string()),
+         hash_to_byte_string(&self.peer_id.to_string()),
          numwant,
          serde_json::to_string(&offers)?
       );
