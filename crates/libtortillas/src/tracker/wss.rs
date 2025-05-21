@@ -13,6 +13,9 @@ use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, trace};
+use webrtc::sdp::description::media::{MediaName, RangedPort};
+use webrtc::sdp::description::session::Origin;
+use webrtc::sdp::{MediaDescription, SessionDescription};
 
 use crate::hashes::Hash;
 use crate::tracker::{hash_to_byte_string, Event};
@@ -138,15 +141,55 @@ impl TrackerTrait for WssTracker {
       trace!("Generated request parameters");
 
       // Generate offers
-      let numwant = 5;
+      let numwant = 1;
+
       let mut offers = vec![];
       let timestamp = UNIX_EPOCH.elapsed()?.as_secs();
-      let raw_sdp_offer = format!(
-         "v=0\
-         o=- {} {} IN IP4 0.0.0.0\
-         s=-\"",
-         timestamp, timestamp
-      );
+
+      // SDP Offer
+      // FIXME: Should unicast address actually be 0.0.0.0? All of WebTorrent's offers/answers are
+      // 0.0.0.0 or 127.0.0.1
+      // FIXME: media_name port?
+      let sdp_offer = SessionDescription {
+         version: 0,
+         origin: Origin {
+            username: "-".to_string(),
+            session_id: timestamp,
+            session_version: timestamp,
+            network_type: "IN".to_string(),
+            address_type: "IP4".to_string(),
+            unicast_address: "0.0.0.0".to_string(),
+         },
+         session_name: "SDP offer from WebTorrent peer".to_string(),
+         session_information: None,
+         uri: None,
+         email_address: None,
+         phone_number: None,
+         connection_information: None,
+         bandwidth: vec![],
+         time_descriptions: vec![],
+         time_zones: vec![],
+         encryption_key: None,
+         attributes: vec![],
+         media_descriptions: vec![MediaDescription {
+            media_name: MediaName {
+               media: "application".to_string(),
+               port: RangedPort {
+                  value: 27764,
+                  range: None,
+               },
+               protos: vec!["UDP".to_string(), "DTLS".to_string(), "SCTP".to_string()],
+               formats: vec!["webrtc-datachannel".to_string()],
+            },
+            media_title: None,
+            connection_information: None,
+            bandwidth: vec![],
+            encryption_key: None,
+            attributes: vec![],
+         }],
+      };
+      let raw_sdp_offer = sdp_offer.marshal();
+
       for _i in 0..numwant {
          let offer = WssOfferWrapper::new(raw_sdp_offer.clone());
          offers.push(offer);
