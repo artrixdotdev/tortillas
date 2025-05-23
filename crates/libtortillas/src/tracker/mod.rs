@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use http::HttpTracker;
 use rand::random_range;
 use serde::{
-   Deserialize,
    de::{self, Visitor},
+   Deserialize,
 };
 use std::{fmt, net::SocketAddr};
 use tokio::sync::mpsc;
