@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use anyhow::{Ok, Result};
 use rand::random_range;
-use tokio::sync::Mutex;
+use tokio::sync::{mpsc, Mutex};
+use tracing::error;
 
 use crate::{
    hashes::InfoHash,
@@ -49,13 +50,13 @@ impl TorrentEngine {
 
    /// Returns the announce list. Flattens vec of vecs if the initial input was a torrent file (or
    /// more specifically, a path to a torrent file)
-   fn get_announce_list(self) -> Vec<Tracker> {
-      match self.metainfo {
-         // MetaInfo::Torrent(file) => file.announce_list.unwrap(),
-         MetaInfo::MagnetUri(magnet) => magnet.announce_list.unwrap(),
+   fn get_announce_list(&self) -> Vec<Tracker> {
+      // Is cloning the announce_list efficient? Probably not. But hey, it's Rust.
+      match &self.metainfo {
+         MetaInfo::MagnetUri(magnet) => magnet.announce_list.clone().unwrap(),
          MetaInfo::Torrent(file) => {
             // Vec of vecs
-            let flattened = file.announce_list.unwrap().into_iter().flatten();
+            let flattened = file.announce_list.clone().unwrap().into_iter().flatten();
 
             // No longer a vec of vecs
             flattened.collect()
@@ -71,17 +72,45 @@ impl TorrentEngine {
       }
    }
 
-   // TODO: Implement stream_peers and concurrently update self.peers
+   /// FIXME: Do trackers send duplicate peers? How do we handle that?
    /// Contacts all given trackers for a list of peers
-   async fn get_all_peers(&self, announce_list: Vec<Tracker>) {
+   async fn get_all_peers(
+      &mut self,
+      announce_list: &[Tracker],
+   ) -> Result<mpsc::Receiver<Vec<Peer>>> {
+      let (tx, rx) = mpsc::channel(100);
+      // Get an rx for each tracker
+      let mut rx_list = vec![];
       for tracker in announce_list.iter() {
-         tracker.get_peers(self.get_info_hash()).await.unwrap();
+         rx_list.push(tracker.stream_peers(self.get_info_hash()).await.unwrap());
       }
+
+      // Repeatedely gather data from each rx and update self.peers as new peers are added
+      // rx
+      tokio::spawn(async move {
+         loop {
+            for rx in rx_list.iter_mut() {
+               // Gather any peers that a tracker returned
+               let mut cur_peers = vec![];
+               while let Some(peer_vec) = rx.recv().await {
+                  cur_peers.extend_from_slice(&peer_vec);
+               }
+
+               // Update self.peers
+               tx.send(cur_peers)
+                  .await
+                  .map_err(|e| error!("Error when sending peers back to torrent(): {}", e))
+                  .unwrap();
+            }
+         }
+      });
+
+      Ok(rx)
    }
 
    /// The full torrenting process, summarized in a single function. As of 5/23/25, the return
    /// value of this function is temporary.
-   pub async fn torrent(mut self, input: String) -> Result<()> {
+   pub async fn torrent(&mut self, input: String) -> Result<()> {
       self.metainfo = self.parse_input(input).await;
 
       let info_hash = self.get_info_hash();
@@ -91,6 +120,7 @@ impl TorrentEngine {
 
       // TODO
       // Call get_all_peers
+      let rx = self.get_all_peers(&announce_list);
 
       // Handle edge cases (ex. no peers)
 

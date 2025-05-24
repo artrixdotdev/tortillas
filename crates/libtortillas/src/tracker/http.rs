@@ -7,8 +7,8 @@ use crate::{
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{
-   Deserialize, Serialize,
    de::{self, Visitor},
+   Deserialize, Serialize,
 };
 use std::{
    net::{Ipv4Addr, SocketAddr},
@@ -116,6 +116,7 @@ impl TrackerTrait for HttpTracker {
       let (tx, rx) = mpsc::channel(100);
       let mut tracker = self.clone();
       let tx = tx.clone();
+
       // no pre‑captured interval – always read the latest value
       tokio::spawn(async move {
          loop {
@@ -132,7 +133,7 @@ impl TrackerTrait for HttpTracker {
             }
 
             // pick up possibly updated interval (never sleep 0s)
-            let delay = tracker.interval.max(1);
+            let delay = tracker.interval.min(1);
             sleep(Duration::from_secs(delay as u64)).await;
          }
       });

@@ -496,7 +496,6 @@ impl TrackerTrait for UdpTracker {
       let (tx, rx) = mpsc::channel(100);
 
       // Clone any data needed by the spawned task
-      let interval = self.interval;
       let tx = tx.clone();
       let mut tracker = self.clone();
 
@@ -514,7 +513,8 @@ impl TrackerTrait for UdpTracker {
                break;
             }
 
-            sleep(Duration::from_secs(interval.into())).await;
+            let delay = tracker.interval.min(1);
+            sleep(Duration::from_secs(delay as u64)).await;
          }
       });
       Ok(rx)

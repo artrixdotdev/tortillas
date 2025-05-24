@@ -25,7 +25,7 @@ pub trait TrackerTrait: Clone {
 /// An Announce URI from a torrent file or magnet URI.
 /// <https://www.bittorrent.org/beps/bep_0012.html>
 /// Example: <udp://tracker.opentrackr.org:1337/announce>
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Tracker {
    /// HTTP Spec
    /// <https://www.bittorrent.org/beps/bep_0003.html>
@@ -37,6 +37,7 @@ pub enum Tracker {
 }
 
 impl Tracker {
+   /// Gets peers based off of given tracker
    pub async fn get_peers(&self, info_hash: InfoHash) -> Result<Vec<Peer>> {
       match self {
          Tracker::Http(uri) => {
@@ -56,6 +57,21 @@ impl Tracker {
             .unwrap();
 
             Ok(tracker.get_peers().await.unwrap())
+         }
+         Tracker::Websocket(_) => todo!(),
+      }
+   }
+
+   /// Streams peers based off of given tracker
+   pub async fn stream_peers(&self, info_hash: InfoHash) -> Result<mpsc::Receiver<Vec<Peer>>> {
+      match self {
+         Tracker::Http(uri) => {
+            let mut tracker = HttpTracker::new(uri.clone(), info_hash, None);
+            Ok(tracker.stream_peers().await.unwrap())
+         }
+         Tracker::Udp(uri) => {
+            let mut tracker = HttpTracker::new(uri.clone(), info_hash, None);
+            Ok(tracker.stream_peers().await.unwrap())
          }
          Tracker::Websocket(_) => todo!(),
       }
