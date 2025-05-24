@@ -10,7 +10,6 @@ We plan to support:
 
 - uTP peer connections
 - TCP peer connections
-- Webtorrent (WSS) peer connections
 
 We currently support:
 
@@ -21,6 +20,10 @@ We are currently working on (this may be a little bit out of date, feel free to 
 
 - uTP peer connections
 - TCP peer connections
+
+We do NOT plan to support:
+
+- WebTorrent connections: Until WebTorrent's documentation and source code is greatly improved, it is not worth the time and energy required to decipher the many protocols and undocumented spec(s) that WebTorrent utilizes (SDP, DTLS, WebRTC -- more specifically how WebTorrent treats and uses these protocols).
 
 ## Testing
 
