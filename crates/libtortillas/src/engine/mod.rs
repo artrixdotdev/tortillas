@@ -6,12 +6,14 @@ use tokio::sync::{mpsc, Mutex};
 use tracing::{error, trace};
 
 use crate::{
-   hashes::InfoHash,
+   errors::TorrentEngineError,
+   hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
-   peers::{tcp::TcpProtocol, utp::UtpProtocol, Peer, TransportHandler},
+   peers::{tcp::TcpProtocol, utp::UtpProtocol, Peer, TransportHandler, TransportProtocol},
    tracker::Tracker,
 };
 
+/// The name of this enum is intentionally awkward as to highlight the difference between [TransportProtocol] and [TransportProtocolS]
 pub enum TransportProtocolS {
    Tcp(TcpProtocol),
    Utp(UtpProtocol),
@@ -24,19 +26,43 @@ pub enum TorrentInput {
 }
 
 /// The main engine that any outside libraries/programs should be interacting with. Automatically handles all supported protocols.
-pub struct TorrentEngine {
-   transport: TransportProtocolS,
+///
+/// TorrentEngine only supports torrenting a single file at a time (at the moment).
+pub struct TorrentEngine<T: TransportProtocol> {
+   handler: TransportHandler<T>,
    metainfo: MetaInfo,
    peers: Arc<Mutex<Vec<Peer>>>,
 }
 
-impl TorrentEngine {
+impl<T> TorrentEngine<T>
+where
+   T: TransportProtocol + 'static,
+{
+   async fn new(input: String, protocol: T) -> Self {
+      trace!("Parsing input to torrent()");
+      let metainfo = TorrentEngine::<T>::parse_input(input).await;
+
+      trace!("Creating new transport handler");
+      let peer_id = Hash::new(rand::random::<[u8; 20]>());
+      let handler = TransportHandler::new(
+         protocol,
+         Arc::new(peer_id),
+         Arc::new(metainfo.info_hash().unwrap()),
+      );
+
+      TorrentEngine {
+         handler,
+         metainfo,
+         peers: Arc::new(Mutex::new(vec![])),
+      }
+   }
+
    /// Parses the input to the torrent function. Can either be a Magnet URI or a valid file path a
    /// torrent file. The definition of a "valid file path" depends on where you're running the
    /// program from.
-   async fn parse_input(&self, input: String) -> MetaInfo {
-      // Is this entirely accurate? Hopefully.
-      match &input[0..8] {
+   pub async fn parse_input(input: String) -> MetaInfo {
+      // Is this accurate 100% of the time? Hopefully.
+      match &input[0..7] {
          // Is a Magnet URI
          "magnet:" => {
             trace!("Input was Magnet URI");
@@ -101,8 +127,9 @@ impl TorrentEngine {
       let mut rx_list = vec![];
 
       trace!("Making initial requests to trackers");
+      let info_hash = self.get_info_hash();
       for tracker in announce_list.iter() {
-         rx_list.push(tracker.stream_peers(self.get_info_hash()).await.unwrap());
+         rx_list.push(tracker.stream_peers(info_hash).await.unwrap());
       }
 
       // Repeatedly gather data from each rx and update self.peers as new peers are added
@@ -131,10 +158,9 @@ impl TorrentEngine {
 
    /// The full torrenting process, summarized in a single function. As of 5/23/25, the return
    /// value of this function is temporary.
-   pub async fn torrent(&mut self, input: String) -> Result<()> {
-      trace!("Parsing input to torrent()");
-      self.metainfo = self.parse_input(input).await;
-
+   ///
+   /// TODO: This function will likely return a torrented file, or a path to a locally torrented file.
+   pub async fn torrent(&mut self) -> anyhow::Result<(), anyhow::Error> {
       let info_hash = self.get_info_hash();
 
       let announce_list: Vec<Tracker> = self.get_announce_list();
@@ -143,6 +169,7 @@ impl TorrentEngine {
       // Call get_all_peers
       let mut rx = self.get_all_peers(&announce_list).await.unwrap();
 
+      // FIXME: Will this run infinitely?
       // Get initial peers
       trace!("Getting initial peers...");
       while let Some(res) = rx.recv().await {
@@ -150,6 +177,10 @@ impl TorrentEngine {
       }
 
       // Handle edge cases (ex. no peers)
+      if self.peers.lock().await.is_empty() {
+         trace!("No peers were provided by trackers.");
+         return Err(TorrentEngineError::InsufficientPeers.into());
+      };
 
       // Create single instance of transport
 
@@ -157,7 +188,38 @@ impl TorrentEngine {
 
       // Wait for bitfield from each peer
 
+      // Receive pieces
+
       // TEMPORARY
       Ok(())
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use std::net::SocketAddr;
+
+   use rand::random_range;
+   use tracing_test::traced_test;
+
+   use crate::{engine::TorrentEngine, peers::tcp::TcpProtocol};
+
+   // THIS TEST IS NOT COMPLETE!!! (DELETEME when torrent() is completed)
+   // Until torrent() is fully implemented, this test is not complete.
+   // The purpose of this test at this point in time is to ensure that torrent() works to the expected point.
+   #[tokio::test]
+   #[traced_test]
+   async fn test_torrent_with_magnet_uri_over_tcp() {
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/zenshuu.txt");
+      let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
+
+      let client_port: u16 = random_range(20001..30000);
+      let client_addr = SocketAddr::from(([0, 0, 0, 0], client_port));
+      let protocol = TcpProtocol::new(Some(client_addr)).await;
+
+      let mut engine = TorrentEngine::new(magnet_uri, protocol).await;
+      engine.torrent().await.unwrap();
    }
 }

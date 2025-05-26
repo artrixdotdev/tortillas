@@ -2,6 +2,12 @@ use std::net::AddrParseError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+pub enum TorrentEngineError {
+   #[error("No peers were provided by trackers.")]
+   InsufficientPeers,
+}
+
+#[derive(Error, Debug)]
 pub enum TrackerError {
    #[error("Network error: {0}")]
    Network(#[from] std::io::Error),

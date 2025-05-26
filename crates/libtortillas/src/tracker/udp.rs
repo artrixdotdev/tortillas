@@ -524,6 +524,7 @@ impl TrackerTrait for UdpTracker {
    #[instrument(skip(self))]
    async fn get_peers(&mut self) -> anyhow::Result<Vec<Peer>, anyhow::Error> {
       let uri = self.uri.replace("udp://", "");
+      let uri = uri.replace("/announce", "");
       debug!(target_uri = %uri, "Connecting to tracker");
       if self.ready_state != ReadyState::Connected {
          self.socket.connect(&uri).await.map_err(|e| {
