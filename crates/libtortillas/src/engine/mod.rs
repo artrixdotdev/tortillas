@@ -1,4 +1,4 @@
-use std::{collections::HashSet, net::SocketAddr, sync::Arc};
+use std::{collections::HashSet, net::SocketAddr, sync::Arc, thread::sleep, time::Duration};
 
 use anyhow::{Ok, Result};
 use rand::random_range;
@@ -136,7 +136,7 @@ impl TorrentEngine {
 
    /// Contacts all given trackers for a list of peers
    async fn get_all_peers(
-      &mut self,
+      self: Arc<Self>,
       announce_list: &[Tracker],
    ) -> Result<mpsc::Receiver<Vec<Peer>>> {
       let (tx, rx) = mpsc::channel(100);
@@ -177,31 +177,35 @@ impl TorrentEngine {
    /// value of this function is temporary.
    ///
    /// TODO: This function will likely return a torrented file, or a path to a locally torrented file.
-   pub async fn torrent(&mut self) -> anyhow::Result<(), anyhow::Error> {
+   pub async fn torrent(self: Arc<Self>) -> anyhow::Result<(), anyhow::Error> {
       let info_hash = self.get_info_hash();
 
       let announce_list: Vec<Tracker> = self.get_announce_list();
       let port: u16 = random_range(1024..65535);
 
-      // Call get_all_peers
-      let mut rx = self.get_all_peers(&announce_list).await.unwrap();
+      // Start getting peers from tracker
+      let mut rx = self.clone().get_all_peers(&announce_list).await.unwrap();
 
-      // FIXME: Will this run infinitely?
       // Get initial peers
       trace!("Getting initial peers...");
-      while let Some(res) = rx.recv().await {
-         let mut guard = self.peers.lock().await;
-         res.iter().for_each(|peer| {
-            guard.insert(peer.clone());
-         });
-         trace!("Inserted peers from tracker succesfully");
-      }
+      let me = Arc::clone(&self);
+      tokio::spawn(async move {
+         while let Some(res) = rx.recv().await {
+            let mut guard = me.peers.lock().await;
+            res.iter().for_each(|peer| {
+               guard.insert(peer.clone());
+            });
+            trace!("Inserted peers from tracker succesfully");
+         }
+      });
 
       // Handle edge cases (ex. no peers)
-      if self.peers.lock().await.is_empty() {
-         trace!("No peers were provided by trackers.");
-         return Err(TorrentEngineError::InsufficientPeers.into());
-      };
+      // This isn't a good way to do this. Refactor later.
+      //
+      // if self.peers.lock().await.is_empty() {
+      //    trace!("No peers were provided by trackers.");
+      //    return Err(TorrentEngineError::InsufficientPeers.into());
+      // };
 
       // An instance of TransportHandler need not be created, as TransportHandler(s) for all
       // supported protocols are automatically created on initialization of TorrentEngine.
@@ -219,6 +223,8 @@ impl TorrentEngine {
 
 #[cfg(test)]
 mod tests {
+   use std::sync::Arc;
+
    use tracing_test::traced_test;
 
    use crate::engine::TorrentEngine;
@@ -234,7 +240,7 @@ mod tests {
          .join("tests/magneturis/zenshuu.txt");
       let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
 
-      let mut engine = TorrentEngine::new(magnet_uri).await;
+      let engine = Arc::new(TorrentEngine::new(magnet_uri).await);
       engine.torrent().await.unwrap();
    }
 }
