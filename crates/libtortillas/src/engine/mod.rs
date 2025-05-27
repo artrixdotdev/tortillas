@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Ok, Result};
 use rand::random_range;
@@ -9,7 +9,7 @@ use crate::{
    errors::TorrentEngineError,
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
-   peers::{tcp::TcpProtocol, utp::UtpProtocol, Peer, TransportHandler, TransportProtocol},
+   peers::{tcp::TcpProtocol, utp::UtpProtocol, Peer, TransportHandler},
    tracker::Tracker,
 };
 
@@ -28,30 +28,48 @@ pub enum TorrentInput {
 /// The main engine that any outside libraries/programs should be interacting with. Automatically handles all supported protocols.
 ///
 /// TorrentEngine only supports torrenting a single file at a time (at the moment).
-pub struct TorrentEngine<T: TransportProtocol> {
-   handler: TransportHandler<T>,
+///
+/// However, it does support all supported protocols on initialization. In other words, both
+/// tcp_handler and utp_handler are available directly after TorrentEngine::new() is called.
+pub struct TorrentEngine {
+   tcp_handler: TransportHandler<TcpProtocol>,
+   utp_handler: TransportHandler<UtpProtocol>,
    metainfo: MetaInfo,
    peers: Arc<Mutex<Vec<Peer>>>,
 }
 
-impl<T> TorrentEngine<T>
-where
-   T: TransportProtocol + 'static,
-{
-   async fn new(input: String, protocol: T) -> Self {
+impl TorrentEngine {
+   async fn new(input: String) -> Self {
       trace!("Parsing input to torrent()");
-      let metainfo = TorrentEngine::<T>::parse_input(input).await;
+      let metainfo = TorrentEngine::parse_input(input).await;
 
       trace!("Creating new transport handler");
-      let peer_id = Hash::new(rand::random::<[u8; 20]>());
-      let handler = TransportHandler::new(
-         protocol,
-         Arc::new(peer_id),
+
+      // For TCP
+      let tcp_peer_id = Hash::new(rand::random::<[u8; 20]>());
+      let tcp_client_port: u16 = random_range(20001..30000);
+      let tcp_addr = SocketAddr::from(([0, 0, 0, 0], tcp_client_port));
+      let tcp_protocol = TcpProtocol::new(Some(tcp_addr)).await;
+      let tcp_handler = TransportHandler::new(
+         tcp_protocol,
+         Arc::new(tcp_peer_id),
+         Arc::new(metainfo.info_hash().unwrap()),
+      );
+
+      // For uTP
+      let utp_peer_id = Hash::new(rand::random::<[u8; 20]>());
+      let utp_client_port: u16 = random_range(20001..30000);
+      let utp_addr = SocketAddr::from(([0, 0, 0, 0], utp_client_port));
+      let utp_protocol = UtpProtocol::new(Some(utp_addr)).await;
+      let utp_handler = TransportHandler::new(
+         utp_protocol,
+         Arc::new(utp_peer_id),
          Arc::new(metainfo.info_hash().unwrap()),
       );
 
       TorrentEngine {
-         handler,
+         tcp_handler,
+         utp_handler,
          metainfo,
          peers: Arc::new(Mutex::new(vec![])),
       }
@@ -182,7 +200,8 @@ where
          return Err(TorrentEngineError::InsufficientPeers.into());
       };
 
-      // Create single instance of transport
+      // An instance of TransportHandler need not be created, as TransportHandler(s) for all
+      // supported protocols are automatically created on initialization of TorrentEngine.
 
       // Handshake with all given peers
 
@@ -197,12 +216,9 @@ where
 
 #[cfg(test)]
 mod tests {
-   use std::net::SocketAddr;
-
-   use rand::random_range;
    use tracing_test::traced_test;
 
-   use crate::{engine::TorrentEngine, peers::tcp::TcpProtocol};
+   use crate::engine::TorrentEngine;
 
    // THIS TEST IS NOT COMPLETE!!! (DELETEME when torrent() is completed)
    // Until torrent() is fully implemented, this test is not complete.
@@ -215,11 +231,7 @@ mod tests {
          .join("tests/magneturis/zenshuu.txt");
       let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
 
-      let client_port: u16 = random_range(20001..30000);
-      let client_addr = SocketAddr::from(([0, 0, 0, 0], client_port));
-      let protocol = TcpProtocol::new(Some(client_addr)).await;
-
-      let mut engine = TorrentEngine::new(magnet_uri, protocol).await;
+      let mut engine = TorrentEngine::new(magnet_uri).await;
       engine.torrent().await.unwrap();
    }
 }
