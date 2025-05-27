@@ -25,7 +25,8 @@ pub mod utp;
 pub type PeerKey = SocketAddr;
 
 /// Represents a BitTorrent peer with connection state and statistics
-#[derive(Debug, Clone)]
+/// Download rate and upload rate are measured in kilobytes per second.
+#[derive(Eq, PartialEq, Hash, Debug, Clone)]
 pub struct Peer {
    pub ip: IpAddr,
    pub port: u16,
@@ -33,8 +34,8 @@ pub struct Peer {
    pub interested: bool,
    pub am_choking: bool,
    pub am_interested: bool,
-   pub download_rate: f64,
-   pub upload_rate: f64,
+   pub download_rate: u64,
+   pub upload_rate: u64,
    pub pieces: Vec<bool>,
    pub last_optimistic_unchoke: Option<Instant>,
    pub id: Option<Hash<20>>,
@@ -54,8 +55,8 @@ impl Peer {
          interested: false,
          am_choking: true,
          am_interested: false,
-         download_rate: 0.0,
-         upload_rate: 0.0,
+         download_rate: 0,
+         upload_rate: 0,
          pieces: vec![],
          last_optimistic_unchoke: None,
          id: None,

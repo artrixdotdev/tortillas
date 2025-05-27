@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{collections::HashSet, net::SocketAddr, sync::Arc};
 
 use anyhow::{Ok, Result};
 use rand::random_range;
@@ -35,7 +35,7 @@ pub struct TorrentEngine {
    tcp_handler: TransportHandler<TcpProtocol>,
    utp_handler: TransportHandler<UtpProtocol>,
    metainfo: MetaInfo,
-   peers: Arc<Mutex<Vec<Peer>>>,
+   peers: Arc<Mutex<HashSet<Peer>>>,
 }
 
 impl TorrentEngine {
@@ -71,7 +71,7 @@ impl TorrentEngine {
          tcp_handler,
          utp_handler,
          metainfo,
-         peers: Arc::new(Mutex::new(vec![])),
+         peers: Arc::new(Mutex::new(HashSet::new())),
       }
    }
 
@@ -134,7 +134,6 @@ impl TorrentEngine {
       }
    }
 
-   /// FIXME: Do trackers send duplicate peers? How do we handle that?
    /// Contacts all given trackers for a list of peers
    async fn get_all_peers(
       &mut self,
@@ -191,7 +190,11 @@ impl TorrentEngine {
       // Get initial peers
       trace!("Getting initial peers...");
       while let Some(res) = rx.recv().await {
-         self.peers.lock().await.extend(res);
+         let mut guard = self.peers.lock().await;
+         res.iter().for_each(|peer| {
+            guard.insert(peer.clone());
+         });
+         trace!("Inserted peers from tracker succesfully");
       }
 
       // Handle edge cases (ex. no peers)
@@ -225,7 +228,7 @@ mod tests {
    // The purpose of this test at this point in time is to ensure that torrent() works to the expected point.
    #[tokio::test]
    #[traced_test]
-   async fn test_torrent_with_magnet_uri_over_tcp() {
+   async fn test_torrent_with_magnet_uri() {
       let path = std::env::current_dir()
          .unwrap()
          .join("tests/magneturis/zenshuu.txt");

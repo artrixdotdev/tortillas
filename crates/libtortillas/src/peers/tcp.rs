@@ -106,21 +106,15 @@ impl TransportProtocol for TcpProtocol {
       peer.bytes_uploaded += data.len() as u64;
 
       // Calculate upload rate based on a time window
-      let now = Instant::now();
       if let Some(last_time) = peer.last_message_sent {
-         let elapsed_secs = last_time.elapsed().as_secs_f64();
-         if elapsed_secs > 0.0 {
-            // Use an exponential moving average for smoother rate calculation
-            const ALPHA: f64 = 0.3; // Smoothing factor (0.0-1.0)
-            let current_rate = data.len() as f64 / elapsed_secs;
-            peer.upload_rate = if peer.upload_rate > 0.0 {
-               (ALPHA * current_rate) + ((1.0 - ALPHA) * peer.upload_rate)
-            } else {
-               current_rate
-            };
+         let elapsed_secs = last_time.elapsed().as_secs();
+         if elapsed_secs > 0 {
+            let current_rate = data.len() as u64 / elapsed_secs;
+            peer.upload_rate = current_rate;
          }
       }
 
+      let now = Instant::now();
       peer.last_message_sent = Some(now);
       Ok(())
    }
@@ -175,21 +169,15 @@ impl TransportProtocol for TcpProtocol {
          peer.bytes_uploaded += full_length as u64;
 
          // Calculate upload rate based on a time window
-         let now = Instant::now();
          if let Some(last_time) = peer.last_message_received {
-            let elapsed_secs = last_time.elapsed().as_secs_f64();
-            if elapsed_secs > 0.0 {
-               // Use an exponential moving average for smoother rate calculation
-               const ALPHA: f64 = 0.3; // Smoothing factor (0.0-1.0)
-               let current_rate = full_length as f64 / elapsed_secs;
-               peer.download_rate = if peer.download_rate > 0.0 {
-                  (ALPHA * current_rate) + ((1.0 - ALPHA) * peer.download_rate)
-               } else {
-                  current_rate
-               };
+            let elapsed_secs = last_time.elapsed().as_secs();
+            if elapsed_secs > 0 {
+               let current_rate = full_length as u64 / elapsed_secs;
+               peer.download_rate = current_rate;
             }
          }
 
+         let now = Instant::now();
          peer.last_message_received = Some(now);
       };
 
