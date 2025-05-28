@@ -189,13 +189,21 @@ impl TorrentEngine {
       // Get initial peers
       trace!("Getting initial peers...");
       let me = Arc::clone(&self);
+
+      // Note to reader: this may be incorrectly written. It is possible that the while let loop
+      // will immediately stop because rx has not received any messages yet.
       tokio::spawn(async move {
          while let Some(res) = rx.recv().await {
-            let mut guard = me.peers.lock().await;
-            res.iter().for_each(|peer| {
-               guard.insert(peer.clone());
-            });
-            trace!("Inserted peers from tracker succesfully");
+            // This additional scope might not be necessary. But for the sake of confidence that
+            // peers will be unlocked in the appropriate amount of time,
+            // this is what I'm doing.
+            {
+               let mut guard = me.peers.lock().await;
+               res.iter().for_each(|peer| {
+                  guard.insert(peer.clone());
+               });
+               trace!("Inserted peers from tracker succesfully");
+            }
          }
       });
 
