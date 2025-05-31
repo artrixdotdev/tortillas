@@ -20,7 +20,7 @@ use crate::{
 };
 pub mod messages;
 pub mod tcp;
-mod transport_messages;
+pub mod transport_messages;
 pub mod utp;
 pub type PeerKey = SocketAddr;
 
@@ -218,7 +218,7 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
       self.tx.clone()
    }
 
-   async fn handle_commands(
+   pub async fn handle_commands(
       &mut self,
       tx: mpsc::Sender<Result<SocketAddr, PeerTransportError>>,
    ) -> Result<()> {

@@ -2,14 +2,20 @@ use std::{collections::HashSet, net::SocketAddr, sync::Arc, thread::sleep, time:
 
 use anyhow::{Ok, Result};
 use rand::random_range;
-use tokio::sync::{mpsc, Mutex};
+use tokio::{
+   sync::{mpsc, Mutex},
+   task::JoinSet,
+};
 use tracing::{error, trace};
 
 use crate::{
    errors::TorrentEngineError,
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
-   peers::{tcp::TcpProtocol, utp::UtpProtocol, Peer, TransportHandler},
+   peers::{
+      tcp::TcpProtocol, transport_messages::TransportCommand, utp::UtpProtocol, Peer,
+      TransportHandler,
+   },
    tracker::Tracker,
 };
 
@@ -32,8 +38,8 @@ pub enum TorrentInput {
 /// However, it does support all supported protocols on initialization. In other words, both
 /// tcp_handler and utp_handler are available directly after TorrentEngine::new() is called.
 pub struct TorrentEngine {
-   tcp_handler: TransportHandler<TcpProtocol>,
-   utp_handler: TransportHandler<UtpProtocol>,
+   tcp_handler: Arc<Mutex<TransportHandler<TcpProtocol>>>,
+   utp_handler: Arc<Mutex<TransportHandler<UtpProtocol>>>,
    metainfo: MetaInfo,
    peers: Arc<Mutex<HashSet<Peer>>>,
 }
@@ -68,8 +74,8 @@ impl TorrentEngine {
       );
 
       TorrentEngine {
-         tcp_handler,
-         utp_handler,
+         tcp_handler: Arc::new(Mutex::new(tcp_handler)),
+         utp_handler: Arc::new(Mutex::new(utp_handler)),
          metainfo,
          peers: Arc::new(Mutex::new(HashSet::new())),
       }
@@ -219,6 +225,54 @@ impl TorrentEngine {
       // supported protocols are automatically created on initialization of TorrentEngine.
 
       // Handshake with all given peers
+      // If this code seems confusing, refer to test_utp_peer_handshake.
+      {
+         let peers = self.peers.lock().await;
+         let utp_handler_guard = self.utp_handler.lock().await;
+         let handler_tx = utp_handler_guard.sender();
+         let mut join_set = JoinSet::new();
+
+         trace!("Locked peers. Beginning handshake process.");
+
+         // FIXME: How are we supposed to determine whether a peer is operating on TCP or uTP?
+         // Until we figure this out, let's just assume that peers are operating over uTP.
+         //
+         // NOTE: Is this clone() inefficient?
+         for peer in peers.clone().into_iter() {
+            let tx = handler_tx.clone();
+            join_set.spawn(async move {
+               let cmd = TransportCommand::Connect { peer: peer.clone() };
+
+               tx.send(cmd)
+                  .await
+                  .map_err(|e| {
+                     error!(
+                        "An error occured when sending the result back to torrent(): {}",
+                        e
+                     );
+                  })
+                  .unwrap();
+            });
+         }
+
+         let (tx, mut rx) = mpsc::channel(100);
+
+         trace!("Gathering handshakes.");
+
+         let me = Arc::clone(&self);
+         tokio::spawn(async move {
+            // Don't confuse this with the "outer" utp_handler_guard.
+            let mut utp_handler_guard = me.utp_handler.lock().await;
+            utp_handler_guard.handle_commands(tx).await.unwrap();
+         });
+
+         // NOTE: Does this need to be in a separate thread? Ideally, this should be called and we
+         // should immediately move on to the next step.
+         join_set.join_all().await;
+
+         // utp_handler will maintain a hashmap of all successfully connected peers. The key for
+         // the hashmap is the socket address of the peer. See PeerKey.
+      }
 
       // Wait for bitfield from each peer
 
