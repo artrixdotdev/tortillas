@@ -14,7 +14,7 @@ use tokio::{
    sync::Mutex,
    time::Instant,
 };
-use tracing::{debug, error, info, instrument, trace};
+use tracing::{debug, error, info, trace};
 
 #[derive(Clone)]
 pub struct UtpProtocol {

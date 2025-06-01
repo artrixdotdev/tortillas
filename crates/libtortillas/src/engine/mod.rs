@@ -13,7 +13,7 @@ use crate::{
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
    peers::{
-      tcp::TcpProtocol, transport_messages::TransportCommand, utp::UtpProtocol, Peer,
+      tcp::TcpProtocol, transport_messages::TransportCommand, utp::UtpProtocol, Peer, Transport,
       TransportHandler,
    },
    tracker::Tracker,
@@ -37,6 +37,9 @@ pub enum TorrentInput {
 ///
 /// However, it does support all supported protocols on initialization. In other words, both
 /// tcp_handler and utp_handler are available directly after TorrentEngine::new() is called.
+///
+/// It should be noted that TorrentEngine does not seed files at the moment. In other words,
+/// TorrentEngine is a leecher. The ability to seed files will be added in a future commit/issue/pull request.
 pub struct TorrentEngine {
    tcp_handler: Arc<Mutex<TransportHandler<TcpProtocol>>>,
    utp_handler: Arc<Mutex<TransportHandler<UtpProtocol>>>,
@@ -227,7 +230,6 @@ impl TorrentEngine {
       // Handshake with all given peers
       // If this code seems confusing, refer to test_utp_peer_handshake.
       {
-         let peers = self.peers.lock().await;
          let utp_handler_guard = self.utp_handler.lock().await;
          let handler_tx = utp_handler_guard.sender();
          let mut join_set = JoinSet::new();
@@ -237,33 +239,37 @@ impl TorrentEngine {
          // FIXME: How are we supposed to determine whether a peer is operating on TCP or uTP?
          // Until we figure this out, let's just assume that peers are operating over uTP.
          //
-         // NOTE: Is this clone() inefficient?
-         for peer in peers.clone().into_iter() {
-            let tx = handler_tx.clone();
-            join_set.spawn(async move {
-               let cmd = TransportCommand::Connect { peer: peer.clone() };
+         {
+            // NOTE: Is this clone() inefficient?
+            for peer in self.peers.lock().await.clone().into_iter() {
+               let tx = handler_tx.clone();
+               join_set.spawn(async move {
+                  let cmd = TransportCommand::Connect { peer: peer.clone() };
 
-               tx.send(cmd)
-                  .await
-                  .map_err(|e| {
-                     error!(
-                        "An error occured when sending the result back to torrent(): {}",
-                        e
-                     );
-                  })
-                  .unwrap();
-            });
+                  tx.send(cmd)
+                     .await
+                     .map_err(|e| {
+                        error!(
+                           "An error occured when sending the result back to torrent(): {}",
+                           e
+                        );
+                     })
+                     .unwrap();
+               });
+            }
          }
-
-         let (tx, mut rx) = mpsc::channel(100);
+         let (tx, _) = mpsc::channel(100);
 
          trace!("Gathering handshakes.");
 
          let me = Arc::clone(&self);
          tokio::spawn(async move {
-            // Don't confuse this with the "outer" utp_handler_guard.
-            let mut utp_handler_guard = me.utp_handler.lock().await;
-            utp_handler_guard.handle_commands(tx).await.unwrap();
+            me.utp_handler
+               .lock()
+               .await
+               .handle_commands(tx)
+               .await
+               .unwrap();
          });
 
          // NOTE: Does this need to be in a separate thread? Ideally, this should be called and we
@@ -272,9 +278,11 @@ impl TorrentEngine {
 
          // utp_handler will maintain a hashmap of all successfully connected peers. The key for
          // the hashmap is the socket address of the peer. See PeerKey.
-      }
 
-      // Wait for bitfield from each peer
+         // Wait for bitfield from each peer.
+         // Now that we've established a connection to all peers, we use utp_handler.peers
+         // to access & communicate with all given peers.
+      }
 
       // Receive pieces
 
