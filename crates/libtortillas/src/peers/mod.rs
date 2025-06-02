@@ -12,7 +12,7 @@ use tokio::{
    time::{timeout, Instant},
 };
 use tracing::{error, trace};
-use transport_messages::TransportCommand;
+use transport_messages::{TransportCommand, TransportResponse};
 
 use crate::{
    errors::PeerTransportError,
@@ -97,6 +97,10 @@ impl Display for Peer {
 // Generic transport protocol trait that defines behavior for a specific protocol
 #[async_trait]
 pub trait TransportProtocol: Send + Sync + Clone {
+   /// Handshakes with a peer and returns the socket address of the peer. This socket address is
+   /// also a [PeerKey](PeerKey) -- AKA the key to the hashmap of the given protocol. For further
+   /// clarification on this hashmap, please see an implementation of this trait such as
+   /// [UtpProtocol](utp::UtpProtocol)
    async fn connect_peer(
       &mut self,
       peer: &mut Peer,
@@ -104,6 +108,11 @@ pub trait TransportProtocol: Send + Sync + Clone {
       info_hash: Arc<InfoHash>,
    ) -> Result<PeerKey, PeerTransportError>;
    async fn send_data(&mut self, to: PeerKey, data: Vec<u8>) -> Result<(), PeerTransportError>;
+   /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
+   /// use this function.
+   async fn receive_from_peer(&mut self, peer: PeerKey)
+      -> Result<PeerMessages, PeerTransportError>;
+   /// Receives data from any incoming peer. Generally used for accepting a handshake.
    async fn receive_data(
       &mut self,
       info_hash: Arc<InfoHash>,
@@ -220,7 +229,7 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
 
    pub async fn handle_commands(
       &mut self,
-      tx: mpsc::Sender<Result<SocketAddr, PeerTransportError>>,
+      tx: mpsc::Sender<Result<TransportResponse, PeerTransportError>>,
    ) -> Result<()> {
       while let Some(cmd) = self.rx.recv().await {
          let mut transport_clone = self.protocol.clone();
@@ -248,10 +257,45 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
                      {
                         error!("Error occured when sending result back");
                      };
-                  } else if tx_clone.send(res.unwrap()).await.is_err() {
+                  } else if tx_clone
+                     .send(Ok(TransportResponse::Connect(res.unwrap().unwrap())))
+                     .await
+                     .is_err()
+                  {
                      error!("Error occured when sending result back");
                   }
                });
+            }
+            TransportCommand::Receive => {
+               trace!("Receiving bitfield from peer");
+               let info_hash = self.info_hash.clone();
+               let id = self.id.clone();
+
+               // Peers should send a bitfield within two seconds.
+               const TIMEOUT_DURATION: u64 = 2;
+
+               let response = transport_clone.receive_data(info_hash, id);
+               let res = timeout(Duration::from_secs(TIMEOUT_DURATION), response)
+                  .await
+                  .map_err(|e| error!("Error receiving bytes from peer: {}", e));
+               if res.is_err() {
+                  error!("Error receiving bytes from peer");
+                  if tx_clone
+                     .send(Err(PeerTransportError::InvalidPeerResponse(
+                        "Invalid peer response".into(),
+                     )))
+                     .await
+                     .is_err()
+                  {
+                     error!("Error occured when sending result back");
+                  };
+               } else if tx_clone
+                  .send(Ok(TransportResponse::Receive(res.unwrap().unwrap())))
+                  .await
+                  .is_err()
+               {
+                  error!("Error occured when sending result back");
+               }
             }
          }
       }

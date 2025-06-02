@@ -107,6 +107,32 @@ impl TransportProtocol for UtpProtocol {
       Ok(peer.socket_addr())
    }
 
+   async fn receive_from_peer(
+      &mut self,
+      peer: PeerKey,
+   ) -> Result<PeerMessages, PeerTransportError> {
+      let (peer, socket) = &mut *self.peers.get_mut(&peer).unwrap().lock().await;
+
+      // Gets the length of the response and the type. This cannot be a handshake.
+      // First three bytes refer to the length, and the second byte refers to the type of the
+      // message.
+      let mut buf = [0u8; 4];
+      socket.read_exact(&mut buf).await.map_err(|e| {
+         error!("Error reading first three bytes from peer: {}", e);
+         PeerTransportError::InvalidPeerResponse("Something went wrong".into())
+      })?;
+      let length = buf[0] + buf[1] + buf[2];
+      let message_type = buf[3];
+
+      // Read the message from the peer.
+      let mut message_buf = vec![0u8; length.into()];
+      socket.read_exact(&mut message_buf).await.map_err(|e| {
+         error!("Error reading message from peer: {}", e);
+         PeerTransportError::InvalidPeerResponse("Something went wrong".into())
+      })?;
+      PeerMessages::from_bytes(message_buf)
+   }
+
    async fn receive_data(
       &mut self,
       info_hash: Arc<InfoHash>,

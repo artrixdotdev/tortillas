@@ -282,6 +282,9 @@ impl TorrentEngine {
          // Wait for bitfield from each peer.
          // Now that we've established a connection to all peers, we use utp_handler.peers
          // to access & communicate with all given peers.
+         {
+            for peer in self.peers.lock().await.clone().into_iter() {}
+         }
       }
 
       // Receive pieces
