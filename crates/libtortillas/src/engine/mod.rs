@@ -13,8 +13,11 @@ use crate::{
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
    peers::{
-      tcp::TcpProtocol, transport_messages::TransportCommand, utp::UtpProtocol, Peer, Transport,
-      TransportHandler,
+      messages::PeerMessages,
+      tcp::TcpProtocol,
+      transport_messages::{TransportCommand, TransportResponse},
+      utp::UtpProtocol,
+      Peer, Transport, TransportHandler,
    },
    tracker::Tracker,
 };
@@ -227,8 +230,11 @@ impl TorrentEngine {
       // An instance of TransportHandler need not be created, as TransportHandler(s) for all
       // supported protocols are automatically created on initialization of TorrentEngine.
 
-      // Handshake with all given peers
+      // Handshake with all initially given peers
       // If this code seems confusing, refer to test_utp_peer_handshake.
+      //
+      // NOTE: At the moment, the following bit of scope is a SINGLE USE ONLY! That means that as
+      // new peers are added to self.peers, they will NOT be connected to automatically.
       {
          let utp_handler_guard = self.utp_handler.lock().await;
          let handler_tx = utp_handler_guard.sender();
@@ -260,7 +266,7 @@ impl TorrentEngine {
          }
          let (tx, _) = mpsc::channel(100);
 
-         trace!("Gathering handshakes.");
+         trace!("Gathering handshakes");
 
          let me = Arc::clone(&self);
          tokio::spawn(async move {
@@ -278,12 +284,96 @@ impl TorrentEngine {
 
          // utp_handler will maintain a hashmap of all successfully connected peers. The key for
          // the hashmap is the socket address of the peer. See PeerKey.
+      }
 
-         // Wait for bitfield from each peer.
+      {
+         // Spawn a loop to wait for bitfields from each peer. This will continuously run until the
+         // [torrent()] function has ended.
+         //
          // Now that we've established a connection to all peers, we use utp_handler.peers
          // to access & communicate with all given peers.
+         let mut join_set = JoinSet::new();
+
          {
-            for peer in self.peers.lock().await.clone().into_iter() {}
+            // NOTE: Is this clone() inefficient?
+            let handler_tx = self.utp_handler.lock().await.sender();
+            for peer in self.peers.lock().await.clone().into_iter() {
+               let tx = handler_tx.clone();
+               let peer_key = peer.socket_addr();
+
+               join_set.spawn(async move {
+                  let cmd = TransportCommand::Receive { peer_key };
+
+                  tx.send(cmd)
+                     .await
+                     .map_err(|e| {
+                        error!(
+                           "An error occured when sending the result back to torrent(): {}",
+                           e
+                        );
+                     })
+                     .unwrap();
+               });
+            }
+         }
+
+         let (tx, mut rx) = mpsc::channel(100);
+
+         trace!("Gathering bitfields");
+
+         let me = Arc::clone(&self);
+         tokio::spawn(async move {
+            me.utp_handler
+               .lock()
+               .await
+               .handle_commands(tx)
+               .await
+               .unwrap();
+         });
+
+         // NOTE: Does this need to be in a separate thread? Ideally, this should be called and we
+         // should immediately move on to the next step.
+         join_set.join_all().await;
+
+         // Receive results,
+         while let Some(res) = rx.recv().await {
+            match res.unwrap() {
+               TransportResponse::Receive { message, peer_key } => {
+                  // Is this scope necessary? Probably not. Better safe than sorry though! (The
+                  // scope was initially added for the sake of ensuring self.utp_handler isn't
+                  // locked for an obscene amount of time).
+                  {
+                     let mut peer = self
+                        .utp_handler
+                        .lock()
+                        .await
+                        .get_peer(peer_key)
+                        .await
+                        .unwrap();
+
+                     // We are assuming that `message` is of type Bitfield
+                     match message {
+                        PeerMessages::Bitfield(bitfield) => {
+                           // Set peer's bitfield (AKA pieces field)
+                           //
+                           // NOTE: Will this actually assign to the peer in utp_handler? It
+                           // should.
+                           let pieces = bitfield.iter().by_vals().collect();
+                           peer.pieces = pieces;
+                        }
+                        _ => {
+                           error!(
+                              "Received something other than a bitfield from peer {}",
+                              peer_key
+                           );
+                        }
+                     }
+                  }
+               }
+               _ => {
+                  error!("Received a message other than receive.");
+               }
+            }
          }
       }
 
