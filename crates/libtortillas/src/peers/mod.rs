@@ -266,20 +266,17 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
                   }
                });
             }
-            TransportCommand::Receive => {
-               trace!("Receiving bitfield from peer");
-               let info_hash = self.info_hash.clone();
-               let id = self.id.clone();
+            TransportCommand::Receive { peer_key } => {
+               trace!("Receiving message from peer");
 
-               // Peers should send a bitfield within two seconds.
+               // It is reasonable to assume that peers would send a message within 2 seconds.
                const TIMEOUT_DURATION: u64 = 2;
 
-               let response = transport_clone.receive_data(info_hash, id);
+               let response = transport_clone.receive_from_peer(peer_key);
                let res = timeout(Duration::from_secs(TIMEOUT_DURATION), response)
                   .await
                   .map_err(|e| error!("Error receiving bytes from peer: {}", e));
                if res.is_err() {
-                  error!("Error receiving bytes from peer");
                   if tx_clone
                      .send(Err(PeerTransportError::InvalidPeerResponse(
                         "Invalid peer response".into(),
@@ -290,7 +287,10 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
                      error!("Error occured when sending result back");
                   };
                } else if tx_clone
-                  .send(Ok(TransportResponse::Receive(res.unwrap().unwrap())))
+                  .send(Ok(TransportResponse::Receive {
+                     message: (res.unwrap().unwrap()),
+                     peer_key: (peer_key),
+                  }))
                   .await
                   .is_err()
                {
