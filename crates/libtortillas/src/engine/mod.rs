@@ -37,8 +37,7 @@ pub enum TorrentInput {
 /// The main engine that any outside libraries/programs should be interacting with. Automatically handles all supported protocols.
 ///
 /// TorrentEngine only supports torrenting a single file at a time (at the moment).
-///
-/// However, it does support all supported protocols on initialization. In other words, both
+/// However, it should be noted that it does support all supported protocols on initialization. In other words, both
 /// tcp_handler and utp_handler are available directly after TorrentEngine::new() is called.
 ///
 /// It should be noted that TorrentEngine does not seed files at the moment. In other words,
@@ -376,36 +375,59 @@ impl TorrentEngine {
       // An instance of TransportHandler need not be created, as TransportHandler(s) for all
       // supported protocols are automatically created on initialization of TorrentEngine.
 
-      // Connect to initial peers.
-      {
-         let peers = self.peers.lock().await.clone().into_iter().collect();
+      // Continuously go through this process with new peers. Uses the features of HashSet to
+      // remove peers from TorrentEngine's list of peers that we've already seen.
+      //
+      // Note to future readers: constantly cloning peers could potentially be a bottleneck.
+      // Consider using an Arc instead?
+      let peers: Vec<Peer> = self.peers.lock().await.clone().into_iter().collect();
+      loop {
          let me = Arc::clone(&self);
-         me.connect_to_peers(peers).await.map_err(|e| {
-            error!(
-               "Something went wrong when initially connecting to peers: {}",
-               e
-            );
-            TorrentEngineError::InitialHandshakeFailed
-         })?;
+         let peers_clone = peers.clone();
+         tokio::spawn(async move {
+            // Connect to initial peers.
+            {
+               me.clone()
+                  .connect_to_peers(peers_clone.clone())
+                  .await
+                  .map_err(|e| {
+                     error!(
+                        "Something went wrong when initially connecting to peers: {}",
+                        e
+                     );
+                     TorrentEngineError::InitialHandshakeFailed
+                  })
+                  .unwrap();
+            }
+
+            // Receive bitfields from initial peers.
+            {
+               me.clone()
+                  .receive_peer_messages(peers_clone.clone())
+                  .await
+                  .map_err(|e| {
+                     error!(
+                        "Something went wrong when initially connecting to peers: {}",
+                        e
+                     );
+                     TorrentEngineError::InitialHandshakeFailed
+                  })
+                  .unwrap();
+            }
+
+            // Send request PeerMessages to initial peers. TODO: This will require a bit of logic behind it. Recall that you should be sending about 5 at a time.
+
+            // Wait for piece messages back
+
+            // Update a vector of pieces with each piece message
+
+            // Combine file and save it to disk
+         });
+         // Sleep for a little bit. AKA wait for a few more peers to (potentially come in)
+         sleep(Duration::from_secs(30));
+
+         // Update peers
       }
-
-      // Receive bitfields from initial peers.
-      {
-         let peers = self.peers.lock().await.clone().into_iter().collect();
-         let me = Arc::clone(&self);
-         me.receive_peer_messages(peers).await.map_err(|e| {
-            error!(
-               "Something went wrong when initially connecting to peers: {}",
-               e
-            );
-            TorrentEngineError::InitialHandshakeFailed
-         })?;
-      }
-
-      // Receive pieces
-
-      // TEMPORARY
-      Ok(())
    }
 }
 
