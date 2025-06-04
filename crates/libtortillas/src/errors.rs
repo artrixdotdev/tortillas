@@ -5,6 +5,12 @@ use thiserror::Error;
 pub enum TorrentEngineError {
    #[error("No peers were provided by trackers.")]
    InsufficientPeers,
+
+   #[error("Initial handshake with peers failed.")]
+   InitialHandshakeFailed,
+
+   #[error(transparent)]
+   Other(#[from] anyhow::Error),
 }
 
 #[derive(Error, Debug)]

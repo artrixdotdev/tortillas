@@ -193,7 +193,7 @@ impl TorrentEngine {
    ///
    /// We allow the user of this function to pick and choose which peers they want to connect to
    /// (likely only new peers).
-   pub async fn connect_to_peers(self: Arc<Self>, peers: Vec<Peer>) -> Result<(), anyhow::Error> {
+   pub async fn connect_to_peers(self: Arc<Self>, peers: Vec<Peer>) -> Result<()> {
       let utp_handler_guard = self.utp_handler.lock().await;
       let handler_tx = utp_handler_guard.sender();
       let mut join_set = JoinSet::new();
@@ -248,7 +248,7 @@ impl TorrentEngine {
    /// value of this function is temporary.
    ///
    /// TODO: This function will likely return a torrented file, or a path to a locally torrented file.
-   pub async fn torrent(self: Arc<Self>) -> anyhow::Result<(), anyhow::Error> {
+   pub async fn torrent(self: Arc<Self>) -> anyhow::Result<(), TorrentEngineError> {
       let info_hash = self.get_info_hash();
 
       let announce_list: Vec<Tracker> = self.get_announce_list();
@@ -299,7 +299,7 @@ impl TorrentEngine {
                e
             );
             TorrentEngineError::InitialHandshakeFailed
-         })?;
+         });
       }
 
       {
