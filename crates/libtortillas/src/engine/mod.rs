@@ -333,100 +333,101 @@ impl TorrentEngine {
    /// The full torrenting process, summarized in a single function. As of 5/23/25, the return
    /// value of this function is temporary.
    ///
+   /// The general flow of this function is as follows:
+   /// - Get initial peers from trackers
+   /// - Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
+   /// - Pieces will be maintained in the TorrentEngine struct
+   /// - Get new peers from each tracker
+   /// - Remove any duplicate peers
+   /// - Repeat
+   ///
+   /// This also makes seeding very easy -- when a peer asks for a piece, just send them
+   /// self.pieces at whatever index they asked for.
+   ///
    /// TODO: This function will likely return a torrented file, or a path to a locally torrented file.
    pub async fn torrent(self: Arc<Self>) -> anyhow::Result<(), Error> {
-      let info_hash = self.get_info_hash();
+      // A list of peers that we've already seen
+      let mut peers_in_action = HashSet::new();
+      loop {
+         let me = Arc::clone(&self);
+         // Start getting peers from tracker
+         trace!("Getting initial peers...");
+         let mut trackers_rx = self
+            .clone()
+            .get_all_peers(&self.get_announce_list())
+            .await
+            .unwrap();
 
-      let announce_list: Vec<Tracker> = self.get_announce_list();
-      let port: u16 = random_range(1024..65535);
+         // Handle edge cases (ex. no peers)
+         // This isn't a good way to do this. Refactor later.
+         //
+         // if self.peers.lock().await.is_empty() {
+         //    trace!("No peers were provided by trackers.");
+         //    return Err(TorrentEngineError::InsufficientPeers.into());
+         // };
 
-      // Start getting peers from tracker
-      let mut rx = self.clone().get_all_peers(&announce_list).await.unwrap();
-
-      // Get initial peers
-      trace!("Getting initial peers...");
-      let me = Arc::clone(&self);
-
-      // Note to reader: this may be incorrectly written. It is possible that the while let loop
-      // will immediately stop because rx has not received any messages yet.
-      tokio::spawn(async move {
-         while let Some(res) = rx.recv().await {
+         let announce_list_length = self.get_announce_list().len();
+         let mut trackers_seen = 0;
+         while let Some(res) = trackers_rx.recv().await {
             // This additional scope might not be necessary. But for the sake of confidence that
             // peers will be unlocked in the appropriate amount of time,
             // this is what I'm doing.
+
+            // NOTE: This is a potential issue. Ideally, once we get a single message from all the
+            // trackers, we end this loop. However, I'm not confident that trackers_rx.recv() will
+            // return anything if something goes wrong on the tracker's end, meaning that
+            // trackers_seen might not be correctly updated..
+            if trackers_seen >= announce_list_length {
+               break;
+            }
             {
                let mut guard = me.peers.lock().await;
                res.iter().for_each(|peer| {
-                  guard.insert(peer.clone());
+                  // If we haven't seen this peer before...
+                  if !peers_in_action.insert(peer.clone()) {
+                     guard.insert(peer.clone());
+                  }
                });
                trace!("Inserted peers from tracker succesfully");
             }
+            trackers_seen += 1;
          }
-      });
 
-      // Handle edge cases (ex. no peers)
-      // This isn't a good way to do this. Refactor later.
-      //
-      // if self.peers.lock().await.is_empty() {
-      //    trace!("No peers were provided by trackers.");
-      //    return Err(TorrentEngineError::InsufficientPeers.into());
-      // };
-
-      // An instance of TransportHandler need not be created, as TransportHandler(s) for all
-      // supported protocols are automatically created on initialization of TorrentEngine.
-
-      // Continuously go through this process with new peers. Uses the features of HashSet to
-      // remove peers from TorrentEngine's list of peers that we've already seen.
-      //
-      // Note to future readers: constantly cloning peers could potentially be a bottleneck.
-      // Consider using an Arc instead?
-      let peers: Vec<Peer> = self.peers.lock().await.clone().into_iter().collect();
-      loop {
-         let me = Arc::clone(&self);
-         let peers_clone = peers.clone();
-         tokio::spawn(async move {
-            // Connect to initial peers.
-            {
-               me.clone()
-                  .connect_to_peers(peers_clone.clone())
+         // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
+         for mut peer in self.peers.lock().await.clone() {
+            let me = Arc::clone(&self);
+            tokio::spawn(async move {
+               // Send handshake
+               let mut utp_handler = me.utp_handler.lock().await;
+               utp_handler
+                  .connect(&mut peer)
                   .await
                   .map_err(|e| {
                      error!(
-                        "Something went wrong when initially connecting to peers: {}",
+                        "Error handshaking with peer (socket address {}): {}",
+                        peer.socket_addr(),
                         e
                      );
                      TorrentEngineError::InitialHandshakeFailed
                   })
                   .unwrap();
-            }
 
-            // Receive bitfields from initial peers.
-            {
-               me.clone()
-                  .receive_peer_messages(peers_clone.clone())
-                  .await
-                  .map_err(|e| {
-                     error!(
-                        "Something went wrong when initially connecting to peers: {}",
-                        e
-                     );
-                     TorrentEngineError::InitialHandshakeFailed
-                  })
-                  .unwrap();
-            }
+               // TODO
+               // Wait for and receive bitfield
+               //
+               // Loop to handle requests and incoming pieces. Place any acquired pieces in a field in
+               // TorrentEngine
+            });
+         }
 
-            // Send request PeerMessages to initial peers. TODO: This will require a bit of logic behind it. Recall that you should be sending about 5 at a time.
+         // Wait for the tracker to add some potentially new peers
+         sleep(Duration::from_secs(15));
 
-            // Wait for piece messages back
-
-            // Update a vector of pieces with each piece message
-
-            // Combine file and save it to disk
-         });
-         // Sleep for a little bit. AKA wait for a few more peers to (potentially come in)
-         sleep(Duration::from_secs(30));
-
-         // Update peers
+         // Clear the set to ensure that we don't tokio::spawn for a peer that we've already
+         // started working with. This set will be "refilled" on the next cycle of the loop, don't
+         // worry. If this is confusing, please refer to the documentation on the torrent()
+         // function.
+         self.peers.lock().await.clear();
       }
    }
 }
