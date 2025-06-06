@@ -1,6 +1,6 @@
 use std::{collections::HashSet, net::SocketAddr, sync::Arc, thread::sleep, time::Duration};
 
-use anyhow::{Error, Ok, Result};
+use anyhow::{anyhow, Error, Ok, Result};
 use rand::random_range;
 use tokio::{
    sync::{mpsc, Mutex},
@@ -369,14 +369,14 @@ impl TorrentEngine {
          let announce_list_length = self.get_announce_list().len();
          let mut trackers_seen = 0;
          while let Some(res) = trackers_rx.recv().await {
-            // This additional scope might not be necessary. But for the sake of confidence that
-            // peers will be unlocked in the appropriate amount of time,
-            // this is what I'm doing.
-
             // NOTE: This is a potential issue. Ideally, once we get a single message from all the
             // trackers, we end this loop. However, I'm not confident that trackers_rx.recv() will
             // return anything if something goes wrong on the tracker's end, meaning that
             // trackers_seen might not be correctly updated..
+
+            // This additional scope might not be necessary. But for the sake of confidence that
+            // peers will be unlocked in the appropriate amount of time,
+            // this is what I'm doing.
             if trackers_seen >= announce_list_length {
                break;
             }
@@ -393,28 +393,33 @@ impl TorrentEngine {
             trackers_seen += 1;
          }
 
+         let (tx, rx) = mpsc::channel(100);
+
+         self
+            .utp_handler
+            .lock()
+            .await
+            .handle_commands(tx)
+            .await
+            .map_err(|e| {
+               error!("Error when calling handle_commands: {}", e);
+               TorrentEngineError::Other(anyhow!("Error when calling handle_commands"))
+            })
+            .unwrap();
+
          // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
          for mut peer in self.peers.lock().await.clone() {
-            let me = Arc::clone(&self);
+            let tx = self.utp_handler.lock().await.sender();
             tokio::spawn(async move {
-               // Send handshake
-               let mut utp_handler = me.utp_handler.lock().await;
-               utp_handler
-                  .connect(&mut peer)
+               // Send handshake. Unwrap is called on this because this code goes directly to our
+               // functions, not a library's.
+               tx.send(TransportCommand::Connect { peer: (peer) })
                   .await
-                  .map_err(|e| {
-                     error!(
-                        "Error handshaking with peer (socket address {}): {}",
-                        peer.socket_addr(),
-                        e
-                     );
-                     TorrentEngineError::InitialHandshakeFailed
-                  })
                   .unwrap();
 
-               // TODO
                // Wait for and receive bitfield
-               //
+
+               // TODO
                // Loop to handle requests and incoming pieces. Place any acquired pieces in a field in
                // TorrentEngine
             });
