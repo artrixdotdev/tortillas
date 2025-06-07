@@ -233,9 +233,11 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
    ) -> Result<()> {
       while let Some(cmd) = self.rx.recv().await {
          let mut transport_clone = self.protocol.clone();
-         let tx_clone = tx.clone();
          match cmd {
-            TransportCommand::Connect { mut peer } => {
+            TransportCommand::Connect {
+               mut peer,
+               oneshot_tx,
+            } => {
                trace!("Connecting to peer: {}", peer.ip);
                let info_hash = self.info_hash.clone();
                let id = self.id.clone();
@@ -250,23 +252,24 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
                   // Handle error from timeout
                   if res.is_err() {
                      error!(%peer, "Peer timed out.");
-                     if tx_clone
+                     if oneshot_tx
                         .send(Err(PeerTransportError::MessageFailed))
-                        .await
                         .is_err()
                      {
                         error!("Error occured when sending result back");
                      };
-                  } else if tx_clone
+                  } else if oneshot_tx
                      .send(Ok(TransportResponse::Connect(res.unwrap().unwrap())))
-                     .await
                      .is_err()
                   {
                      error!("Error occured when sending result back");
                   }
                });
             }
-            TransportCommand::Receive { peer_key } => {
+            TransportCommand::Receive {
+               peer_key,
+               oneshot_tx,
+            } => {
                trace!("Receiving message from peer");
 
                // It is reasonable to assume that peers would send a message within 2 seconds.
@@ -277,21 +280,19 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
                   .await
                   .map_err(|e| error!("Error receiving bytes from peer: {}", e));
                if res.is_err() {
-                  if tx_clone
+                  if oneshot_tx
                      .send(Err(PeerTransportError::InvalidPeerResponse(
                         "Invalid peer response".into(),
                      )))
-                     .await
                      .is_err()
                   {
                      error!("Error occured when sending result back");
                   };
-               } else if tx_clone
+               } else if oneshot_tx
                   .send(Ok(TransportResponse::Receive {
                      message: (res.unwrap().unwrap()),
                      peer_key: (peer_key),
                   }))
-                  .await
                   .is_err()
                {
                   error!("Error occured when sending result back");

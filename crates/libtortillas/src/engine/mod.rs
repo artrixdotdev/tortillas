@@ -3,13 +3,13 @@ use std::{collections::HashSet, net::SocketAddr, sync::Arc, thread::sleep, time:
 use anyhow::{anyhow, Error, Ok, Result};
 use rand::random_range;
 use tokio::{
-   sync::{mpsc, Mutex},
+   sync::{mpsc, oneshot, Mutex},
    task::JoinSet,
 };
 use tracing::{error, trace};
 
 use crate::{
-   errors::TorrentEngineError,
+   errors::{PeerTransportError, TorrentEngineError},
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
    peers::{
@@ -408,16 +408,25 @@ impl TorrentEngine {
             .unwrap();
 
          // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
-         for mut peer in self.peers.lock().await.clone() {
+         for peer in self.peers.lock().await.clone() {
             let tx = self.utp_handler.lock().await.sender();
             tokio::spawn(async move {
                // Send handshake. Unwrap is called on this because this code goes directly to our
                // functions, not a library's.
-               tx.send(TransportCommand::Connect { peer: (peer) })
-                  .await
-                  .unwrap();
+               let (oneshot_tx, oneshot_rx) =
+                  oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
+               tx.send(TransportCommand::Connect {
+                  peer: (peer),
+                  oneshot_tx,
+               })
+               .await
+               .unwrap();
+
+               let res = oneshot_rx.await.unwrap();
 
                // Wait for and receive bitfield
+               let (bitfield_tx, bitfield_rx) =
+                  oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
 
                // TODO
                // Loop to handle requests and incoming pieces. Place any acquired pieces in a field in
