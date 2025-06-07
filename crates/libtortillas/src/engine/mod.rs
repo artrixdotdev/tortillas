@@ -262,7 +262,7 @@ impl TorrentEngine {
             .unwrap();
 
          // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
-         for peer in self.peers.lock().await.clone() {
+         for mut peer in self.peers.lock().await.clone() {
             let tx = self.utp_handler.lock().await.sender();
             tokio::spawn(async move {
                // Send handshake. Unwrap is called on this because this code goes directly to our
@@ -270,7 +270,7 @@ impl TorrentEngine {
                let (connect_tx, connect_rx) =
                   oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
                tx.send(TransportCommand::Connect {
-                  peer: (peer),
+                  peer: (peer.clone()),
                   oneshot_tx: connect_tx,
                })
                .await
@@ -308,6 +308,45 @@ impl TorrentEngine {
                // Wait for and receive bitfield
                let (bitfield_tx, bitfield_rx) =
                   oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
+               tx.send(TransportCommand::Receive {
+                  peer_key: (peer.clone().socket_addr()),
+                  oneshot_tx: (bitfield_tx),
+               })
+               .await
+               .unwrap();
+
+               match bitfield_rx.await.unwrap() {
+                  Ok(res) => {
+                     match res {
+                        TransportResponse::Receive { message, peer_key } => {
+                           trace!(
+                              "Received message from peer {}. Message: {:?}",
+                              peer_key,
+                              message
+                           );
+
+                           // Set bitfield of peer
+                           peer.pieces = match message {
+                              PeerMessages::Bitfield(bitfield) => {
+                                 bitfield.iter().by_vals().collect()
+                              }
+                              // If the response isn't a bitfield for some reason...
+                              _ => {
+                                 vec![]
+                              }
+                           }
+                        }
+                        // This should never happen.
+                        _ => {}
+                     }
+                  }
+                  // We *might* be able to handle this in the future. But for now, just
+                  // panic.
+                  Err(e) => {
+                     error!("An error occurred: {}", e);
+                     panic!("");
+                  }
+               }
 
                // TODO
                // Loop to handle requests and incoming pieces. Place any acquired pieces in a field in
