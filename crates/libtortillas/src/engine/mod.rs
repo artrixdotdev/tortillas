@@ -247,61 +247,75 @@ impl TorrentEngine {
             trackers_seen += 1;
          }
 
-         self
-            .utp_handler
-            .lock()
-            .await
-            .handle_commands()
-            .await
-            .map_err(|e| {
-               error!("Error when calling handle_commands: {}", e);
-               TorrentEngineError::Other(anyhow!("Error when calling handle_commands"))
-            })
-            .unwrap();
+         let utp_tx = self.utp_handler.lock().await.sender();
+         let tcp_tx = self.tcp_handler.lock().await.sender();
+
+         tokio::spawn(async move {
+            self
+               .utp_handler
+               .lock()
+               .await
+               .handle_commands()
+               .await
+               .map_err(|e| {
+                  error!("Error when calling handle_commands: {}", e);
+                  TorrentEngineError::Other(anyhow!("Error when calling handle_commands"))
+               })
+               .unwrap();
+         });
+         tokio::spawn(async move {
+            self
+               .tcp_handler
+               .lock()
+               .await
+               .handle_commands()
+               .await
+               .map_err(|e| {
+                  error!("Error when calling handle_commands: {}", e);
+                  TorrentEngineError::Other(anyhow!("Error when calling handle_commands"))
+               })
+               .unwrap();
+         });
 
          // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
          for mut peer in self.peers.lock().await.clone() {
-            let tx = self.utp_handler.lock().await.sender();
+            let utp_tx = utp_tx.clone();
+            let tcp_tx = tcp_tx.clone();
             tokio::spawn(async move {
                // Send handshake. Unwrap is called on this because this code goes directly to our
                // functions, not a library's.
-               let (connect_tx, connect_rx) =
-                  oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
-               tx.send(TransportCommand::Connect {
-                  peer: (peer.clone()),
-                  oneshot_tx: connect_tx,
-               })
-               .await
-               .unwrap();
+               //
+               // Try connecting over TCP and uTP, and use whichever one works. While this may seem
+               // "not to spec", this is how the transmission BitTorrent client does it: https://github.com/transmission/transmission/discussions/7603
 
-               // Ok, this could definitely be cleaned up.
-               match connect_rx.await {
-                  Ok(wrapped) => {
-                     // Nothing better to do here than trace the response.
-                     match wrapped {
-                        Ok(res) => {
-                           match res {
-                              TransportResponse::Connect(addr) => {
-                                 trace!("Connected to peer at {}", addr);
-                              }
-                              // This should never happen.
-                              _ => {}
-                           }
-                        }
-                        // We *might* be able to handle this in the future. But for now, just
-                        // panic.
-                        Err(e) => {
-                           error!("An error occurred: {}", e);
-                           panic!("");
-                        }
-                     }
-                  }
-                  Err(_) => {
-                     // If we get to this point, something has gone horribly wrong and there's no
-                     // reason to continue trying to operate with this peer.
-                     panic!("Could not handle response from peer.");
-                  }
-               }
+               // TCP
+               let (tcp_connect_tx, tcp_connect_rx) =
+                  oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
+               tcp_tx
+                  .send(TransportCommand::Connect {
+                     peer: (peer.clone()),
+                     oneshot_tx: tcp_connect_tx,
+                  })
+                  .await
+                  .unwrap();
+
+               let tcp_res = tcp_connect_rx.await.unwrap();
+
+               // uTP
+               let (utp_connect_tx, utp_connect_rx) =
+                  oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
+               utp_tx
+                  .send(TransportCommand::Connect {
+                     peer: (peer.clone()),
+                     oneshot_tx: utp_connect_tx,
+                  })
+                  .await
+                  .unwrap();
+
+               let utp_res = utp_connect_rx.await.unwrap();
+
+               // Assign based on which protocol the peer is operating on.
+               let tx = if utp_res.is_ok() { utp_tx } else { tcp_tx };
 
                // Wait for and receive bitfield
                let (bitfield_tx, bitfield_rx) =
