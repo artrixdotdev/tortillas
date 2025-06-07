@@ -1,6 +1,6 @@
 use std::{collections::HashSet, net::SocketAddr, sync::Arc, thread::sleep, time::Duration};
 
-use anyhow::{anyhow, Error, Ok, Result};
+use anyhow::{anyhow, Error, Result};
 use rand::random_range;
 use tokio::{
    sync::{mpsc, oneshot, Mutex},
@@ -267,19 +267,46 @@ impl TorrentEngine {
             tokio::spawn(async move {
                // Send handshake. Unwrap is called on this because this code goes directly to our
                // functions, not a library's.
-               let (oneshot_tx, oneshot_rx) =
+               let (connect_tx, connect_rx) =
                   oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
                tx.send(TransportCommand::Connect {
                   peer: (peer),
-                  oneshot_tx,
+                  oneshot_tx: connect_tx,
                })
                .await
                .unwrap();
 
-               let res = oneshot_rx.await.unwrap();
+               // Ok, this could definitely be cleaned up.
+               match connect_rx.await {
+                  Ok(wrapped) => {
+                     // Nothing better to do here than trace the response.
+                     match wrapped {
+                        Ok(res) => {
+                           match res {
+                              TransportResponse::Connect(addr) => {
+                                 trace!("Connected to peer at {}", addr);
+                              }
+                              // This should never happen.
+                              _ => {}
+                           }
+                        }
+                        // We *might* be able to handle this in the future. But for now, just
+                        // panic.
+                        Err(e) => {
+                           error!("An error occurred: {}", e);
+                           panic!("");
+                        }
+                     }
+                  }
+                  Err(_) => {
+                     // If we get to this point, something has gone horribly wrong and there's no
+                     // reason to continue trying to operate with this peer.
+                     panic!("Could not handle response from peer.");
+                  }
+               }
 
                // Wait for and receive bitfield
-               let (bitfield_tx, _rx) =
+               let (bitfield_tx, bitfield_rx) =
                   oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
 
                // TODO
