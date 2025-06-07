@@ -250,9 +250,9 @@ impl TorrentEngine {
          let utp_tx = self.utp_handler.lock().await.sender();
          let tcp_tx = self.tcp_handler.lock().await.sender();
 
+         let utp_handler_clone = self.utp_handler.clone();
          tokio::spawn(async move {
-            self
-               .utp_handler
+            utp_handler_clone
                .lock()
                .await
                .handle_commands()
@@ -263,9 +263,10 @@ impl TorrentEngine {
                })
                .unwrap();
          });
+
+         let tcp_handler_clone = self.tcp_handler.clone();
          tokio::spawn(async move {
-            self
-               .tcp_handler
+            tcp_handler_clone
                .lock()
                .await
                .handle_commands()
