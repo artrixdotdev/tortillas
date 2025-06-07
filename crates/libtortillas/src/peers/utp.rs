@@ -267,13 +267,19 @@ impl TransportProtocol for UtpProtocol {
 mod tests {
 
    use rand::random_range;
-   use tokio::{sync::mpsc, task::JoinSet};
+   use tokio::{
+      sync::{mpsc, oneshot},
+      task::JoinSet,
+   };
    use tracing::info;
    use tracing_test::traced_test;
 
    use crate::{
       parser::{MagnetUri, MetaInfo},
-      peers::{transport_messages::TransportCommand, Transport, TransportHandler},
+      peers::{
+         transport_messages::{TransportCommand, TransportResponse},
+         Transport, TransportHandler,
+      },
       tracker::{http::HttpTracker, Tracker, TrackerTrait},
    };
 
@@ -334,48 +340,41 @@ mod tests {
 
             let tx = utp_transport_handler.tx.clone();
 
-            // This is how UtpTransports should be handled async
-
-            // Create a vector to hold all the join handles
-            let mut join_set = JoinSet::new();
+            // This is one way that UtpTransports could be handled async
+            // This tidbit is just for confirming that we successfully connected to at least one
+            // peer
+            let (success_tx, mut success_rx) = mpsc::channel(100);
 
             // For each peer, spawn a task to connect
-            let num_of_peers = peers.len();
             for peer in peers {
                // Clone tx (see Tokio docs on why we need to clone tx: <https://tokio.rs/tokio/tutorial/channels>)
                let tx = tx.clone();
-               join_set.spawn(async move {
-                  let cmd = TransportCommand::Connect { peer };
+               let success_tx_clone = success_tx.clone();
+               tokio::spawn(async move {
+                  let (oneshot_tx, oneshot_rx) = oneshot::channel();
+                  let cmd = TransportCommand::Connect { peer, oneshot_tx };
 
-                  match tx.send(cmd).await {
-                     Ok(()) => Ok(peer_id),
-                     Err(_) => Err("Connection failed".to_string()),
-                  }
+                  tx.send(cmd).await.unwrap();
+
+                  // Receive message. There is no error handling present here as there's no reason
+                  // to -- all we're doing is handshaking, and then ending the process. If you'd
+                  // like to see a more rigorous (perhaps) way of handling errors, take a look at
+                  // the torrent() function in TorrentEngine
+                  success_tx_clone
+                     .send(oneshot_rx.await.unwrap())
+                     .await
+                     .unwrap();
                });
             }
 
-            let (tx, mut rx) = mpsc::channel(100);
-
             // Start handling mpsc messages from the join set
             tokio::spawn(async move {
-               utp_transport_handler.handle_commands(tx).await.unwrap();
+               utp_transport_handler.handle_commands().await.unwrap();
             });
 
-            // Await the join_set.spawn()
-            join_set.join_all().await;
-
-            // Collect responses from handle_message
-            tokio::spawn(async move {
-               let mut total_peers_seen = 0;
-               while let Some(_res) = rx.recv().await {
-                  total_peers_seen += 1;
-                  if num_of_peers == total_peers_seen {
-                     break;
-                  }
-               }
-            })
-            .await
-            .unwrap();
+            // As long as this unwraps correctly, we have successfully made a handshake.
+            let res = success_rx.recv().await.unwrap().unwrap();
+            trace!("{:?}", res);
          }
          _ => panic!("Expected Torrent"),
       }

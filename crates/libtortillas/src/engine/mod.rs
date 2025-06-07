@@ -247,13 +247,11 @@ impl TorrentEngine {
             trackers_seen += 1;
          }
 
-         let (tx, rx) = mpsc::channel(100);
-
          self
             .utp_handler
             .lock()
             .await
-            .handle_commands(tx)
+            .handle_commands()
             .await
             .map_err(|e| {
                error!("Error when calling handle_commands: {}", e);

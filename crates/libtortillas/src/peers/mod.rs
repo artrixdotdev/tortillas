@@ -227,10 +227,7 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
       self.tx.clone()
    }
 
-   pub async fn handle_commands(
-      &mut self,
-      tx: mpsc::Sender<Result<TransportResponse, PeerTransportError>>,
-   ) -> Result<()> {
+   pub async fn handle_commands(&mut self) -> Result<()> {
       while let Some(cmd) = self.rx.recv().await {
          let mut transport_clone = self.protocol.clone();
          match cmd {
