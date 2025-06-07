@@ -42,49 +42,43 @@ Please keep in mind that as of April 6th, 2025, this library is not complete.
 Given a vector of peers `peers`:
 
 ```rs
+            let tx = utp_transport_handler.tx.clone();
 
-         // Create a single uTP transport instance
-         let mut utp_transport_handler = UtpTransportHandler::new(//...);
+            // This is one way that UtpTransports could be handled async
+            // This tidbit is just for confirming that we successfully connected to at least one
+            // peer
+            let (success_tx, mut success_rx) = mpsc::channel(100);
 
-         // Get the tx from the created uTP transport
-         let tx = utp_transport_handler.tx.clone();
+            // For each peer, spawn a task to connect
+            for peer in peers {
+               // Clone tx (see Tokio docs on why we need to clone tx: <https://tokio.rs/tokio/tutorial/channels>)
+               let tx = tx.clone();
+               let success_tx_clone = success_tx.clone();
+               tokio::spawn(async move {
+                  let (oneshot_tx, oneshot_rx) = oneshot::channel();
+                  let cmd = TransportCommand::Connect { peer, oneshot_tx };
 
-         // Create a vector to hold all the join handles
-         let mut join_set = JoinSet::new();
+                  tx.send(cmd).await.unwrap();
 
-         for peer in peers {
-            // Clone tx (see Tokio docs on why we need to clone tx: <https://tokio.rs/tokio/tutorial/channels>)
-            let tx = tx.clone();
-            join_set.spawn(async move {
-               let cmd = TransportCommand::Connect { peer };
-
-               match tx.send(cmd).await {
-                  Ok(()) => Ok(peer_id),
-                  Err(_) => Err("Connection failed".to_string()),
-               }
-            });
-         }
-
-         // tx and rx used for communication between utp_transport_handler.handle_message and this thread
-         let (tx, mut rx) = mpsc::channel(100);
-
-         // Start handling mpsc messages from the join set
-         tokio::spawn(async move {
-            utp_transport_handler.handle_message(tx).await.unwrap();
-         });
-
-         // Await the join_set.spawn()
-         join_set.join_all().await;
-
-         // Collect responses from handle_message
-         tokio::spawn(async move {
-            let mut total_peers_seen = 0;
-            while let Some(_res) = rx.recv().await {
-               // Do something
+                  // Receive message. There is no error handling present here as there's no reason
+                  // to -- all we're doing is handshaking, and then ending the process. If you'd
+                  // like to see a more rigorous (perhaps) way of handling errors, take a look at
+                  // the torrent() function in TorrentEngine
+                  success_tx_clone
+                     .send(oneshot_rx.await.unwrap())
+                     .await
+                     .unwrap();
+               });
             }
-         })
-         .await
-         .unwrap();
+
+            // Start handling mpsc messages from the join set
+            tokio::spawn(async move {
+               utp_transport_handler.handle_commands().await.unwrap();
+            });
+
+            // As long as this unwraps correctly, we have successfully made a handshake.
+            let res = success_rx.recv().await.unwrap().unwrap();
+            trace!("{:?}", res);
 ```
 
-Please keep in mind that this code is heavily redacted. See `test_utp_peer_handshake` for more.
+Please keep in mind that this code is heavily redacted and is not an entirely optimal way to do this (specifically in reference to error handling). See `test_utp_peer_handshake` for more.
