@@ -120,19 +120,21 @@ impl TrackerTrait for HttpTracker {
       // no pre‑captured interval – always read the latest value
       tokio::spawn(async move {
          loop {
-            let peers = tracker.get_peers().await.unwrap();
-            trace!(
-               "Successfully made request to get peers: {}",
-               peers.last().unwrap()
-            );
+            let peers = match tracker.get_peers().await {
+               Ok(peers) => peers,
+               Err(e) => {
+                  error!("Error on get_peers(): {}", e);
+                  vec![]
+               }
+            };
 
-            // stop gracefully if the receiver was dropped
             if tx.send(peers).await.is_err() {
-               warn!("Receiver dropped – stopping peer stream");
+               error!("Failed to send peers to receiver");
                break;
             }
 
-            // pick up possibly updated interval (never sleep 0s)
+            trace!("Sent peers to reciever");
+
             let delay = tracker.interval.min(1);
             sleep(Duration::from_secs(delay as u64)).await;
          }

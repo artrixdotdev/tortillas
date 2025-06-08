@@ -161,23 +161,26 @@ impl TorrentEngine {
       }
 
       // Repeatedly gather data from each rx and update self.peers as new peers are added
-      // rx
       trace!("Spawning task to handle output from initial requests");
       tokio::spawn(async move {
          loop {
+            let mut cur_peers = vec![];
             for rx in rx_list.iter_mut() {
                // Gather any peers that a tracker returned
-               let mut cur_peers = vec![];
-               while let Some(peer_vec) = rx.recv().await {
-                  cur_peers.extend_from_slice(&peer_vec);
-               }
-
-               // Update self.peers
-               tx.send(cur_peers)
-                  .await
-                  .map_err(|e| error!("Error when sending peers back to torrent(): {}", e))
-                  .unwrap();
+               // In reference to total_trackers: while every tracker may not work, it isn't
+               // inherently bad to contact a tracker multiple times. This could, however, be a
+               // bottleneck in the future.
+               cur_peers.extend(rx.recv().await.unwrap());
             }
+            // Update self.peers
+            match tx.send(cur_peers).await {
+               Ok(()) => {
+                  trace!("Succesfully sent peers back to torrent()")
+               }
+               Err(e) => {
+                  error!("Error when sending peers back to torrent(): {}", e)
+               }
+            };
          }
       });
 
@@ -200,8 +203,6 @@ impl TorrentEngine {
    ///
    /// TODO: This function will likely return a torrented file, or a path to a locally torrented file.
    pub async fn torrent(self: Arc<Self>) -> anyhow::Result<(), Error> {
-      // A list of peers that we've already seen
-      let mut peers_in_action = HashSet::new();
       loop {
          let me = Arc::clone(&self);
          // Start getting peers from tracker
@@ -212,7 +213,7 @@ impl TorrentEngine {
             .await
             .unwrap();
 
-         // Handle edge cases (ex. no peers)
+         // Handle edge cases (ex. no peers). TODO, but not necessary
          // This isn't a good way to do this. Refactor later.
          //
          // if self.peers.lock().await.is_empty() {
@@ -220,35 +221,26 @@ impl TorrentEngine {
          //    return Err(TorrentEngineError::InsufficientPeers.into());
          // };
 
-         let announce_list_length = self.get_announce_list().len();
-         let mut trackers_seen = 0;
-         while let Some(res) = trackers_rx.recv().await {
-            // NOTE: This is a potential issue. Ideally, once we get a single message from all the
-            // trackers, we end this loop. However, I'm not confident that trackers_rx.recv() will
-            // return anything if something goes wrong on the tracker's end, meaning that
-            // trackers_seen might not be correctly updated..
+         tokio::spawn(async move {
+            // A list of peers that we've already seen
+            let mut peers_in_action = HashSet::new();
+            let mut guard = me.peers.lock().await;
 
-            // This additional scope might not be necessary. But for the sake of confidence that
-            // peers will be unlocked in the appropriate amount of time,
-            // this is what I'm doing.
-            if trackers_seen >= announce_list_length {
-               break;
+            trace!("Receiving peers into torrent()");
+            // We only need to recv().await once. See get_all_peers() for why.
+            let new_peers = trackers_rx.recv().await.unwrap();
+            for peer in new_peers {
+               if !peers_in_action.insert(peer.clone()) {
+                  guard.insert(peer.clone());
+               }
             }
-            {
-               let mut guard = me.peers.lock().await;
-               res.iter().for_each(|peer| {
-                  // If we haven't seen this peer before...
-                  if !peers_in_action.insert(peer.clone()) {
-                     guard.insert(peer.clone());
-                  }
-               });
-               trace!("Inserted peers from tracker succesfully");
-            }
-            trackers_seen += 1;
-         }
+            trace!("Received peers into torrent (). Carrying on with program.");
+         });
 
          let utp_tx = self.utp_handler.lock().await.sender();
          let tcp_tx = self.tcp_handler.lock().await.sender();
+
+         trace!("Got uTP and TCP handlers");
 
          let utp_handler_clone = self.utp_handler.clone();
          tokio::spawn(async move {
@@ -279,6 +271,7 @@ impl TorrentEngine {
          });
 
          // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
+         trace!("Beginning iteration of peers");
          for mut peer in self.peers.lock().await.clone() {
             let utp_tx = utp_tx.clone();
             let tcp_tx = tcp_tx.clone();
@@ -290,7 +283,8 @@ impl TorrentEngine {
                // "not to spec", this is how the transmission BitTorrent client does it: https://github.com/transmission/transmission/discussions/7603
 
                // TCP
-               let (tcp_connect_tx, tcp_connect_rx) =
+               // rx is unneeded -- see let tx = ... ~30 lines down
+               let (tcp_connect_tx, _) =
                   oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
                tcp_tx
                   .send(TransportCommand::Connect {
@@ -299,8 +293,6 @@ impl TorrentEngine {
                   })
                   .await
                   .unwrap();
-
-               let tcp_res = tcp_connect_rx.await.unwrap();
 
                // uTP
                let (utp_connect_tx, utp_connect_rx) =
@@ -390,8 +382,8 @@ mod tests {
    // THIS TEST IS NOT COMPLETE!!! (DELETEME when torrent() is completed)
    // Until torrent() is fully implemented, this test is not complete.
    // The purpose of this test at this point in time is to ensure that torrent() works to the expected point.
-   #[tokio::test]
    #[traced_test]
+   #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
    async fn test_torrent_with_magnet_uri() {
       let path = std::env::current_dir()
          .unwrap()

@@ -8,6 +8,7 @@ use serde::{
 };
 use std::{fmt, net::SocketAddr};
 use tokio::sync::mpsc;
+use tracing::trace;
 use udp::UdpTracker;
 
 use crate::{hashes::InfoHash, peers::Peer};
