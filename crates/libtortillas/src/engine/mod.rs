@@ -1,9 +1,9 @@
 use std::{collections::HashSet, net::SocketAddr, sync::Arc, thread::sleep, time::Duration};
 
-use anyhow::{Error, Result, anyhow};
+use anyhow::{anyhow, Error, Result};
 use rand::random_range;
 use tokio::{
-   sync::{Mutex, mpsc, oneshot},
+   sync::{mpsc, oneshot, Mutex},
    task::JoinSet,
 };
 use tracing::{error, trace};
@@ -13,11 +13,11 @@ use crate::{
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
    peers::{
-      Peer, Transport, TransportHandler,
       messages::PeerMessages,
       tcp::TcpProtocol,
       transport_messages::{TransportCommand, TransportResponse},
       utp::UtpProtocol,
+      Peer, Transport, TransportHandler,
    },
    tracker::Tracker,
 };
@@ -161,28 +161,57 @@ impl TorrentEngine {
       // Repeatedly gather data from each rx and update self.peers as new peers are added
       trace!("Spawning task to handle output from initial requests");
       tokio::spawn(async move {
+         // Loops through every rx and awaits a response. This may be extremely efficient; ex: we
+         // are given three trackers. One has a delay of 300 seconds, and the others have a delay
+         // of 15 seconds. The other two trackers will be forced to wait 300 seconds. FIXME.
          loop {
-            let mut cur_peers = vec![];
             for rx in rx_list.iter_mut() {
                // Gather any peers that a tracker returned
                // In reference to total_trackers: while every tracker may not work, it isn't
                // inherently bad to contact a tracker multiple times. This could, however, be a
                // bottleneck in the future.
-               cur_peers.extend(rx.recv().await.unwrap());
+               let res = rx.recv().await.unwrap();
+
+               // Update self.peers
+               match tx.send(res).await {
+                  Ok(()) => {
+                     trace!("Succesfully sent peers back to torrent()")
+                  }
+                  Err(e) => {
+                     error!("Error when sending peers back to torrent(): {}", e)
+                  }
+               };
             }
-            // Update self.peers
-            match tx.send(cur_peers).await {
-               Ok(()) => {
-                  trace!("Succesfully sent peers back to torrent()")
-               }
-               Err(e) => {
-                  error!("Error when sending peers back to torrent(): {}", e)
-               }
-            };
          }
       });
 
       Ok(rx)
+   }
+
+   pub async fn recv_peers(self: Arc<Self>) {
+      let mut trackers_rx = self
+         .clone()
+         .get_all_peers(&self.get_announce_list())
+         .await
+         .unwrap();
+
+      let me = self.clone();
+      tokio::spawn(async move {
+         trace!("Receiving peers into torrent()");
+
+         // A list of peers that we've already seen
+         let mut peers_in_action = HashSet::new();
+         while let Some(new_peers) = trackers_rx.recv().await {
+            let mut guard = me.peers.lock().await;
+            for peer in new_peers {
+               if !peers_in_action.insert(peer.clone()) {
+                  guard.insert(peer.clone());
+               }
+            }
+         }
+
+         trace!("Received peers into torrent (). Carrying on with program.");
+      });
    }
 
    /// The full torrenting process, summarized in a single function. As of 5/23/25, the return
@@ -201,16 +230,48 @@ impl TorrentEngine {
    ///
    /// TODO: This function will likely return a torrented file, or a path to a locally torrented file.
    pub async fn torrent(self: Arc<Self>) -> anyhow::Result<(), Error> {
-      loop {
-         let me = Arc::clone(&self);
-         // Start getting peers from tracker
-         trace!("Getting initial peers...");
-         let mut trackers_rx = self
-            .clone()
-            .get_all_peers(&self.get_announce_list())
-            .await
-            .unwrap();
+      let me = self.clone();
+      // Start getting peers from tracker
+      trace!("Getting initial peers...");
 
+      tokio::spawn(async move {
+         me.recv_peers().await;
+      });
+
+      let utp_tx = self.utp_handler.lock().await.sender();
+      let tcp_tx = self.tcp_handler.lock().await.sender();
+
+      trace!("Got uTP and TCP handlers");
+
+      let utp_handler_clone = self.utp_handler.clone();
+      tokio::spawn(async move {
+         utp_handler_clone
+            .lock()
+            .await
+            .handle_commands()
+            .await
+            .map_err(|e| {
+               error!("Error when calling handle_commands: {}", e);
+               TorrentEngineError::Other(anyhow!("Error when calling handle_commands"))
+            })
+            .unwrap();
+      });
+
+      let tcp_handler_clone = self.tcp_handler.clone();
+      tokio::spawn(async move {
+         tcp_handler_clone
+            .lock()
+            .await
+            .handle_commands()
+            .await
+            .map_err(|e| {
+               error!("Error when calling handle_commands: {}", e);
+               TorrentEngineError::Other(anyhow!("Error when calling handle_commands"))
+            })
+            .unwrap();
+      });
+
+      loop {
          // Handle edge cases (ex. no peers). TODO, but not necessary
          // This isn't a good way to do this. Refactor later.
          //
@@ -219,151 +280,108 @@ impl TorrentEngine {
          //    return Err(TorrentEngineError::InsufficientPeers.into());
          // };
 
-         tokio::spawn(async move {
-            // A list of peers that we've already seen
-            let mut peers_in_action = HashSet::new();
-            let mut guard = me.peers.lock().await;
-
-            trace!("Receiving peers into torrent()");
-            // We only need to recv().await once. See get_all_peers() for why.
-            let new_peers = trackers_rx.recv().await.unwrap();
-            for peer in new_peers {
-               if !peers_in_action.insert(peer.clone()) {
-                  guard.insert(peer.clone());
-               }
-            }
-            trace!("Received peers into torrent (). Carrying on with program.");
-         });
-
-         let utp_tx = self.utp_handler.lock().await.sender();
-         let tcp_tx = self.tcp_handler.lock().await.sender();
-
-         trace!("Got uTP and TCP handlers");
-
-         let utp_handler_clone = self.utp_handler.clone();
-         tokio::spawn(async move {
-            utp_handler_clone
-               .lock()
-               .await
-               .handle_commands()
-               .await
-               .map_err(|e| {
-                  error!("Error when calling handle_commands: {}", e);
-                  TorrentEngineError::Other(anyhow!("Error when calling handle_commands"))
-               })
-               .unwrap();
-         });
-
-         let tcp_handler_clone = self.tcp_handler.clone();
-         tokio::spawn(async move {
-            tcp_handler_clone
-               .lock()
-               .await
-               .handle_commands()
-               .await
-               .map_err(|e| {
-                  error!("Error when calling handle_commands: {}", e);
-                  TorrentEngineError::Other(anyhow!("Error when calling handle_commands"))
-               })
-               .unwrap();
-         });
-
          // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
          trace!("Beginning iteration of peers");
-         for mut peer in self.peers.lock().await.clone() {
-            let utp_tx = utp_tx.clone();
-            let tcp_tx = tcp_tx.clone();
-            tokio::spawn(async move {
-               // Send handshake. Unwrap is called on this because this code goes directly to our
-               // functions, not a library's.
-               //
-               // Try connecting over TCP and uTP, and use whichever one works. While this may seem
-               // "not to spec", this is how the transmission BitTorrent client does it: https://github.com/transmission/transmission/discussions/7603
+         {
+            for mut peer in self.peers.lock().await.clone() {
+               let utp_tx = utp_tx.clone();
+               let tcp_tx = tcp_tx.clone();
+               tokio::spawn(async move {
+                  // Send handshake. Unwrap is called on this because this code goes directly to our
+                  // functions, not a library's.
+                  //
+                  // Try connecting over TCP and uTP, and use whichever one works. While this may seem
+                  // "not to spec", this is how the transmission BitTorrent client does it: https://github.com/transmission/transmission/discussions/7603
 
-               // TCP
-               // rx is unneeded -- see let tx = ... ~30 lines down
-               let (tcp_connect_tx, _) =
-                  oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
-               tcp_tx
-                  .send(TransportCommand::Connect {
-                     peer: (peer.clone()),
-                     oneshot_tx: tcp_connect_tx,
+                  // TCP
+                  // rx is unneeded -- see let tx = ... ~30 lines down
+                  let (tcp_connect_tx, _) =
+                     oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
+                  tcp_tx
+                     .send(TransportCommand::Connect {
+                        peer: (peer.clone()),
+                        oneshot_tx: tcp_connect_tx,
+                     })
+                     .await
+                     .unwrap();
+
+                  // uTP
+                  let (utp_connect_tx, utp_connect_rx) =
+                     oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
+                  utp_tx
+                     .send(TransportCommand::Connect {
+                        peer: (peer.clone()),
+                        oneshot_tx: utp_connect_tx,
+                     })
+                     .await
+                     .unwrap();
+
+                  let utp_res = utp_connect_rx.await.unwrap();
+
+                  // Assign based on which protocol the peer is operating on.
+                  let tx = if utp_res.is_ok() { utp_tx } else { tcp_tx };
+
+                  // Wait for and receive bitfield
+                  let (bitfield_tx, bitfield_rx) =
+                     oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
+                  tx.send(TransportCommand::Receive {
+                     peer_key: (peer.clone().socket_addr()),
+                     oneshot_tx: (bitfield_tx),
                   })
                   .await
                   .unwrap();
 
-               // uTP
-               let (utp_connect_tx, utp_connect_rx) =
-                  oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
-               utp_tx
-                  .send(TransportCommand::Connect {
-                     peer: (peer.clone()),
-                     oneshot_tx: utp_connect_tx,
-                  })
-                  .await
-                  .unwrap();
+                  match bitfield_rx.await.unwrap() {
+                     Ok(res) => {
+                        match res {
+                           TransportResponse::Receive { message, peer_key } => {
+                              trace!(
+                                 "Received message from peer {}. Message: {:?}",
+                                 peer_key,
+                                 message
+                              );
 
-               let utp_res = utp_connect_rx.await.unwrap();
-
-               // Assign based on which protocol the peer is operating on.
-               let tx = if utp_res.is_ok() { utp_tx } else { tcp_tx };
-
-               // Wait for and receive bitfield
-               let (bitfield_tx, bitfield_rx) =
-                  oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
-               tx.send(TransportCommand::Receive {
-                  peer_key: (peer.clone().socket_addr()),
-                  oneshot_tx: (bitfield_tx),
-               })
-               .await
-               .unwrap();
-
-               match bitfield_rx.await.unwrap() {
-                  Ok(res) => {
-                     match res {
-                        TransportResponse::Receive { message, peer_key } => {
-                           trace!(
-                              "Received message from peer {}. Message: {:?}",
-                              peer_key, message
-                           );
-
-                           // Set bitfield of peer
-                           peer.pieces = match message {
-                              PeerMessages::Bitfield(bitfield) => {
-                                 bitfield.iter().by_vals().collect()
-                              }
-                              // If the response isn't a bitfield for some reason...
-                              _ => {
-                                 vec![]
+                              // Set bitfield of peer
+                              peer.pieces = match message {
+                                 PeerMessages::Bitfield(bitfield) => {
+                                    bitfield.iter().by_vals().collect()
+                                 }
+                                 // If the response isn't a bitfield for some reason...
+                                 _ => {
+                                    vec![]
+                                 }
                               }
                            }
+                           // This should never happen.
+                           _ => {}
                         }
-                        // This should never happen.
-                        _ => {}
+                     }
+                     // We *might* be able to handle this in the future. But for now, just
+                     // panic.
+                     Err(e) => {
+                        error!("An error occurred: {}", e);
+                        panic!("");
                      }
                   }
-                  // We *might* be able to handle this in the future. But for now, just
-                  // panic.
-                  Err(e) => {
-                     error!("An error occurred: {}", e);
-                     panic!("");
-                  }
-               }
 
-               // TODO
-               // Loop to handle requests and incoming pieces. Place any acquired pieces in a field in
-               // TorrentEngine
-            });
+                  // TODO
+                  // Loop to handle requests and incoming pieces. Place any acquired pieces in a field in
+                  // TorrentEngine
+               });
+            }
          }
 
          // Wait for the tracker to add some potentially new peers
+         trace!("Sleeping for potential new peers");
          sleep(Duration::from_secs(15));
 
          // Clear the set to ensure that we don't tokio::spawn for a peer that we've already
          // started working with. This set will be "refilled" on the next cycle of the loop, don't
          // worry. If this is confusing, please refer to the documentation on the torrent()
          // function.
+         trace!("Locking & clearing peers");
          self.peers.lock().await.clear();
+         trace!("Rerunning loop with new peers");
       }
    }
 }
