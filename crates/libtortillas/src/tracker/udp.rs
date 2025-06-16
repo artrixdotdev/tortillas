@@ -516,7 +516,7 @@ impl TrackerTrait for UdpTracker {
 
             trace!("Sent peers to reciever");
 
-            let delay = tracker.interval.min(1);
+            let delay = tracker.interval.max(1);
             sleep(Duration::from_secs(delay as u64)).await;
          }
       });

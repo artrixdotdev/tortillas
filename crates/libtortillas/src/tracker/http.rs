@@ -7,8 +7,8 @@ use crate::{
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{
-   de::{self, Visitor},
    Deserialize, Serialize,
+   de::{self, Visitor},
 };
 use std::{
    net::{Ipv4Addr, SocketAddr},
@@ -135,7 +135,7 @@ impl TrackerTrait for HttpTracker {
 
             trace!("Sent peers to reciever");
 
-            let delay = tracker.interval.min(1);
+            let delay = tracker.interval.max(1);
             sleep(Duration::from_secs(delay as u64)).await;
          }
       });

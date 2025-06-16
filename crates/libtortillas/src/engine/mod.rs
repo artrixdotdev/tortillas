@@ -1,9 +1,9 @@
 use std::{collections::HashSet, net::SocketAddr, sync::Arc, thread::sleep, time::Duration};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use rand::random_range;
 use tokio::{
-   sync::{mpsc, oneshot, Mutex},
+   sync::{Mutex, mpsc, oneshot},
    task::JoinSet,
 };
 use tracing::{error, trace};
@@ -13,11 +13,11 @@ use crate::{
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
    peers::{
+      Peer, Transport, TransportHandler,
       messages::PeerMessages,
       tcp::TcpProtocol,
       transport_messages::{TransportCommand, TransportResponse},
       utp::UtpProtocol,
-      Peer, Transport, TransportHandler,
    },
    tracker::Tracker,
 };
@@ -58,8 +58,7 @@ impl TorrentEngine {
 
       // For TCP
       let tcp_peer_id = Hash::new(rand::random::<[u8; 20]>());
-      let tcp_client_port: u16 = random_range(20001..30000);
-      let tcp_addr = SocketAddr::from(([0, 0, 0, 0], tcp_client_port));
+      let tcp_addr = SocketAddr::from(([0, 0, 0, 0], 0));
       let tcp_protocol = TcpProtocol::new(Some(tcp_addr)).await;
       let tcp_handler = TransportHandler::new(
          tcp_protocol,
@@ -69,8 +68,7 @@ impl TorrentEngine {
 
       // For uTP
       let utp_peer_id = Hash::new(rand::random::<[u8; 20]>());
-      let utp_client_port: u16 = random_range(20001..30000);
-      let utp_addr = SocketAddr::from(([0, 0, 0, 0], utp_client_port));
+      let utp_addr = SocketAddr::from(([0, 0, 0, 0], 0));
       let utp_protocol = UtpProtocol::new(Some(utp_addr)).await;
       let utp_handler = TransportHandler::new(
          utp_protocol,
@@ -326,8 +324,7 @@ impl TorrentEngine {
                         TransportResponse::Receive { message, peer_key } => {
                            trace!(
                               "Received message from peer {}. Message: {:?}",
-                              peer_key,
-                              message
+                              peer_key, message
                            );
 
                            // Set bitfield of peer
