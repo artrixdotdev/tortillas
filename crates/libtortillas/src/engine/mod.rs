@@ -183,6 +183,91 @@ impl TorrentEngine {
       });
    }
 
+   async fn handle_peer(
+      self: Arc<Self>,
+      mut peer: Peer,
+      tcp_tx: mpsc::Sender<TransportCommand>,
+      utp_tx: mpsc::Sender<TransportCommand>,
+   ) {
+      // Send handshake. Unwrap is called on this because this code goes directly to our
+      // functions, not a library's.
+      //
+      // Try connecting over TCP and uTP, and use whichever one works. While this may seem
+      // "not to spec", this is how the transmission BitTorrent client does it: https://github.com/transmission/transmission/discussions/7603
+
+      // TCP
+      // rx is unneeded -- see let tx = ... ~30 lines down
+      let (tcp_connect_tx, _) = oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
+      tcp_tx
+         .send(TransportCommand::Connect {
+            peer: (peer.clone()),
+            oneshot_tx: tcp_connect_tx,
+         })
+         .await
+         .unwrap();
+
+      // uTP
+      let (utp_connect_tx, utp_connect_rx) =
+         oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
+      utp_tx
+         .send(TransportCommand::Connect {
+            peer: (peer.clone()),
+            oneshot_tx: utp_connect_tx,
+         })
+         .await
+         .unwrap();
+
+      let utp_res = utp_connect_rx.await.unwrap();
+
+      // Assign based on which protocol the peer is operating on.
+      let tx = if utp_res.is_ok() { utp_tx } else { tcp_tx };
+
+      // Wait for and receive bitfield
+      let (bitfield_tx, bitfield_rx) =
+         oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
+      tx.send(TransportCommand::Receive {
+         peer_key: (peer.clone().socket_addr()),
+         oneshot_tx: (bitfield_tx),
+      })
+      .await
+      .unwrap();
+
+      match bitfield_rx.await.unwrap() {
+         Ok(res) => {
+            match res {
+               TransportResponse::Receive { message, peer_key } => {
+                  trace!(
+                     "Received message from peer {}. Message: {:?}",
+                     peer_key,
+                     message
+                  );
+
+                  // Set bitfield of peer
+                  peer.pieces = match message {
+                     PeerMessages::Bitfield(bitfield) => bitfield.iter().by_vals().collect(),
+                     // If the response isn't a bitfield for some reason...
+                     _ => {
+                        vec![]
+                     }
+                  }
+               }
+               // This should never happen.
+               _ => {}
+            }
+         }
+         // We *might* be able to handle this in the future. But for now, just
+         // panic.
+         Err(e) => {
+            error!("An error occurred: {}", e);
+            panic!("");
+         }
+      }
+
+      // TODO
+      // Loop to handle requests and incoming pieces. Place any acquired pieces in a field in
+      // TorrentEngine
+   }
+
    /// The full torrenting process, summarized in a single function. As of 5/23/25, the return
    /// value of this function is temporary.
    ///
@@ -204,7 +289,6 @@ impl TorrentEngine {
       trace!("Getting initial peers...");
 
       let announce_list = me.get_announce_list();
-
       tokio::spawn(async move {
          me.get_all_peers(&announce_list).await;
       });
@@ -212,7 +296,7 @@ impl TorrentEngine {
       let utp_tx = self.utp_handler.lock().await.sender();
       let tcp_tx = self.tcp_handler.lock().await.sender();
 
-      trace!("Got uTP and TCP handlers");
+      trace!("Got uTP and TCP senders (tx)");
 
       let utp_handler_clone = self.utp_handler.clone();
       tokio::spawn(async move {
@@ -228,6 +312,8 @@ impl TorrentEngine {
             .unwrap();
       });
 
+      trace!("Locked utp_handler and spawned handle_commands()");
+
       let tcp_handler_clone = self.tcp_handler.clone();
       tokio::spawn(async move {
          tcp_handler_clone
@@ -241,6 +327,8 @@ impl TorrentEngine {
             })
             .unwrap();
       });
+
+      trace!("Locked tcp_handler and spawned handle_commands()");
 
       loop {
          // If there are no peers, wait until there are. If there aren't, everything implodes on
@@ -259,90 +347,12 @@ impl TorrentEngine {
          // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
          trace!("Beginning iteration of peers");
          {
-            for mut peer in self.peers.lock().await.clone() {
+            for peer in self.peers.lock().await.clone() {
+               let me = Arc::clone(&self);
                let utp_tx = utp_tx.clone();
                let tcp_tx = tcp_tx.clone();
                tokio::spawn(async move {
-                  // Send handshake. Unwrap is called on this because this code goes directly to our
-                  // functions, not a library's.
-                  //
-                  // Try connecting over TCP and uTP, and use whichever one works. While this may seem
-                  // "not to spec", this is how the transmission BitTorrent client does it: https://github.com/transmission/transmission/discussions/7603
-
-                  // TCP
-                  // rx is unneeded -- see let tx = ... ~30 lines down
-                  let (tcp_connect_tx, _) =
-                     oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
-                  tcp_tx
-                     .send(TransportCommand::Connect {
-                        peer: (peer.clone()),
-                        oneshot_tx: tcp_connect_tx,
-                     })
-                     .await
-                     .unwrap();
-
-                  // uTP
-                  let (utp_connect_tx, utp_connect_rx) =
-                     oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
-                  utp_tx
-                     .send(TransportCommand::Connect {
-                        peer: (peer.clone()),
-                        oneshot_tx: utp_connect_tx,
-                     })
-                     .await
-                     .unwrap();
-
-                  let utp_res = utp_connect_rx.await.unwrap();
-
-                  // Assign based on which protocol the peer is operating on.
-                  let tx = if utp_res.is_ok() { utp_tx } else { tcp_tx };
-
-                  // Wait for and receive bitfield
-                  let (bitfield_tx, bitfield_rx) =
-                     oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
-                  tx.send(TransportCommand::Receive {
-                     peer_key: (peer.clone().socket_addr()),
-                     oneshot_tx: (bitfield_tx),
-                  })
-                  .await
-                  .unwrap();
-
-                  match bitfield_rx.await.unwrap() {
-                     Ok(res) => {
-                        match res {
-                           TransportResponse::Receive { message, peer_key } => {
-                              trace!(
-                                 "Received message from peer {}. Message: {:?}",
-                                 peer_key,
-                                 message
-                              );
-
-                              // Set bitfield of peer
-                              peer.pieces = match message {
-                                 PeerMessages::Bitfield(bitfield) => {
-                                    bitfield.iter().by_vals().collect()
-                                 }
-                                 // If the response isn't a bitfield for some reason...
-                                 _ => {
-                                    vec![]
-                                 }
-                              }
-                           }
-                           // This should never happen.
-                           _ => {}
-                        }
-                     }
-                     // We *might* be able to handle this in the future. But for now, just
-                     // panic.
-                     Err(e) => {
-                        error!("An error occurred: {}", e);
-                        panic!("");
-                     }
-                  }
-
-                  // TODO
-                  // Loop to handle requests and incoming pieces. Place any acquired pieces in a field in
-                  // TorrentEngine
+                  me.clone().handle_peer(peer, tcp_tx, utp_tx).await;
                });
             }
          }
