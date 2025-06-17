@@ -235,31 +235,30 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
                mut peer,
                oneshot_tx,
             } => {
-               trace!("Connecting to peer: {}", peer.ip);
+               trace!("Connecting to peer: {}", peer);
                let info_hash = self.info_hash.clone();
                let id = self.id.clone();
                tokio::spawn(async move {
                   // Peers should be able to finish their handshake after two seconds
                   const TIMEOUT_DURATION: u64 = 2;
                   let connect = transport_clone.connect_peer(&mut peer, id, info_hash);
-                  let res = timeout(Duration::from_secs(TIMEOUT_DURATION), connect)
-                     .await
-                     .map_err(|e| error!("Error connecting to peer: {e}"));
 
                   // Handle error from timeout
-                  if res.is_err() {
-                     error!(%peer, "Peer timed out.");
-                     if oneshot_tx
-                        .send(Err(PeerTransportError::MessageFailed))
-                        .is_err()
-                     {
-                        error!("Error occured when sending result back");
-                     };
-                  } else if oneshot_tx
-                     .send(Ok(TransportResponse::Connect(res.unwrap().unwrap())))
+                  let res = timeout(Duration::from_secs(TIMEOUT_DURATION), connect)
+                     .await
+                     .map_err(|e| error!("Peer timed out {}: {e}", peer))
+                     .unwrap();
+
+                  // Handle error from connect_peer
+                  let message = res
+                     .map_err(|e| error!("Error when connecting to peer: {}", e))
+                     .unwrap();
+
+                  if oneshot_tx
+                     .send(Ok(TransportResponse::Connect(message)))
                      .is_err()
                   {
-                     error!("Error occured when sending result back");
+                     error!("Error occured when sending result back from peer {}", peer);
                   }
                });
             }
@@ -267,32 +266,49 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
                peer_key,
                oneshot_tx,
             } => {
-               trace!("Receiving message from peer");
+               trace!("Receiving message from peer {}", peer_key);
 
-               // It is reasonable to assume that peers would send a message within 2 seconds.
-               const TIMEOUT_DURATION: u64 = 2;
+               // It is reasonable to assume that peers would send a message within 5 seconds
+               // (maybe? This could be potential issue in the future and a more robust solution
+               // maybe required).
+               const TIMEOUT_DURATION: u64 = 5;
 
                let response = transport_clone.receive_from_peer(peer_key);
+
+               // Handle error from peer timeout
                let res = timeout(Duration::from_secs(TIMEOUT_DURATION), response)
                   .await
-                  .map_err(|e| error!("Error receiving bytes from peer: {}", e));
-               if res.is_err() {
+                  .map_err(|e| error!("Peer timed out {}: {}", peer_key, e))
+                  .unwrap();
+
+               // Handle error from receive_from_peer
+               if res
+                  .as_ref()
+                  .map_err(|e| error!("Error when connecting to peer: {}", e))
+                  .is_err()
+               {
                   if oneshot_tx
                      .send(Err(PeerTransportError::InvalidPeerResponse(
                         "Invalid peer response".into(),
                      )))
                      .is_err()
                   {
-                     error!("Error occured when sending result back");
+                     error!(
+                        "Error occured when sending result back from peer {}",
+                        peer_key
+                     );
                   };
                } else if oneshot_tx
                   .send(Ok(TransportResponse::Receive {
-                     message: (res.unwrap().unwrap()),
+                     message: (res.unwrap()),
                      peer_key: (peer_key),
                   }))
                   .is_err()
                {
-                  error!("Error occured when sending result back");
+                  error!(
+                     "Error occured when sending result back from peer {}",
+                     peer_key
+                  );
                }
             }
          }
