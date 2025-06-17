@@ -243,13 +243,18 @@ impl TorrentEngine {
       });
 
       loop {
-         // Handle edge cases (ex. no peers). TODO, but not necessary
-         // This isn't a good way to do this. Refactor later.
-         //
-         // if self.peers.lock().await.is_empty() {
-         //    trace!("No peers were provided by trackers.");
-         //    return Err(TorrentEngineError::InsufficientPeers.into());
-         // };
+         // If there are no peers, wait until there are. If there aren't, everything implodes on
+         // itself. If empty_counter reaches 10, something's probably gone wrong and the program
+         // should exit.
+         let mut empty_counter = 0;
+         while self.peers.lock().await.is_empty() {
+            if empty_counter == 10 {
+               return Err(TorrentEngineError::InsufficientPeers.into());
+            }
+            trace!("No peers were provided by trackers yet!");
+            sleep(Duration::from_secs(1));
+            empty_counter += 1;
+         }
 
          // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
          trace!("Beginning iteration of peers");
