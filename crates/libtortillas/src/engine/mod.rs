@@ -144,11 +144,7 @@ impl TorrentEngine {
    }
 
    /// Contacts all given trackers for a list of peers
-   async fn get_all_peers(
-      self: Arc<Self>,
-      announce_list: &[Tracker],
-   ) -> Result<mpsc::Receiver<Vec<Peer>>> {
-      let (tx, rx) = mpsc::channel(100);
+   async fn get_all_peers(self: Arc<Self>, announce_list: &[Tracker]) {
       // Get an rx for each tracker
       let mut rx_list = vec![];
 
@@ -158,59 +154,32 @@ impl TorrentEngine {
          rx_list.push(tracker.stream_peers(info_hash).await.unwrap());
       }
 
+      let me = Arc::clone(&self);
+
       // Repeatedly gather data from each rx and update self.peers as new peers are added
       trace!("Spawning task to handle output from initial requests");
       tokio::spawn(async move {
          // Loops through every rx and awaits a response. This may be extremely efficient; ex: we
          // are given three trackers. One has a delay of 300 seconds, and the others have a delay
          // of 15 seconds. The other two trackers will be forced to wait 300 seconds. FIXME.
-         loop {
-            for rx in rx_list.iter_mut() {
-               // Gather any peers that a tracker returned
-               // In reference to total_trackers: while every tracker may not work, it isn't
-               // inherently bad to contact a tracker multiple times. This could, however, be a
-               // bottleneck in the future.
-               let res = rx.recv().await.unwrap();
-
-               // Update self.peers
-               match tx.send(res).await {
-                  Ok(()) => {
-                     trace!("Succesfully sent peers back to torrent()")
-                  }
-                  Err(e) => {
-                     error!("Error when sending peers back to torrent(): {}", e)
-                  }
-               };
-            }
-         }
-      });
-
-      Ok(rx)
-   }
-
-   pub async fn recv_peers(self: Arc<Self>) {
-      let mut trackers_rx = self
-         .clone()
-         .get_all_peers(&self.get_announce_list())
-         .await
-         .unwrap();
-
-      let me = self.clone();
-      tokio::spawn(async move {
-         trace!("Receiving peers into torrent()");
-
+         //
          // A list of peers that we've already seen
          let mut peers_in_action = HashSet::new();
-         while let Some(new_peers) = trackers_rx.recv().await {
-            let mut guard = me.peers.lock().await;
-            for peer in new_peers {
-               if !peers_in_action.insert(peer.clone()) {
-                  guard.insert(peer.clone());
+         loop {
+            // We do not need a timeout/sleep here as stream_peers handles that for us.
+            for rx in rx_list.iter_mut() {
+               let res = rx.recv().await.unwrap();
+
+               trace!("Received peers from get_all_peers()");
+               let mut guard = me.peers.lock().await;
+               for peer in res {
+                  if !peers_in_action.insert(peer.clone()) {
+                     guard.insert(peer.clone());
+                     trace!("Added peer: {}", peer.clone());
+                  }
                }
             }
          }
-
-         trace!("Received peers into torrent (). Carrying on with program.");
       });
    }
 
@@ -234,8 +203,10 @@ impl TorrentEngine {
       // Start getting peers from tracker
       trace!("Getting initial peers...");
 
+      let announce_list = me.get_announce_list();
+
       tokio::spawn(async move {
-         me.recv_peers().await;
+         me.get_all_peers(&announce_list).await;
       });
 
       let utp_tx = self.utp_handler.lock().await.sender();
