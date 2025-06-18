@@ -174,7 +174,6 @@ impl TorrentEngine {
 
                trace!("Received peers from get_all_peers()");
                let mut guard = me.peers.lock().await;
-               guard.insert(Peer::from_socket_addr(SocketAddr::from_str("95.234.80.134:46519").unwrap()));
                for peer in res {
                   if !peers_in_action.insert(peer.clone()) {
                      guard.insert(peer.clone());
@@ -266,14 +265,17 @@ impl TorrentEngine {
                }
                // This should never happen.
                _ => {
-                   trace!("Got something other than a bitfield from peer {}", peer);
+                  trace!("Got something other than a bitfield from peer {}", peer);
                }
             }
          }
          // We *might* be able to handle this in the future. But for now, just
          // panic.
          Err(e) => {
-            error!("An error occurred when handling the bitfield received from the peer {}: {}", peer, e);
+            error!(
+               "An error occurred when handling the bitfield received from the peer {}: {}",
+               peer, e
+            );
             panic!("");
          }
       }
@@ -347,20 +349,23 @@ impl TorrentEngine {
 
       trace!("Locked tcp_handler and spawned handle_commands()");
 
-      loop {
-         // If there are no peers, wait until there are. If there aren't, everything implodes on
-         // itself. If empty_counter reaches 10, something's probably gone wrong and the program
-         // should exit.
-         let mut empty_counter = 0;
-         while self.peers.lock().await.is_empty() {
-            if empty_counter == 5 {
-               return Err(TorrentEngineError::InsufficientPeers.into());
-            }
-            trace!("No peers were provided by trackers yet!");
-            sleep(Duration::from_secs(2));
-            empty_counter += 1;
+      // If there are no peers, wait until there are. If there aren't, everything implodes on
+      // itself. If empty_counter reaches 10, something's probably gone wrong and the program
+      // should exit.
+      //
+      // We are doing this outside the loop -- once we have a few initial peers, we don't need to
+      // worry if the trackers don't send any more.
+      let mut empty_counter = 0;
+      while self.peers.lock().await.is_empty() {
+         if empty_counter == 5 {
+            return Err(TorrentEngineError::InsufficientPeers.into());
          }
+         trace!("No peers were provided by trackers yet!");
+         sleep(Duration::from_secs(2));
+         empty_counter += 1;
+      }
 
+      loop {
          // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
          trace!("Beginning iteration of peers");
          {
