@@ -376,16 +376,25 @@ impl TorrentEngine {
 mod tests {
    use std::sync::Arc;
 
-   use tracing_test::traced_test;
+   use tracing::Level;
+   use tracing_subscriber::fmt;
 
    use crate::engine::TorrentEngine;
 
    // THIS TEST IS NOT COMPLETE!!! (DELETEME when torrent() is completed)
    // Until torrent() is fully implemented, this test is not complete.
    // The purpose of this test at this point in time is to ensure that torrent() works to the expected point.
-   #[traced_test]
+   //
+   // This test uses its own subscriber in lieu of traced_test as it desperately needs to show
+   // line numbers (which requires the use of tracing_subscriber).
    #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
    async fn test_torrent_with_magnet_uri() {
+      let subscriber = fmt()
+         .with_line_number(true)
+         .with_max_level(Level::TRACE)
+         .finish();
+      tracing::subscriber::set_global_default(subscriber).expect("subscriber already set");
+
       let path = std::env::current_dir()
          .unwrap()
          .join("tests/magneturis/zenshuu.txt");
