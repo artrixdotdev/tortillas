@@ -174,6 +174,7 @@ impl TorrentEngine {
 
                trace!("Received peers from get_all_peers()");
                let mut guard = me.peers.lock().await;
+               guard.insert(Peer::from_socket_addr(SocketAddr::from_str("95.234.80.134:46519").unwrap()));
                for peer in res {
                   if !peers_in_action.insert(peer.clone()) {
                      guard.insert(peer.clone());
@@ -264,16 +265,20 @@ impl TorrentEngine {
                   }
                }
                // This should never happen.
-               _ => {}
+               _ => {
+                   trace!("Got something other than a bitfield from peer {}", peer);
+               }
             }
          }
          // We *might* be able to handle this in the future. But for now, just
          // panic.
          Err(e) => {
-            error!("An error occurred: {}", e);
+            error!("An error occurred when handling the bitfield received from the peer {}: {}", peer, e);
             panic!("");
          }
       }
+
+      trace!("Begin interested/unchoke process for peer {}", peer);
 
       // TODO
       // Loop to handle requests and incoming pieces. Place any acquired pieces in a field in

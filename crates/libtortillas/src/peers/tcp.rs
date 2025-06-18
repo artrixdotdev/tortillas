@@ -93,7 +93,7 @@ impl TransportProtocol for TcpProtocol {
 
       // Read response handshake
       stream.read_exact(&mut buf).await.map_err(|e| {
-         error!("Failed to read handshake from peer: {}", e);
+         error!("Failed to read handshake from peer {}: {}", peer, e);
          PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
       })?;
 
