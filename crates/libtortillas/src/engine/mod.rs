@@ -1,4 +1,6 @@
-use std::{collections::HashSet, net::SocketAddr, sync::Arc, thread::sleep, time::Duration};
+use std::{
+   collections::HashSet, net::SocketAddr, str::FromStr, sync::Arc, thread::sleep, time::Duration,
+};
 
 use anyhow::{anyhow, Error, Result};
 use rand::random_range;
@@ -196,8 +198,8 @@ impl TorrentEngine {
       // "not to spec", this is how the transmission BitTorrent client does it: https://github.com/transmission/transmission/discussions/7603
 
       // TCP
-      // rx is unneeded -- see let tx = ... ~30 lines down
-      let (tcp_connect_tx, _) = oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
+      let (tcp_connect_tx, tcp_connect_rx) =
+         oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
       tcp_tx
          .send(TransportCommand::Connect {
             peer: (peer.clone()),
@@ -217,10 +219,20 @@ impl TorrentEngine {
          .await
          .unwrap();
 
-      let utp_res = utp_connect_rx.await.unwrap();
-
       // Assign based on which protocol the peer is operating on.
-      let tx = if utp_res.is_ok() { utp_tx } else { tcp_tx };
+      // If utp_connect_rx returns first, then the peer is operating on uTP (of course, they could
+      // be operating on TCP too, but it wouldn't really matter). If tcp_connect_rx returns first,
+      // then the peer is operating on TCP & the same logic would apply.
+      //
+      // Note that we do NOT care about the return value of either of these oneshots.
+      let tx = tokio::select! {
+          _ = utp_connect_rx => {
+              trace!("Peer {} seems to be using uTP", peer);
+              utp_tx},
+          _ = tcp_connect_rx => {
+              trace!("Peer {} seems to be using TCP", peer);
+              tcp_tx},
+      };
 
       // Wait for and receive bitfield
       let (bitfield_tx, bitfield_rx) =
@@ -336,11 +348,11 @@ impl TorrentEngine {
          // should exit.
          let mut empty_counter = 0;
          while self.peers.lock().await.is_empty() {
-            if empty_counter == 10 {
+            if empty_counter == 5 {
                return Err(TorrentEngineError::InsufficientPeers.into());
             }
             trace!("No peers were provided by trackers yet!");
-            sleep(Duration::from_secs(1));
+            sleep(Duration::from_secs(2));
             empty_counter += 1;
          }
 
@@ -387,6 +399,9 @@ mod tests {
    //
    // This test uses its own subscriber in lieu of traced_test as it desperately needs to show
    // line numbers (which requires the use of tracing_subscriber).
+   //
+   // If debugging, a known good peer for the torrent in zenshuu.txt is 95.234.80.134:46519 (as of 06/17/2025). This was confirmed
+   // through use of the transmission BitTorrent client.
    #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
    async fn test_torrent_with_magnet_uri() {
       let subscriber = fmt()

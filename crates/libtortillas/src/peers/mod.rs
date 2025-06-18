@@ -254,11 +254,12 @@ impl<P: TransportProtocol + 'static> TransportHandler<P> {
                      .map_err(|e| error!("Error when connecting to peer: {}", e))
                      .unwrap();
 
-                  if oneshot_tx
-                     .send(Ok(TransportResponse::Connect(message)))
-                     .is_err()
-                  {
+                  let res = oneshot_tx.send(Ok(TransportResponse::Connect(message)));
+                  if res.is_err() {
                      error!("Error occured when sending result back from peer {}", peer);
+
+                     // Yes, this will kill this thread. That's ok.
+                     res.map_err(|e| error!("{:?}", e.unwrap())).unwrap();
                   }
                });
             }
