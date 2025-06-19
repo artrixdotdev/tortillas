@@ -220,7 +220,17 @@ impl TransportProtocol for UtpProtocol {
    async fn send_data(&mut self, to: PeerKey, message: Vec<u8>) -> Result<(), PeerTransportError> {
       trace!("Attempting to send message...");
 
-      let (peer, socket) = &mut *self.peers.get_mut(&to).unwrap().lock().await;
+      let (peer, socket) = &mut *match self.peers.get_mut(&to) {
+         None => {
+            trace!(
+               "Something went wrong when trying to access the peer/stream for peer {}",
+               to
+            );
+            return Err(PeerTransportError::MessageFailed);
+         }
+         Some(peer_socket) => peer_socket.lock().await,
+      };
+
       socket.write_all(&message).await.map_err(|e| {
          error!("Failed to send message to peer: {e}");
          PeerTransportError::MessageFailed
