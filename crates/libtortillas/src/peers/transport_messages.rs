@@ -19,6 +19,11 @@ pub enum TransportCommand {
       peer_key: PeerKey,
       oneshot_tx: oneshot::Sender<Result<TransportResponse, PeerTransportError>>,
    },
+   Send {
+      message: PeerMessages,
+      peer_key: PeerKey,
+      oneshot_tx: oneshot::Sender<Result<TransportResponse, PeerTransportError>>,
+   },
 }
 
 /// An enum for responses sent from [handle_commands()] (from [TransportHandler])
@@ -29,4 +34,5 @@ pub enum TransportResponse {
       message: PeerMessages,
       peer_key: PeerKey,
    },
+   Send(SocketAddr),
 }
