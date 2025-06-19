@@ -3,6 +3,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Error, Result};
+use bitvec::vec::BitVec;
 use rand::random_range;
 use tokio::{
    sync::{mpsc, oneshot, Mutex},
@@ -226,13 +227,85 @@ impl TorrentEngine {
       //
       // Note that we do NOT care about the return value of either of these oneshots.
       let tx = tokio::select! {
-          _ = utp_connect_rx => {
+          res = utp_connect_rx => {
+              // Ensure that uTP didn't just time out.
+              match res {
+                Ok(inner) => {
+                    match inner {
+                        Ok(_) => {
+                            // If we got this far, we're good.
+                        },
+                        Err(e) => {
+                            error!("Peer {} timed out when handshaking: {}", peer, e);
+                            return;
+                        }
+                    }
+                },
+                Err(e) => {
+                    error!("Recv error: {}", e);
+                    return;
+                }
+              };
+
               trace!("Peer {} seems to be using uTP", peer);
+
               utp_tx},
-          _ = tcp_connect_rx => {
+          res = tcp_connect_rx => {
+              // Ensure that uTP didn't just time out.
+              match res {
+                Ok(inner) => {
+                    match inner {
+                        Ok(_) => {
+                            // If we got this far, we're good.
+                        },
+                        Err(e) => {
+                            error!("Peer {} timed out when handshaking: {}", peer, e);
+                            return;
+                        }
+                    }
+                },
+                Err(e) => {
+                    error!("Recv error from peer {}: {}", peer, e);
+                    return;
+                }
+              };
+
               trace!("Peer {} seems to be using TCP", peer);
+
               tcp_tx},
       };
+
+      // Send an empty bitfield (NOTE: this may need to be adjusted in the future for seeding)
+      let (send_bitfield_tx, send_bitfield_rx) =
+         oneshot::channel::<Result<TransportResponse, PeerTransportError>>();
+      tx.send(TransportCommand::Send {
+         message: (PeerMessages::Bitfield(BitVec::from_vec(vec![]))),
+         peer_key: (peer.socket_addr()),
+         oneshot_tx: (send_bitfield_tx),
+      })
+      .await
+      .unwrap();
+
+      // Ensure that bitfield actually sends
+      match send_bitfield_rx.await.unwrap() {
+         Ok(message) => match message {
+            TransportResponse::Send(addr) => {
+               trace!("Succesfully sent bitfield to peer {}", addr);
+            }
+            _ => {
+               trace!(
+                  "Got something entirely incorrect back from send_bitfield_rx for peer {}",
+                  peer
+               );
+            }
+         },
+         Err(e) => {
+            error!(
+               "Error when processing result of send_data after sending bitfield to peer {}: {}",
+               peer, e
+            );
+         }
+      }
 
       // Wait for and receive bitfield
       let (bitfield_tx, bitfield_rx) =
