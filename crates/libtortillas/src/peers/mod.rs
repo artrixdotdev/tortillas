@@ -4,11 +4,12 @@ use crate::{
 };
 use anyhow::Result;
 use async_trait::async_trait;
-use librqbit_utp::UtpStream;
+use librqbit_utp::{UtpSocket, UtpStream};
 use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+   str::FromStr,
    sync::Arc,
    time::Duration,
 };
@@ -35,6 +36,39 @@ pub type PeerKey = SocketAddr;
 pub enum PeerStream {
    Tcp(TcpStream),
    Utp(UtpStream),
+}
+
+impl PeerStream {
+   /// Connect to a peer with the given peer_addr (ip & port in the form of a
+   /// [SocketAddr](std::net::SocketAddr))
+   ///
+   /// When connecting to a peer, we attempt to connect over both TCP and uTP, and use whichever
+   /// one works. While this may seem "not to spec", this is how the transmission BitTorrent
+   /// client does it:
+   /// https://github.com/transmission/transmission/discussions/7603
+   pub async fn connect(peer_addr: SocketAddr) -> Self {
+      // Prework for uTP stream
+      //
+      // NOTE: This may need to be refactored according to BEP 0003:
+      //
+      // > The port number this peer is listening on. Common behavior is for a downloader to
+      // try to listen on port 6881 and if that port is taken try 6882, then 6883, etc. and
+      // give up after 6889.
+      let socket_addr = SocketAddr::from_str("0.0.0.0:6881").unwrap();
+
+      trace!(
+         "Creating UTP socket for (potential) peer {} at {}",
+         peer_addr,
+         socket_addr
+      );
+
+      let utp_socket = UtpSocket::new_udp(socket_addr).await.unwrap();
+
+      tokio::select! {
+         stream = utp_socket.connect(peer_addr) => {PeerStream::Utp(stream.unwrap())},
+         stream = TcpStream::connect(peer_addr) => {PeerStream::Tcp(stream.unwrap())}
+      }
+   }
 }
 
 /// Represents a BitTorrent peer with connection state and statistics
@@ -108,7 +142,20 @@ impl Peer {
 
       to_tx.send(TransportResponse::Init(from_tx)).await.unwrap();
 
-      // Handle connections & messages with peer...
+      // Make "low level handshake" with peer (i.e, make an initial connection with them, not
+      // concerning the BitTorrent protocol)
+      let stream = PeerStream::connect(self.socket_addr());
+
+      // Send handshake to peer (TODO).
+
+      // Wait for & recieve handshake from peer (TODO).
+
+      // Send empty bitfield (TODO). This may need to be modified in the future to allow for
+      // seeding.
+
+      // Wait for bitfield in return (TODO).
+
+      // Start request/piece message loop (TODO)
    }
 }
 
