@@ -1,11 +1,14 @@
+use crate::{
+   errors::PeerTransportError,
+   hashes::{Hash, InfoHash},
+};
 use anyhow::Result;
 use async_trait::async_trait;
-use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
+use librqbit_utp::UtpStream;
 use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-   str::FromStr,
    sync::Arc,
    time::Duration,
 };
@@ -17,15 +20,22 @@ use tokio::{
 use tracing::{error, trace};
 use transport_messages::{TransportCommand, TransportResponse};
 
-use crate::{
-   errors::PeerTransportError,
-   hashes::{Hash, InfoHash},
-};
 pub mod messages;
 pub mod tcp;
+pub mod transport;
 pub mod transport_messages;
 pub mod utp;
+
+/// It should be noted that the *name* PeerKey is slightly deprecated from previous renditions of
+/// libtortillas. The idea of having a type for the "key" of a peer is still completely relevant
+/// though.
 pub type PeerKey = SocketAddr;
+
+/// A very simple enum to help differentiate between streams.
+pub enum PeerStream {
+   Tcp(TcpStream),
+   Utp(UtpStream),
+}
 
 /// Represents a BitTorrent peer with connection state and statistics
 /// Download rate and upload rate are measured in kilobytes per second.
