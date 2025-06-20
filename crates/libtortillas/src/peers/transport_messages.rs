@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::errors::PeerTransportError;
 
@@ -29,6 +29,7 @@ pub enum TransportCommand {
 /// An enum for responses sent from [handle_commands()] (from [TransportHandler])
 #[derive(Debug, Clone)]
 pub enum TransportResponse {
+   Init(mpsc::Sender<TransportCommand>),
    Connect(SocketAddr),
    Receive {
       message: PeerMessages,

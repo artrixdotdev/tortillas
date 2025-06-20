@@ -1,13 +1,16 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
 use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+   str::FromStr,
    sync::Arc,
    time::Duration,
 };
 use tokio::{
+   net::TcpStream,
    sync::mpsc::{self, Receiver, Sender},
    time::{timeout, Instant},
 };
@@ -85,6 +88,17 @@ impl Peer {
    /// Create a new peer from a socket address
    pub fn from_socket_addr(peer_addr: SocketAddr) -> Self {
       Self::new(peer_addr.ip(), peer_addr.port())
+   }
+
+   /// Autonomously handles the connection & messages between a peer. The from_tx/from_rx is provided to
+   /// facilitate communication to this function from the caller (likely TorrentEngine -- if so, this channel will be used to communicate what pieces TorrentEngine still needs).
+   /// to_tx is provided to allow communication from handle_peer to the caller.
+   async fn handle_peer(&mut self, to_tx: mpsc::Sender<TransportResponse>) {
+      let (from_tx, from_rx) = mpsc::channel(100);
+
+      to_tx.send(TransportResponse::Init(from_tx)).await.unwrap();
+
+      // Handle connections & messages with peer...
    }
 }
 
