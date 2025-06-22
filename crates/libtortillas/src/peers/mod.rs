@@ -5,7 +5,8 @@ use crate::{
 use anyhow::Result;
 use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpStream};
-use messages::{Handshake, PeerMessages, MAGIC_STRING};
+use messages::{Handshake, MAGIC_STRING, PeerMessages};
+use peer_transport::PeerTransport;
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -17,14 +18,14 @@ use tokio::{
    io::{AsyncReadExt, AsyncWriteExt},
    net::TcpStream,
    sync::mpsc::{self, Receiver, Sender},
-   time::{timeout, Instant},
+   time::{Instant, timeout},
 };
 use tracing::{error, trace};
 use transport_messages::{TransportCommand, TransportResponse};
 
 pub mod messages;
+pub mod peer_transport;
 pub mod tcp;
-pub mod transport;
 pub mod transport_messages;
 pub mod utp;
 
@@ -40,6 +41,8 @@ pub enum PeerStream {
    Tcp(TcpStream),
    Utp(UtpStream),
 }
+
+pub type PeerId = Arc<Hash<20>>;
 
 impl PeerStream {
    /// Connect to a peer with the given peer_addr (ip & port in the form of a
@@ -61,8 +64,7 @@ impl PeerStream {
 
       trace!(
          "Creating UTP socket for (potential) peer {} at {}",
-         peer_addr,
-         socket_addr
+         peer_addr, socket_addr
       );
 
       let utp_socket = UtpSocket::new_udp(socket_addr).await.unwrap();
@@ -203,16 +205,22 @@ impl Peer {
    /// Autonomously handles the connection & messages between a peer. The from_tx/from_rx is provided to
    /// facilitate communication to this function from the caller (likely TorrentEngine -- if so, this channel will be used to communicate what pieces TorrentEngine still needs).
    /// to_tx is provided to allow communication from handle_peer to the caller.
-   async fn handle_peer(&mut self, to_tx: mpsc::Sender<TransportResponse>) {
+   async fn handle_peer(
+      &mut self,
+      to_tx: mpsc::Sender<TransportResponse>,
+      info_hash: InfoHash,
+      our_id: PeerId,
+   ) {
       let (from_tx, from_rx) = mpsc::channel(100);
 
       to_tx.send(TransportResponse::Init(from_tx)).await.unwrap();
 
       // Make "low level handshake" with peer (i.e, make an initial connection with them, not
       // concerning the BitTorrent protocol)
-      let stream = PeerStream::connect(self.socket_addr());
+      let stream = PeerStream::connect(self.socket_addr()).await;
 
-      // Send handshake to peer (TODO).
+      // Send handshake to peer.
+      PeerTransport::connect_peer(self, our_id, Arc::new(info_hash), stream);
 
       // Wait for & recieve handshake from peer (TODO).
 
@@ -244,11 +252,14 @@ pub trait TransportProtocol: Send + Sync + Clone {
       id: Arc<Hash<20>>,
       info_hash: Arc<InfoHash>,
    ) -> Result<PeerKey, PeerTransportError>;
+
    async fn send_data(&mut self, to: PeerKey, data: Vec<u8>) -> Result<(), PeerTransportError>;
+
    /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
    /// use this function.
    async fn receive_from_peer(&mut self, peer: PeerKey)
-      -> Result<PeerMessages, PeerTransportError>;
+   -> Result<PeerMessages, PeerTransportError>;
+
    /// Receives data from any incoming peer. Generally used for accepting a handshake.
    async fn receive_data(
       &mut self,

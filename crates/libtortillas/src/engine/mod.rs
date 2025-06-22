@@ -1,14 +1,8 @@
-use std::{
-   collections::HashSet, net::SocketAddr, str::FromStr, sync::Arc, thread::sleep, time::Duration,
-};
+use std::{collections::HashSet, net::SocketAddr, sync::Arc, thread::sleep, time::Duration};
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use bitvec::vec::BitVec;
-use rand::random_range;
-use tokio::{
-   sync::{mpsc, oneshot, Mutex},
-   task::JoinSet,
-};
+use tokio::sync::{Mutex, mpsc, oneshot};
 use tracing::{error, trace};
 
 use crate::{
@@ -16,11 +10,11 @@ use crate::{
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
    peers::{
+      Peer, TransportHandler,
       messages::PeerMessages,
       tcp::TcpProtocol,
       transport_messages::{TransportCommand, TransportResponse},
       utp::UtpProtocol,
-      Peer, Transport, TransportHandler,
    },
    tracker::Tracker,
 };
@@ -323,8 +317,7 @@ impl TorrentEngine {
                TransportResponse::Receive { message, peer_key } => {
                   trace!(
                      "Received message from peer {}. Message: {:?}",
-                     peer_key,
-                     message
+                     peer_key, message
                   );
 
                   // Set bitfield of peer
