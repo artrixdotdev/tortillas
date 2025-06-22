@@ -14,6 +14,7 @@ use std::{
    time::Duration,
 };
 use tokio::{
+   io::{AsyncReadExt, AsyncWriteExt},
    net::TcpStream,
    sync::mpsc::{self, Receiver, Sender},
    time::{timeout, Instant},
@@ -32,7 +33,9 @@ pub mod utp;
 /// though.
 pub type PeerKey = SocketAddr;
 
-/// A very simple enum to help differentiate between streams.
+/// A very simple enum to help differentiate between streams. TcpStream and UtpStream are so
+/// incredibly similar in functionality that it's ususally possible to simply make a blanket
+/// function, such as [write_all](PeerStream::write_all)
 pub enum PeerStream {
    Tcp(TcpStream),
    Utp(UtpStream),
@@ -64,10 +67,73 @@ impl PeerStream {
 
       let utp_socket = UtpSocket::new_udp(socket_addr).await.unwrap();
 
+      trace!("Attemping connection to {}", peer_addr);
       tokio::select! {
          stream = utp_socket.connect(peer_addr) => {PeerStream::Utp(stream.unwrap())},
          stream = TcpStream::connect(peer_addr) => {PeerStream::Tcp(stream.unwrap())}
       }
+   }
+
+   /// Blanket write_all implementation.
+   pub async fn write_all(&mut self, bytes: Vec<u8>) -> Result<()> {
+      match self {
+         Self::Tcp(stream) => {
+            stream
+               .write_all(&bytes)
+               .await
+               .map_err(|e| {
+                  error!(
+                     "Error sending bytes to peer {}: {}",
+                     e,
+                     stream.peer_addr().unwrap()
+                  )
+               })
+               .unwrap();
+         }
+         Self::Utp(stream) => {
+            stream
+               .write_all(&bytes)
+               .await
+               .map_err(|e| {
+                  error!(
+                     "Error sending bytes to peer {}: {}",
+                     e,
+                     stream.remote_addr()
+                  )
+               })
+               .unwrap();
+         }
+      }
+      Ok(())
+   }
+
+   /// Blanket read_exact implementation.
+   pub async fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
+      match self {
+         Self::Tcp(stream) => {
+            let peer_addr = stream.peer_addr().unwrap();
+            stream
+               .read_exact(buf)
+               .await
+               .map_err(|e| {
+                  error!("Failed to read handshake from peer {}: {}", peer_addr, e);
+                  PeerTransportError::ConnectionFailed(peer_addr.to_string())
+               })
+               .unwrap();
+         }
+         Self::Utp(stream) => {
+            let peer_addr = stream.remote_addr();
+            stream
+               .read_exact(buf)
+               .await
+               .map_err(|e| {
+                  error!("Failed to read handshake from peer {}: {}", peer_addr, e);
+                  PeerTransportError::ConnectionFailed(peer_addr.to_string())
+               })
+               .unwrap();
+         }
+      }
+      Ok(())
    }
 }
 

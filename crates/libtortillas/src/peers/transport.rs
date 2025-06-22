@@ -1,6 +1,6 @@
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
-use tracing::{error, trace};
+use tracing::{error, info, trace};
 
 use crate::{
    errors::PeerTransportError,
@@ -28,9 +28,37 @@ impl Transport {
       peer: &mut Peer,
       peer_id: Arc<Hash<20>>,
       info_hash: Arc<InfoHash>,
-      stream: PeerStream,
+      mut stream: PeerStream,
    ) -> Result<PeerKey, PeerTransportError> {
-      Ok(PeerKey::from_str("").unwrap())
+      let handshake = Handshake::new(info_hash.clone(), peer_id.clone());
+      stream.write_all(handshake.to_bytes()).await.unwrap();
+      trace!("Sent handshake to peer");
+
+      // Calculate expected size for response
+      // 1 byte + protocol + reserved + hashes
+      const EXPECTED_SIZE: usize = 1 + MAGIC_STRING.len() + 8 + 40;
+      let mut buf = [0u8; EXPECTED_SIZE];
+
+      // Read response handshake
+      stream.read_exact(&mut buf).await.map_err(|e| {
+         error!("Failed to read handshake from peer {}: {}", peer, e);
+         PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
+      })?;
+
+      let handshake =
+         Handshake::from_bytes(&buf).map_err(|e| PeerTransportError::Other(anyhow!("{e}")))?;
+
+      let (_, new_peer) = self
+         .validate_handshake(handshake, peer.socket_addr(), info_hash, peer_id)
+         .unwrap();
+
+      // Store peer information
+      let peer_id = new_peer.id.unwrap();
+      peer.id = Some(peer_id);
+
+      info!(%peer, "Peer connected");
+
+      Ok(peer.socket_addr())
    }
 
    async fn send_data(
