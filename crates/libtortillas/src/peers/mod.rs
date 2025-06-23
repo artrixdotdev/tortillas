@@ -9,13 +9,16 @@ use messages::{Handshake, MAGIC_STRING, PeerMessages};
 use peer_transport::PeerTransport;
 use std::{
    fmt::Display,
+   io::BufRead,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+   pin::Pin,
    str::FromStr,
    sync::Arc,
+   task::{Context, Poll},
    time::Duration,
 };
 use tokio::{
-   io::{AsyncReadExt, AsyncWriteExt},
+   io::{self, AsyncRead, AsyncWrite, ReadBuf},
    net::TcpStream,
    sync::mpsc::{self, Receiver, Sender},
    time::{Instant, timeout},
@@ -76,66 +79,52 @@ impl PeerStream {
       }
    }
 
-   /// Blanket write_all implementation.
-   pub async fn write_all(&mut self, bytes: Vec<u8>) -> Result<()> {
+   /// Returns the addr of the connected peer
+   pub fn remote_addr(&self) -> Result<SocketAddr> {
       match self {
-         Self::Tcp(stream) => {
-            stream
-               .write_all(&bytes)
-               .await
-               .map_err(|e| {
-                  error!(
-                     "Error sending bytes to peer {}: {}",
-                     e,
-                     stream.peer_addr().unwrap()
-                  )
-               })
-               .unwrap();
-         }
-         Self::Utp(stream) => {
-            stream
-               .write_all(&bytes)
-               .await
-               .map_err(|e| {
-                  error!(
-                     "Error sending bytes to peer {}: {}",
-                     e,
-                     stream.remote_addr()
-                  )
-               })
-               .unwrap();
-         }
+         PeerStream::Tcp(s) => Ok(s.peer_addr().unwrap()),
+         PeerStream::Utp(s) => Ok(s.remote_addr()),
       }
-      Ok(())
+   }
+}
+
+impl AsyncRead for PeerStream {
+   fn poll_read(
+      mut self: Pin<&mut Self>,
+      cx: &mut Context<'_>,
+      buf: &mut ReadBuf<'_>,
+   ) -> Poll<io::Result<()>> {
+      match &mut *self {
+         PeerStream::Tcp(s) => Pin::new(s).poll_read(cx, buf),
+         PeerStream::Utp(s) => Pin::new(s).poll_read(cx, buf),
+      }
+   }
+}
+
+impl AsyncWrite for PeerStream {
+   fn poll_write(
+      mut self: Pin<&mut Self>,
+      cx: &mut Context<'_>,
+      buf: &[u8],
+   ) -> Poll<Result<usize, io::Error>> {
+      match &mut *self {
+         PeerStream::Tcp(s) => Pin::new(s).poll_write(cx, buf),
+         PeerStream::Utp(s) => Pin::new(s).poll_write(cx, buf),
+      }
    }
 
-   /// Blanket read_exact implementation.
-   pub async fn read_exact(&mut self, buf: &mut [u8]) -> Result<()> {
-      match self {
-         Self::Tcp(stream) => {
-            let peer_addr = stream.peer_addr().unwrap();
-            stream
-               .read_exact(buf)
-               .await
-               .map_err(|e| {
-                  error!("Failed to read handshake from peer {}: {}", peer_addr, e);
-                  PeerTransportError::ConnectionFailed(peer_addr.to_string())
-               })
-               .unwrap();
-         }
-         Self::Utp(stream) => {
-            let peer_addr = stream.remote_addr();
-            stream
-               .read_exact(buf)
-               .await
-               .map_err(|e| {
-                  error!("Failed to read handshake from peer {}: {}", peer_addr, e);
-                  PeerTransportError::ConnectionFailed(peer_addr.to_string())
-               })
-               .unwrap();
-         }
+   fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+      match &mut *self {
+         PeerStream::Tcp(s) => Pin::new(s).poll_flush(cx),
+         PeerStream::Utp(s) => Pin::new(s).poll_flush(cx),
       }
-      Ok(())
+   }
+
+   fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+      match &mut *self {
+         PeerStream::Tcp(s) => Pin::new(s).poll_shutdown(cx),
+         PeerStream::Utp(s) => Pin::new(s).poll_shutdown(cx),
+      }
    }
 }
 
@@ -220,9 +209,11 @@ impl Peer {
       let stream = PeerStream::connect(self.socket_addr()).await;
 
       // Send handshake to peer.
-      PeerTransport::connect_peer(self, our_id, Arc::new(info_hash), stream);
+      PeerTransport::connect_peer(self, our_id, Arc::new(info_hash), stream)
+         .await
+         .unwrap();
 
-      // Wait for & recieve handshake from peer (TODO).
+      // Wait for & recieve handshake from peer.
 
       // Send empty bitfield (TODO). This may need to be modified in the future to allow for
       // seeding.
