@@ -7,7 +7,6 @@ use async_trait::async_trait;
 use messages::{Handshake, MAGIC_STRING, PeerMessages};
 use std::{
    fmt::Display,
-   io::BufRead,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::Arc,
    time::Duration,
