@@ -1,4 +1,15 @@
+use crate::errors::PeerTransportError;
+use crate::hashes::Hash;
+use crate::peers::InfoHash;
+use crate::peers::PeerKey;
+use crate::peers::messages::Handshake;
 use anyhow::Result;
+use anyhow::anyhow;
+use tracing::debug;
+use tracing::error;
+use tracing::info;
+
+use std::sync::Arc;
 use std::{
    net::SocketAddr,
    pin::Pin,
@@ -6,13 +17,16 @@ use std::{
    task::{Context, Poll},
 };
 
+use super::MAGIC_STRING;
+use super::Peer;
+use super::PeerId;
+use super::messages::PeerMessages;
 use librqbit_utp::{UtpSocket, UtpStream};
 use tokio::{
-   io::{self, AsyncRead, AsyncWrite, ReadBuf},
+   io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
    net::TcpStream,
 };
 use tracing::trace;
-
 /// A very simple enum to help differentiate between streams. TcpStream and UtpStream are so
 /// incredibly similar in functionality that it's ususally possible to simply make a blanket
 /// function, such as [write_all](PeerStream::write_all)
@@ -38,18 +52,156 @@ impl PeerStream {
       // try to listen on port 6881 and if that port is taken try 6882, then 6883, etc. and
       // give up after 6889.
       let socket_addr = SocketAddr::from_str("0.0.0.0:6881").unwrap();
-
       trace!(
          "Creating UTP socket for (potential) peer {} at {}",
          peer_addr, socket_addr
       );
-
       let utp_socket = UtpSocket::new_udp(socket_addr).await.unwrap();
 
       trace!("Attemping connection to {}", peer_addr);
       tokio::select! {
          stream = utp_socket.connect(peer_addr) => {PeerStream::Utp(stream.unwrap())},
          stream = TcpStream::connect(peer_addr) => {PeerStream::Tcp(stream.unwrap())}
+      }
+   }
+
+   /// Sends a PeerMessage to a peer.
+   async fn send(&mut self, data: PeerMessages) -> Result<(), PeerTransportError> {
+      self
+         .write_all(&data.to_bytes().unwrap())
+         .await
+         .map_err(|e| {
+            error!("Failed to send message to peer: {e}");
+            PeerTransportError::MessageFailed
+         })
+   }
+
+   /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
+   /// use this function.
+   async fn recv(&mut self) -> Result<PeerMessages, PeerTransportError> {
+      // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
+      let mut buf = vec![0; 5];
+
+      self.read_exact(&mut buf).await.map_err(|e| {
+         error!("Error occurred when reading the peer's response: {e}");
+         PeerTransportError::InvalidPeerResponse("Error occured".into())
+      })?;
+
+      let addr = self.remote_addr()?;
+      let length = u32::from_be_bytes(buf[..4].try_into().unwrap());
+
+      trace!(message_type = buf[4], ip = %addr, "Recieved message headers, requesting rest...");
+
+      let mut rest = vec![0; length as usize];
+
+      self.read_exact(&mut rest).await.map_err(|e| {
+         error!("Error occurred when reading the peer's response: {e}");
+         PeerTransportError::InvalidPeerResponse("Error occured".into())
+      })?;
+      let full_length = length + buf.len() as u32;
+
+      debug!(
+         "Read {} action ({} bytes) from {} ",
+         buf[4], full_length, addr
+      );
+      buf.extend_from_slice(&rest);
+
+      PeerMessages::from_bytes(buf)
+   }
+
+   /// Handshakes with a peer and returns the socket address of the peer. This socket address is
+   /// also a (PeerKey)[super::PeerKey].
+   pub async fn send_handshake(
+      &mut self,
+      peer: &mut Peer,
+      our_id: PeerId,
+      info_hash: Arc<InfoHash>,
+   ) -> Result<PeerId, PeerTransportError> {
+      let handshake = Handshake::new(info_hash.clone(), our_id.clone());
+      self.write_all(&handshake.to_bytes()).await.unwrap();
+      trace!("Sent handshake to peer");
+
+      // Calculate expected size for response
+      // 1 byte + protocol + reserved + hashes
+      const EXPECTED_SIZE: usize = 1 + MAGIC_STRING.len() + 8 + 40;
+      let mut buf = [0u8; EXPECTED_SIZE];
+
+      // Read response handshake
+      self.read_exact(&mut buf).await.map_err(|e| {
+         error!("Failed to read handshake from peer {}: {}", peer, e);
+         PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
+      })?;
+
+      let handshake =
+         Handshake::from_bytes(&buf).map_err(|e| PeerTransportError::Other(anyhow!("{e}")))?;
+
+      validate_handshake(&handshake, peer.socket_addr(), info_hash)?;
+
+      info!(%peer, "Peer connected");
+      Ok(handshake.peer_id)
+   }
+
+   /// Receives an incoming handshake from a peer.
+   async fn receive_handshake(
+      &mut self,
+      info_hash: Arc<InfoHash>,
+      id: Arc<Hash<20>>,
+      mut stream: PeerStream,
+   ) -> Result<PeerId, PeerTransportError> {
+      // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
+      let mut buf = vec![0; 5];
+
+      stream.read_exact(&mut buf).await.map_err(|e| {
+         error!("Error occurred when reading the peer's response: {e}");
+         PeerTransportError::InvalidPeerResponse("Error occured".into())
+      })?;
+      let addr = stream.remote_addr().unwrap();
+
+      trace!(message_type = buf[4], ip = %addr, "Recieved message headers, requesting rest...");
+      let is_handshake = is_handshake(&buf);
+
+      let length = if is_handshake {
+         // This is a handshake.
+         // The length of a handshake is always 68 and we already have the
+         // first 5 bytes of it, so we need 68 - 5 bytes (the current buffer length)
+
+         68 - buf.len() as u32
+      } else {
+         // This is not a handshake
+         // Non handshake messages have a length field from bytes 0-4
+         return Err(PeerTransportError::InvalidPeerResponse(
+            "Invalid Handshake".into(),
+         ));
+      };
+
+      let mut rest = vec![0; length as usize];
+
+      stream.read_exact(&mut rest).await.map_err(|e| {
+         error!("Error occurred when reading the peer's response: {e}");
+         PeerTransportError::InvalidPeerResponse("Error occured".into())
+      })?;
+      let full_length = length + buf.len() as u32;
+
+      debug!(
+         "Read {} action ({} bytes) from {} ",
+         buf[4], full_length, addr
+      );
+      buf.extend_from_slice(&rest);
+
+      // Creates a new handshake and sends it
+      let message = PeerMessages::from_bytes(buf)?;
+      if let PeerMessages::Handshake(handshake) = message {
+         if let Err(e) = validate_handshake(&handshake, addr, info_hash.clone()) {
+            return Err(e);
+         }
+         let response = PeerMessages::Handshake(Handshake::new(info_hash, id));
+         self.send(response).await?;
+         info!("Peer {} connected", self.remote_addr().unwrap());
+         Ok(handshake.peer_id.clone())
+      } else {
+         Err(PeerTransportError::InvalidPeerResponse(
+            "Invalid peer response".to_string(),
+         ))
       }
    }
 
@@ -100,4 +252,36 @@ impl AsyncWrite for PeerStream {
          PeerStream::Utp(s) => Pin::new(s).poll_shutdown(cx),
       }
    }
+}
+
+/// Takes in a received handshake and returns the handshake we should respond with as well as the new peer. It preassigns the our_id to the peer.
+fn validate_handshake(
+   received_handshake: &Handshake,
+   peer_addr: SocketAddr,
+   info_hash: Arc<InfoHash>,
+) -> Result<(), PeerTransportError> {
+   // Validate protocol string
+   if MAGIC_STRING != received_handshake.protocol {
+      error!("Invalid magic string received from peer {}", peer_addr);
+      return Err(PeerTransportError::InvalidMagicString {
+         received: String::from_utf8_lossy(&received_handshake.protocol).into(),
+         expected: String::from_utf8_lossy(MAGIC_STRING).into(),
+      });
+   }
+
+   // Validate info hash
+   if info_hash.clone() != received_handshake.info_hash {
+      error!("Invalid info hash received from peer {}", peer_addr);
+      return Err(PeerTransportError::InvalidInfoHash {
+         received: received_handshake.info_hash.to_hex(),
+         expected: info_hash.clone().to_hex(),
+      });
+   }
+
+   Ok(())
+}
+
+/// Checks to see if a peer message is a handshake using the first 5 bytes.
+fn is_handshake(buf: &[u8]) -> bool {
+   buf[0] as usize == MAGIC_STRING.len() && buf[1..5] == MAGIC_STRING[0..4]
 }

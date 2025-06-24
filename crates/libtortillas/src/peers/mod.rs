@@ -17,13 +17,11 @@ use tokio::{
    time::{Instant, timeout},
 };
 use tracing::{error, trace};
-use transport::PeerTransport;
 use transport_messages::{TransportCommand, TransportResponse};
 
 pub mod messages;
 pub mod stream;
 pub mod tcp;
-pub mod transport;
 pub mod transport_messages;
 pub mod utp;
 
@@ -111,10 +109,11 @@ impl Peer {
 
       // Make "low level handshake" with peer (i.e, make an initial connection with them, not
       // concerning the BitTorrent protocol)
-      let stream = PeerStream::connect(self.socket_addr()).await;
+      let mut stream = PeerStream::connect(self.socket_addr()).await;
 
       // Send handshake to peer.
-      PeerTransport::connect_peer(self, our_id, Arc::new(info_hash), stream)
+      stream
+         .send_handshake(self, our_id, Arc::new(info_hash))
          .await
          .unwrap();
 

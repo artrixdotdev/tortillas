@@ -2,10 +2,10 @@ use super::{Peer, PeerKey, TransportProtocol};
 use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
-   peers::messages::{Handshake, MAGIC_STRING},
    peers::PeerMessages,
+   peers::messages::{Handshake, MAGIC_STRING},
 };
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use librqbit_utp::{UtpSocket, UtpSocketUdp, UtpStream};
 use std::{collections::HashMap, net::SocketAddr, str::FromStr, sync::Arc};
@@ -27,7 +27,6 @@ impl UtpProtocol {
       let socket_addr = socket_addr.unwrap_or(SocketAddr::from_str("0.0.0.0:6881").unwrap());
       trace!("Creating UTP socket at {}", socket_addr);
       let socket = UtpSocket::new_udp(socket_addr).await.unwrap();
-
       UtpProtocol {
          socket,
          peers: HashMap::new(),
@@ -287,10 +286,10 @@ mod tests {
    use crate::{
       parser::{MagnetUri, MetaInfo},
       peers::{
-         transport_messages::{TransportCommand, TransportResponse},
          Transport, TransportHandler,
+         transport_messages::{TransportCommand, TransportResponse},
       },
-      tracker::{http::HttpTracker, Tracker, TrackerTrait},
+      tracker::{Tracker, TrackerTrait, http::HttpTracker},
    };
 
    use super::*;
