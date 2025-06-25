@@ -4,6 +4,7 @@ use crate::{
 };
 use anyhow::Result;
 use async_trait::async_trait;
+use bitvec::vec::BitVec;
 use messages::{Handshake, MAGIC_STRING, PeerMessages};
 use std::{
    fmt::Display,
@@ -112,16 +113,19 @@ impl Peer {
       let mut stream = PeerStream::connect(self.socket_addr()).await;
 
       // Send handshake to peer.
-      stream
+      let peer_id = stream
          .send_handshake(our_id, Arc::new(info_hash))
          .await
          .unwrap();
 
-      // Wait for & recieve handshake from peer.
+      self.id = Some(*peer_id);
 
       // Send empty bitfield (TODO). This may need to be modified in the future to allow for
       // seeding.
-
+      stream
+         .send(PeerMessages::Bitfield(BitVec::EMPTY))
+         .await
+         .unwrap();
       // Wait for bitfield in return (TODO).
 
       // Start request/piece message loop (TODO)
