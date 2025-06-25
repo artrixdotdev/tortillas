@@ -113,11 +113,11 @@ impl PeerStream {
    /// also a (PeerKey)[super::PeerKey].
    pub async fn send_handshake(
       &mut self,
-      peer: &mut Peer,
       our_id: PeerId,
       info_hash: Arc<InfoHash>,
    ) -> Result<PeerId, PeerTransportError> {
       let handshake = Handshake::new(info_hash.clone(), our_id.clone());
+      let remote_addr = self.remote_addr().unwrap();
       self.write_all(&handshake.to_bytes()).await.unwrap();
       trace!("Sent handshake to peer");
 
@@ -128,16 +128,17 @@ impl PeerStream {
 
       // Read response handshake
       self.read_exact(&mut buf).await.map_err(|e| {
-         error!("Failed to read handshake from peer {}: {}", peer, e);
-         PeerTransportError::ConnectionFailed(peer.socket_addr().to_string())
+         error!("Failed to read handshake from peer {}: {}", remote_addr, e);
+         PeerTransportError::ConnectionFailed(remote_addr.to_string())
       })?;
 
       let handshake =
          Handshake::from_bytes(&buf).map_err(|e| PeerTransportError::Other(anyhow!("{e}")))?;
 
-      validate_handshake(&handshake, peer.socket_addr(), info_hash)?;
+      validate_handshake(&handshake, remote_addr, info_hash)?;
 
-      info!(%peer, "Peer connected");
+      info!(%remote_addr, "Peer connected");
+
       Ok(handshake.peer_id)
    }
 
@@ -146,16 +147,15 @@ impl PeerStream {
       &mut self,
       info_hash: Arc<InfoHash>,
       id: Arc<Hash<20>>,
-      mut stream: PeerStream,
    ) -> Result<PeerId, PeerTransportError> {
       // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
       let mut buf = vec![0; 5];
 
-      stream.read_exact(&mut buf).await.map_err(|e| {
+      self.read_exact(&mut buf).await.map_err(|e| {
          error!("Error occurred when reading the peer's response: {e}");
          PeerTransportError::InvalidPeerResponse("Error occured".into())
       })?;
-      let addr = stream.remote_addr().unwrap();
+      let addr = self.remote_addr().unwrap();
 
       trace!(message_type = buf[4], ip = %addr, "Recieved message headers, requesting rest...");
       let is_handshake = is_handshake(&buf);
@@ -176,7 +176,7 @@ impl PeerStream {
 
       let mut rest = vec![0; length as usize];
 
-      stream.read_exact(&mut rest).await.map_err(|e| {
+      self.read_exact(&mut rest).await.map_err(|e| {
          error!("Error occurred when reading the peer's response: {e}");
          PeerTransportError::InvalidPeerResponse("Error occured".into())
       })?;

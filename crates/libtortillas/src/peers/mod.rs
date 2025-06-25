@@ -113,7 +113,7 @@ impl Peer {
 
       // Send handshake to peer.
       stream
-         .send_handshake(self, our_id, Arc::new(info_hash))
+         .send_handshake(our_id, Arc::new(info_hash))
          .await
          .unwrap();
 
