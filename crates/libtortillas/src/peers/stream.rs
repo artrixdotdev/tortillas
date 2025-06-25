@@ -66,7 +66,7 @@ impl PeerStream {
    }
 
    /// Sends a PeerMessage to a peer.
-   async fn send(&mut self, data: PeerMessages) -> Result<(), PeerTransportError> {
+   pub async fn send(&mut self, data: PeerMessages) -> Result<(), PeerTransportError> {
       self
          .write_all(&data.to_bytes().unwrap())
          .await
@@ -78,7 +78,7 @@ impl PeerStream {
 
    /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
    /// use this function.
-   async fn recv(&mut self) -> Result<PeerMessages, PeerTransportError> {
+   pub async fn recv(&mut self) -> Result<PeerMessages, PeerTransportError> {
       // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
       let mut buf = vec![0; 5];
 
@@ -143,7 +143,7 @@ impl PeerStream {
    }
 
    /// Receives an incoming handshake from a peer.
-   async fn receive_handshake(
+   pub async fn receive_handshake(
       &mut self,
       info_hash: Arc<InfoHash>,
       id: Arc<Hash<20>>,
