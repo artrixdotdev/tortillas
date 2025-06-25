@@ -5,7 +5,7 @@ use crate::{
 use anyhow::Result;
 use async_trait::async_trait;
 use bitvec::vec::BitVec;
-use messages::{Handshake, MAGIC_STRING, PeerMessages};
+use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -15,7 +15,7 @@ use std::{
 use stream::PeerStream;
 use tokio::{
    sync::mpsc::{self, Receiver, Sender},
-   time::{Instant, timeout},
+   time::{timeout, Instant},
 };
 use tracing::{error, trace};
 use transport_messages::{TransportCommand, TransportResponse};
@@ -120,13 +120,29 @@ impl Peer {
 
       self.id = Some(*peer_id);
 
-      // Send empty bitfield (TODO). This may need to be modified in the future to allow for
+      // Send empty bitfield. This may need to be modified in the future to allow for
       // seeding.
       stream
          .send(PeerMessages::Bitfield(BitVec::EMPTY))
          .await
          .unwrap();
-      // Wait for bitfield in return (TODO).
+
+      // Wait for bitfield in return.
+      let bitfield = stream.recv().await.unwrap();
+
+      match bitfield {
+         PeerMessages::Bitfield(bitfield) => {
+            trace!("Received bitfield message from peer {}", self.socket_addr());
+            self.pieces = bitfield.iter().by_vals().collect();
+         }
+         res => {
+            error!(
+               "Message received from peer {} was not a bitfield -- it was a {:?}",
+               self.socket_addr(),
+               res
+            )
+         }
+      }
 
       // Start request/piece message loop (TODO)
    }
@@ -157,7 +173,7 @@ pub trait TransportProtocol: Send + Sync + Clone {
    /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
    /// use this function.
    async fn receive_from_peer(&mut self, peer: PeerKey)
-   -> Result<PeerMessages, PeerTransportError>;
+      -> Result<PeerMessages, PeerTransportError>;
 
    /// Receives data from any incoming peer. Generally used for accepting a handshake.
    async fn receive_data(
