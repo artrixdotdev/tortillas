@@ -1,10 +1,10 @@
 use crate::errors::PeerTransportError;
 use crate::hashes::Hash;
+use crate::peers::messages::Handshake;
 use crate::peers::InfoHash;
 use crate::peers::PeerKey;
-use crate::peers::messages::Handshake;
-use anyhow::Result;
 use anyhow::anyhow;
+use anyhow::Result;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -17,10 +17,10 @@ use std::{
    task::{Context, Poll},
 };
 
-use super::MAGIC_STRING;
+use super::messages::PeerMessages;
 use super::Peer;
 use super::PeerId;
-use super::messages::PeerMessages;
+use super::MAGIC_STRING;
 use librqbit_utp::{UtpSocket, UtpStream};
 use tokio::{
    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
@@ -54,7 +54,8 @@ impl PeerStream {
       let socket_addr = SocketAddr::from_str("0.0.0.0:6881").unwrap();
       trace!(
          "Creating UTP socket for (potential) peer {} at {}",
-         peer_addr, socket_addr
+         peer_addr,
+         socket_addr
       );
       let utp_socket = UtpSocket::new_udp(socket_addr).await.unwrap();
 
@@ -90,9 +91,10 @@ impl PeerStream {
       let addr = self.remote_addr()?;
       let length = u32::from_be_bytes(buf[..4].try_into().unwrap());
 
-      trace!(message_type = buf[4], ip = %addr, "Recieved message headers, requesting rest...");
+      trace!(message_type = buf[4], ip = %addr, length = length, "Recieved message headers, requesting rest...");
 
-      let mut rest = vec![0; length as usize];
+      // Why do we have to do length - 1? Only a higher power knows.
+      let mut rest = vec![0; (length - 1) as usize];
 
       self.read_exact(&mut rest).await.map_err(|e| {
          error!("Error occurred when reading the peer's response: {e}");

@@ -484,7 +484,12 @@ impl<P: TransportProtocol + Send + Sync + 'static> Transport for TransportHandle
 
 #[cfg(test)]
 mod tests {
+   use std::str::FromStr;
+
+   use rand::RngCore;
    use tracing_test::traced_test;
+
+   use crate::parser::MagnetUri;
 
    use super::*;
 
@@ -494,5 +499,31 @@ mod tests {
       let peer = Peer::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 6881);
       assert_eq!(peer.ip, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
       assert_eq!(peer.port, 6881);
+   }
+
+   #[tokio::test]
+   #[traced_test]
+   async fn test_peer_connection() {
+      // This is a known good peer (as of 06/17/2025) for the torrent located in zenshuu.txt
+      let known_good_peer = "78.192.97.58:51413";
+      let mut peer = Peer::from_socket_addr(SocketAddr::from_str(known_good_peer).unwrap());
+      let (to_tx, mut rx) = mpsc::channel(100);
+
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/zenshuu.txt");
+      let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
+      let data = MagnetUri::parse(magnet_uri).await.unwrap();
+
+      // Stuff for generating our_id (yes, literally our ID as a peer in the network)
+      let mut our_id = [0u8; 20];
+      rand::rng().fill_bytes(&mut our_id);
+      let our_id = Hash::from_bytes(our_id);
+
+      peer
+         .handle_peer(to_tx, data.info_hash().unwrap(), Arc::new(our_id))
+         .await;
+
+      let from_tx = rx.recv().await.unwrap();
    }
 }
