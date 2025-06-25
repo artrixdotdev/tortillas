@@ -285,3 +285,48 @@ fn validate_handshake(
 fn is_handshake(buf: &[u8]) -> bool {
    buf[0] as usize == MAGIC_STRING.len() && buf[1..5] == MAGIC_STRING[0..4]
 }
+
+#[cfg(test)]
+mod tests {
+   use tokio::net::TcpListener;
+   use tracing_test::traced_test;
+
+   use super::*;
+
+   #[tokio::test]
+   #[traced_test]
+   async fn test_peer_stream_receive_handshake_success() {
+      let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+      let addr = listener.local_addr().unwrap();
+
+      let info_hash = Arc::new(Hash::new([1u8; 20]));
+      let server_id = Arc::new(Hash::new([2u8; 20]));
+      let client_id = Arc::new(Hash::new([3u8; 20]));
+
+      // Spawn client that sends handshake
+      let client_info_hash = info_hash.clone();
+      let client_server_id = server_id.clone();
+      let client_peer_id = client_id.clone();
+      tokio::spawn(async move {
+         let mut stream = PeerStream::Tcp(TcpStream::connect(addr).await.unwrap());
+
+         let response = stream
+            .send_handshake(client_peer_id, client_info_hash)
+            .await
+            .unwrap();
+
+         assert_eq!(response, client_server_id);
+      });
+
+      // Server side
+      let (stream, _) = listener.accept().await.unwrap();
+      let mut peer_stream = PeerStream::Tcp(stream);
+
+      let response = peer_stream
+         .receive_handshake(info_hash, server_id.clone())
+         .await
+         .unwrap();
+
+      assert_eq!(response, client_id.clone());
+   }
+}
