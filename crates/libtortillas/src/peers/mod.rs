@@ -5,7 +5,7 @@ use crate::{
 use anyhow::Result;
 use async_trait::async_trait;
 use bitvec::vec::BitVec;
-use commands::PeerResponse;
+use commands::{PeerCommand, PeerResponse};
 use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::Display,
@@ -162,7 +162,110 @@ impl Peer {
          }
       }
 
-      // Start request/piece message loop (TODO)
+      // Start request/piece message loop
+      while let Some(command) = from_rx.recv().await {
+         match command {
+            PeerCommand::Piece(piece_num) => {
+               // https://github.com/vimpunk/cratetorrent/blob/master/PEER_MESSAGES.md#6-request
+               //
+               // > All current implementations use 2^14 (16 kiB)
+               // - BEP 0003
+               //
+               // For now, we are assuming that the offset is 0. This will likely need to be
+               // changed in the future (?).
+               let request = PeerMessages::Request(piece_num, 0, 16384);
+
+               const REQUEST_TIMEOUT: u64 = 5;
+
+               trace!("Making request to peer {}", self.socket_addr());
+
+               // Timeout everything for safety.
+               let request_result =
+                  timeout(Duration::from_secs(REQUEST_TIMEOUT), stream.send(request))
+                     .await
+                     .map_err(|e| error!("Peer timed out {}: {e}", self.socket_addr()))
+                     .unwrap();
+
+               trace!("Succesfully made request to {}", self.socket_addr());
+
+               if request_result.is_err() {
+                  let err = request_result.err().unwrap();
+                  to_tx
+                     .send(PeerResponse::PieceFailure {
+                        piece_num,
+                        error: err,
+                     })
+                     .await
+                     .map_err(|e| {
+                        error!(
+                           "Failed to send PieceFailure message from peer {}: {}",
+                           e,
+                           self.socket_addr()
+                        )
+                     })
+                     .unwrap();
+               }
+
+               const PIECE_TIMEOUT: u64 = 5;
+
+               trace!(
+                  "Waiting for piece message in response to request from peer {}",
+                  self.socket_addr()
+               );
+
+               // Once request message is sent, wait for piece message in response.
+               let piece_result = timeout(Duration::from_secs(PIECE_TIMEOUT), stream.recv())
+                  .await
+                  .map_err(|e| error!("Peer timed out {}: {e}", self.socket_addr()))
+                  .unwrap();
+
+               match piece_result {
+                  Ok(piece) => {
+                     trace!("Got message from peer {}", self.socket_addr());
+                     if let PeerMessages::Piece(_, _, _) = piece {
+                        to_tx
+                           .send(PeerResponse::Piece(piece))
+                           .await
+                           .map_err(|e| {
+                              error!(
+                                 "Failed to send Piece message from peer {}: {}",
+                                 e,
+                                 self.socket_addr()
+                              )
+                           })
+                           .unwrap();
+                     } else {
+                        error!(
+                           "Message from peer {} was not a Piece message",
+                           self.socket_addr()
+                        );
+                     }
+                  }
+                  Err(e) => {
+                     error!(
+                        "Something went wrong when retrieving piece from peer {}: {}",
+                        self.socket_addr(),
+                        e
+                     );
+                     to_tx
+                        .send(PeerResponse::PieceFailure {
+                           piece_num,
+                           error: e,
+                        })
+                        .await
+                        .map_err(|e| {
+                           error!(
+                              "Failed to send PieceFailure message from peer {}: {}",
+                              e,
+                              self.socket_addr()
+                           )
+                        })
+                        .unwrap();
+                  }
+               }
+            }
+         }
+      }
    }
 }
 
