@@ -5,6 +5,7 @@ use crate::{
 use anyhow::Result;
 use async_trait::async_trait;
 use bitvec::vec::BitVec;
+use commands::PeerResponse;
 use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::Display,
@@ -20,6 +21,7 @@ use tokio::{
 use tracing::{error, trace};
 use transport_messages::{TransportCommand, TransportResponse};
 
+pub mod commands;
 pub mod messages;
 pub mod stream;
 pub mod tcp;
@@ -100,13 +102,13 @@ impl Peer {
    /// to_tx is provided to allow communication from handle_peer to the caller.
    async fn handle_peer(
       &mut self,
-      to_tx: mpsc::Sender<TransportResponse>,
+      to_tx: mpsc::Sender<PeerResponse>,
       info_hash: InfoHash,
       our_id: PeerId,
    ) {
-      let (from_tx, from_rx) = mpsc::channel(100);
+      let (from_tx, mut from_rx) = mpsc::channel(100);
 
-      to_tx.send(TransportResponse::Init(from_tx)).await.unwrap();
+      to_tx.send(PeerResponse::Init(from_tx)).await.unwrap();
 
       // Make "low level handshake" with peer (i.e, make an initial connection with them, not
       // concerning the BitTorrent protocol)
@@ -134,6 +136,22 @@ impl Peer {
          PeerMessages::Bitfield(bitfield) => {
             trace!("Received bitfield message from peer {}", self.socket_addr());
             self.pieces = bitfield.iter().by_vals().collect();
+
+            // Send bitfield back (likely to engine)
+            to_tx
+               .send(PeerResponse::Receive {
+                  message: PeerMessages::from_bytes(bitfield.into()).unwrap(),
+                  peer_key: self.socket_addr(),
+               })
+               .await
+               .map_err(|e| {
+                  error!(
+                     "Error sending bitfield with to_tx on peer {}: {}",
+                     self.socket_addr(),
+                     e
+                  )
+               })
+               .unwrap();
          }
          res => {
             error!(
