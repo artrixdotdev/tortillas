@@ -7,7 +7,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
-use messages::{Handshake, MAGIC_STRING, PeerMessages};
+use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -17,10 +17,10 @@ use std::{
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      Mutex,
       mpsc::{self, Receiver, Sender},
+      Mutex,
    },
-   time::{Instant, timeout},
+   time::{timeout, Instant},
 };
 use tracing::{error, trace};
 use transport_messages::{TransportCommand, TransportResponse};
@@ -103,6 +103,12 @@ impl Peer {
 
    // Extract piece request handling into a separate method for clarity
    async fn handle_piece_request(stream: &mut PeerWriter, piece_num: u32) {
+      // https://github.com/vimpunk/cratetorrent/blob/master/PEER_MESSAGES.md#6-request
+      //
+      // > All current implementations use 2^14 (16 kiB)
+      // - BEP 0003
+      //
+      // For now, we are assuming that the offset is 0. This may need to be changed in the future.
       let request = PeerMessages::Request(piece_num, 0, 16384);
       const REQUEST_TIMEOUT: u64 = 5;
 
@@ -158,7 +164,7 @@ impl Peer {
 
       self.id = Some(*peer_id);
 
-      // Send empty bitfield
+      // Send empty bitfield. This may need to be refactored in the future to account for seeding.
       stream
          .send(PeerMessages::Bitfield(BitVec::EMPTY))
          .await
@@ -200,7 +206,8 @@ impl Peer {
 
       let writer = Arc::new(Mutex::new(writer));
 
-      // Main event loop using select!
+      // 1st of 2 tokio::spawn(s) that allow the peer to communicate (read + write) concurrently. See
+      // above `stream.split()`.
       tokio::spawn(async move {
          while let Ok(message) = reader.recv().await {
             // Handle different message types
@@ -240,16 +247,14 @@ impl Peer {
       });
 
       let writer_clone = Arc::clone(&writer);
+
+      // 2nd tokio::spawn (see comment above)
       tokio::spawn(async move {
          while let Some(message) = from_rx.recv().await {
             match message {
                PeerCommand::Piece(piece_num) => {
                   let mut writer_guard = writer_clone.lock().await;
-                  Self::handle_piece_request(&mut *writer_guard, piece_num).await;
-               }
-               _ => {
-                  // Channel closed, exit loop
-                  break;
+                  Self::handle_piece_request(&mut writer_guard, piece_num).await;
                }
             }
          }
@@ -282,7 +287,7 @@ pub trait TransportProtocol: Send + Sync + Clone {
    /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
    /// use this function.
    async fn receive_from_peer(&mut self, peer: PeerKey)
-   -> Result<PeerMessages, PeerTransportError>;
+      -> Result<PeerMessages, PeerTransportError>;
 
    /// Receives data from any incoming peer. Generally used for accepting a handshake.
    async fn receive_data(

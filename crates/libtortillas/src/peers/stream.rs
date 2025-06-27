@@ -1,10 +1,9 @@
 use crate::errors::PeerTransportError;
 use crate::hashes::Hash;
-use crate::peers::InfoHash;
-use crate::peers::PeerKey;
 use crate::peers::messages::Handshake;
-use anyhow::Result;
+use crate::peers::InfoHash;
 use anyhow::anyhow;
+use anyhow::Result;
 use async_trait::async_trait;
 use librqbit_utp::UtpStreamReadHalf;
 use librqbit_utp::UtpStreamWriteHalf;
@@ -21,10 +20,9 @@ use std::{
    task::{Context, Poll},
 };
 
-use super::MAGIC_STRING;
-use super::Peer;
-use super::PeerId;
 use super::messages::PeerMessages;
+use super::PeerId;
+use super::MAGIC_STRING;
 use librqbit_utp::{UtpSocket, UtpStream};
 use tokio::{
    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
@@ -108,7 +106,8 @@ impl PeerStream {
       let socket_addr = SocketAddr::from_str("0.0.0.0:6881").unwrap();
       trace!(
          "Creating UTP socket for (potential) peer {} at {}",
-         peer_addr, socket_addr
+         peer_addr,
+         socket_addr
       );
       let utp_socket = UtpSocket::new_udp(socket_addr).await.unwrap();
 
@@ -201,9 +200,7 @@ impl PeerStream {
       // Creates a new handshake and sends it
       let message = PeerMessages::from_bytes(buf)?;
       if let PeerMessages::Handshake(handshake) = message {
-         if let Err(e) = validate_handshake(&handshake, addr, info_hash.clone()) {
-            return Err(e);
-         }
+         validate_handshake(&handshake, addr, info_hash.clone())?;
          let response = PeerMessages::Handshake(Handshake::new(info_hash, id));
          self.send(response).await?;
          info!("Peer {} connected", self.remote_addr().unwrap());
