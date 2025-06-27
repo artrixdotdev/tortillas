@@ -5,6 +5,7 @@ use crate::peers::PeerKey;
 use crate::peers::messages::Handshake;
 use anyhow::Result;
 use anyhow::anyhow;
+use async_trait::async_trait;
 use librqbit_utp::UtpStreamReadHalf;
 use librqbit_utp::UtpStreamWriteHalf;
 use tokio::net::tcp;
@@ -37,7 +38,7 @@ pub enum PeerStream {
    Tcp(TcpStream),
    Utp(UtpStream),
 }
-
+#[async_trait]
 pub trait PeerSend: AsyncWrite + Unpin {
    /// Sends a PeerMessage to a peer.
    async fn send(&mut self, data: PeerMessages) -> Result<(), PeerTransportError> {
@@ -51,6 +52,7 @@ pub trait PeerSend: AsyncWrite + Unpin {
    }
 }
 
+#[async_trait]
 pub trait PeerRecv: AsyncRead + Unpin {
    /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
    /// use this function.
