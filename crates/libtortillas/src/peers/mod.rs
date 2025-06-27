@@ -6,7 +6,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
-use messages::{Handshake, PeerMessages, MAGIC_STRING};
+use messages::{Handshake, MAGIC_STRING, PeerMessages};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -16,7 +16,7 @@ use std::{
 use stream::PeerStream;
 use tokio::{
    sync::mpsc::{self, Receiver, Sender},
-   time::{timeout, Instant},
+   time::{Instant, timeout},
 };
 use tracing::{error, trace};
 use transport_messages::{TransportCommand, TransportResponse};
@@ -97,6 +97,52 @@ impl Peer {
       Self::new(peer_addr.ip(), peer_addr.port())
    }
 
+   // Extract piece request handling into a separate method for clarity
+   async fn handle_piece_request(
+      &self,
+      stream: &mut PeerStream,
+      to_tx: &mpsc::Sender<PeerResponse>,
+      piece_num: u32,
+   ) {
+      let request = PeerMessages::Request(piece_num, 0, 16384);
+      const REQUEST_TIMEOUT: u64 = 5;
+
+      let request_result =
+         timeout(Duration::from_secs(REQUEST_TIMEOUT), stream.send(request)).await;
+
+      match request_result {
+         Ok(Ok(())) => {
+            trace!("Successfully made request to {}", self.socket_addr());
+         }
+         Ok(Err(_)) => {
+            let error_msg = match request_result {
+               Ok(Err(err)) => format!("Send error: {}", err),
+               Err(_) => "Request timeout".to_string(),
+               _ => unreachable!(),
+            };
+
+            error!(
+               "Failed to send request to peer {}: {}",
+               self.socket_addr(),
+               error_msg
+            );
+
+            // Note: We don't wait for a piece response here since the request failed
+            // The piece response will be handled in the main select! loop if it arrives
+         }
+         Err(_) => {
+            error!(
+               "Failed to send request to peer {}: {}",
+               self.socket_addr(),
+               "Request timeout"
+            );
+
+            // Note: We don't wait for a piece response here since the request failed
+            // The piece response will be handled in the main select! loop if it arrives
+         }
+      }
+   }
+
    /// Autonomously handles the connection & messages between a peer. The from_tx/from_rx is provided to
    /// facilitate communication to this function from the caller (likely TorrentEngine -- if so, this channel will be used to communicate what pieces TorrentEngine still needs).
    /// to_tx is provided to allow communication from handle_peer to the caller.
@@ -110,11 +156,10 @@ impl Peer {
 
       to_tx.send(PeerResponse::Init(from_tx)).await.unwrap();
 
-      // Make "low level handshake" with peer (i.e, make an initial connection with them, not
-      // concerning the BitTorrent protocol)
+      // Make "low level handshake" with peer
       let mut stream = PeerStream::connect(self.socket_addr()).await;
 
-      // Send handshake to peer.
+      // Send handshake to peer
       let peer_id = stream
          .send_handshake(our_id, Arc::new(info_hash))
          .await
@@ -122,25 +167,24 @@ impl Peer {
 
       self.id = Some(*peer_id);
 
-      // Send empty bitfield. This may need to be modified in the future to allow for
-      // seeding.
+      // Send empty bitfield
       stream
          .send(PeerMessages::Bitfield(BitVec::EMPTY))
          .await
          .unwrap();
 
-      // Wait for bitfield in return.
-      let bitfield = stream.recv().await.unwrap();
+      // Wait for bitfield in return
+      let message = stream.recv().await.unwrap();
+      let to_send = message.clone();
 
-      match bitfield {
+      match message {
          PeerMessages::Bitfield(bitfield) => {
             trace!("Received bitfield message from peer {}", self.socket_addr());
             self.pieces = bitfield.iter().by_vals().collect();
 
-            // Send bitfield back (likely to engine)
             to_tx
                .send(PeerResponse::Receive {
-                  message: PeerMessages::from_bytes(bitfield.into()).unwrap(),
+                  message: to_send,
                   peer_key: self.socket_addr(),
                })
                .await
@@ -162,108 +206,71 @@ impl Peer {
          }
       }
 
-      // Start request/piece message loop
-      while let Some(command) = from_rx.recv().await {
-         match command {
-            PeerCommand::Piece(piece_num) => {
-               // https://github.com/vimpunk/cratetorrent/blob/master/PEER_MESSAGES.md#6-request
-               //
-               // > All current implementations use 2^14 (16 kiB)
-               // - BEP 0003
-               //
-               // For now, we are assuming that the offset is 0. This will likely need to be
-               // changed in the future (?).
-               let request = PeerMessages::Request(piece_num, 0, 16384);
-
-               const REQUEST_TIMEOUT: u64 = 5;
-
-               trace!("Making request to peer {}", self.socket_addr());
-
-               // Timeout everything for safety.
-               let request_result =
-                  timeout(Duration::from_secs(REQUEST_TIMEOUT), stream.send(request))
-                     .await
-                     .map_err(|e| error!("Peer timed out {}: {e}", self.socket_addr()))
-                     .unwrap();
-
-               trace!("Succesfully made request to {}", self.socket_addr());
-
-               if request_result.is_err() {
-                  let err = request_result.err().unwrap();
-                  to_tx
-                     .send(PeerResponse::PieceFailure {
-                        piece_num,
-                        error: err,
-                     })
-                     .await
-                     .map_err(|e| {
-                        error!(
-                           "Failed to send PieceFailure message from peer {}: {}",
-                           e,
-                           self.socket_addr()
-                        )
-                     })
-                     .unwrap();
-               }
-
-               const PIECE_TIMEOUT: u64 = 5;
-
-               trace!(
-                  "Waiting for piece message in response to request from peer {}",
-                  self.socket_addr()
-               );
-
-               // Once request message is sent, wait for piece message in response.
-               let piece_result = timeout(Duration::from_secs(PIECE_TIMEOUT), stream.recv())
-                  .await
-                  .map_err(|e| error!("Peer timed out {}: {e}", self.socket_addr()))
-                  .unwrap();
-
-               match piece_result {
-                  Ok(piece) => {
-                     trace!("Got message from peer {}", self.socket_addr());
-                     if let PeerMessages::Piece(_, _, _) = piece {
-                        to_tx
-                           .send(PeerResponse::Piece(piece))
-                           .await
-                           .map_err(|e| {
-                              error!(
-                                 "Failed to send Piece message from peer {}: {}",
-                                 e,
-                                 self.socket_addr()
-                              )
-                           })
-                           .unwrap();
-                     } else {
-                        error!(
-                           "Message from peer {} was not a Piece message",
-                           self.socket_addr()
-                        );
+      // Main event loop using select!
+      loop {
+         tokio::select! {
+             // Handle commands from engine
+             command = from_rx.recv() => {
+                 match command {
+                     Some(PeerCommand::Piece(piece_num)) => {
+                         self.handle_piece_request(&mut stream, &to_tx, piece_num).await;
                      }
-                  }
-                  Err(e) => {
-                     error!(
-                        "Something went wrong when retrieving piece from peer {}: {}",
-                        self.socket_addr(),
-                        e
-                     );
-                     to_tx
-                        .send(PeerResponse::PieceFailure {
-                           piece_num,
-                           error: e,
-                        })
-                        .await
-                        .map_err(|e| {
-                           error!(
-                              "Failed to send PieceFailure message from peer {}: {}",
-                              e,
-                              self.socket_addr()
-                           )
-                        })
-                        .unwrap();
-                  }
-               }
-            }
+                     None => {
+                         // Channel closed, exit loop
+                         break;
+                     }
+                 }
+             }
+
+             // Handle incoming messages from peer
+             message_result = stream.recv() => {
+                 match message_result {
+                     Ok(message) => {
+                         // Handle different message types
+                         match &message {
+                             PeerMessages::Piece(_, _, _) => {
+                                 to_tx
+                                     .send(PeerResponse::Piece(message))
+                                     .await
+                                     .map_err(|e| {
+                                         error!(
+                                             "Failed to send Piece message from peer {}: {}",
+                                             self.socket_addr(),
+                                             e
+                                         )
+                                     })
+                                     .unwrap();
+                             }
+                             _ => {
+                                 // Handle other message types or forward them
+                                 to_tx
+                                     .send(PeerResponse::Receive {
+                                         message,
+                                         peer_key: self.socket_addr(),
+                                     })
+                                     .await
+                                     .map_err(|e| {
+                                         error!(
+                                             "Failed to send message from peer {}: {}",
+                                             self.socket_addr(),
+                                             e
+                                         )
+                                     })
+                                     .unwrap();
+                             }
+                         }
+                     }
+                     Err(e) => {
+                         error!(
+                             "Error receiving message from peer {}: {}",
+                             self.socket_addr(),
+                             e
+                         );
+                         // Optionally break or handle the error
+                         break;
+                     }
+                 }
+             }
          }
       }
    }
@@ -294,7 +301,7 @@ pub trait TransportProtocol: Send + Sync + Clone {
    /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
    /// use this function.
    async fn receive_from_peer(&mut self, peer: PeerKey)
-      -> Result<PeerMessages, PeerTransportError>;
+   -> Result<PeerMessages, PeerTransportError>;
 
    /// Receives data from any incoming peer. Generally used for accepting a handshake.
    async fn receive_data(
@@ -325,7 +332,7 @@ pub trait TransportProtocol: Send + Sync + Clone {
          });
       }
 
-      // Validate info hash
+      // Validate info has
       if info_hash.clone() != received_handshake.info_hash {
          error!("Invalid info hash received from peer {}", peer_addr);
          return Err(PeerTransportError::InvalidInfoHash {

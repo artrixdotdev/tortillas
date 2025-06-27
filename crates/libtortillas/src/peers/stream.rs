@@ -1,10 +1,10 @@
 use crate::errors::PeerTransportError;
 use crate::hashes::Hash;
-use crate::peers::messages::Handshake;
 use crate::peers::InfoHash;
 use crate::peers::PeerKey;
-use anyhow::anyhow;
+use crate::peers::messages::Handshake;
 use anyhow::Result;
+use anyhow::anyhow;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -17,10 +17,10 @@ use std::{
    task::{Context, Poll},
 };
 
-use super::messages::PeerMessages;
+use super::MAGIC_STRING;
 use super::Peer;
 use super::PeerId;
-use super::MAGIC_STRING;
+use super::messages::PeerMessages;
 use librqbit_utp::{UtpSocket, UtpStream};
 use tokio::{
    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
@@ -54,8 +54,7 @@ impl PeerStream {
       let socket_addr = SocketAddr::from_str("0.0.0.0:6881").unwrap();
       trace!(
          "Creating UTP socket for (potential) peer {} at {}",
-         peer_addr,
-         socket_addr
+         peer_addr, socket_addr
       );
       let utp_socket = UtpSocket::new_udp(socket_addr).await.unwrap();
 
