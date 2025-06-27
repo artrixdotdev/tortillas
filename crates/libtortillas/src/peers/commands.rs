@@ -2,13 +2,15 @@ use tokio::sync::mpsc;
 
 use crate::errors::PeerTransportError;
 
-use super::{messages::PeerMessages, PeerKey};
+use super::{PeerKey, messages::PeerMessages};
 
+#[derive(Debug)]
 pub enum PeerCommand {
    /// Just the index of the piece that we're asking the peer for.
    Piece(u32),
 }
 
+#[derive(Debug)]
 pub enum PeerResponse {
    Init(mpsc::Sender<PeerCommand>),
    Receive {

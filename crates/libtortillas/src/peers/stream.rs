@@ -38,7 +38,7 @@ pub enum PeerStream {
    Utp(UtpStream),
 }
 
-pub trait PearSend: AsyncWrite + Unpin {
+pub trait PeerSend: AsyncWrite + Unpin {
    /// Sends a PeerMessage to a peer.
    async fn send(&mut self, data: PeerMessages) -> Result<(), PeerTransportError> {
       self
@@ -235,7 +235,7 @@ impl PeerStream {
    }
 }
 
-impl PearSend for PeerStream {}
+impl PeerSend for PeerStream {}
 impl PeerRecv for PeerStream {}
 
 impl AsyncRead for PeerStream {
@@ -330,7 +330,7 @@ impl AsyncWrite for PeerWriter {
 
 // Implement the traits to get the send/recv methods
 impl PeerRecv for PeerReader {}
-impl PearSend for PeerWriter {}
+impl PeerSend for PeerWriter {}
 
 /// Takes in a received handshake and returns the handshake we should respond with as well as the new peer. It preassigns the our_id to the peer.
 fn validate_handshake(

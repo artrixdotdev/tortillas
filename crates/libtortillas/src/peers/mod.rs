@@ -13,9 +13,12 @@ use std::{
    sync::Arc,
    time::Duration,
 };
-use stream::{PearSend, PeerRecv, PeerStream};
+use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
-   sync::mpsc::{self, Receiver, Sender},
+   sync::{
+      Mutex,
+      mpsc::{self, Receiver, Sender},
+   },
    time::{Instant, timeout},
 };
 use tracing::{error, trace};
@@ -98,12 +101,7 @@ impl Peer {
    }
 
    // Extract piece request handling into a separate method for clarity
-   async fn handle_piece_request(
-      &self,
-      stream: &mut PeerStream,
-      to_tx: &mpsc::Sender<PeerResponse>,
-      piece_num: u32,
-   ) {
+   async fn handle_piece_request(stream: &mut impl PeerSend, piece_num: u32) {
       let request = PeerMessages::Request(piece_num, 0, 16384);
       const REQUEST_TIMEOUT: u64 = 5;
 
@@ -112,7 +110,7 @@ impl Peer {
 
       match request_result {
          Ok(Ok(())) => {
-            trace!("Successfully made request to {}", self.socket_addr());
+            trace!("Successfully made request");
          }
          Ok(Err(_)) => {
             let error_msg = match request_result {
@@ -121,21 +119,13 @@ impl Peer {
                _ => unreachable!(),
             };
 
-            error!(
-               "Failed to send request to peer {}: {}",
-               self.socket_addr(),
-               error_msg
-            );
+            error!("Failed to send request: {}", error_msg);
 
             // Note: We don't wait for a piece response here since the request failed
             // The piece response will be handled in the main select! loop if it arrives
          }
          Err(_) => {
-            error!(
-               "Failed to send request to peer {}: {}",
-               self.socket_addr(),
-               "Request timeout"
-            );
+            error!("Failed to send request to peer: {}", "Request timeout");
 
             // Note: We don't wait for a piece response here since the request failed
             // The piece response will be handled in the main select! loop if it arrives
@@ -147,7 +137,7 @@ impl Peer {
    /// facilitate communication to this function from the caller (likely TorrentEngine -- if so, this channel will be used to communicate what pieces TorrentEngine still needs).
    /// to_tx is provided to allow communication from handle_peer to the caller.
    async fn handle_peer(
-      &mut self,
+      mut self,
       to_tx: mpsc::Sender<PeerResponse>,
       info_hash: InfoHash,
       our_id: PeerId,
@@ -205,74 +195,64 @@ impl Peer {
             )
          }
       }
+      let (mut reader, writer) = stream.split();
+
+      let writer = Arc::new(Mutex::new(writer));
 
       // Main event loop using select!
-      loop {
-         tokio::select! {
-             // Handle commands from engine
-             command = from_rx.recv() => {
-                 match command {
-                     Some(PeerCommand::Piece(piece_num)) => {
-                         self.handle_piece_request(&mut stream, &to_tx, piece_num).await;
-                     }
-                     None => {
-                         // Channel closed, exit loop
-                         break;
-                     }
-                 }
-             }
-
-             // Handle incoming messages from peer
-             message_result = stream.recv() => {
-                 match message_result {
-                     Ok(message) => {
-                         // Handle different message types
-                         match &message {
-                             PeerMessages::Piece(_, _, _) => {
-                                 to_tx
-                                     .send(PeerResponse::Piece(message))
-                                     .await
-                                     .map_err(|e| {
-                                         error!(
-                                             "Failed to send Piece message from peer {}: {}",
-                                             self.socket_addr(),
-                                             e
-                                         )
-                                     })
-                                     .unwrap();
-                             }
-                             _ => {
-                                 // Handle other message types or forward them
-                                 to_tx
-                                     .send(PeerResponse::Receive {
-                                         message,
-                                         peer_key: self.socket_addr(),
-                                     })
-                                     .await
-                                     .map_err(|e| {
-                                         error!(
-                                             "Failed to send message from peer {}: {}",
-                                             self.socket_addr(),
-                                             e
-                                         )
-                                     })
-                                     .unwrap();
-                             }
-                         }
-                     }
-                     Err(e) => {
-                         error!(
-                             "Error receiving message from peer {}: {}",
-                             self.socket_addr(),
-                             e
-                         );
-                         // Optionally break or handle the error
-                         break;
-                     }
-                 }
-             }
+      tokio::spawn(async move {
+         while let Ok(message) = reader.recv().await {
+            // Handle different message types
+            match &message {
+               PeerMessages::Piece(_, _, _) => {
+                  to_tx
+                     .send(PeerResponse::Piece(message))
+                     .await
+                     .map_err(|e| {
+                        error!(
+                           "Failed to send Piece message from peer {}: {}",
+                           self.socket_addr(),
+                           e
+                        )
+                     })
+                     .unwrap();
+               }
+               _ => {
+                  // Handle other message types or forward them
+                  to_tx
+                     .send(PeerResponse::Receive {
+                        message,
+                        peer_key: self.socket_addr(),
+                     })
+                     .await
+                     .map_err(|e| {
+                        error!(
+                           "Failed to send message from peer {}: {}",
+                           self.socket_addr(),
+                           e
+                        )
+                     })
+                     .unwrap();
+               }
+            }
          }
-      }
+      });
+
+      let writer_clone = Arc::clone(&writer);
+      tokio::spawn(async move {
+         while let Some(message) = from_rx.recv().await {
+            match message {
+               PeerCommand::Piece(piece_num) => {
+                  let mut writer_guard = writer_clone.lock().await;
+                  Self::handle_piece_request(&mut *writer_guard, piece_num).await;
+               }
+               _ => {
+                  // Channel closed, exit loop
+                  break;
+               }
+            }
+         }
+      });
    }
 }
 
@@ -615,6 +595,7 @@ mod tests {
    use std::str::FromStr;
 
    use rand::RngCore;
+   use tracing::info;
    use tracing_test::traced_test;
 
    use crate::parser::MagnetUri;
