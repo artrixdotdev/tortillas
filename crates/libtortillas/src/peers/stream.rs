@@ -5,6 +5,9 @@ use crate::peers::PeerKey;
 use crate::peers::messages::Handshake;
 use anyhow::Result;
 use anyhow::anyhow;
+use librqbit_utp::UtpStreamReadHalf;
+use librqbit_utp::UtpStreamWriteHalf;
+use tokio::net::tcp;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
@@ -35,7 +38,7 @@ pub enum PeerStream {
    Utp(UtpStream),
 }
 
-pub trait PeerWriter: AsyncWrite + Unpin {
+pub trait PearSend: AsyncWrite + Unpin {
    /// Sends a PeerMessage to a peer.
    async fn send(&mut self, data: PeerMessages) -> Result<(), PeerTransportError> {
       self
@@ -48,7 +51,7 @@ pub trait PeerWriter: AsyncWrite + Unpin {
    }
 }
 
-pub trait PeerReader: AsyncRead + Unpin {
+pub trait PeerRecv: AsyncRead + Unpin {
    /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
    /// use this function.
    async fn recv(&mut self) -> Result<PeerMessages, PeerTransportError> {
@@ -217,10 +220,23 @@ impl PeerStream {
          PeerStream::Utp(s) => Ok(s.remote_addr()),
       }
    }
+   /// Splits the PeerStream into separate reader and writer halves
+   pub fn split(self) -> (PeerReader, PeerWriter) {
+      match self {
+         PeerStream::Tcp(stream) => {
+            let (reader, writer) = stream.into_split();
+            (PeerReader::Tcp(reader), PeerWriter::Tcp(writer))
+         }
+         PeerStream::Utp(stream) => {
+            let (reader, writer) = stream.split();
+            (PeerReader::Utp(reader), PeerWriter::Utp(writer))
+         }
+      }
+   }
 }
 
-impl PeerWriter for PeerStream {}
-impl PeerReader for PeerStream {}
+impl PearSend for PeerStream {}
+impl PeerRecv for PeerStream {}
 
 impl AsyncRead for PeerStream {
    fn poll_read(
@@ -261,6 +277,60 @@ impl AsyncWrite for PeerStream {
       }
    }
 }
+
+pub enum PeerReader {
+   Tcp(tcp::OwnedReadHalf),
+   Utp(UtpStreamReadHalf),
+}
+
+pub enum PeerWriter {
+   Tcp(tcp::OwnedWriteHalf),
+   Utp(UtpStreamWriteHalf),
+}
+
+impl AsyncRead for PeerReader {
+   fn poll_read(
+      mut self: Pin<&mut Self>,
+      cx: &mut Context<'_>,
+      buf: &mut ReadBuf<'_>,
+   ) -> Poll<io::Result<()>> {
+      match &mut *self {
+         PeerReader::Tcp(s) => Pin::new(s).poll_read(cx, buf),
+         PeerReader::Utp(s) => Pin::new(s).poll_read(cx, buf),
+      }
+   }
+}
+
+impl AsyncWrite for PeerWriter {
+   fn poll_write(
+      mut self: Pin<&mut Self>,
+      cx: &mut Context<'_>,
+      buf: &[u8],
+   ) -> Poll<Result<usize, io::Error>> {
+      match &mut *self {
+         PeerWriter::Tcp(s) => Pin::new(s).poll_write(cx, buf),
+         PeerWriter::Utp(s) => Pin::new(s).poll_write(cx, buf),
+      }
+   }
+
+   fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+      match &mut *self {
+         PeerWriter::Tcp(s) => Pin::new(s).poll_flush(cx),
+         PeerWriter::Utp(s) => Pin::new(s).poll_flush(cx),
+      }
+   }
+
+   fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+      match &mut *self {
+         PeerWriter::Tcp(s) => Pin::new(s).poll_shutdown(cx),
+         PeerWriter::Utp(s) => Pin::new(s).poll_shutdown(cx),
+      }
+   }
+}
+
+// Implement the traits to get the send/recv methods
+impl PeerRecv for PeerReader {}
+impl PearSend for PeerWriter {}
 
 /// Takes in a received handshake and returns the handshake we should respond with as well as the new peer. It preassigns the our_id to the peer.
 fn validate_handshake(
