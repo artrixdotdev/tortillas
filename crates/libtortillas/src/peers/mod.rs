@@ -1,6 +1,7 @@
 use crate::{
    errors::PeerTransportError,
    hashes::{Hash, InfoHash},
+   peers::stream::PeerWriter,
 };
 use anyhow::Result;
 use async_trait::async_trait;
@@ -101,7 +102,7 @@ impl Peer {
    }
 
    // Extract piece request handling into a separate method for clarity
-   async fn handle_piece_request(stream: &mut impl PeerSend, piece_num: u32) {
+   async fn handle_piece_request(stream: &mut PeerWriter, piece_num: u32) {
       let request = PeerMessages::Request(piece_num, 0, 16384);
       const REQUEST_TIMEOUT: u64 = 5;
 
