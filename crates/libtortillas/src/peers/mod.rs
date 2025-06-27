@@ -13,7 +13,7 @@ use std::{
    sync::Arc,
    time::Duration,
 };
-use stream::PeerStream;
+use stream::{PeerReader, PeerStream, PeerWriter};
 use tokio::{
    sync::mpsc::{self, Receiver, Sender},
    time::{Instant, timeout},

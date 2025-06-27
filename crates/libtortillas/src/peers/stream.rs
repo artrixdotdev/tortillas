@@ -35,6 +35,55 @@ pub enum PeerStream {
    Utp(UtpStream),
 }
 
+pub trait PeerWriter: AsyncWrite + Unpin {
+   /// Sends a PeerMessage to a peer.
+   async fn send(&mut self, data: PeerMessages) -> Result<(), PeerTransportError> {
+      self
+         .write_all(&data.to_bytes().unwrap())
+         .await
+         .map_err(|e| {
+            error!("Failed to send message to peer: {e}");
+            PeerTransportError::MessageFailed
+         })
+   }
+}
+
+pub trait PeerReader: AsyncRead + Unpin {
+   /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
+   /// use this function.
+   async fn recv(&mut self) -> Result<PeerMessages, PeerTransportError> {
+      // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
+      let mut buf = vec![0; 5];
+
+      self.read_exact(&mut buf).await.map_err(|e| {
+         error!("Error occurred when reading the peer's response: {e}");
+         PeerTransportError::InvalidPeerResponse("Error occured".into())
+      })?;
+
+      let length = u32::from_be_bytes(buf[..4].try_into().unwrap());
+
+      trace!(
+         message_type = buf[4],
+         length = length,
+         "Recieved message headers, requesting rest..."
+      );
+
+      // Why do we have to do length - 1? Only a higher power knows.
+      let mut rest = vec![0; (length - 1) as usize];
+
+      self.read_exact(&mut rest).await.map_err(|e| {
+         error!("Error occurred when reading the peer's response: {e}");
+         PeerTransportError::InvalidPeerResponse("Error occured".into())
+      })?;
+      let full_length = length + buf.len() as u32;
+
+      debug!("Read {} action ({} bytes)", buf[4], full_length,);
+      buf.extend_from_slice(&rest);
+
+      PeerMessages::from_bytes(buf)
+   }
+}
+
 impl PeerStream {
    /// Connect to a peer with the given peer_addr (ip & port in the form of a
    /// [SocketAddr](std::net::SocketAddr))
@@ -63,51 +112,6 @@ impl PeerStream {
          stream = utp_socket.connect(peer_addr) => {PeerStream::Utp(stream.unwrap())},
          stream = TcpStream::connect(peer_addr) => {PeerStream::Tcp(stream.unwrap())}
       }
-   }
-
-   /// Sends a PeerMessage to a peer.
-   pub async fn send(&mut self, data: PeerMessages) -> Result<(), PeerTransportError> {
-      self
-         .write_all(&data.to_bytes().unwrap())
-         .await
-         .map_err(|e| {
-            error!("Failed to send message to peer: {e}");
-            PeerTransportError::MessageFailed
-         })
-   }
-
-   /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
-   /// use this function.
-   pub async fn recv(&mut self) -> Result<PeerMessages, PeerTransportError> {
-      // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
-      let mut buf = vec![0; 5];
-
-      self.read_exact(&mut buf).await.map_err(|e| {
-         error!("Error occurred when reading the peer's response: {e}");
-         PeerTransportError::InvalidPeerResponse("Error occured".into())
-      })?;
-
-      let addr = self.remote_addr()?;
-      let length = u32::from_be_bytes(buf[..4].try_into().unwrap());
-
-      trace!(message_type = buf[4], ip = %addr, length = length, "Recieved message headers, requesting rest...");
-
-      // Why do we have to do length - 1? Only a higher power knows.
-      let mut rest = vec![0; (length - 1) as usize];
-
-      self.read_exact(&mut rest).await.map_err(|e| {
-         error!("Error occurred when reading the peer's response: {e}");
-         PeerTransportError::InvalidPeerResponse("Error occured".into())
-      })?;
-      let full_length = length + buf.len() as u32;
-
-      debug!(
-         "Read {} action ({} bytes) from {} ",
-         buf[4], full_length, addr
-      );
-      buf.extend_from_slice(&rest);
-
-      PeerMessages::from_bytes(buf)
    }
 
    /// Handshakes with a peer and returns the socket address of the peer. This socket address is
@@ -214,6 +218,9 @@ impl PeerStream {
       }
    }
 }
+
+impl PeerWriter for PeerStream {}
+impl PeerReader for PeerStream {}
 
 impl AsyncRead for PeerStream {
    fn poll_read(
