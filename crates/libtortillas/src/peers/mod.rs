@@ -633,7 +633,7 @@ mod tests {
          .unwrap()
          .join("tests/magneturis/zenshuu.txt");
       let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
-      let data = MagnetUri::parse(magnet_uri).await.unwrap();
+      let data = MagnetUri::parse(magnet_uri).unwrap();
 
       // Stuff for generating our_id (yes, literally our ID as a peer in the network)
       let mut our_id = [0u8; 20];

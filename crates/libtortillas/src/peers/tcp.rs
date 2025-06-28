@@ -4,7 +4,7 @@
 use std::str::FromStr;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::Instant;
@@ -256,8 +256,8 @@ mod tests {
 
    use crate::{
       parser::{MagnetUri, MetaInfo},
-      peers::{transport_messages::TransportCommand, Transport, TransportHandler},
-      tracker::{http::HttpTracker, Tracker, TrackerTrait},
+      peers::{Transport, TransportHandler, transport_messages::TransportCommand},
+      tracker::{Tracker, TrackerTrait, http::HttpTracker},
    };
 
    use super::*;
@@ -269,7 +269,7 @@ mod tests {
          .join("tests/magneturis/test1.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
 
-      let metainfo = MagnetUri::parse(contents).await.unwrap();
+      let metainfo = MagnetUri::parse(contents).unwrap();
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {

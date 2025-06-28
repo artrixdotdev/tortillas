@@ -31,9 +31,12 @@ pub struct TorrentFile {
 
 impl TorrentFile {
    /// Parse torrent file into [`Metainfo`](super::MetaInfo).
-   pub async fn parse(path: PathBuf) -> Result<MetaInfo> {
+   pub async fn read(path: PathBuf) -> Result<MetaInfo> {
       let file = fs::read(path).await?;
-      let metainfo: MetaInfo = MetaInfo::Torrent(bencode::from_bytes(&file)?);
+      Self::parse(&file)
+   }
+   pub fn parse(bytes: &[u8]) -> Result<MetaInfo> {
+      let metainfo: MetaInfo = MetaInfo::Torrent(bencode::from_bytes(bytes)?);
       Ok(metainfo)
    }
 }
@@ -96,7 +99,7 @@ mod tests {
          .unwrap()
          .join("tests/torrents/big-buck-bunny.torrent");
 
-      let metainfo = TorrentFile::parse(path).await.unwrap();
+      let metainfo = TorrentFile::read(path).await.unwrap();
 
       match metainfo {
          MetaInfo::Torrent(torrent) => {

@@ -301,7 +301,7 @@ mod tests {
          .join("tests/magneturis/test1.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
 
-      let metainfo = MagnetUri::parse(contents).await.unwrap();
+      let metainfo = MagnetUri::parse(contents).unwrap();
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {

@@ -90,7 +90,7 @@ impl TorrentEngine {
          // Is a Magnet URI
          "magnet:" => {
             trace!("Input was Magnet URI");
-            MagnetUri::parse(input).await.unwrap()
+            MagnetUri::parse(input).unwrap()
          }
 
          // Is a torrent file
@@ -98,7 +98,7 @@ impl TorrentEngine {
             trace!("Input was Torrent file");
             let path = std::env::current_dir().unwrap().join(input);
 
-            TorrentFile::parse(path).await.unwrap()
+            TorrentFile::read(path).await.unwrap()
          }
       }
    }

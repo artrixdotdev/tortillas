@@ -49,7 +49,7 @@ pub struct MagnetUri {
 }
 
 impl MagnetUri {
-   pub async fn parse(uri: String) -> Result<MetaInfo> {
+   pub fn parse(uri: String) -> Result<MetaInfo> {
       let qs = uri.split('?').next_back().unwrap(); // Turns magnet:?xt=... into xt=...
 
       // First pass: collect all key-value pairs, grouping repeating keys
@@ -113,7 +113,7 @@ mod tests {
          .join("tests/magneturis/big-buck-bunny.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
 
-      let metainfo = MagnetUri::parse(contents).await.unwrap();
+      let metainfo = MagnetUri::parse(contents).unwrap();
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {

@@ -15,6 +15,14 @@ pub enum MetaInfo {
 }
 
 impl MetaInfo {
+   pub async fn new(path_or_url: &'static str) -> Result<Self, anyhow::Error> {
+      Ok(if path_or_url.starts_with("magnet:") {
+         MagnetUri::parse(path_or_url.into())?
+      } else {
+         TorrentFile::read(path_or_url.into()).await?
+      })
+   }
+
    /// Returns the info hash for the given MetaInfo enum. If the enum is a [Torrent](TorrentFile), then this
    /// function will calculate and return the hash. If the enum is a [MagnetUri], then this
    /// function will grab the existing hash and return it, as the MagnetUri spec already contains
@@ -47,7 +55,7 @@ mod tests {
          .join("tests/magneturis/big-buck-bunny.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
 
-      let metainfo = MagnetUri::parse(contents).await.unwrap();
+      let metainfo = MagnetUri::parse(contents).unwrap();
 
       let info_hash = metainfo.info_hash().unwrap();
       assert_eq!(
@@ -62,7 +70,7 @@ mod tests {
       let path = std::env::current_dir()
          .unwrap()
          .join("tests/torrents/big-buck-bunny.torrent");
-      let file = TorrentFile::parse(path).await.unwrap();
+      let file = TorrentFile::read(path).await.unwrap();
 
       let info_hash = file.info_hash().unwrap();
       assert_eq!(
@@ -79,7 +87,7 @@ mod tests {
          .join("tests/magneturis/big-buck-bunny.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
 
-      let metainfo = MagnetUri::parse(contents).await.unwrap();
+      let metainfo = MagnetUri::parse(contents).unwrap();
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
             matches!(magnet.announce_list.unwrap()[0], Tracker::Udp(_))
