@@ -5,7 +5,7 @@ mod magnet;
 pub use file::*;
 pub use magnet::*;
 
-use crate::hashes::InfoHash;
+use crate::{hashes::InfoHash, tracker::Tracker};
 
 /// Always utilize MetaInfo instead of directly using TorrentFile or MagnetUri
 #[derive(Debug, Deserialize)]
@@ -36,6 +36,18 @@ impl MetaInfo {
          MetaInfo::MagnetUri(magnet_uri) => magnet_uri
             .info_hash()
             .map_err(|e| anyhow::anyhow!("Failed to extract magnet URI info hash: {}", e)),
+      }
+   }
+
+   pub fn announce_list(&self) -> Vec<Tracker> {
+      match &self {
+         MetaInfo::Torrent(file) => file
+            .announce_list()
+            .into_iter() // Iterate over the outer Vec
+            .flatten() // Flatten the inner Vecs of Strings
+            .collect(),
+
+         MetaInfo::MagnetUri(magnet) => magnet.announce_list(),
       }
    }
 }

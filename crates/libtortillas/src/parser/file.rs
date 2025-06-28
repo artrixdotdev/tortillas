@@ -35,6 +35,11 @@ impl TorrentFile {
       let file = fs::read(path).await?;
       Self::parse(&file)
    }
+
+   pub fn announce_list(&self) -> Vec<Vec<Tracker>> {
+      self.announce_list.clone().unwrap_or_default()
+   }
+
    pub fn parse(bytes: &[u8]) -> Result<MetaInfo> {
       let metainfo: MetaInfo = MetaInfo::Torrent(bencode::from_bytes(bytes)?);
       Ok(metainfo)

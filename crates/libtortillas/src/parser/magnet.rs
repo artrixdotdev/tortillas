@@ -87,6 +87,11 @@ impl MagnetUri {
       // Parse the modified query string
       Ok(MetaInfo::MagnetUri(serde_qs::from_str(&final_qs)?))
    }
+
+   pub fn announce_list(&self) -> Vec<Tracker> {
+      self.announce_list.clone().unwrap_or_default()
+   }
+
    pub fn info_hash(&self) -> Result<InfoHash, anyhow::Error> {
       let hex_part = self
          .info_hash
