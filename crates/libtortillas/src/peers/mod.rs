@@ -7,7 +7,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
-use messages::{Handshake, PeerMessages, MAGIC_STRING};
+use messages::{Handshake, MAGIC_STRING, PeerMessages};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -17,10 +17,10 @@ use std::{
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      mpsc::{self, Receiver, Sender},
       Mutex,
+      mpsc::{self, Receiver, Sender},
    },
-   time::{timeout, Instant},
+   time::{Instant, timeout},
 };
 use tracing::{error, trace};
 use transport_messages::{TransportCommand, TransportResponse};
@@ -177,7 +177,7 @@ impl Peer {
       match message {
          PeerMessages::Bitfield(bitfield) => {
             trace!("Received bitfield message from peer {}", self.socket_addr());
-            self.pieces = bitfield.iter().by_vals().collect();
+            self.pieces = bitfield;
 
             to_tx
                .send(PeerResponse::Receive {
@@ -287,7 +287,7 @@ pub trait TransportProtocol: Send + Sync + Clone {
    /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
    /// use this function.
    async fn receive_from_peer(&mut self, peer: PeerKey)
-      -> Result<PeerMessages, PeerTransportError>;
+   -> Result<PeerMessages, PeerTransportError>;
 
    /// Receives data from any incoming peer. Generally used for accepting a handshake.
    async fn receive_data(
@@ -652,12 +652,7 @@ mod tests {
    /// Keep in mind that this test operates as both the TorrentEngine and the peer, handling all
    /// communication with the peer in such a manner.
    async fn test_peer_to_peer_pieces() {
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/zenshuu.txt");
-      let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
-      let data = MagnetUri::parse(magnet_uri).await.unwrap();
-      let info_hash = data.info_hash().unwrap();
+      let info_hash = Hash::new(rand::random::<[u8; 20]>());
 
       // Start listener
       let peer_addr = "127.0.0.1:9883";
@@ -684,7 +679,7 @@ mod tests {
       // First message should be a handshake
       let stream = listener.accept().await.unwrap().0;
       let mut peer_stream = PeerStream::Tcp(stream);
-      let mut bytes = vec![0; 68];
+      let mut bytes = [0; 68];
       peer_stream.read_exact(&mut bytes).await.unwrap();
 
       // Ensure the handshake we received is valid
