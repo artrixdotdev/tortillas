@@ -15,7 +15,7 @@ pub enum MetaInfo {
 }
 
 impl MetaInfo {
-   pub async fn new(path_or_url: &'static str) -> Result<Self, anyhow::Error> {
+   pub async fn new(path_or_url: String) -> Result<Self, anyhow::Error> {
       Ok(if path_or_url.starts_with("magnet:") {
          MagnetUri::parse(path_or_url.into())?
       } else {
