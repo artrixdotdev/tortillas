@@ -332,7 +332,7 @@ impl PeerRecv for PeerReader {}
 impl PeerSend for PeerWriter {}
 
 /// Takes in a received handshake and returns the handshake we should respond with as well as the new peer. It preassigns the our_id to the peer.
-fn validate_handshake(
+pub(super) fn validate_handshake(
    received_handshake: &Handshake,
    peer_addr: SocketAddr,
    info_hash: Arc<InfoHash>,
