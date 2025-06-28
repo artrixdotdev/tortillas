@@ -47,10 +47,7 @@ pub struct TorrentEngine {
 }
 
 impl TorrentEngine {
-   async fn new(input: String) -> Self {
-      trace!("Parsing input to torrent()");
-      let metainfo = TorrentEngine::parse_input(input).await;
-
+   async fn new(metainfo: MetaInfo) -> Self {
       trace!("Creating new transport handler");
 
       // For TCP
@@ -465,7 +462,7 @@ mod tests {
    use tracing::Level;
    use tracing_subscriber::fmt;
 
-   use crate::engine::TorrentEngine;
+   use crate::{engine::TorrentEngine, parser::MetaInfo};
 
    // THIS TEST IS NOT COMPLETE!!! (DELETEME when torrent() is completed)
    // Until torrent() is fully implemented, this test is not complete.
@@ -489,7 +486,9 @@ mod tests {
          .join("tests/magneturis/zenshuu.txt");
       let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
 
-      let engine = Arc::new(TorrentEngine::new(magnet_uri).await);
+      let metainfo = MetaInfo::new(magnet_uri).await.unwrap();
+
+      let engine = Arc::new(TorrentEngine::new(metainfo).await);
       engine.torrent().await.unwrap();
    }
 }

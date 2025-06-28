@@ -154,7 +154,7 @@ impl Peer {
       to_tx.send(PeerResponse::Init(from_tx)).await.unwrap();
 
       // Make "low level handshake" with peer
-      let mut stream = PeerStream::connect(self.socket_addr()).await;
+      let mut stream = PeerStream::connect(self.socket_addr(), None).await;
 
       // Send handshake to peer
       let peer_id = stream

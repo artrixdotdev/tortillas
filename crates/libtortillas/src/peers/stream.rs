@@ -1,10 +1,12 @@
 use crate::errors::PeerTransportError;
 use crate::hashes::Hash;
-use crate::peers::messages::Handshake;
 use crate::peers::InfoHash;
-use anyhow::anyhow;
+use crate::peers::messages::Handshake;
 use anyhow::Result;
+use anyhow::anyhow;
 use async_trait::async_trait;
+use librqbit_utp::Transport;
+use librqbit_utp::UtpSocketUdp;
 use librqbit_utp::UtpStreamReadHalf;
 use librqbit_utp::UtpStreamWriteHalf;
 use tokio::net::tcp;
@@ -20,9 +22,9 @@ use std::{
    task::{Context, Poll},
 };
 
-use super::messages::PeerMessages;
-use super::PeerId;
 use super::MAGIC_STRING;
+use super::PeerId;
+use super::messages::PeerMessages;
 use librqbit_utp::{UtpSocket, UtpStream};
 use tokio::{
    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
@@ -95,26 +97,17 @@ impl PeerStream {
    /// one works. While this may seem "not to spec", this is how the transmission BitTorrent
    /// client does it:
    /// https://github.com/transmission/transmission/discussions/7603
-   pub async fn connect(peer_addr: SocketAddr) -> Self {
-      // Prework for uTP stream
-      //
-      // NOTE: This may need to be refactored according to BEP 0003:
-      //
-      // > The port number this peer is listening on. Common behavior is for a downloader to
-      // try to listen on port 6881 and if that port is taken try 6882, then 6883, etc. and
-      // give up after 6889.
-      let socket_addr = SocketAddr::from_str("0.0.0.0:6881").unwrap();
-      trace!(
-         "Creating UTP socket for (potential) peer {} at {}",
-         peer_addr,
-         socket_addr
-      );
-      let utp_socket = UtpSocket::new_udp(socket_addr).await.unwrap();
-
+   ///
+   /// utp_socket should be None ONLY for testing, when we only wish to utilize a TcpStream.
+   pub async fn connect(peer_addr: SocketAddr, utp_socket: Option<Arc<UtpSocketUdp>>) -> Self {
       trace!("Attemping connection to {}", peer_addr);
-      tokio::select! {
-         stream = utp_socket.connect(peer_addr) => {PeerStream::Utp(stream.unwrap())},
-         stream = TcpStream::connect(peer_addr) => {PeerStream::Tcp(stream.unwrap())}
+      if let Some(utp_socket) = utp_socket {
+         tokio::select! {
+            stream = utp_socket.connect(peer_addr) => {PeerStream::Utp(stream.unwrap())},
+            stream = TcpStream::connect(peer_addr) => {PeerStream::Tcp(stream.unwrap())}
+         }
+      } else {
+         PeerStream::Tcp(TcpStream::connect(peer_addr).await.unwrap())
       }
    }
 
