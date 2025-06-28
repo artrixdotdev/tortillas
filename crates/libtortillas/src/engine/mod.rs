@@ -322,11 +322,9 @@ impl TorrentEngine {
 
                   // Set bitfield of peer
                   peer.pieces = match message {
-                     PeerMessages::Bitfield(bitfield) => bitfield.iter().by_vals().collect(),
+                     PeerMessages::Bitfield(bitfield) => bitfield,
                      // If the response isn't a bitfield for some reason...
-                     _ => {
-                        vec![]
-                     }
+                     _ => BitVec::EMPTY,
                   }
                }
                // This should never happen.

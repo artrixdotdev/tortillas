@@ -50,7 +50,7 @@ pub struct Peer {
    pub am_interested: bool,
    pub download_rate: u64,
    pub upload_rate: u64,
-   pub pieces: Vec<bool>,
+   pub pieces: BitVec<u8>,
    pub last_optimistic_unchoke: Option<Instant>,
    pub id: Option<Hash<20>>,
    pub last_message_sent: Option<Instant>,
@@ -71,7 +71,7 @@ impl Peer {
          am_interested: false,
          download_rate: 0,
          upload_rate: 0,
-         pieces: vec![],
+         pieces: BitVec::EMPTY,
          last_optimistic_unchoke: None,
          id: None,
          last_message_received: None,
@@ -688,12 +688,14 @@ mod tests {
       peer_stream.read_exact(&mut bytes).await.unwrap();
 
       // Ensure the handshake we received is valid
-      assert!(validate_handshake(
-         &Handshake::from_bytes(&bytes).unwrap(),
-         SocketAddr::from_str(peer_addr).unwrap(),
-         Arc::new(info_hash),
-      )
-      .is_ok());
+      assert!(
+         validate_handshake(
+            &Handshake::from_bytes(&bytes).unwrap(),
+            SocketAddr::from_str(peer_addr).unwrap(),
+            Arc::new(info_hash),
+         )
+         .is_ok()
+      );
 
       trace!("Received valid handshake");
 
