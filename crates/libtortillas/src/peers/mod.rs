@@ -143,26 +143,31 @@ impl Peer {
    /// Autonomously handles the connection & messages between a peer. The from_tx/from_rx is provided to
    /// facilitate communication to this function from the caller (likely TorrentEngine -- if so, this channel will be used to communicate what pieces TorrentEngine still needs).
    /// to_tx is provided to allow communication from handle_peer to the caller.
-   async fn handle_peer(
+   pub async fn handle_peer(
       mut self,
       to_tx: mpsc::Sender<PeerResponse>,
       info_hash: InfoHash,
       our_id: PeerId,
+      stream: Option<PeerStream>,
    ) {
       let (from_tx, mut from_rx) = mpsc::channel(100);
 
       to_tx.send(PeerResponse::Init(from_tx)).await.unwrap();
 
-      // Make "low level handshake" with peer
-      let mut stream = PeerStream::connect(self.socket_addr(), None).await;
-
-      // Send handshake to peer
-      let peer_id = stream
-         .send_handshake(our_id, Arc::new(info_hash))
-         .await
-         .unwrap();
-
-      self.id = Some(*peer_id);
+      // For outgoing peers (we are connecting to them), we should create the stream ourselves and send the handshake & bitfield
+      let mut stream = if let None = stream {
+         let mut stream = PeerStream::connect(self.socket_addr(), None).await;
+         // Send handshake to peer
+         let peer_id = stream
+            .send_handshake(our_id, Arc::new(info_hash))
+            .await
+            .unwrap();
+         self.id = Some(*peer_id);
+         stream
+      } else {
+         // Otherwise, since they have already sent their handshake and been verified, we can skip that part.
+         stream.unwrap()
+      };
 
       // Send empty bitfield. This may need to be refactored in the future to account for seeding.
       stream
@@ -641,7 +646,7 @@ mod tests {
       let our_id = Hash::from_bytes(our_id);
 
       peer
-         .handle_peer(to_tx, data.info_hash().unwrap(), Arc::new(our_id))
+         .handle_peer(to_tx, data.info_hash().unwrap(), Arc::new(our_id), None)
          .await;
 
       let from_tx = rx.recv().await.unwrap();
@@ -664,7 +669,9 @@ mod tests {
       let (to_tx, mut to_rx) = mpsc::channel(100);
 
       tokio::spawn(async move {
-         peer.handle_peer(to_tx, info_hash, Arc::new(peer_id)).await;
+         peer
+            .handle_peer(to_tx, info_hash, Arc::new(peer_id), None)
+            .await;
       });
 
       let from_tx_wrapped = to_rx.recv().await.unwrap();
