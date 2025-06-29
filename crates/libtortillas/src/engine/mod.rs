@@ -10,7 +10,7 @@ use crate::{
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
    peers::{
-      Peer, TransportHandler,
+      Peer, PeerId, TransportHandler,
       messages::PeerMessages,
       tcp::TcpProtocol,
       transport_messages::{TransportCommand, TransportResponse},
@@ -40,100 +40,23 @@ pub enum TorrentInput {
 /// It should be noted that TorrentEngine does not seed files at the moment. In other words,
 /// TorrentEngine is a leecher. The ability to seed files will be added in a future commit/issue/pull request.
 pub struct TorrentEngine {
-   tcp_handler: Arc<Mutex<TransportHandler<TcpProtocol>>>,
-   utp_handler: Arc<Mutex<TransportHandler<UtpProtocol>>>,
    metainfo: MetaInfo,
+   id: PeerId,
    peers: Arc<Mutex<HashSet<Peer>>>,
+   tcp_addr: Option<SocketAddr>,
+   utp_addr: Option<SocketAddr>,
 }
 
 impl TorrentEngine {
    async fn new(metainfo: MetaInfo) -> Self {
       trace!("Creating new transport handler");
 
-      // For TCP
-      let tcp_peer_id = Hash::new(rand::random::<[u8; 20]>());
-      let tcp_addr = SocketAddr::from(([0, 0, 0, 0], 0));
-      let tcp_protocol = TcpProtocol::new(Some(tcp_addr)).await;
-      let tcp_handler = TransportHandler::new(
-         tcp_protocol,
-         Arc::new(tcp_peer_id),
-         Arc::new(metainfo.info_hash().unwrap()),
-      );
-
-      // For uTP
-      let utp_peer_id = Hash::new(rand::random::<[u8; 20]>());
-      let utp_addr = SocketAddr::from(([0, 0, 0, 0], 0));
-      let utp_protocol = UtpProtocol::new(Some(utp_addr)).await;
-      let utp_handler = TransportHandler::new(
-         utp_protocol,
-         Arc::new(utp_peer_id),
-         Arc::new(metainfo.info_hash().unwrap()),
-      );
-
       TorrentEngine {
-         tcp_handler: Arc::new(Mutex::new(tcp_handler)),
-         utp_handler: Arc::new(Mutex::new(utp_handler)),
          metainfo,
+         id: Arc::new(Hash::from_bytes(rand::random::<[u8; 20]>())),
          peers: Arc::new(Mutex::new(HashSet::new())),
-      }
-   }
-
-   /// Parses the input to the torrent function. Can either be a Magnet URI or a valid file path a
-   /// torrent file. The definition of a "valid file path" depends on where you're running the
-   /// program from.
-   pub async fn parse_input(input: String) -> MetaInfo {
-      // Is this accurate 100% of the time? Hopefully.
-      match &input[0..7] {
-         // Is a Magnet URI
-         "magnet:" => {
-            trace!("Input was Magnet URI");
-            MagnetUri::parse(input).unwrap()
-         }
-
-         // Is a torrent file
-         _ => {
-            trace!("Input was Torrent file");
-            let path = std::env::current_dir().unwrap().join(input);
-
-            TorrentFile::read(path).await.unwrap()
-         }
-      }
-   }
-
-   /// Returns the announce list. Flattens vec of vecs if the initial input was a torrent file (or
-   /// more specifically, a path to a torrent file)
-   fn get_announce_list(&self) -> Vec<Tracker> {
-      // Is cloning the announce_list efficient? Probably not. But hey, it's Rust.
-      match &self.metainfo {
-         MetaInfo::MagnetUri(magnet) => {
-            let announce_list = magnet.announce_list.clone().unwrap();
-            trace!(
-               "Succesfully cloned and unwrapped announce_list: {:?}",
-               announce_list
-            );
-            announce_list
-         }
-         MetaInfo::Torrent(file) => {
-            // Vec of vecs
-            let flattened = file.announce_list.clone().unwrap().into_iter().flatten();
-
-            // No longer a vec of vecs
-            let res = flattened.collect();
-
-            trace!(
-               "Succesfully cloned, unwrapped, and flattened announce_list: {:?}",
-               res
-            );
-            res
-         }
-      }
-   }
-
-   /// Returns the info hash
-   fn get_info_hash(&self) -> InfoHash {
-      match &self.metainfo {
-         MetaInfo::MagnetUri(magnet) => magnet.info_hash().unwrap(),
-         MetaInfo::Torrent(file) => file.info.hash().unwrap(),
+         tcp_addr: None,
+         utp_addr: None,
       }
    }
 
@@ -141,11 +64,21 @@ impl TorrentEngine {
    async fn get_all_peers(self: Arc<Self>, announce_list: &[Tracker]) {
       // Get an rx for each tracker
       let mut rx_list = vec![];
+      let primary_addr = self.tcp_addr.unwrap_or_else(|| {
+         self
+            .utp_addr
+            .expect("Neither TCP nor UTP address was provided")
+      });
 
       trace!("Making initial requests to trackers");
-      let info_hash = self.get_info_hash();
+      let info_hash = self.metainfo.info_hash().unwrap();
       for tracker in announce_list.iter() {
-         rx_list.push(tracker.stream_peers(info_hash).await.unwrap());
+         rx_list.push(
+            tracker
+               .stream_peers(info_hash, Some(primary_addr))
+               .await
+               .unwrap(),
+         );
       }
 
       let me = Arc::clone(&self);

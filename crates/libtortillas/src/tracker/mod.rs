@@ -63,22 +63,20 @@ impl Tracker {
    }
 
    /// Streams peers based off of given tracker
-   pub async fn stream_peers(&self, info_hash: InfoHash) -> Result<mpsc::Receiver<Vec<Peer>>> {
+   pub async fn stream_peers(
+      &self,
+      info_hash: InfoHash,
+      peer_addr: Option<SocketAddr>,
+   ) -> Result<mpsc::Receiver<Vec<Peer>>> {
       match self {
          Tracker::Http(uri) => {
-            let mut tracker = HttpTracker::new(uri.clone(), info_hash, None);
+            let mut tracker = HttpTracker::new(uri.clone(), info_hash, peer_addr);
             Ok(tracker.stream_peers().await.unwrap())
          }
          Tracker::Udp(uri) => {
-            let port: u16 = random_range(1024..65535);
-            let mut tracker = UdpTracker::new(
-               uri.clone(),
-               None,
-               info_hash,
-               Some(SocketAddr::from(([0, 0, 0, 0], port))),
-            )
-            .await
-            .unwrap();
+            let mut tracker = UdpTracker::new(uri.clone(), None, info_hash, peer_addr)
+               .await
+               .unwrap();
             Ok(tracker.stream_peers().await.unwrap())
          }
          Tracker::Websocket(_) => todo!(),
