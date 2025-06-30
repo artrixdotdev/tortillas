@@ -1,8 +1,19 @@
-use std::{collections::HashSet, net::SocketAddr, sync::Arc, thread::sleep, time::Duration};
+use std::{
+   collections::{HashMap, HashSet},
+   net::SocketAddr,
+   str::FromStr,
+   sync::Arc,
+   thread::sleep,
+   time::Duration,
+};
 
-use anyhow::{Error, Result, anyhow};
+use anyhow::{anyhow, Error, Result};
 use bitvec::vec::BitVec;
-use tokio::sync::{Mutex, mpsc, oneshot};
+use librqbit_utp::{UtpSocket, UtpSocketUdp};
+use tokio::{
+   net::TcpListener,
+   sync::{mpsc, oneshot, Mutex, RwLock},
+};
 use tracing::{error, trace};
 
 use crate::{
@@ -10,14 +21,18 @@ use crate::{
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
    peers::{
-      Peer, PeerId, TransportHandler,
+      commands::{PeerCommand, PeerResponse},
       messages::PeerMessages,
+      stream::PeerStream,
       tcp::TcpProtocol,
       transport_messages::{TransportCommand, TransportResponse},
       utp::UtpProtocol,
+      Peer, PeerId, PeerKey, TransportHandler,
    },
    tracker::Tracker,
 };
+
+type PeerMessenger = (mpsc::Sender<PeerCommand>, mpsc::Receiver<PeerResponse>);
 
 /// The name of this enum is intentionally awkward as to highlight the difference between [TransportProtocol] and [TransportProtocolS]
 pub enum TransportProtocolS {
@@ -39,12 +54,15 @@ pub enum TorrentInput {
 ///
 /// It should be noted that TorrentEngine does not seed files at the moment. In other words,
 /// TorrentEngine is a leecher. The ability to seed files will be added in a future commit/issue/pull request.
+#[derive(Debug)]
 pub struct TorrentEngine {
    metainfo: MetaInfo,
    id: PeerId,
-   peers: Arc<Mutex<HashSet<Peer>>>,
-   tcp_addr: Option<SocketAddr>,
-   utp_addr: Option<SocketAddr>,
+   active_peers: Arc<Mutex<HashMap<PeerKey, PeerMessenger>>>,
+   peers: Arc<RwLock<HashSet<Peer>>>,
+   tcp_addr: Arc<Mutex<Option<SocketAddr>>>,
+   utp_addr: Arc<Mutex<Option<SocketAddr>>>,
+   bitfield: BitVec<u8>,
 }
 
 impl TorrentEngine {
@@ -54,25 +72,32 @@ impl TorrentEngine {
       TorrentEngine {
          metainfo,
          id: Arc::new(Hash::from_bytes(rand::random::<[u8; 20]>())),
-         peers: Arc::new(Mutex::new(HashSet::new())),
-         tcp_addr: None,
-         utp_addr: None,
+         active_peers: Arc::new(Mutex::new(HashMap::new())),
+         peers: Arc::new(RwLock::new(HashSet::new())),
+         tcp_addr: Arc::new(Mutex::new(None)),
+         utp_addr: Arc::new(Mutex::new(None)),
+         bitfield: BitVec::EMPTY,
       }
    }
 
    /// Contacts all given trackers for a list of peers
-   async fn get_all_peers(self: Arc<Self>, announce_list: &[Tracker]) {
+   async fn get_all_peers(self: Arc<Self>) {
       // Get an rx for each tracker
       let mut rx_list = vec![];
-      let primary_addr = self.tcp_addr.unwrap_or_else(|| {
-         self
-            .utp_addr
+
+      let me = self.clone();
+      let primary_addr = if let Some(addr) = *me.tcp_addr.lock().await {
+         addr
+      } else {
+         me.utp_addr
+            .lock()
+            .await
             .expect("Neither TCP nor UTP address was provided")
-      });
+      };
 
       trace!("Making initial requests to trackers");
-      let info_hash = self.metainfo.info_hash().unwrap();
-      for tracker in announce_list.iter() {
+      let info_hash = me.metainfo.info_hash().unwrap();
+      for tracker in me.metainfo.announce_list().iter() {
          rx_list.push(
             tracker
                .stream_peers(info_hash, Some(primary_addr))
@@ -80,34 +105,43 @@ impl TorrentEngine {
                .unwrap(),
          );
       }
+      {
+         let me = Arc::clone(&me);
+         // Repeatedly gather data from each rx and update self.peers as new peers are added
+         trace!("Spawning task to handle output from initial requests");
+         tokio::spawn(async move {
+            // Loops through every rx and awaits a response. This may be extremely efficient; ex: we
+            // are given three trackers. One has a delay of 300 seconds, and the others have a delay
+            // of 15 seconds. The other two trackers will be forced to wait 300 seconds. FIXME.
+            //
+            // A list of peers that we've already seen
+            let mut peers_in_action = HashSet::new();
+            loop {
+               // We do not need a timeout/sleep here as stream_peers handles that for us.
+               for rx in rx_list.iter_mut() {
+                  let res = rx.recv().await.unwrap();
 
-      let me = Arc::clone(&self);
-
-      // Repeatedly gather data from each rx and update self.peers as new peers are added
-      trace!("Spawning task to handle output from initial requests");
-      tokio::spawn(async move {
-         // Loops through every rx and awaits a response. This may be extremely efficient; ex: we
-         // are given three trackers. One has a delay of 300 seconds, and the others have a delay
-         // of 15 seconds. The other two trackers will be forced to wait 300 seconds. FIXME.
-         //
-         // A list of peers that we've already seen
-         let mut peers_in_action = HashSet::new();
-         loop {
-            // We do not need a timeout/sleep here as stream_peers handles that for us.
-            for rx in rx_list.iter_mut() {
-               let res = rx.recv().await.unwrap();
-
-               trace!("Received peers from get_all_peers()");
-               let mut guard = me.peers.lock().await;
-               for peer in res {
-                  if !peers_in_action.insert(peer.clone()) {
-                     guard.insert(peer.clone());
-                     trace!("Added peer: {}", peer.clone());
+                  trace!("Received peers from get_all_peers()");
+                  let mut guard = me.peers.write().await;
+                  for peer in res {
+                     if !peers_in_action.insert(peer.clone()) {
+                        guard.insert(peer.clone());
+                        trace!("Added peer: {}", peer.clone());
+                     }
                   }
                }
             }
-         }
-      });
+         });
+      }
+   }
+
+   async fn listen(self: Arc<Self>) -> (Arc<UtpSocketUdp>, TcpListener) {
+      (
+         UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").unwrap())
+            .await
+            .unwrap(),
+         TcpListener::bind("0.0.0.0:0").await.unwrap(),
+      )
    }
 
    async fn handle_peer(
@@ -247,7 +281,8 @@ impl TorrentEngine {
                TransportResponse::Receive { message, peer_key } => {
                   trace!(
                      "Received message from peer {}. Message: {:?}",
-                     peer_key, message
+                     peer_key,
+                     message
                   );
 
                   // Set bitfield of peer
@@ -297,51 +332,82 @@ impl TorrentEngine {
    ///
    /// TODO: This function will likely return a torrented file, or a path to a locally torrented file.
    pub async fn torrent(self: Arc<Self>) -> anyhow::Result<(), Error> {
-      let me = self.clone();
       // Start getting peers from tracker
       trace!("Getting initial peers...");
 
-      let announce_list = me.get_announce_list();
-      tokio::spawn(async move {
-         me.get_all_peers(&announce_list).await;
-      });
+      let me = self.clone();
 
-      let utp_tx = self.utp_handler.lock().await.sender();
-      let tcp_tx = self.tcp_handler.lock().await.sender();
+      let (utp_listener, tcp_listener) = me.clone().listen().await;
+
+      {
+         let mut tcp_addr_guard = self.tcp_addr.lock().await;
+         *tcp_addr_guard = tcp_listener.local_addr().ok();
+
+         let mut utp_addr_guard = self.utp_addr.lock().await;
+         *utp_addr_guard = Some(utp_listener.bind_addr());
+      }
+
+      {
+         let me = me.clone();
+         tokio::spawn(async move {
+            loop {
+               let (stream, addr) = tcp_listener.accept().await.unwrap();
+               let stream = PeerStream::Tcp(stream);
+               let peer = Peer::from_socket_addr(addr);
+
+               let (to_tx, mut to_rx) = mpsc::channel(100);
+
+               peer
+                  .handle_peer(
+                     to_tx,
+                     me.metainfo.info_hash().unwrap(),
+                     Arc::clone(&me.id),
+                     Some(stream),
+                  )
+                  .await;
+
+               let peer_response = to_rx.recv().await.unwrap();
+
+               if let PeerResponse::Init(from_tx) = peer_response {
+                  me.active_peers.lock().await.insert(addr, (from_tx, to_rx));
+               }
+            }
+         });
+      }
+
+      {
+         let me = me.clone();
+         tokio::spawn(async move {
+            let listener = utp_listener;
+
+            loop {
+               let stream = listener.accept().await.unwrap();
+               let addr = stream.remote_addr();
+
+               let stream = PeerStream::Utp(stream);
+               let peer = Peer::from_socket_addr(addr);
+
+               let (to_tx, mut to_rx) = mpsc::channel(100);
+
+               peer
+                  .handle_peer(
+                     to_tx,
+                     me.metainfo.info_hash().unwrap(),
+                     Arc::clone(&me.id),
+                     Some(stream),
+                  )
+                  .await;
+
+               let peer_response = to_rx.recv().await.unwrap();
+
+               if let PeerResponse::Init(from_tx) = peer_response {
+                  me.active_peers.lock().await.insert(addr, (from_tx, to_rx));
+               }
+            }
+         });
+      }
 
       trace!("Got uTP and TCP senders (tx)");
-
-      let utp_handler_clone = self.utp_handler.clone();
-      tokio::spawn(async move {
-         utp_handler_clone
-            .lock()
-            .await
-            .handle_commands()
-            .await
-            .map_err(|e| {
-               error!("Error when calling handle_commands: {}", e);
-               TorrentEngineError::Other(anyhow!("Error when calling handle_commands"))
-            })
-            .unwrap();
-      });
-
-      trace!("Locked utp_handler and spawned handle_commands()");
-
-      let tcp_handler_clone = self.tcp_handler.clone();
-      tokio::spawn(async move {
-         tcp_handler_clone
-            .lock()
-            .await
-            .handle_commands()
-            .await
-            .map_err(|e| {
-               error!("Error when calling handle_commands: {}", e);
-               TorrentEngineError::Other(anyhow!("Error when calling handle_commands"))
-            })
-            .unwrap();
-      });
-
-      trace!("Locked tcp_handler and spawned handle_commands()");
 
       // If there are no peers, wait until there are. If there aren't, everything implodes on
       // itself. If empty_counter reaches 10, something's probably gone wrong and the program
@@ -350,7 +416,7 @@ impl TorrentEngine {
       // We are doing this outside the loop -- once we have a few initial peers, we don't need to
       // worry if the trackers don't send any more.
       let mut empty_counter = 0;
-      while self.peers.lock().await.is_empty() {
+      while me.peers.read().await.is_empty() {
          if empty_counter == 5 {
             return Err(TorrentEngineError::InsufficientPeers.into());
          }
@@ -363,13 +429,28 @@ impl TorrentEngine {
          // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
          trace!("Beginning iteration of peers");
          {
-            for peer in self.peers.lock().await.clone() {
-               let me = Arc::clone(&self);
-               let utp_tx = utp_tx.clone();
-               let tcp_tx = tcp_tx.clone();
-               tokio::spawn(async move {
-                  me.clone().handle_peer(peer, tcp_tx, utp_tx).await;
-               });
+            for peer in me.peers.read().await.clone() {
+               let (to_tx, mut to_rx) = mpsc::channel(100);
+
+               let peer_addr = peer.socket_addr();
+
+               peer
+                  .handle_peer(
+                     to_tx,
+                     me.metainfo.info_hash().unwrap(),
+                     Arc::clone(&me.id),
+                     None,
+                  )
+                  .await;
+
+               let peer_response = to_rx.recv().await.unwrap();
+
+               if let PeerResponse::Init(from_tx) = peer_response {
+                  me.active_peers
+                     .lock()
+                     .await
+                     .insert(peer_addr, (from_tx, to_rx));
+               }
             }
          }
 
@@ -382,7 +463,7 @@ impl TorrentEngine {
          // worry. If this is confusing, please refer to the documentation on the torrent()
          // function.
          trace!("Locking & clearing peers");
-         self.peers.lock().await.clear();
+         me.peers.write().await.clear();
          trace!("Rerunning loop with new peers");
       }
    }
