@@ -50,7 +50,6 @@ pub struct TorrentEngine {
    metainfo: MetaInfo,
    id: PeerId,
    active_peers: Arc<Mutex<HashMap<PeerKey, PeerMessenger>>>,
-   peers: Arc<RwLock<HashSet<Peer>>>,
    tcp_addr: Arc<Mutex<Option<SocketAddr>>>,
    utp_addr: Arc<Mutex<Option<SocketAddr>>>,
    bitfield: BitVec<u8>,
@@ -64,65 +63,9 @@ impl TorrentEngine {
          metainfo,
          id: Arc::new(Hash::from_bytes(rand::random::<[u8; 20]>())),
          active_peers: Arc::new(Mutex::new(HashMap::new())),
-         peers: Arc::new(RwLock::new(HashSet::new())),
          tcp_addr: Arc::new(Mutex::new(None)),
          utp_addr: Arc::new(Mutex::new(None)),
          bitfield: BitVec::EMPTY,
-      }
-   }
-
-   /// Contacts all given trackers for a list of peers
-   async fn get_all_peers(self: Arc<Self>) {
-      // Get an rx for each tracker
-      let mut rx_list = vec![];
-
-      let me = self.clone();
-      let primary_addr = if let Some(addr) = *me.tcp_addr.lock().await {
-         addr
-      } else {
-         me.utp_addr
-            .lock()
-            .await
-            .expect("Neither TCP nor UTP address was provided")
-      };
-
-      trace!("Making initial requests to trackers");
-      let info_hash = me.metainfo.info_hash().unwrap();
-      for tracker in me.metainfo.announce_list().iter() {
-         rx_list.push(
-            tracker
-               .stream_peers(info_hash, Some(primary_addr))
-               .await
-               .unwrap(),
-         );
-      }
-      {
-         let me = Arc::clone(&me);
-         // Repeatedly gather data from each rx and update self.peers as new peers are added
-         trace!("Spawning task to handle output from initial requests");
-         tokio::spawn(async move {
-            // Loops through every rx and awaits a response. This may be extremely efficient; ex: we
-            // are given three trackers. One has a delay of 300 seconds, and the others have a delay
-            // of 15 seconds. The other two trackers will be forced to wait 300 seconds. FIXME.
-            //
-            // A list of peers that we've already seen
-            let mut peers_in_action = HashSet::new();
-            loop {
-               // We do not need a timeout/sleep here as stream_peers handles that for us.
-               for rx in rx_list.iter_mut() {
-                  let res = rx.recv().await.unwrap();
-
-                  trace!("Received peers from get_all_peers()");
-                  let mut guard = me.peers.write().await;
-                  for peer in res {
-                     if !peers_in_action.insert(peer.clone()) {
-                        guard.insert(peer.clone());
-                        trace!("Added peer: {}", peer.clone());
-                     }
-                  }
-               }
-            }
-         });
       }
    }
 
@@ -231,81 +174,84 @@ impl TorrentEngine {
 
       trace!("Started listening for uTP peer");
 
-      {
-         let me = me.clone();
-         tokio::spawn(async move {
-            me.get_all_peers().await;
-         });
+      // Get an rx for each tracker
+      let mut rx_list = vec![];
+
+      let me = self.clone();
+      let primary_addr = if let Some(addr) = *me.tcp_addr.lock().await {
+         addr
+      } else {
+         me.utp_addr
+            .lock()
+            .await
+            .expect("Neither TCP nor UTP address was provided")
+      };
+
+      trace!("Making initial requests to trackers");
+      let info_hash = me.metainfo.info_hash().unwrap();
+      for tracker in me.metainfo.announce_list().iter() {
+         rx_list.push(
+            tracker
+               .stream_peers(info_hash, Some(primary_addr))
+               .await
+               .unwrap(),
+         );
       }
 
-      trace!("Started get_all_peers");
+      let me = Arc::clone(&me);
 
-      // If there are no peers, wait until there are. If there aren't, everything implodes on
-      // itself. If empty_counter reaches 10, something's probably gone wrong and the program
-      // should exit.
+      // Repeatedly gather data from each rx and update self.peers as new peers are added
+      trace!("Spawning task to handle output from initial requests");
+
+      // Loops through every rx and awaits a response. This may be extremely efficient; ex: we
+      // are given three trackers. One has a delay of 300 seconds, and the others have a delay
+      // of 15 seconds. The other two trackers will be forced to wait 300 seconds. FIXME.
       //
-      // We are doing this outside the loop -- once we have a few initial peers, we don't need to
-      // worry if the trackers don't send any more.
-      let mut empty_counter = 0;
-      while me.peers.read().await.is_empty() {
-         if empty_counter == 5 {
-            return Err(TorrentEngineError::InsufficientPeers.into());
-         }
-         trace!("No peers were provided by trackers yet!");
-         sleep(Duration::from_secs(2));
-         empty_counter += 1;
-      }
+      // A list of peers that we've already seen
+      let mut peers_in_action = HashSet::new();
 
       loop {
-         // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
-         trace!("Beginning iteration of peers");
-         {
-            let peers = me.peers.read().await;
-            trace!("Number of peers: {}", peers.len());
-            for peer in peers.clone() {
-               let listener = utp_listener.clone();
-               let (to_tx, mut to_rx) = mpsc::channel(100);
+         // We do not need a timeout/sleep here as stream_peers handles that for us.
+         for rx in rx_list.iter_mut() {
+            let res = rx.recv().await.unwrap();
 
-               let peer_addr = peer.socket_addr();
+            trace!("Received peers from get_all_peers()");
+            for peer in res {
+               if !peers_in_action.insert(peer.clone()) {
+                  let listener = utp_listener.clone();
+                  let (to_tx, mut to_rx) = mpsc::channel(100);
 
-               let me_inner = me.clone();
-               tokio::spawn(async move {
-                  peer
-                     .handle_peer(
-                        to_tx,
-                        me_inner.metainfo.info_hash().unwrap(),
-                        Arc::clone(&me_inner.id),
-                        None,
-                        // This enables the peer to connect via UTP or TCP
-                        Some(listener),
-                     )
-                     .await;
-               });
+                  let peer_addr = peer.socket_addr();
 
-               let peer_response = to_rx.recv().await.unwrap();
+                  let me_inner = me.clone();
+                  tokio::spawn(async move {
+                     peer
+                        .handle_peer(
+                           to_tx,
+                           me_inner.metainfo.info_hash().unwrap(),
+                           Arc::clone(&me_inner.id),
+                           None,
+                           // This enables the peer to connect via UTP or TCP
+                           Some(listener),
+                        )
+                        .await;
+                  });
 
-               if let PeerResponse::Init(from_tx) = peer_response {
-                  me.clone()
-                     .active_peers
-                     .lock()
-                     .await
-                     .insert(peer_addr, (from_tx, to_rx));
+                  let peer_response = to_rx.recv().await.unwrap();
+
+                  if let PeerResponse::Init(from_tx) = peer_response {
+                     me.clone()
+                        .active_peers
+                        .lock()
+                        .await
+                        .insert(peer_addr, (from_tx, to_rx));
+                  }
                }
             }
          }
-
-         // Wait for the tracker to add some potentially new peers
-         trace!("Sleeping for potential new peers");
-         sleep(Duration::from_secs(15));
-
-         // Clear the set to ensure that we don't tokio::spawn for a peer that we've already
-         // started working with. This set will be "refilled" on the next cycle of the loop, don't
-         // worry. If this is confusing, please refer to the documentation on the torrent()
-         // function.
-         trace!("Locking & clearing peers");
-         me.peers.write().await.clear();
-         trace!("Rerunning loop with new peers");
       }
+
+      // Start requesting pieces (TODO)
    }
 }
 
