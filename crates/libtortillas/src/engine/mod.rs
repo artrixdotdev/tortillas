@@ -375,6 +375,8 @@ impl TorrentEngine {
          });
       }
 
+      trace!("Started listening for TCP peer");
+
       {
          let me = me.clone();
          tokio::spawn(async move {
@@ -407,7 +409,16 @@ impl TorrentEngine {
          });
       }
 
-      trace!("Got uTP and TCP senders (tx)");
+      trace!("Started listening for uTP peer");
+
+      {
+         let me = me.clone();
+         tokio::spawn(async move {
+            me.get_all_peers().await;
+         });
+      }
+
+      trace!("Started get_all_peers");
 
       // If there are no peers, wait until there are. If there aren't, everything implodes on
       // itself. If empty_counter reaches 10, something's probably gone wrong and the program
@@ -434,19 +445,23 @@ impl TorrentEngine {
 
                let peer_addr = peer.socket_addr();
 
-               peer
-                  .handle_peer(
-                     to_tx,
-                     me.metainfo.info_hash().unwrap(),
-                     Arc::clone(&me.id),
-                     None,
-                  )
-                  .await;
+               let me_inner = me.clone();
+               tokio::spawn(async move {
+                  peer
+                     .handle_peer(
+                        to_tx,
+                        me_inner.metainfo.info_hash().unwrap(),
+                        Arc::clone(&me_inner.id),
+                        None,
+                     )
+                     .await;
+               });
 
                let peer_response = to_rx.recv().await.unwrap();
 
                if let PeerResponse::Init(from_tx) = peer_response {
-                  me.active_peers
+                  me.clone()
+                     .active_peers
                      .lock()
                      .await
                      .insert(peer_addr, (from_tx, to_rx));
