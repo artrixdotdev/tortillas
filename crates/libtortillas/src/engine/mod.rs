@@ -7,12 +7,12 @@ use std::{
    time::Duration,
 };
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use bitvec::vec::BitVec;
 use librqbit_utp::{UtpSocket, UtpSocketUdp};
 use tokio::{
    net::TcpListener,
-   sync::{mpsc, oneshot, Mutex, RwLock},
+   sync::{Mutex, RwLock, mpsc, oneshot},
 };
 use tracing::{error, trace};
 
@@ -21,10 +21,10 @@ use crate::{
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
    peers::{
+      Peer, PeerId, PeerKey,
       commands::{PeerCommand, PeerResponse},
       messages::PeerMessages,
       stream::PeerStream,
-      Peer, PeerId, PeerKey,
    },
    tracker::Tracker,
 };
@@ -182,6 +182,7 @@ impl TorrentEngine {
                      me.metainfo.info_hash().unwrap(),
                      Arc::clone(&me.id),
                      Some(stream),
+                     None,
                   )
                   .await;
 
@@ -198,9 +199,8 @@ impl TorrentEngine {
 
       {
          let me = me.clone();
+         let listener = utp_listener.clone();
          tokio::spawn(async move {
-            let listener = utp_listener;
-
             loop {
                let stream = listener.accept().await.unwrap();
                let addr = stream.remote_addr();
@@ -216,6 +216,7 @@ impl TorrentEngine {
                      me.metainfo.info_hash().unwrap(),
                      Arc::clone(&me.id),
                      Some(stream),
+                     None,
                   )
                   .await;
 
@@ -262,6 +263,7 @@ impl TorrentEngine {
             let peers = me.peers.read().await;
             trace!("Number of peers: {}", peers.len());
             for peer in peers.clone() {
+               let listener = utp_listener.clone();
                let (to_tx, mut to_rx) = mpsc::channel(100);
 
                let peer_addr = peer.socket_addr();
@@ -274,6 +276,8 @@ impl TorrentEngine {
                         me_inner.metainfo.info_hash().unwrap(),
                         Arc::clone(&me_inner.id),
                         None,
+                        // This enables the peer to connect via UTP or TCP
+                        Some(listener),
                      )
                      .await;
                });

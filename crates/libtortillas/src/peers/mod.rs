@@ -7,7 +7,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
-use messages::{Handshake, PeerMessages, MAGIC_STRING};
+use librqbit_utp::UtpSocketUdp;
+use messages::{Handshake, MAGIC_STRING, PeerMessages};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -17,10 +18,10 @@ use std::{
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      mpsc::{self, Receiver, Sender},
       Mutex,
+      mpsc::{self, Receiver, Sender},
    },
-   time::{timeout, Instant},
+   time::{Instant, timeout},
 };
 use tracing::{error, trace};
 
@@ -145,6 +146,7 @@ impl Peer {
       info_hash: InfoHash,
       our_id: PeerId,
       stream: Option<PeerStream>,
+      utp_socket: Option<Arc<UtpSocketUdp>>,
    ) {
       let peer_addr = self.socket_addr();
       let (from_tx, mut from_rx) = mpsc::channel(100);
@@ -154,7 +156,7 @@ impl Peer {
       // For outgoing peers (we are connecting to them), we should create the stream ourselves and send the handshake & bitfield
       trace!("Attempting to connect to peer {}", peer_addr);
       let mut stream = if let None = stream {
-         let mut stream = PeerStream::connect(peer_addr, None).await;
+         let mut stream = PeerStream::connect(peer_addr, utp_socket).await;
          // Send handshake to peer
          let peer_id = stream
             .send_handshake(our_id, Arc::new(info_hash))
@@ -234,8 +236,7 @@ impl Peer {
                   // Handle other message types or forward them
                   trace!(
                      "Received a message other than Piece from peer {}: {:?}",
-                     peer_addr,
-                     message
+                     peer_addr, message
                   );
                   to_tx
                      .send(PeerResponse::Receive {
@@ -257,8 +258,7 @@ impl Peer {
          while let Some(message) = from_rx.recv().await {
             trace!(
                "Received message from from_rx for peer {}: {:?}",
-               peer_addr,
-               message
+               peer_addr, message
             );
             match message {
                PeerCommand::Piece(piece_num) => {
@@ -322,7 +322,13 @@ mod tests {
       let our_id = Hash::from_bytes(our_id);
 
       peer
-         .handle_peer(to_tx, data.info_hash().unwrap(), Arc::new(our_id), None)
+         .handle_peer(
+            to_tx,
+            data.info_hash().unwrap(),
+            Arc::new(our_id),
+            None,
+            None,
+         )
          .await;
 
       let from_tx = rx.recv().await.unwrap();
@@ -346,7 +352,7 @@ mod tests {
 
       tokio::spawn(async move {
          peer
-            .handle_peer(to_tx, info_hash, Arc::new(peer_id), None)
+            .handle_peer(to_tx, info_hash, Arc::new(peer_id), None, None)
             .await;
       });
 
@@ -366,12 +372,14 @@ mod tests {
       peer_stream.read_exact(&mut bytes).await.unwrap();
 
       // Ensure the handshake we received is valid
-      assert!(validate_handshake(
-         &Handshake::from_bytes(&bytes).unwrap(),
-         SocketAddr::from_str(peer_addr).unwrap(),
-         Arc::new(info_hash),
-      )
-      .is_ok());
+      assert!(
+         validate_handshake(
+            &Handshake::from_bytes(&bytes).unwrap(),
+            SocketAddr::from_str(peer_addr).unwrap(),
+            Arc::new(info_hash),
+         )
+         .is_ok()
+      );
 
       trace!("Received valid handshake");
 
