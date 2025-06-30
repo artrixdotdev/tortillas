@@ -440,7 +440,9 @@ impl TorrentEngine {
          // Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
          trace!("Beginning iteration of peers");
          {
-            for peer in me.peers.read().await.clone() {
+            let peers = me.peers.read().await;
+            trace!("Number of peers: {}", peers.len());
+            for peer in peers.clone() {
                let (to_tx, mut to_rx) = mpsc::channel(100);
 
                let peer_addr = peer.socket_addr();

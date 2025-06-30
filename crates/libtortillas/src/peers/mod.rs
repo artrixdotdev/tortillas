@@ -150,13 +150,15 @@ impl Peer {
       our_id: PeerId,
       stream: Option<PeerStream>,
    ) {
+      let peer_addr = self.socket_addr();
       let (from_tx, mut from_rx) = mpsc::channel(100);
 
       to_tx.send(PeerResponse::Init(from_tx)).await.unwrap();
 
       // For outgoing peers (we are connecting to them), we should create the stream ourselves and send the handshake & bitfield
+      trace!("Attempting to connect to peer {}", peer_addr);
       let mut stream = if let None = stream {
-         let mut stream = PeerStream::connect(self.socket_addr(), None).await;
+         let mut stream = PeerStream::connect(peer_addr, None).await;
          // Send handshake to peer
          let peer_id = stream
             .send_handshake(our_id, Arc::new(info_hash))
@@ -169,11 +171,15 @@ impl Peer {
          stream.unwrap()
       };
 
+      trace!("Connected to peer {}", peer_addr);
+
       // Send empty bitfield. This may need to be refactored in the future to account for seeding.
       stream
          .send(PeerMessages::Bitfield(BitVec::EMPTY))
          .await
          .unwrap();
+
+      trace!("Sent empty bitfield to peer {}", peer_addr);
 
       // Wait for bitfield in return
       let message = stream.recv().await.unwrap();
@@ -181,20 +187,19 @@ impl Peer {
 
       match message {
          PeerMessages::Bitfield(bitfield) => {
-            trace!("Received bitfield message from peer {}", self.socket_addr());
+            trace!("Received bitfield message from peer {}", peer_addr);
             self.pieces = bitfield;
 
             to_tx
                .send(PeerResponse::Receive {
                   message: to_send,
-                  peer_key: self.socket_addr(),
+                  peer_key: peer_addr,
                })
                .await
                .map_err(|e| {
                   error!(
                      "Error sending bitfield with to_tx on peer {}: {}",
-                     self.socket_addr(),
-                     e
+                     peer_addr, e
                   )
                })
                .unwrap();
@@ -202,8 +207,7 @@ impl Peer {
          res => {
             error!(
                "Message received from peer {} was not a bitfield -- it was a {:?}",
-               self.socket_addr(),
-               res
+               peer_addr, res
             )
          }
       }
@@ -218,33 +222,32 @@ impl Peer {
             // Handle different message types
             match &message {
                PeerMessages::Piece(_, _, _) => {
+                  trace!("Received a Piece message from peer {}", peer_addr);
                   to_tx
                      .send(PeerResponse::Piece(message))
                      .await
                      .map_err(|e| {
                         error!(
                            "Failed to send Piece message from peer {}: {}",
-                           self.socket_addr(),
-                           e
+                           peer_addr, e
                         )
                      })
                      .unwrap();
                }
                _ => {
                   // Handle other message types or forward them
+                  trace!(
+                     "Received a message other than Piece from peer {}: {:?}",
+                     peer_addr,
+                     message
+                  );
                   to_tx
                      .send(PeerResponse::Receive {
                         message,
-                        peer_key: self.socket_addr(),
+                        peer_key: peer_addr,
                      })
                      .await
-                     .map_err(|e| {
-                        error!(
-                           "Failed to send message from peer {}: {}",
-                           self.socket_addr(),
-                           e
-                        )
-                     })
+                     .map_err(|e| error!("Failed to send message from peer {}: {}", peer_addr, e))
                      .unwrap();
                }
             }
@@ -256,6 +259,11 @@ impl Peer {
       // 2nd tokio::spawn (see comment above)
       tokio::spawn(async move {
          while let Some(message) = from_rx.recv().await {
+            trace!(
+               "Received message from from_rx for peer {}: {:?}",
+               peer_addr,
+               message
+            );
             match message {
                PeerCommand::Piece(piece_num) => {
                   let mut writer_guard = writer_clone.lock().await;
