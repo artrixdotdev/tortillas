@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
 use librqbit_utp::UtpSocketUdp;
-use messages::{Handshake, MAGIC_STRING, PeerMessages};
+use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -18,10 +18,10 @@ use std::{
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      Mutex,
       mpsc::{self, Receiver, Sender},
+      Mutex,
    },
-   time::{Instant, timeout},
+   time::{timeout, Instant},
 };
 use tracing::{error, trace};
 
@@ -37,6 +37,9 @@ pub type PeerId = Arc<Hash<20>>;
 
 /// Represents a BitTorrent peer with connection state and statistics
 /// Download rate and upload rate are measured in kilobytes per second.
+///
+/// `am_choked` and `am_interested` refers to our status of choking and interest, and `choked` and
+/// `interested` refers to the peers status of choking and interest.
 #[derive(Eq, PartialEq, Hash, Debug, Clone)]
 pub struct Peer {
    pub ip: IpAddr,
@@ -140,6 +143,9 @@ impl Peer {
    /// Autonomously handles the connection & messages between a peer. The from_tx/from_rx is provided to
    /// facilitate communication to this function from the caller (likely TorrentEngine -- if so, this channel will be used to communicate what pieces TorrentEngine still needs).
    /// to_tx is provided to allow communication from handle_peer to the caller.
+   ///
+   /// At the moment, handle_peer is a leecher. In that, it is not a seeder -- it only takes from
+   /// the torrent swarm. Seeding will be implemented in the future.
    pub async fn handle_peer(
       mut self,
       to_tx: mpsc::Sender<PeerResponse>,
@@ -209,19 +215,33 @@ impl Peer {
             )
          }
       }
+
+      // Send an "interested" message
+      stream.send(PeerMessages::Interested).await.unwrap();
+      self.am_interested = true;
+
+      trace!("Sent an Interested message to peer {}", peer_addr);
+
+      if let PeerMessages::Unchoke = stream.recv().await.unwrap() {
+         trace!("Peer {} unchoked us", peer_addr);
+         self.choked = false;
+      }
+
+      // Start of request/piece message loop
       let (mut reader, writer) = stream.split();
 
       let writer = Arc::new(Mutex::new(writer));
 
       // 1st of 2 tokio::spawn(s) that allow the peer to communicate (read + write) concurrently. See
       // above `stream.split()`.
+      let reader_to_tx = to_tx.clone();
       tokio::spawn(async move {
          while let Ok(message) = reader.recv().await {
             // Handle different message types
             match &message {
                PeerMessages::Piece(_, _, _) => {
                   trace!("Received a Piece message from peer {}", peer_addr);
-                  to_tx
+                  reader_to_tx
                      .send(PeerResponse::Piece(message))
                      .await
                      .map_err(|e| {
@@ -235,10 +255,11 @@ impl Peer {
                _ => {
                   // Handle other message types or forward them
                   trace!(
-                     "Received a message other than Piece from peer {}: {:?}",
-                     peer_addr, message
+                     "Received a message other than supported options from peer {}: {:?}",
+                     peer_addr,
+                     message
                   );
-                  to_tx
+                  reader_to_tx
                      .send(PeerResponse::Receive {
                         message,
                         peer_key: peer_addr,
@@ -252,19 +273,36 @@ impl Peer {
       });
 
       let writer_clone = Arc::clone(&writer);
+      let writer_to_tx = to_tx.clone();
 
       // 2nd tokio::spawn (see comment above)
       tokio::spawn(async move {
          while let Some(message) = from_rx.recv().await {
             trace!(
                "Received message from from_rx for peer {}: {:?}",
-               peer_addr, message
+               peer_addr,
+               message
             );
-            match message {
-               PeerCommand::Piece(piece_num) => {
-                  let mut writer_guard = writer_clone.lock().await;
-                  Self::handle_piece_request(&mut writer_guard, piece_num).await;
+
+            // If we're choking, we can't do anything.
+            if !self.am_choking {
+               match message {
+                  PeerCommand::Piece(piece_num) => {
+                     let mut writer_guard = writer_clone.lock().await;
+                     Self::handle_piece_request(&mut writer_guard, piece_num).await;
+                  }
                }
+            } else {
+               writer_to_tx
+                  .send(PeerResponse::Choking)
+                  .await
+                  .map_err(|e| {
+                     error!(
+                        "Error when sending message back with to_tx from peer {}: {}",
+                        peer_addr, e
+                     )
+                  })
+                  .unwrap();
             }
          }
       });
@@ -372,14 +410,12 @@ mod tests {
       peer_stream.read_exact(&mut bytes).await.unwrap();
 
       // Ensure the handshake we received is valid
-      assert!(
-         validate_handshake(
-            &Handshake::from_bytes(&bytes).unwrap(),
-            SocketAddr::from_str(peer_addr).unwrap(),
-            Arc::new(info_hash),
-         )
-         .is_ok()
-      );
+      assert!(validate_handshake(
+         &Handshake::from_bytes(&bytes).unwrap(),
+         SocketAddr::from_str(peer_addr).unwrap(),
+         Arc::new(info_hash),
+      )
+      .is_ok());
 
       trace!("Received valid handshake");
 

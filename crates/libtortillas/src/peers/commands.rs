@@ -2,7 +2,7 @@ use tokio::sync::mpsc;
 
 use crate::errors::PeerTransportError;
 
-use super::{PeerKey, messages::PeerMessages};
+use super::{messages::PeerMessages, PeerKey};
 
 #[derive(Debug)]
 pub enum PeerCommand {
@@ -13,6 +13,7 @@ pub enum PeerCommand {
 #[derive(Debug)]
 pub enum PeerResponse {
    Init(mpsc::Sender<PeerCommand>),
+   Choking,
    Receive {
       message: PeerMessages,
       peer_key: PeerKey,
