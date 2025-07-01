@@ -222,7 +222,17 @@ impl Peer {
 
       trace!("Sent an Interested message to peer {}", peer_addr);
 
-      if let PeerMessages::Unchoke = stream.recv().await.unwrap() {
+      if let PeerMessages::Unchoke = stream
+         .recv()
+         .await
+         .map_err(|e| {
+            error!(
+               "Something went wrong when receiving the unchoke message: {}",
+               e
+            )
+         })
+         .unwrap()
+      {
          trace!("Peer {} unchoked us", peer_addr);
          self.choked = false;
       }
@@ -285,7 +295,7 @@ impl Peer {
             );
 
             // If we're choking, we can't do anything.
-            if !self.am_choking {
+            if !self.choked && self.am_interested {
                match message {
                   PeerCommand::Piece(piece_num) => {
                      let mut writer_guard = writer_clone.lock().await;
@@ -342,11 +352,13 @@ mod tests {
 
    #[tokio::test]
    #[traced_test]
+   /// As this test contacts a remote peer, it may not always work. However, it is still included
+   /// in the general tests for sake of completeness.
    async fn test_peer_connection() {
       // This is a known good peer (as of 06/17/2025) for the torrent located in zenshuu.txt
       let known_good_peer = "78.192.97.58:51413";
-      let mut peer = Peer::from_socket_addr(SocketAddr::from_str(known_good_peer).unwrap());
-      let (to_tx, mut rx) = mpsc::channel(100);
+      let peer = Peer::from_socket_addr(SocketAddr::from_str(known_good_peer).unwrap());
+      let (to_tx, mut to_rx) = mpsc::channel(100);
 
       let path = std::env::current_dir()
          .unwrap()
@@ -369,7 +381,16 @@ mod tests {
          )
          .await;
 
-      let from_tx = rx.recv().await.unwrap();
+      let from_tx = to_rx.recv().await.unwrap();
+
+      let peer_response_bitfield = to_rx.recv().await.unwrap();
+      assert!(matches!(
+         peer_response_bitfield,
+         PeerResponse::Receive {
+            message: PeerMessages::Bitfield(..),
+            ..
+         }
+      ))
    }
 
    #[tokio::test]
@@ -448,6 +469,17 @@ mod tests {
       ));
 
       trace!("Sent empty bitfield");
+
+      // Receive an Interested message
+      let peer_response_unchoke = peer_stream.recv().await.unwrap();
+      assert!(matches!(peer_response_unchoke, PeerMessages::Interested));
+
+      trace!("Recieved an Interested message");
+
+      // Send an Unchoke message
+      peer_stream.send(PeerMessages::Unchoke).await.unwrap();
+
+      trace!("Sent an unchoke message");
 
       // Tell the peer to request piece 1
       from_tx.send(PeerCommand::Piece(1)).await.unwrap();
