@@ -7,12 +7,12 @@ use std::{
    time::Duration,
 };
 
-use anyhow::{Error, Result, anyhow};
+use anyhow::{anyhow, Error, Result};
 use bitvec::vec::BitVec;
 use librqbit_utp::{UtpSocket, UtpSocketUdp};
 use tokio::{
    net::TcpListener,
-   sync::{Mutex, RwLock, mpsc, oneshot},
+   sync::{mpsc, oneshot, Mutex, RwLock},
 };
 use tracing::{error, trace};
 
@@ -21,10 +21,10 @@ use crate::{
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
    peers::{
-      Peer, PeerId, PeerKey,
       commands::{PeerCommand, PeerResponse},
       messages::PeerMessages,
       stream::PeerStream,
+      Peer, PeerId, PeerKey,
    },
    tracker::Tracker,
 };
@@ -210,48 +210,58 @@ impl TorrentEngine {
       // A list of peers that we've already seen
       let mut peers_in_action = HashSet::new();
 
-      loop {
-         // We do not need a timeout/sleep here as stream_peers handles that for us.
-         for rx in rx_list.iter_mut() {
-            let res = rx.recv().await.unwrap();
+      tokio::spawn(async move {
+         loop {
+            // We do not need a timeout/sleep here as stream_peers handles that for us.
+            for rx in rx_list.iter_mut() {
+               let res = rx.recv().await.unwrap();
 
-            trace!("Received peers from get_all_peers()");
-            for peer in res {
-               if !peers_in_action.insert(peer.clone()) {
-                  let listener = utp_listener.clone();
-                  let (to_tx, mut to_rx) = mpsc::channel(100);
+               trace!("Received peers from get_all_peers()");
+               for peer in res {
+                  if !peers_in_action.insert(peer.clone()) {
+                     let listener = utp_listener.clone();
+                     let (to_tx, mut to_rx) = mpsc::channel(100);
 
-                  let peer_addr = peer.socket_addr();
+                     let peer_addr = peer.socket_addr();
 
-                  let me_inner = me.clone();
-                  tokio::spawn(async move {
-                     peer
-                        .handle_peer(
-                           to_tx,
-                           me_inner.metainfo.info_hash().unwrap(),
-                           Arc::clone(&me_inner.id),
-                           None,
-                           // This enables the peer to connect via UTP or TCP
-                           Some(listener),
-                        )
-                        .await;
-                  });
+                     let me_inner = me.clone();
+                     tokio::spawn(async move {
+                        peer
+                           .handle_peer(
+                              to_tx,
+                              me_inner.metainfo.info_hash().unwrap(),
+                              Arc::clone(&me_inner.id),
+                              None,
+                              // This enables the peer to connect via UTP or TCP
+                              Some(listener),
+                           )
+                           .await;
+                     });
 
-                  let peer_response = to_rx.recv().await.unwrap();
+                     let peer_response = to_rx.recv().await.unwrap();
 
-                  if let PeerResponse::Init(from_tx) = peer_response {
-                     me.clone()
-                        .active_peers
-                        .lock()
-                        .await
-                        .insert(peer_addr, (from_tx, to_rx));
+                     if let PeerResponse::Init(from_tx) = peer_response {
+                        me.clone()
+                           .active_peers
+                           .lock()
+                           .await
+                           .insert(peer_addr, (from_tx, to_rx));
+                     }
                   }
                }
             }
          }
-      }
+      });
 
-      // Start requesting pieces (TODO)
+      // Continously gather bitfields using to_rx
+
+      // Request a piece from every peer that has that piece
+
+      // Handle incoming piece messages
+
+      // Handle incoming request messages (in this case, we are the peer)
+
+      Ok(())
    }
 }
 
