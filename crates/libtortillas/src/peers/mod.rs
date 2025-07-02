@@ -5,27 +5,29 @@ use crate::{
 };
 use anyhow::Result;
 use async_trait::async_trait;
+use atomic_time::{AtomicInstant, AtomicOptionInstant};
 use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
+use core::fmt;
 use librqbit_utp::UtpSocketUdp;
-use messages::{Handshake, MAGIC_STRING, PeerMessages};
+use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
-   fmt::Display,
+   fmt::{Debug, Display, Formatter},
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::{
-      Arc,
       atomic::{AtomicBool, Ordering},
+      Arc,
    },
    time::Duration,
 };
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      Mutex,
       mpsc::{self, Receiver, Sender},
+      Mutex,
    },
-   time::{Instant, timeout},
+   time::{timeout, Instant},
 };
 use tracing::{error, trace};
 
@@ -44,7 +46,7 @@ pub type PeerId = Arc<Hash<20>>;
 ///
 /// `am_choked` and `am_interested` refers to our status of choking and interest, and `choked` and
 /// `interested` refers to the peers status of choking and interest.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Peer {
    pub ip: IpAddr,
    pub port: u16,
@@ -57,10 +59,25 @@ pub struct Peer {
    pub pieces: BitVec<u8>,
    pub last_optimistic_unchoke: Option<Instant>,
    pub id: Option<Hash<20>>,
-   pub last_message_sent: Option<Instant>,
-   pub last_message_received: Option<Instant>,
+   /// Defaults to None
+   pub last_message_sent: Arc<AtomicOptionInstant>,
+   /// Defaults to None
+   pub last_message_received: Arc<AtomicOptionInstant>,
    pub bytes_downloaded: u64,
    pub bytes_uploaded: u64,
+}
+
+impl Debug for Peer {
+   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      f.debug_struct("Peer")
+         .field("addr", &self.socket_addr())
+         .field("choked", &self.choked.load(Ordering::Relaxed))
+         .field("interested", &self.interested.load(Ordering::Relaxed))
+         .field("am_choked", &self.am_choked.load(Ordering::Relaxed))
+         .field("am_interested", &self.am_interested.load(Ordering::Relaxed))
+         .field("id", &self.id)
+         .finish()
+   }
 }
 
 impl InternalHash for Peer {
@@ -73,11 +90,8 @@ impl PartialEq for Peer {
    fn eq(&self, other: &Self) -> bool {
       self.socket_addr() == other.socket_addr()
    }
-
-   fn ne(&self, other: &Self) -> bool {
-      self.socket_addr() != other.socket_addr()
-   }
 }
+
 impl Eq for Peer {}
 
 impl Peer {
@@ -95,8 +109,8 @@ impl Peer {
          pieces: BitVec::EMPTY,
          last_optimistic_unchoke: None,
          id: None,
-         last_message_received: None,
-         last_message_sent: None,
+         last_message_received: Arc::new(AtomicOptionInstant::none()),
+         last_message_sent: Arc::new(AtomicOptionInstant::none()),
          bytes_downloaded: 0,
          bytes_uploaded: 0,
       }
@@ -159,6 +173,19 @@ impl Peer {
             // The piece response will be handled in the main select! loop if it arrives
          }
       }
+   }
+
+   /// A small helper function used to update the time on a message to `Instant::now()`.
+   ///
+   /// # Examples
+   ///
+   /// ```no_run
+   /// // In an impl of Peer
+   ///
+   /// Self::update_message(self.last_message_sent.clone());
+   /// ```
+   fn update_message(message: Arc<AtomicOptionInstant>) {
+      message.store(Some(Instant::now().into()), Ordering::Release);
    }
 
    /// Autonomously handles the connection & messages between a peer. The from_tx/from_rx is provided to
@@ -265,6 +292,7 @@ impl Peer {
 
       tokio::spawn(async move {
          while let Ok(message) = reader.recv().await {
+            Self::update_message(self.last_message_received.clone());
             // Handle different message types
             match &message {
                PeerMessages::Piece(_, _, _) => {
@@ -324,7 +352,8 @@ impl Peer {
          while let Some(message) = from_rx.recv().await {
             trace!(
                "Received message from from_rx for peer {}: {:?}",
-               peer_addr, message
+               peer_addr,
+               message
             );
 
             match message {
@@ -352,6 +381,8 @@ impl Peer {
                   }
                }
             }
+
+            Self::update_message(self.last_message_sent.clone());
          }
       });
    }
@@ -471,14 +502,12 @@ mod tests {
       peer_stream.read_exact(&mut bytes).await.unwrap();
 
       // Ensure the handshake we received is valid
-      assert!(
-         validate_handshake(
-            &Handshake::from_bytes(&bytes).unwrap(),
-            SocketAddr::from_str(peer_addr).unwrap(),
-            Arc::new(info_hash),
-         )
-         .is_ok()
-      );
+      assert!(validate_handshake(
+         &Handshake::from_bytes(&bytes).unwrap(),
+         SocketAddr::from_str(peer_addr).unwrap(),
+         Arc::new(info_hash),
+      )
+      .is_ok());
 
       trace!("Received valid handshake");
 
