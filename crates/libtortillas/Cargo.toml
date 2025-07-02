@@ -4,6 +4,7 @@ version = "0.0.0"
 edition = "2024"
 
 [dependencies]
+atomic-time = "0.1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
 serde_bencode = "^0.2.4"
