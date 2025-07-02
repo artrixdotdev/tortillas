@@ -251,7 +251,11 @@ impl TorrentEngine {
                }
             }
          }
-      });
+      })
+      .await
+      .unwrap();
+
+      // NOTE: Remove await.unwrap() after adding next few parts.
 
       // Continously gather bitfields using to_rx
 
