@@ -10,24 +10,24 @@ use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
 use core::fmt;
 use librqbit_utp::UtpSocketUdp;
-use messages::{Handshake, PeerMessages, MAGIC_STRING};
+use messages::{Handshake, MAGIC_STRING, PeerMessages};
 use std::{
    fmt::{Debug, Display, Formatter},
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::{
-      atomic::{AtomicBool, Ordering},
       Arc,
+      atomic::{AtomicBool, AtomicU64, Ordering},
    },
    time::Duration,
 };
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      mpsc::{self, Receiver, Sender},
       Mutex,
+      mpsc::{self, Receiver, Sender},
    },
-   time::{timeout, Instant},
+   time::{Instant, timeout},
 };
 use tracing::{error, trace};
 
@@ -54,17 +54,18 @@ pub struct Peer {
    pub interested: Arc<AtomicBool>,
    pub am_choked: Arc<AtomicBool>,
    pub am_interested: Arc<AtomicBool>,
-   pub download_rate: u64,
-   pub upload_rate: u64,
+   pub download_rate: Arc<AtomicU64>,
+   pub upload_rate: Arc<AtomicU64>,
    pub pieces: BitVec<u8>,
-   pub last_optimistic_unchoke: Option<Instant>,
+   /// The timestamp of the last time that a peer unchoked us
+   pub last_optimistic_unchoke: Arc<AtomicOptionInstant>,
    pub id: Option<Hash<20>>,
-   /// Defaults to None
+   /// Defaults to None. Does not update on initial handshake, initial sending of bitfield, or initial sending of Interested message.
    pub last_message_sent: Arc<AtomicOptionInstant>,
-   /// Defaults to None
+   /// Defaults to None. Does not update on initial handshake, initial sending of bitfield, or initial sending of Interested message.
    pub last_message_received: Arc<AtomicOptionInstant>,
-   pub bytes_downloaded: u64,
-   pub bytes_uploaded: u64,
+   pub bytes_downloaded: Arc<AtomicU64>,
+   pub bytes_uploaded: Arc<AtomicU64>,
 }
 
 impl Debug for Peer {
@@ -104,15 +105,15 @@ impl Peer {
          interested: Arc::new(false.into()),
          am_choked: Arc::new(true.into()),
          am_interested: Arc::new(false.into()),
-         download_rate: 0,
-         upload_rate: 0,
+         download_rate: Arc::new(0u64.into()),
+         upload_rate: Arc::new(0u64.into()),
          pieces: BitVec::EMPTY,
-         last_optimistic_unchoke: None,
+         last_optimistic_unchoke: Arc::new(AtomicOptionInstant::none()),
          id: None,
          last_message_received: Arc::new(AtomicOptionInstant::none()),
          last_message_sent: Arc::new(AtomicOptionInstant::none()),
-         bytes_downloaded: 0,
-         bytes_uploaded: 0,
+         bytes_downloaded: Arc::new(0u64.into()),
+         bytes_uploaded: Arc::new(0u64.into()),
       }
    }
 
@@ -313,6 +314,7 @@ impl Peer {
                   trace!("Peer {} is now choked", peer_addr);
                }
                PeerMessages::Unchoke => {
+                  Self::update_message(self.last_optimistic_unchoke.clone());
                   am_choked.store(false, Ordering::Release);
                   trace!("Peer {} is now unchoked", peer_addr);
                }
@@ -352,8 +354,7 @@ impl Peer {
          while let Some(message) = from_rx.recv().await {
             trace!(
                "Received message from from_rx for peer {}: {:?}",
-               peer_addr,
-               message
+               peer_addr, message
             );
 
             match message {
@@ -502,12 +503,14 @@ mod tests {
       peer_stream.read_exact(&mut bytes).await.unwrap();
 
       // Ensure the handshake we received is valid
-      assert!(validate_handshake(
-         &Handshake::from_bytes(&bytes).unwrap(),
-         SocketAddr::from_str(peer_addr).unwrap(),
-         Arc::new(info_hash),
-      )
-      .is_ok());
+      assert!(
+         validate_handshake(
+            &Handshake::from_bytes(&bytes).unwrap(),
+            SocketAddr::from_str(peer_addr).unwrap(),
+            Arc::new(info_hash),
+         )
+         .is_ok()
+      );
 
       trace!("Received valid handshake");
 
