@@ -5,12 +5,12 @@ use std::{
    sync::Arc,
 };
 
-use anyhow::{Error, Result, anyhow};
+use anyhow::{anyhow, Error, Result};
 use bitvec::vec::BitVec;
 use librqbit_utp::{UtpSocket, UtpSocketUdp};
 use tokio::{
    net::TcpListener,
-   sync::{Mutex, mpsc},
+   sync::{mpsc, Mutex},
    time::{Duration, Instant},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -20,10 +20,10 @@ use crate::{
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
    peers::{
-      Peer, PeerId, PeerKey,
       commands::{PeerCommand, PeerResponse},
       messages::PeerMessages,
       stream::PeerStream,
+      Peer, PeerId, PeerKey,
    },
    tracker::Tracker,
 };
@@ -169,6 +169,7 @@ impl TorrentEngine {
             Arc::clone(&me.id),
             Some(stream),
             None,
+            Some(self.bitfield.clone()),
          )
          .await;
 
@@ -471,6 +472,7 @@ impl TorrentEngine {
                                             Arc::clone(&me_inner.id),
                                             None,
                                             Some(listener),
+                                            Some(me_inner.bitfield.clone()),
                                         ).await;
                                     });
 
@@ -535,7 +537,7 @@ mod tests {
    use std::sync::Arc;
 
    use tracing::Level;
-   use tracing_subscriber::{EnvFilter, fmt};
+   use tracing_subscriber::{fmt, EnvFilter};
    use tracing_test::traced_test;
 
    use crate::{engine::TorrentEngine, parser::MetaInfo};

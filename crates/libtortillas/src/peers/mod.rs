@@ -153,6 +153,7 @@ impl Peer {
       our_id: PeerId,
       stream: Option<PeerStream>,
       utp_socket: Option<Arc<UtpSocketUdp>>,
+      init_bitfield: Option<BitVec<u8>>,
    ) {
       let peer_addr = self.socket_addr();
       let (from_tx, mut from_rx) = mpsc::channel(100);
@@ -177,9 +178,11 @@ impl Peer {
 
       trace!("Connected to peer {}", peer_addr);
 
+      let bitfield_to_send = init_bitfield.unwrap_or(BitVec::EMPTY);
+
       // Send empty bitfield. This may need to be refactored in the future to account for seeding.
       stream
-         .send(PeerMessages::Bitfield(BitVec::EMPTY))
+         .send(PeerMessages::Bitfield(bitfield_to_send.clone()))
          .await
          .unwrap();
 
@@ -218,23 +221,19 @@ impl Peer {
 
       // Send an "interested" message
       stream.send(PeerMessages::Interested).await.unwrap();
-      self.am_interested = true;
-
+      self.interested = true;
       trace!("Sent an Interested message to peer {}", peer_addr);
 
-      if let PeerMessages::Unchoke = stream
-         .recv()
-         .await
-         .map_err(|e| {
-            error!(
-               "Something went wrong when receiving the unchoke message: {}",
-               e
-            )
-         })
-         .unwrap()
-      {
-         trace!("Peer {} unchoked us", peer_addr);
-         self.choked = false;
+      match stream.recv().await.unwrap() {
+         PeerMessages::Choke => {
+            self.am_choking = true;
+            trace!("Peer {} is now choked", peer_addr);
+         }
+         PeerMessages::Unchoke => {
+            self.am_choking = false;
+            trace!("Peer {} is now unchoked", peer_addr);
+         }
+         _ => {}
       }
 
       // Start of request/piece message loop
@@ -244,6 +243,9 @@ impl Peer {
 
       // 1st of 2 tokio::spawn(s) that allow the peer to communicate (read + write) concurrently. See
       // above `stream.split()`.
+      //
+      // FIXME: This currently does not account for choke/unchoke/interested/uninterested messages.
+      // These NEED to be handled properly.
       let reader_to_tx = to_tx.clone();
       tokio::spawn(async move {
          while let Ok(message) = reader.recv().await {
@@ -294,25 +296,26 @@ impl Peer {
                message
             );
 
-            // If we're choking, we can't do anything.
-            if !self.choked && self.am_interested {
-               match message {
-                  PeerCommand::Piece(piece_num) => {
+            match message {
+               PeerCommand::Piece(piece_num) => {
+                  // If we're choking or the peer isn't interested, we can't do anything.
+                  if !self.am_choking && self.interested {
                      let mut writer_guard = writer_clone.lock().await;
                      Self::handle_piece_request(&mut writer_guard, piece_num).await;
+                  } else {
+                     trace!(choking=self.am_choking, interested=self.interested, "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested");
+                     writer_to_tx
+                        .send(PeerResponse::Choking)
+                        .await
+                        .map_err(|e| {
+                           error!(
+                              "Error when sending message back with to_tx from peer {}: {}",
+                              peer_addr, e
+                           )
+                        })
+                        .unwrap();
                   }
                }
-            } else {
-               writer_to_tx
-                  .send(PeerResponse::Choking)
-                  .await
-                  .map_err(|e| {
-                     error!(
-                        "Error when sending message back with to_tx from peer {}: {}",
-                        peer_addr, e
-                     )
-                  })
-                  .unwrap();
             }
          }
       });
@@ -330,6 +333,7 @@ mod tests {
    use std::{
       io::{Read, Write},
       str::FromStr,
+      thread::sleep,
    };
 
    use rand::RngCore;
@@ -378,6 +382,7 @@ mod tests {
             Arc::new(our_id),
             None,
             None,
+            None,
          )
          .await;
 
@@ -411,7 +416,7 @@ mod tests {
 
       tokio::spawn(async move {
          peer
-            .handle_peer(to_tx, info_hash, Arc::new(peer_id), None, None)
+            .handle_peer(to_tx, info_hash, Arc::new(peer_id), None, None, None)
             .await;
       });
 
@@ -483,6 +488,8 @@ mod tests {
 
       // Tell the peer to request piece 1
       from_tx.send(PeerCommand::Piece(1)).await.unwrap();
+
+      trace!("Sent piece message");
 
       // Wait for a request for piece 1
       let request = peer_stream.recv().await.unwrap();
