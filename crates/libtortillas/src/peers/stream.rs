@@ -12,6 +12,7 @@ use tokio::net::tcp;
 use tracing::debug;
 use tracing::error;
 use tracing::info;
+use tracing::instrument;
 
 use std::fmt;
 use std::fmt::Display;
@@ -115,6 +116,15 @@ impl PeerStream {
 
    /// Handshakes with a peer and returns the socket address of the peer. This socket address is
    /// also a (PeerKey)[super::PeerKey].
+   #[instrument(
+      skip(self)
+      fields(
+         protocol = self.protocol(),
+         remote_addr = self.remote_addr().unwrap().to_string(),
+         info_hash = info_hash.to_string(),
+         our_id = our_id.to_string()
+      )
+   )]
    pub async fn send_handshake(
       &mut self,
       our_id: PeerId,
@@ -147,6 +157,15 @@ impl PeerStream {
    }
 
    /// Receives an incoming handshake from a peer.
+   #[instrument(
+      skip(self)
+      fields(
+         protocol = self.protocol(),
+         remote_addr = self.remote_addr().unwrap().to_string(),
+         info_hash = info_hash.to_string(),
+         our_id = id.to_string()
+      )
+   )]
    pub async fn receive_handshake(
       &mut self,
       info_hash: Arc<InfoHash>,
