@@ -50,7 +50,7 @@ pub struct Peer {
    pub port: u16,
    pub choked: Arc<AtomicBool>,
    pub interested: Arc<AtomicBool>,
-   pub am_choking: Arc<AtomicBool>,
+   pub am_choked: Arc<AtomicBool>,
    pub am_interested: Arc<AtomicBool>,
    pub download_rate: u64,
    pub upload_rate: u64,
@@ -88,7 +88,7 @@ impl Peer {
          port,
          choked: Arc::new(true.into()),
          interested: Arc::new(false.into()),
-         am_choking: Arc::new(true.into()),
+         am_choked: Arc::new(true.into()),
          am_interested: Arc::new(false.into()),
          download_rate: 0,
          upload_rate: 0,
@@ -258,7 +258,7 @@ impl Peer {
       let reader_to_tx = to_tx.clone();
 
       // Clones of Arc<AtomicBool>(s) for choking/interested statuses
-      let am_choking = self.am_choking.clone();
+      let am_choked = self.am_choked.clone();
       let am_interested = self.am_interested.clone();
       let choked = self.choked.clone();
       let interested = self.interested.clone();
@@ -281,19 +281,19 @@ impl Peer {
                      .unwrap();
                }
                PeerMessages::Choke => {
-                  am_choking.store(true, Ordering::Release);
+                  am_choked.store(true, Ordering::Release);
                   trace!("Peer {} is now choked", peer_addr);
                }
                PeerMessages::Unchoke => {
-                  am_choking.store(false, Ordering::Release);
+                  am_choked.store(false, Ordering::Release);
                   trace!("Peer {} is now unchoked", peer_addr);
                }
                PeerMessages::Interested => {
-                  am_choking.store(true, Ordering::Release);
+                  am_choked.store(true, Ordering::Release);
                   trace!("Peer {} is now interested", peer_addr);
                }
                PeerMessages::NotInterested => {
-                  am_choking.store(false, Ordering::Release);
+                  am_choked.store(false, Ordering::Release);
                   trace!("Peer {} is now not interested", peer_addr);
                }
                _ => {
@@ -330,7 +330,7 @@ impl Peer {
             match message {
                PeerCommand::Piece(piece_num) => {
                   // If we're choking or the peer isn't interested, we can't do anything.
-                  if !self.am_choking.load(Ordering::Acquire)
+                  if !self.am_choked.load(Ordering::Acquire)
                      && self.interested.load(Ordering::Acquire)
                   {
                      let mut writer_guard = writer_clone.lock().await;
