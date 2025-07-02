@@ -10,7 +10,10 @@ use std::{fmt, net::SocketAddr};
 use tokio::sync::mpsc;
 use udp::UdpTracker;
 
-use crate::{hashes::InfoHash, peers::Peer};
+use crate::{
+   hashes::{Hash, InfoHash},
+   peers::Peer,
+};
 pub mod http;
 pub mod udp;
 
@@ -38,10 +41,14 @@ pub enum Tracker {
 
 impl Tracker {
    /// Gets peers based off of given tracker
-   pub async fn get_peers(&self, info_hash: InfoHash) -> Result<Vec<Peer>> {
+   pub async fn get_peers(
+      &self,
+      info_hash: InfoHash,
+      peer_id: Option<Hash<20>>,
+   ) -> Result<Vec<Peer>> {
       match self {
          Tracker::Http(uri) => {
-            let mut tracker = HttpTracker::new(uri.clone(), info_hash, None);
+            let mut tracker = HttpTracker::new(uri.clone(), info_hash, peer_id, None);
 
             Ok(tracker.get_peers().await.unwrap())
          }
@@ -52,6 +59,7 @@ impl Tracker {
                None,
                info_hash,
                Some(SocketAddr::from(([0, 0, 0, 0], port))),
+               peer_id,
             )
             .await
             .unwrap();
@@ -67,14 +75,15 @@ impl Tracker {
       &self,
       info_hash: InfoHash,
       peer_addr: Option<SocketAddr>,
+      peer_id: Option<Hash<20>>,
    ) -> Result<mpsc::Receiver<Vec<Peer>>> {
       match self {
          Tracker::Http(uri) => {
-            let mut tracker = HttpTracker::new(uri.clone(), info_hash, peer_addr);
+            let mut tracker = HttpTracker::new(uri.clone(), info_hash, peer_id, peer_addr);
             Ok(tracker.stream_peers().await.unwrap())
          }
          Tracker::Udp(uri) => {
-            let mut tracker = UdpTracker::new(uri.clone(), None, info_hash, peer_addr)
+            let mut tracker = UdpTracker::new(uri.clone(), None, info_hash, peer_addr, peer_id)
                .await
                .unwrap();
             Ok(tracker.stream_peers().await.unwrap())

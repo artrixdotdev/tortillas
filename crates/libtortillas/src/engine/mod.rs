@@ -7,12 +7,12 @@ use std::{
    time::Duration,
 };
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use bitvec::vec::BitVec;
 use librqbit_utp::{UtpSocket, UtpSocketUdp};
 use tokio::{
    net::TcpListener,
-   sync::{mpsc, oneshot, Mutex, RwLock},
+   sync::{Mutex, RwLock, mpsc, oneshot},
 };
 use tracing::{error, trace};
 
@@ -21,10 +21,10 @@ use crate::{
    hashes::{Hash, InfoHash},
    parser::{MagnetUri, MetaInfo, TorrentFile},
    peers::{
+      Peer, PeerId, PeerKey,
       commands::{PeerCommand, PeerResponse},
       messages::PeerMessages,
       stream::PeerStream,
-      Peer, PeerId, PeerKey,
    },
    tracker::Tracker,
 };
@@ -192,7 +192,7 @@ impl TorrentEngine {
       for tracker in me.metainfo.announce_list().iter() {
          rx_list.push(
             tracker
-               .stream_peers(info_hash, Some(primary_addr))
+               .stream_peers(info_hash, Some(primary_addr), Some(*me.id))
                .await
                .unwrap(),
          );

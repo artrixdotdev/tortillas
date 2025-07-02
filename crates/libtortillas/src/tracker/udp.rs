@@ -356,6 +356,7 @@ impl UdpTracker {
       socket: Option<UdpSocket>,
       info_hash: InfoHash,
       peer_socket_addr: Option<SocketAddr>,
+      peer_id: Option<Hash<20>>,
    ) -> Result<UdpTracker> {
       debug!("Creating new UDP tracker");
       let sock = match socket {
@@ -371,9 +372,8 @@ impl UdpTracker {
          }
       };
 
-      let mut peer_id = [0u8; 20];
-      rand::rng().fill_bytes(&mut peer_id);
-      let peer_id = Hash::from_bytes(peer_id);
+      let peer_id = peer_id.unwrap_or_else(|| Hash::new(rand::random()));
+
       debug!(peer_id = %peer_id, "Generated peer ID");
 
       Ok(UdpTracker {
@@ -645,6 +645,7 @@ mod tests {
                None,
                info_hash.unwrap(),
                Some(SocketAddr::from(([0, 0, 0, 0], port))),
+               None,
             )
             .await
             .unwrap();

@@ -79,11 +79,10 @@ impl HttpTracker {
    pub fn new(
       uri: String,
       info_hash: InfoHash,
+      peer_id: Option<Hash<20>>,
       peer_tracker_addr: Option<SocketAddr>,
    ) -> HttpTracker {
-      let mut peer_id_bytes = [0u8; 20];
-      rand::fill(&mut peer_id_bytes);
-      let peer_id = Hash::new(peer_id_bytes);
+      let peer_id = peer_id.unwrap_or_else(|| Hash::new(rand::random()));
       debug!(peer_id = %peer_id, "Generated peer ID");
 
       HttpTracker {
@@ -285,7 +284,7 @@ mod tests {
             let info_hash = magnet.info_hash();
             let announce_list = magnet.announce_list.unwrap();
             let announce_uri = announce_list[0].uri();
-            let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None);
+            let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None, None);
 
             // Make request
             // let res = HttpTracker::get_peers(&mut http_tracker)
