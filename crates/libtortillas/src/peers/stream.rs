@@ -5,7 +5,6 @@ use crate::peers::messages::Handshake;
 use anyhow::Result;
 use anyhow::anyhow;
 use async_trait::async_trait;
-use librqbit_utp::Transport;
 use librqbit_utp::UtpSocketUdp;
 use librqbit_utp::UtpStreamReadHalf;
 use librqbit_utp::UtpStreamWriteHalf;
@@ -14,6 +13,8 @@ use tracing::debug;
 use tracing::error;
 use tracing::info;
 
+use std::fmt;
+use std::fmt::Display;
 use std::sync::Arc;
 use std::{
    net::SocketAddr,
@@ -25,7 +26,7 @@ use std::{
 use super::MAGIC_STRING;
 use super::PeerId;
 use super::messages::PeerMessages;
-use librqbit_utp::{UtpSocket, UtpStream};
+use librqbit_utp::UtpStream;
 use tokio::{
    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
    net::TcpStream,
@@ -38,6 +39,7 @@ pub enum PeerStream {
    Tcp(TcpStream),
    Utp(UtpStream),
 }
+
 #[async_trait]
 pub trait PeerSend: AsyncWrite + Unpin {
    /// Sends a PeerMessage to a peer.
@@ -224,6 +226,19 @@ impl PeerStream {
             (PeerReader::Utp(reader), PeerWriter::Utp(writer))
          }
       }
+   }
+
+   pub fn protocol(&self) -> String {
+      match self {
+         PeerStream::Tcp(_) => "TCP".to_string(),
+         PeerStream::Utp(_) => "uTP".to_string(),
+      }
+   }
+}
+
+impl Display for PeerStream {
+   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      write!(f, "{}@{}", self.protocol(), self.remote_addr().unwrap())
    }
 }
 
