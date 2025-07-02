@@ -8,20 +8,24 @@ use async_trait::async_trait;
 use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
 use librqbit_utp::UtpSocketUdp;
-use messages::{Handshake, PeerMessages, MAGIC_STRING};
+use messages::{Handshake, MAGIC_STRING, PeerMessages};
 use std::{
    fmt::Display,
+   hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-   sync::Arc,
+   sync::{
+      Arc,
+      atomic::{AtomicBool, Ordering},
+   },
    time::Duration,
 };
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      mpsc::{self, Receiver, Sender},
       Mutex,
+      mpsc::{self, Receiver, Sender},
    },
-   time::{timeout, Instant},
+   time::{Instant, timeout},
 };
 use tracing::{error, trace};
 
@@ -40,14 +44,14 @@ pub type PeerId = Arc<Hash<20>>;
 ///
 /// `am_choked` and `am_interested` refers to our status of choking and interest, and `choked` and
 /// `interested` refers to the peers status of choking and interest.
-#[derive(Eq, PartialEq, Hash, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct Peer {
    pub ip: IpAddr,
    pub port: u16,
-   pub choked: bool,
-   pub interested: bool,
-   pub am_choking: bool,
-   pub am_interested: bool,
+   pub choked: Arc<AtomicBool>,
+   pub interested: Arc<AtomicBool>,
+   pub am_choking: Arc<AtomicBool>,
+   pub am_interested: Arc<AtomicBool>,
    pub download_rate: u64,
    pub upload_rate: u64,
    pub pieces: BitVec<u8>,
@@ -59,16 +63,33 @@ pub struct Peer {
    pub bytes_uploaded: u64,
 }
 
+impl InternalHash for Peer {
+   fn hash<H: Hasher>(&self, state: &mut H) {
+      self.socket_addr().hash(state)
+   }
+}
+
+impl PartialEq for Peer {
+   fn eq(&self, other: &Self) -> bool {
+      self.socket_addr() == other.socket_addr()
+   }
+
+   fn ne(&self, other: &Self) -> bool {
+      self.socket_addr() != other.socket_addr()
+   }
+}
+impl Eq for Peer {}
+
 impl Peer {
    /// Create a new peer with the given IP address and port
    pub fn new(ip: IpAddr, port: u16) -> Self {
       Peer {
          ip,
          port,
-         choked: true,
-         interested: false,
-         am_choking: true,
-         am_interested: false,
+         choked: Arc::new(true.into()),
+         interested: Arc::new(false.into()),
+         am_choking: Arc::new(true.into()),
+         am_interested: Arc::new(false.into()),
          download_rate: 0,
          upload_rate: 0,
          pieces: BitVec::EMPTY,
@@ -221,20 +242,8 @@ impl Peer {
 
       // Send an "interested" message
       stream.send(PeerMessages::Interested).await.unwrap();
-      self.interested = true;
+      self.interested.store(true, Ordering::Release);
       trace!("Sent an Interested message to peer {}", peer_addr);
-
-      match stream.recv().await.unwrap() {
-         PeerMessages::Choke => {
-            self.am_choking = true;
-            trace!("Peer {} is now choked", peer_addr);
-         }
-         PeerMessages::Unchoke => {
-            self.am_choking = false;
-            trace!("Peer {} is now unchoked", peer_addr);
-         }
-         _ => {}
-      }
 
       // Start of request/piece message loop
       let (mut reader, writer) = stream.split();
@@ -247,6 +256,13 @@ impl Peer {
       // FIXME: This currently does not account for choke/unchoke/interested/uninterested messages.
       // These NEED to be handled properly.
       let reader_to_tx = to_tx.clone();
+
+      // Clones of Arc<AtomicBool>(s) for choking/interested statuses
+      let am_choking = self.am_choking.clone();
+      let am_interested = self.am_interested.clone();
+      let choked = self.choked.clone();
+      let interested = self.interested.clone();
+
       tokio::spawn(async move {
          while let Ok(message) = reader.recv().await {
             // Handle different message types
@@ -264,11 +280,27 @@ impl Peer {
                      })
                      .unwrap();
                }
+               PeerMessages::Choke => {
+                  am_choking.store(true, Ordering::Release);
+                  trace!("Peer {} is now choked", peer_addr);
+               }
+               PeerMessages::Unchoke => {
+                  am_choking.store(false, Ordering::Release);
+                  trace!("Peer {} is now unchoked", peer_addr);
+               }
+               PeerMessages::Interested => {
+                  am_choking.store(true, Ordering::Release);
+                  trace!("Peer {} is now interested", peer_addr);
+               }
+               PeerMessages::NotInterested => {
+                  am_choking.store(false, Ordering::Release);
+                  trace!("Peer {} is now not interested", peer_addr);
+               }
                _ => {
                   // Handle other message types or forward them
                   trace!(
-                     "Received a message other than supported options from peer {}: {:?}",
-                     peer_addr,
+                     peer_addr = %peer_addr,
+                     "Received a message other than supported options from peer {:?}",
                      message
                   );
                   reader_to_tx
@@ -292,18 +324,21 @@ impl Peer {
          while let Some(message) = from_rx.recv().await {
             trace!(
                "Received message from from_rx for peer {}: {:?}",
-               peer_addr,
-               message
+               peer_addr, message
             );
 
             match message {
                PeerCommand::Piece(piece_num) => {
                   // If we're choking or the peer isn't interested, we can't do anything.
-                  if !self.am_choking && self.interested {
+                  if !self.am_choking.load(Ordering::Acquire)
+                     && self.interested.load(Ordering::Acquire)
+                  {
                      let mut writer_guard = writer_clone.lock().await;
                      Self::handle_piece_request(&mut writer_guard, piece_num).await;
                   } else {
-                     trace!(choking=self.am_choking, interested=self.interested, "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested");
+                     trace!(
+                        "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
+                     );
                      writer_to_tx
                         .send(PeerResponse::Choking)
                         .await
@@ -436,12 +471,14 @@ mod tests {
       peer_stream.read_exact(&mut bytes).await.unwrap();
 
       // Ensure the handshake we received is valid
-      assert!(validate_handshake(
-         &Handshake::from_bytes(&bytes).unwrap(),
-         SocketAddr::from_str(peer_addr).unwrap(),
-         Arc::new(info_hash),
-      )
-      .is_ok());
+      assert!(
+         validate_handshake(
+            &Handshake::from_bytes(&bytes).unwrap(),
+            SocketAddr::from_str(peer_addr).unwrap(),
+            Arc::new(info_hash),
+         )
+         .is_ok()
+      );
 
       trace!("Received valid handshake");
 
@@ -488,6 +525,12 @@ mod tests {
 
       // Tell the peer to request piece 1
       from_tx.send(PeerCommand::Piece(1)).await.unwrap();
+
+      // A bit hacky, but it'll do.
+      if let PeerResponse::Choking = to_rx.recv().await.unwrap() {
+         sleep(Duration::from_millis(250));
+         from_tx.send(PeerCommand::Piece(1)).await.unwrap();
+      }
 
       trace!("Sent piece message");
 
