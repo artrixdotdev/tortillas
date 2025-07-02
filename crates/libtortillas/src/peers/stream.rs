@@ -106,10 +106,15 @@ impl PeerStream {
       trace!("Attemping connection to {}", peer_addr);
       if let Some(utp_socket) = utp_socket {
          tokio::select! {
-            stream = utp_socket.connect(peer_addr) => {PeerStream::Utp(stream.unwrap())},
-            stream = TcpStream::connect(peer_addr) => {PeerStream::Tcp(stream.unwrap())}
+            stream = utp_socket.connect(peer_addr) => {
+               debug!(peer_addr = %peer_addr,"Connected to peer over uTP");
+               PeerStream::Utp(stream.unwrap())},
+            stream = TcpStream::connect(peer_addr) => {
+               debug!(peer_addr = %peer_addr,"Connected to peer over TCP");
+               PeerStream::Tcp(stream.unwrap())}
          }
       } else {
+         debug!(peer_addr = %peer_addr, "Connecting to peer over TCP");
          PeerStream::Tcp(TcpStream::connect(peer_addr).await.unwrap())
       }
    }
