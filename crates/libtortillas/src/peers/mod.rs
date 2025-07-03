@@ -1,18 +1,15 @@
 use crate::{
-   errors::PeerTransportError,
    hashes::{Hash, InfoHash},
    peers::stream::PeerWriter,
 };
-use anyhow::Result;
-use async_trait::async_trait;
-use atomic_time::{AtomicInstant, AtomicOptionInstant};
+use atomic_time::AtomicOptionInstant;
 use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
 use core::fmt;
 use librqbit_utp::UtpSocketUdp;
-use messages::{Handshake, PeerMessages, MAGIC_STRING};
+use messages::{PeerMessages, MAGIC_STRING};
 use std::{
-   fmt::{Debug, Display, Formatter},
+   fmt::{Debug, Display},
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::{
@@ -24,7 +21,7 @@ use std::{
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      mpsc::{self, Receiver, Sender},
+      mpsc::{self, Sender},
       Mutex,
    },
    time::{timeout, Instant},
@@ -56,7 +53,7 @@ pub type PeerId = Arc<Hash<20>>;
 /// `am_choked` and `am_interested` refers to our status of choking and interest, and `choked` and
 /// `interested` refers to the peers status of choking and interest.
 #[derive(Clone)]
-struct PeerState {
+pub struct PeerState {
    pub choked: Arc<AtomicBool>,
    pub interested: Arc<AtomicBool>,
    pub am_choked: Arc<AtomicBool>,
@@ -120,6 +117,12 @@ impl InternalHash for Peer {
 impl PartialEq for Peer {
    fn eq(&self, other: &Self) -> bool {
       self.socket_addr() == other.socket_addr()
+   }
+}
+
+impl Display for Peer {
+   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      write!(f, "{}:{}", self.ip, self.port)
    }
 }
 
@@ -443,12 +446,6 @@ impl Peer {
             Self::update_message(self.last_message_sent.clone());
          }
       });
-   }
-}
-
-impl Display for Peer {
-   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      write!(f, "{}:{}", self.ip, self.port)
    }
 }
 
