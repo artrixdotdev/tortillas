@@ -38,7 +38,9 @@ pub mod stream;
 pub type PeerKey = SocketAddr;
 pub type PeerId = Arc<Hash<20>>;
 
-/// A helper struct for Peer that maintains a given peers state.
+/// A helper struct for Peer that maintains a given peers state. This state includes both the state
+/// defined in [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html) and our own state which we
+/// wish to maintain (ex. total bytes downloaded).
 ///
 /// The general intent of this struct is to make it easier for us to "throw" state across threads
 /// -- every field in here is an atomic Arc, which means that it's very easy to do something
@@ -50,14 +52,32 @@ pub type PeerId = Arc<Hash<20>>;
 /// })
 /// ```
 ///
-/// `am_choked` and `am_interested` refers to our status of choking and interest, and `choked` and
-/// `interested` refers to the peers status of choking and interest.
+/// `clone()` operations on this struct should be relatively lightweight, seeing that everything is
+/// contained in an Arc.
 #[derive(Clone)]
 pub struct PeerState {
+   /// Download rate measured in kilobytes per second
+   pub download_rate: Arc<AtomicU64>,
+   /// Upload rate measured in kilobytes per second
+   pub upload_rate: Arc<AtomicU64>,
+   /// The remote peer's choke status
    pub choked: Arc<AtomicBool>,
+   /// The remote peer's interest status
    pub interested: Arc<AtomicBool>,
+   /// Our choke status
    pub am_choked: Arc<AtomicBool>,
+   /// Our interest status
    pub am_interested: Arc<AtomicBool>,
+   /// The timestamp of the last time that a peer unchoked us
+   pub last_optimistic_unchoke: Arc<AtomicOptionInstant>,
+   /// Defaults to None. Does not update on initial handshake, initial sending of bitfield, or initial sending of Interested message.
+   pub last_message_sent: Arc<AtomicOptionInstant>,
+   /// Defaults to None. Does not update on initial handshake, initial sending of bitfield, or initial sending of Interested message.
+   pub last_message_received: Arc<AtomicOptionInstant>,
+   /// Total bytes downloaded
+   pub bytes_downloaded: Arc<AtomicU64>,
+   /// Total bytes uploaded
+   pub bytes_uploaded: Arc<AtomicU64>,
 }
 
 impl PeerState {
@@ -67,6 +87,13 @@ impl PeerState {
          interested: Arc::new(false.into()),
          am_choked: Arc::new(true.into()),
          am_interested: Arc::new(false.into()),
+         download_rate: Arc::new(0u64.into()),
+         upload_rate: Arc::new(0u64.into()),
+         last_optimistic_unchoke: Arc::new(AtomicOptionInstant::none()),
+         last_message_received: Arc::new(AtomicOptionInstant::none()),
+         last_message_sent: Arc::new(AtomicOptionInstant::none()),
+         bytes_downloaded: Arc::new(0u64.into()),
+         bytes_uploaded: Arc::new(0u64.into()),
       }
    }
 }
@@ -78,18 +105,8 @@ pub struct Peer {
    pub ip: IpAddr,
    pub port: u16,
    pub state: PeerState,
-   pub download_rate: Arc<AtomicU64>,
-   pub upload_rate: Arc<AtomicU64>,
    pub pieces: BitVec<u8>,
-   /// The timestamp of the last time that a peer unchoked us
-   pub last_optimistic_unchoke: Arc<AtomicOptionInstant>,
    pub id: Option<Hash<20>>,
-   /// Defaults to None. Does not update on initial handshake, initial sending of bitfield, or initial sending of Interested message.
-   pub last_message_sent: Arc<AtomicOptionInstant>,
-   /// Defaults to None. Does not update on initial handshake, initial sending of bitfield, or initial sending of Interested message.
-   pub last_message_received: Arc<AtomicOptionInstant>,
-   pub bytes_downloaded: Arc<AtomicU64>,
-   pub bytes_uploaded: Arc<AtomicU64>,
 }
 
 impl Debug for Peer {
@@ -135,15 +152,8 @@ impl Peer {
          ip,
          port,
          state: PeerState::new(),
-         download_rate: Arc::new(0u64.into()),
-         upload_rate: Arc::new(0u64.into()),
          pieces: BitVec::EMPTY,
-         last_optimistic_unchoke: Arc::new(AtomicOptionInstant::none()),
          id: None,
-         last_message_received: Arc::new(AtomicOptionInstant::none()),
-         last_message_sent: Arc::new(AtomicOptionInstant::none()),
-         bytes_downloaded: Arc::new(0u64.into()),
-         bytes_uploaded: Arc::new(0u64.into()),
       }
    }
 
@@ -212,7 +222,6 @@ impl Peer {
       message: PeerMessages,
       to_tx: Sender<PeerResponse>,
       state: PeerState,
-      last_optimistic_unchoke: Arc<AtomicOptionInstant>,
       peer_addr: SocketAddr,
    ) {
       match &message {
@@ -234,7 +243,7 @@ impl Peer {
             trace!("Peer {} is now choked", peer_addr);
          }
          PeerMessages::Unchoke => {
-            Self::update_message(last_optimistic_unchoke);
+            Self::update_message(state.last_optimistic_unchoke);
             state.am_choked.store(false, Ordering::Release);
             trace!("Peer {} is now unchoked", peer_addr);
          }
@@ -415,15 +424,8 @@ impl Peer {
       let reader_to_tx = to_tx.clone();
       tokio::spawn(async move {
          while let Ok(message) = reader.recv().await {
-            Self::update_message(self.last_message_received.clone());
-            Self::handle_recv(
-               message,
-               reader_to_tx.clone(),
-               state.clone(),
-               self.last_optimistic_unchoke.clone(),
-               peer_addr,
-            )
-            .await;
+            Self::update_message(state.last_message_received.clone());
+            Self::handle_recv(message, reader_to_tx.clone(), state.clone(), peer_addr).await;
          }
       });
 
@@ -443,7 +445,7 @@ impl Peer {
                to_tx.clone(),
             )
             .await;
-            Self::update_message(self.last_message_sent.clone());
+            Self::update_message(self.state.last_message_sent.clone());
          }
       });
    }
@@ -463,7 +465,7 @@ mod tests {
    use tokio::net::TcpListener;
    use tracing_test::traced_test;
 
-   use crate::parser::MagnetUri;
+   use crate::{parser::MagnetUri, peers::messages::Handshake};
 
    use super::{stream::validate_handshake, *};
 
