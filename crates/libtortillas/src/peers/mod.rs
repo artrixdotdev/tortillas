@@ -41,19 +41,46 @@ pub mod stream;
 pub type PeerKey = SocketAddr;
 pub type PeerId = Arc<Hash<20>>;
 
-/// Represents a BitTorrent peer with connection state and statistics
-/// Download rate and upload rate are measured in kilobytes per second.
+/// A helper struct for Peer that maintains a given peers state.
+///
+/// The general intent of this struct is to make it easier for us to "throw" state across threads
+/// -- every field in here is an atomic Arc, which means that it's very easy to do something
+/// like this (in an impl of the Peer struct):
+///
+/// ```no_run
+/// tokio::spawn(async move {
+///   some_fn(self.state.clone());
+/// })
+/// ```
 ///
 /// `am_choked` and `am_interested` refers to our status of choking and interest, and `choked` and
 /// `interested` refers to the peers status of choking and interest.
 #[derive(Clone)]
-pub struct Peer {
-   pub ip: IpAddr,
-   pub port: u16,
+struct PeerState {
    pub choked: Arc<AtomicBool>,
    pub interested: Arc<AtomicBool>,
    pub am_choked: Arc<AtomicBool>,
    pub am_interested: Arc<AtomicBool>,
+}
+
+impl PeerState {
+   fn new() -> Self {
+      PeerState {
+         choked: Arc::new(true.into()),
+         interested: Arc::new(false.into()),
+         am_choked: Arc::new(true.into()),
+         am_interested: Arc::new(false.into()),
+      }
+   }
+}
+
+/// Represents a BitTorrent peer with connection state and statistics
+/// Download rate and upload rate are measured in kilobytes per second.
+#[derive(Clone)]
+pub struct Peer {
+   pub ip: IpAddr,
+   pub port: u16,
+   pub state: PeerState,
    pub download_rate: Arc<AtomicU64>,
    pub upload_rate: Arc<AtomicU64>,
    pub pieces: BitVec<u8>,
@@ -72,10 +99,13 @@ impl Debug for Peer {
    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
       f.debug_struct("Peer")
          .field("addr", &self.socket_addr())
-         .field("choked", &self.choked.load(Ordering::Relaxed))
-         .field("interested", &self.interested.load(Ordering::Relaxed))
-         .field("am_choked", &self.am_choked.load(Ordering::Relaxed))
-         .field("am_interested", &self.am_interested.load(Ordering::Relaxed))
+         .field("choked", &self.state.choked.load(Ordering::Relaxed))
+         .field("interested", &self.state.interested.load(Ordering::Relaxed))
+         .field("am_choked", &self.state.am_choked.load(Ordering::Relaxed))
+         .field(
+            "am_interested",
+            &self.state.am_interested.load(Ordering::Relaxed),
+         )
          .field("id", &self.id)
          .finish()
    }
@@ -101,10 +131,7 @@ impl Peer {
       Peer {
          ip,
          port,
-         choked: Arc::new(true.into()),
-         interested: Arc::new(false.into()),
-         am_choked: Arc::new(true.into()),
-         am_interested: Arc::new(false.into()),
+         state: PeerState::new(),
          download_rate: Arc::new(0u64.into()),
          upload_rate: Arc::new(0u64.into()),
          pieces: BitVec::EMPTY,
@@ -181,8 +208,7 @@ impl Peer {
    async fn handle_recv(
       message: PeerMessages,
       to_tx: Sender<PeerResponse>,
-      am_choked: Arc<AtomicBool>,
-      am_interested: Arc<AtomicBool>,
+      state: PeerState,
       last_optimistic_unchoke: Arc<AtomicOptionInstant>,
       peer_addr: SocketAddr,
    ) {
@@ -201,20 +227,20 @@ impl Peer {
                .unwrap();
          }
          PeerMessages::Choke => {
-            am_choked.store(true, Ordering::Release);
+            state.am_choked.store(true, Ordering::Release);
             trace!("Peer {} is now choked", peer_addr);
          }
          PeerMessages::Unchoke => {
             Self::update_message(last_optimistic_unchoke);
-            am_choked.store(false, Ordering::Release);
+            state.am_choked.store(false, Ordering::Release);
             trace!("Peer {} is now unchoked", peer_addr);
          }
          PeerMessages::Interested => {
-            am_interested.store(true, Ordering::Release);
+            state.am_interested.store(true, Ordering::Release);
             trace!("Peer {} is now interested", peer_addr);
          }
          PeerMessages::NotInterested => {
-            am_interested.store(false, Ordering::Release);
+            state.am_interested.store(false, Ordering::Release);
             trace!("Peer {} is now not interested", peer_addr);
          }
          _ => {
@@ -330,19 +356,15 @@ impl Peer {
 
       // Send an "interested" message
       stream.send(PeerMessages::Interested).await.unwrap();
-      self.interested.store(true, Ordering::Release);
+      self.state.interested.store(true, Ordering::Release);
       trace!("Sent an Interested message to peer {}", peer_addr);
 
       // Start of request/piece message loop
       let (mut reader, writer) = stream.split();
-
       let writer = Arc::new(Mutex::new(writer));
 
-      // Clones of Arc<AtomicBool>(s) for choking/interested statuses
-      let am_choked = self.am_choked.clone();
-      let am_interested = self.am_interested.clone();
-      let _choked = self.choked.clone();
-      let interested = self.interested.clone();
+      // Clone state to use (will be moved)
+      let state = self.state.clone();
 
       // 1st of 2 tokio::spawn(s) that allow the peer to communicate (read + write) concurrently. See
       // above `stream.split()`.
@@ -353,8 +375,7 @@ impl Peer {
             Self::handle_recv(
                message,
                reader_to_tx.clone(),
-               am_choked.clone(),
-               am_interested.clone(),
+               state.clone(),
                self.last_optimistic_unchoke.clone(),
                peer_addr,
             )
@@ -365,7 +386,8 @@ impl Peer {
       let writer_clone = Arc::clone(&writer);
       let writer_to_tx = to_tx.clone();
 
-      let am_choked = self.am_choked.clone();
+      // Clone state to use (will be moved)
+      let state = self.state.clone();
 
       // 2nd tokio::spawn (see comment above)
       tokio::spawn(async move {
@@ -379,7 +401,9 @@ impl Peer {
             match message {
                PeerCommand::Piece(piece_num) => {
                   // If we're choking or the peer isn't interested, we can't do anything.
-                  if !am_choked.load(Ordering::Acquire) && interested.load(Ordering::Acquire) {
+                  if !state.am_choked.load(Ordering::Acquire)
+                     && state.interested.load(Ordering::Acquire)
+                  {
                      let mut writer_guard = writer_clone.lock().await;
                      Self::handle_piece_request(&mut writer_guard, piece_num).await;
                   } else {
