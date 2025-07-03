@@ -10,24 +10,24 @@ use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
 use core::fmt;
 use librqbit_utp::UtpSocketUdp;
-use messages::{Handshake, MAGIC_STRING, PeerMessages};
+use messages::{Handshake, PeerMessages, MAGIC_STRING};
 use std::{
    fmt::{Debug, Display, Formatter},
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::{
-      Arc,
       atomic::{AtomicBool, AtomicU64, Ordering},
+      Arc,
    },
    time::Duration,
 };
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      Mutex,
       mpsc::{self, Receiver, Sender},
+      Mutex,
    },
-   time::{Instant, timeout},
+   time::{timeout, Instant},
 };
 use tracing::{error, trace};
 
@@ -176,6 +176,66 @@ impl Peer {
       }
    }
 
+   /// A helper function for [handle_peer](Peer::handle_peer). This is a very beefy function --
+   /// refactors that reduce its size are welcome.
+   async fn handle_recv(
+      message: PeerMessages,
+      to_tx: Sender<PeerResponse>,
+      am_choked: Arc<AtomicBool>,
+      am_interested: Arc<AtomicBool>,
+      last_optimistic_unchoke: Arc<AtomicOptionInstant>,
+      peer_addr: SocketAddr,
+   ) {
+      match &message {
+         PeerMessages::Piece(_, _, _) => {
+            trace!("Received a Piece message from peer {}", peer_addr);
+            to_tx
+               .send(PeerResponse::Piece(message))
+               .await
+               .map_err(|e| {
+                  error!(
+                     "Failed to send Piece message from peer {}: {}",
+                     peer_addr, e
+                  )
+               })
+               .unwrap();
+         }
+         PeerMessages::Choke => {
+            am_choked.store(true, Ordering::Release);
+            trace!("Peer {} is now choked", peer_addr);
+         }
+         PeerMessages::Unchoke => {
+            Self::update_message(last_optimistic_unchoke);
+            am_choked.store(false, Ordering::Release);
+            trace!("Peer {} is now unchoked", peer_addr);
+         }
+         PeerMessages::Interested => {
+            am_interested.store(true, Ordering::Release);
+            trace!("Peer {} is now interested", peer_addr);
+         }
+         PeerMessages::NotInterested => {
+            am_interested.store(false, Ordering::Release);
+            trace!("Peer {} is now not interested", peer_addr);
+         }
+         _ => {
+            // Handle other message types or forward them
+            trace!(
+               peer_addr = %peer_addr,
+               "Received a message other than supported options from peer {:?}",
+               message
+            );
+            to_tx
+               .send(PeerResponse::Receive {
+                  message,
+                  peer_key: peer_addr,
+               })
+               .await
+               .map_err(|e| error!("Failed to send message from peer {}: {}", peer_addr, e))
+               .unwrap();
+         }
+      }
+   }
+
    /// A small helper function used to update the time on a message to `Instant::now()`.
    ///
    /// # Examples
@@ -278,91 +338,48 @@ impl Peer {
 
       let writer = Arc::new(Mutex::new(writer));
 
-      // 1st of 2 tokio::spawn(s) that allow the peer to communicate (read + write) concurrently. See
-      // above `stream.split()`.
-      //
-      // FIXME: This currently does not account for choke/unchoke/interested/uninterested messages.
-      // These NEED to be handled properly.
-      let reader_to_tx = to_tx.clone();
-
       // Clones of Arc<AtomicBool>(s) for choking/interested statuses
       let am_choked = self.am_choked.clone();
       let am_interested = self.am_interested.clone();
-      let choked = self.choked.clone();
+      let _choked = self.choked.clone();
       let interested = self.interested.clone();
 
+      // 1st of 2 tokio::spawn(s) that allow the peer to communicate (read + write) concurrently. See
+      // above `stream.split()`.
+      let reader_to_tx = to_tx.clone();
       tokio::spawn(async move {
          while let Ok(message) = reader.recv().await {
             Self::update_message(self.last_message_received.clone());
-            // Handle different message types
-            match &message {
-               PeerMessages::Piece(_, _, _) => {
-                  trace!("Received a Piece message from peer {}", peer_addr);
-                  reader_to_tx
-                     .send(PeerResponse::Piece(message))
-                     .await
-                     .map_err(|e| {
-                        error!(
-                           "Failed to send Piece message from peer {}: {}",
-                           peer_addr, e
-                        )
-                     })
-                     .unwrap();
-               }
-               PeerMessages::Choke => {
-                  am_choked.store(true, Ordering::Release);
-                  trace!("Peer {} is now choked", peer_addr);
-               }
-               PeerMessages::Unchoke => {
-                  Self::update_message(self.last_optimistic_unchoke.clone());
-                  am_choked.store(false, Ordering::Release);
-                  trace!("Peer {} is now unchoked", peer_addr);
-               }
-               PeerMessages::Interested => {
-                  am_choked.store(true, Ordering::Release);
-                  trace!("Peer {} is now interested", peer_addr);
-               }
-               PeerMessages::NotInterested => {
-                  am_choked.store(false, Ordering::Release);
-                  trace!("Peer {} is now not interested", peer_addr);
-               }
-               _ => {
-                  // Handle other message types or forward them
-                  trace!(
-                     peer_addr = %peer_addr,
-                     "Received a message other than supported options from peer {:?}",
-                     message
-                  );
-                  reader_to_tx
-                     .send(PeerResponse::Receive {
-                        message,
-                        peer_key: peer_addr,
-                     })
-                     .await
-                     .map_err(|e| error!("Failed to send message from peer {}: {}", peer_addr, e))
-                     .unwrap();
-               }
-            }
+            Self::handle_recv(
+               message,
+               reader_to_tx.clone(),
+               am_choked.clone(),
+               am_interested.clone(),
+               self.last_optimistic_unchoke.clone(),
+               peer_addr,
+            )
+            .await;
          }
       });
 
       let writer_clone = Arc::clone(&writer);
       let writer_to_tx = to_tx.clone();
 
+      let am_choked = self.am_choked.clone();
+
       // 2nd tokio::spawn (see comment above)
       tokio::spawn(async move {
          while let Some(message) = from_rx.recv().await {
             trace!(
                "Received message from from_rx for peer {}: {:?}",
-               peer_addr, message
+               peer_addr,
+               message
             );
 
             match message {
                PeerCommand::Piece(piece_num) => {
                   // If we're choking or the peer isn't interested, we can't do anything.
-                  if !self.am_choked.load(Ordering::Acquire)
-                     && self.interested.load(Ordering::Acquire)
-                  {
+                  if !am_choked.load(Ordering::Acquire) && interested.load(Ordering::Acquire) {
                      let mut writer_guard = writer_clone.lock().await;
                      Self::handle_piece_request(&mut writer_guard, piece_num).await;
                   } else {
@@ -503,14 +520,12 @@ mod tests {
       peer_stream.read_exact(&mut bytes).await.unwrap();
 
       // Ensure the handshake we received is valid
-      assert!(
-         validate_handshake(
-            &Handshake::from_bytes(&bytes).unwrap(),
-            SocketAddr::from_str(peer_addr).unwrap(),
-            Arc::new(info_hash),
-         )
-         .is_ok()
-      );
+      assert!(validate_handshake(
+         &Handshake::from_bytes(&bytes).unwrap(),
+         SocketAddr::from_str(peer_addr).unwrap(),
+         Arc::new(info_hash),
+      )
+      .is_ok());
 
       trace!("Received valid handshake");
 
