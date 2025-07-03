@@ -262,6 +262,47 @@ impl Peer {
       }
    }
 
+   /// A helper function for [handle_peer](Peer::handle_peer). This is a very beefy function --
+   /// refactors that reduce its size are welcome.
+   async fn handle_peer_command(
+      message: PeerCommand,
+      peer_addr: SocketAddr,
+      state: PeerState,
+      writer: Arc<Mutex<PeerWriter>>,
+      to_tx: Sender<PeerResponse>,
+   ) {
+      trace!(
+         "Received message from from_rx for peer {}: {:?}",
+         peer_addr,
+         message
+      );
+
+      match message {
+         PeerCommand::Piece(piece_num) => {
+            // If we're choking or the peer isn't interested, we can't do anything.
+            if !state.am_choked.load(Ordering::Acquire) && state.interested.load(Ordering::Acquire)
+            {
+               let mut writer_guard = writer.lock().await;
+               Self::handle_piece_request(&mut writer_guard, piece_num).await;
+            } else {
+               trace!(
+                        "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
+                     );
+               to_tx
+                  .send(PeerResponse::Choking)
+                  .await
+                  .map_err(|e| {
+                     error!(
+                        "Error when sending message back with to_tx from peer {}: {}",
+                        peer_addr, e
+                     )
+                  })
+                  .unwrap();
+            }
+         }
+      }
+   }
+
    /// A small helper function used to update the time on a message to `Instant::now()`.
    ///
    /// # Examples
@@ -384,7 +425,6 @@ impl Peer {
       });
 
       let writer_clone = Arc::clone(&writer);
-      let writer_to_tx = to_tx.clone();
 
       // Clone state to use (will be moved)
       let state = self.state.clone();
@@ -392,38 +432,14 @@ impl Peer {
       // 2nd tokio::spawn (see comment above)
       tokio::spawn(async move {
          while let Some(message) = from_rx.recv().await {
-            trace!(
-               "Received message from from_rx for peer {}: {:?}",
+            Self::handle_peer_command(
+               message,
                peer_addr,
-               message
-            );
-
-            match message {
-               PeerCommand::Piece(piece_num) => {
-                  // If we're choking or the peer isn't interested, we can't do anything.
-                  if !state.am_choked.load(Ordering::Acquire)
-                     && state.interested.load(Ordering::Acquire)
-                  {
-                     let mut writer_guard = writer_clone.lock().await;
-                     Self::handle_piece_request(&mut writer_guard, piece_num).await;
-                  } else {
-                     trace!(
-                        "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
-                     );
-                     writer_to_tx
-                        .send(PeerResponse::Choking)
-                        .await
-                        .map_err(|e| {
-                           error!(
-                              "Error when sending message back with to_tx from peer {}: {}",
-                              peer_addr, e
-                           )
-                        })
-                        .unwrap();
-                  }
-               }
-            }
-
+               state.clone(),
+               writer_clone.clone(),
+               to_tx.clone(),
+            )
+            .await;
             Self::update_message(self.last_message_sent.clone());
          }
       });
