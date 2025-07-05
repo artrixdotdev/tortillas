@@ -6,11 +6,16 @@ use std::{
 };
 
 use anyhow::{anyhow, Error, Result};
-use bitvec::vec::BitVec;
+use bitvec::{bitvec, order::Lsb0, vec::BitVec};
+use futures::{
+   stream::{self, FuturesUnordered},
+   StreamExt,
+};
 use librqbit_utp::{UtpSocket, UtpSocketUdp};
 use tokio::{
    net::TcpListener,
-   sync::{mpsc, Mutex},
+   sync::{mpsc, Mutex, RwLock},
+   task::JoinSet,
    time::{Duration, Instant},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -55,7 +60,7 @@ pub struct TorrentEngine {
    active_peers: Arc<Mutex<HashMap<PeerKey, PeerMessenger>>>,
    tcp_addr: Arc<Mutex<Option<SocketAddr>>>,
    utp_addr: Arc<Mutex<Option<SocketAddr>>>,
-   bitfield: BitVec<u8>,
+   bitfield: Arc<RwLock<BitVec<u8>>>,
    // Statistics tracking
    session_start: Instant,
    stats: Arc<Mutex<TorrentStats>>,
@@ -95,7 +100,7 @@ impl TorrentEngine {
          active_peers: Arc::new(Mutex::new(HashMap::new())),
          tcp_addr: Arc::new(Mutex::new(None)),
          utp_addr: Arc::new(Mutex::new(None)),
-         bitfield: BitVec::EMPTY,
+         bitfield: Arc::new(RwLock::new(BitVec::EMPTY)),
          session_start: Instant::now(),
          stats: Arc::new(Mutex::new(TorrentStats::default())),
       }
@@ -169,7 +174,7 @@ impl TorrentEngine {
             Arc::clone(&me.id),
             Some(stream),
             None,
-            Some(self.bitfield.clone()),
+            Some(self.bitfield.read().await.clone()),
          )
          .await;
 
@@ -472,7 +477,7 @@ impl TorrentEngine {
                                             Arc::clone(&me_inner.id),
                                             None,
                                             Some(listener),
-                                            Some(me_inner.bitfield.clone()),
+                                            Some(me_inner.bitfield.read().await.clone()),
                                         ).await;
                                     });
 
@@ -521,8 +526,39 @@ impl TorrentEngine {
             anyhow!("Peer discovery failed: {}", e)
         })?;
 
+      // Gather a single bitfield using to_rx
+      {
+         let mut peers = self.active_peers.lock().await;
+
+         trace!("Locked active_peers");
+
+         let mut receivers = FuturesUnordered::new();
+         for peer in peers.values_mut() {
+            let (_, rx) = peer;
+            receivers.push(rx.recv());
+         }
+
+         trace!("All peers' receivers were successfully put into a vec");
+
+         if let PeerResponse::Receive { message, .. } = receivers.next().await.unwrap().unwrap() {
+            if let PeerMessages::Bitfield(bitfield) = message {
+               let bitvec: BitVec<u8, Lsb0> = bitvec![u8, Lsb0; 0; bitfield.len()];
+               let mut bitfield_guard = self.bitfield.write().await;
+               *bitfield_guard = bitvec;
+            } else {
+               warn!("Did not receive a bitfield from a peer's to_tx");
+            }
+         } else {
+            warn!("Did not receive a PeerResponse::Receive message from a peer's to_tx");
+         }
+      }
+
+      trace!(
+         bitfield_len = self.bitfield.read().await.len(),
+         "Successfully updated bitfield"
+      );
+
       // TODO: Implement the following phases with proper tracing:
-      // - Continuously gather bitfields using to_rx
       // - Request pieces from peers that have them
       // - Handle incoming piece messages
       // - Handle incoming request messages (seeding)
