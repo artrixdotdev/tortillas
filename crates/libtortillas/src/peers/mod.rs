@@ -7,24 +7,24 @@ use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
 use core::fmt;
 use librqbit_utp::UtpSocketUdp;
-use messages::{PeerMessages, MAGIC_STRING};
+use messages::{MAGIC_STRING, PeerMessages};
 use std::{
    fmt::{Debug, Display},
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::{
-      atomic::{AtomicBool, AtomicU64, Ordering},
       Arc,
+      atomic::{AtomicBool, AtomicU64, Ordering},
    },
    time::Duration,
 };
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      mpsc::{self, Sender},
       Mutex,
+      mpsc::{self, Sender},
    },
-   time::{timeout, Instant},
+   time::{Instant, timeout},
 };
 use tracing::{error, trace};
 
@@ -285,8 +285,7 @@ impl Peer {
    ) {
       trace!(
          "Received message from from_rx for peer {}: {:?}",
-         peer_addr,
-         message
+         peer_addr, message
       );
 
       match message {
@@ -298,8 +297,8 @@ impl Peer {
                Self::handle_piece_request(&mut writer_guard, piece_num).await;
             } else {
                trace!(
-                        "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
-                     );
+                  "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
+               );
                to_tx
                   .send(PeerResponse::Choking)
                   .await
@@ -453,11 +452,7 @@ impl Peer {
 
 #[cfg(test)]
 mod tests {
-   use std::{
-      io::{Read, Write},
-      str::FromStr,
-      thread::sleep,
-   };
+   use std::{str::FromStr, thread::sleep};
 
    use rand::RngCore;
    use tokio::io::AsyncReadExt;
@@ -509,7 +504,7 @@ mod tests {
          )
          .await;
 
-      let from_tx = to_rx.recv().await.unwrap();
+      let _ = to_rx.recv().await.unwrap();
 
       let peer_response_bitfield = to_rx.recv().await.unwrap();
       assert!(matches!(
@@ -559,12 +554,14 @@ mod tests {
       peer_stream.read_exact(&mut bytes).await.unwrap();
 
       // Ensure the handshake we received is valid
-      assert!(validate_handshake(
-         &Handshake::from_bytes(&bytes).unwrap(),
-         SocketAddr::from_str(peer_addr).unwrap(),
-         Arc::new(info_hash),
-      )
-      .is_ok());
+      assert!(
+         validate_handshake(
+            &Handshake::from_bytes(&bytes).unwrap(),
+            SocketAddr::from_str(peer_addr).unwrap(),
+            Arc::new(info_hash),
+         )
+         .is_ok()
+      );
 
       trace!("Received valid handshake");
 

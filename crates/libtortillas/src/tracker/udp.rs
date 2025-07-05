@@ -18,14 +18,13 @@ use async_trait::async_trait;
 /// https://www.bittorrent.org/beps/bep_0015.html
 /// https://xbtt.sourceforge.net/udp_tracker_protocol.html
 use num_enum::TryFromPrimitive;
-use rand::RngCore;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::{
    net::UdpSocket,
    sync::mpsc,
    time::{Duration, Instant, sleep},
 };
-use tracing::{Span, debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 /// Types and constants
 type ConnectionId = u64;

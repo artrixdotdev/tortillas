@@ -11,7 +11,7 @@ use serde::{
    de::{self, Visitor},
 };
 use std::{
-   net::{Ipv4Addr, SocketAddr},
+   net::{IpAddr, Ipv4Addr, SocketAddr},
    str::FromStr,
 };
 use tokio::{
@@ -41,13 +41,12 @@ pub enum Event {
 /// Tracker request. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct TrackerRequest {
-   ip: Option<Ipv4Addr>,
+   ip: Option<IpAddr>,
    port: u16,
    uploaded: u8,
    downloaded: u8,
    left: Option<u8>,
    event: Event,
-   peer_tracker_addr: SocketAddr,
 }
 
 impl TrackerRequest {
@@ -58,22 +57,28 @@ impl TrackerRequest {
          debug!(default_addr = %default_addr, "Using default peer tracker address");
          default_addr
       });
+      // If the ip address is 127.0.0.1 or 0.0.0.0 just dont send it since its optional
+      let ip = if addr.ip().is_loopback() | addr.ip().is_unspecified() {
+         None
+      } else {
+         Some(addr.ip())
+      };
+
+      let port = addr.port();
 
       debug!(
           peer_tracker_addr = %addr,
-          port = 6881,
           event = ?Event::Stopped,
           "Creating new tracker request"
       );
 
       TrackerRequest {
-         ip: None,
-         port: 6881,
+         ip,
+         port,
          uploaded: 0,
          downloaded: 0,
          left: None,
          event: Event::Stopped,
-         peer_tracker_addr: addr,
       }
    }
 }
@@ -146,7 +151,7 @@ impl HttpTracker {
       info!(
           peer_id = %peer_id,
           tracker_uri = %uri,
-          peer_tracker_addr = %params.peer_tracker_addr,
+          peer_listener_addr = format!("{}:{}", params.ip.unwrap_or(Ipv4Addr::UNSPECIFIED.into()), params.port),
           "HTTP tracker instance created successfully"
       );
 

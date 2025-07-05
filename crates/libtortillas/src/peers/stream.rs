@@ -20,7 +20,6 @@ use std::sync::Arc;
 use std::{
    net::SocketAddr,
    pin::Pin,
-   str::FromStr,
    task::{Context, Poll},
 };
 
