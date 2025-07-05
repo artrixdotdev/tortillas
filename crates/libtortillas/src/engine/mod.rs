@@ -5,27 +5,24 @@ use std::{
    sync::Arc,
 };
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use bitvec::vec::BitVec;
 use librqbit_utp::{UtpSocket, UtpSocketUdp};
 use tokio::{
    net::TcpListener,
-   sync::{mpsc, Mutex},
+   sync::{Mutex, mpsc},
    time::{Duration, Instant},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
-   errors::{PeerTransportError, TorrentEngineError},
-   hashes::{Hash, InfoHash},
-   parser::{MagnetUri, MetaInfo, TorrentFile},
+   hashes::Hash,
+   parser::MetaInfo,
    peers::{
-      commands::{PeerCommand, PeerResponse},
-      messages::PeerMessages,
-      stream::PeerStream,
       Peer, PeerId, PeerKey,
+      commands::{PeerCommand, PeerResponse},
+      stream::PeerStream,
    },
-   tracker::Tracker,
 };
 
 type PeerMessenger = (mpsc::Sender<PeerCommand>, mpsc::Receiver<PeerResponse>);
@@ -344,7 +341,7 @@ impl TorrentEngine {
       let tracker_span = tracing::debug_span!("tracker_communication");
       let mut rx_list = vec![];
 
-      let primary_addr = {
+      {
          let _tracker_enter = tracker_span.enter();
 
          let primary_addr = if let Some(addr) = *me.tcp_addr.lock().await {
@@ -536,9 +533,7 @@ impl TorrentEngine {
 mod tests {
    use std::sync::Arc;
 
-   use tracing::Level;
-   use tracing_subscriber::{fmt, EnvFilter};
-   use tracing_test::traced_test;
+   use tracing_subscriber::fmt;
 
    use crate::{engine::TorrentEngine, parser::MetaInfo};
 
