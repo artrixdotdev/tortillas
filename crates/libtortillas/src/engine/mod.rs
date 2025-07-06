@@ -5,18 +5,18 @@ use std::{
    sync::Arc,
 };
 
-use anyhow::{Error, Result, anyhow};
+use anyhow::{anyhow, Error, Result};
 use bitvec::{bitvec, order::Lsb0, vec::BitVec};
 use futures::{
-   StreamExt,
    stream::{self, FuturesUnordered},
+   StreamExt,
 };
 use librqbit_utp::{UtpSocket, UtpSocketUdp};
 use tokio::{
    net::TcpListener,
-   sync::{Mutex, RwLock, mpsc},
+   sync::{broadcast, mpsc, oneshot, Mutex, RwLock},
    task::JoinSet,
-   time::{Duration, Instant},
+   time::{sleep, Duration, Instant},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -24,14 +24,14 @@ use crate::{
    hashes::Hash,
    parser::MetaInfo,
    peers::{
-      Peer, PeerId, PeerKey,
       commands::{PeerCommand, PeerResponse},
       messages::PeerMessages,
       stream::PeerStream,
+      Peer, PeerId, PeerKey,
    },
 };
 
-type PeerMessenger = (mpsc::Sender<PeerCommand>, mpsc::Receiver<PeerResponse>);
+type PeerMessenger = mpsc::Sender<PeerCommand>;
 
 /// Helper enum for managing the input to the [torrent()] function.
 #[derive(Debug)]
@@ -56,6 +56,10 @@ pub struct TorrentEngine {
    metainfo: MetaInfo,
    id: PeerId,
    active_peers: Arc<Mutex<HashMap<PeerKey, PeerMessenger>>>,
+   from_peer_tx_rx: (
+      broadcast::Sender<PeerResponse>,
+      broadcast::Receiver<PeerResponse>,
+   ),
    tcp_addr: Arc<Mutex<Option<SocketAddr>>>,
    utp_addr: Arc<Mutex<Option<SocketAddr>>>,
    bitfield: Arc<RwLock<BitVec<u8>>>,
@@ -82,6 +86,7 @@ impl TorrentEngine {
    async fn new(metainfo: MetaInfo) -> Self {
       let info_hash = metainfo.info_hash().unwrap();
       let peer_id = Arc::new(Hash::from_bytes(rand::random::<[u8; 20]>()));
+      let from_peer_tx_rx = broadcast::channel(100);
 
       info!(
           info_hash = %info_hash,
@@ -98,6 +103,7 @@ impl TorrentEngine {
          active_peers: Arc::new(Mutex::new(HashMap::new())),
          tcp_addr: Arc::new(Mutex::new(None)),
          utp_addr: Arc::new(Mutex::new(None)),
+         from_peer_tx_rx,
          bitfield: Arc::new(RwLock::new(BitVec::EMPTY)),
          session_start: Instant::now(),
          stats: Arc::new(Mutex::new(TorrentStats::default())),
@@ -159,47 +165,52 @@ impl TorrentEngine {
       debug!("Processing new {protocol} peer connection");
 
       let peer = Peer::from_socket_addr(addr);
-      let (to_tx, mut to_rx) = mpsc::channel(100);
 
       // Handle peer connection
       let peer_span = tracing::trace_span!("peer_handshake");
       let _peer_enter = peer_span.enter();
 
+      let mut bitfield = BitVec::EMPTY;
+      {
+         bitfield = self.bitfield.read().await.clone();
+      }
+
       peer
          .handle_peer(
-            to_tx,
+            self.from_peer_tx_rx.0.clone(),
             me.metainfo.info_hash().unwrap(),
             Arc::clone(&me.id),
             Some(stream),
             None,
-            Some(self.bitfield.read().await.clone()),
+            Some(bitfield),
          )
          .await;
 
-      match to_rx.recv().await {
-         Some(PeerResponse::Init(from_tx)) => {
-            me.active_peers.lock().await.insert(addr, (from_tx, to_rx));
+      let mut peer_from_tx = self.from_peer_tx_rx.0.subscribe();
 
-            // Update statistics
-            {
-               let mut stats = me.stats.lock().await;
-               stats.active_connections += 1;
-            }
+      match peer_from_tx.recv().await {
+         Ok(PeerResponse::Init { from_tx, peer_key }) => {
+            self
+               .clone()
+               .active_peers
+               .lock()
+               .await
+               .insert(peer_key, from_tx);
 
-            info!("{protocol} peer successfully initialized and added to active peers");
+            info!(peer_addr = %addr, "Outbound peer connection established");
          }
-         Some(response) => {
+         Err(response) => {
             warn!(
-               ?response,
-               "Unexpected peer response during {protocol} initialization"
+                peer_addr = %addr,
+                ?response,
+                "Unexpected response from outbound peer"
             );
-            let mut stats = me.stats.lock().await;
-            stats.failed_connections += 1;
          }
-         None => {
-            warn!("{protocol} peer channel closed during initialization");
-            let mut stats = me.stats.lock().await;
-            stats.failed_connections += 1;
+         _ => {
+            debug!(
+                peer_addr = %addr,
+                "Outbound peer connection failed"
+            );
          }
       }
    }
@@ -402,6 +413,32 @@ impl TorrentEngine {
          primary_addr
       };
 
+      // Spawns a loop to handle responses from `from_peer_tx_rx.1` (AKA the receiver that all
+      // peer threads send messages to)
+      let me_handle_peer = self.clone();
+      tokio::spawn(async move {
+         let mut peer_from_rx = me_handle_peer.from_peer_tx_rx.0.subscribe();
+
+         match peer_from_rx.recv().await {
+            Ok(PeerResponse::Init { from_tx, peer_key }) => {
+               me_handle_peer
+                  .clone()
+                  .active_peers
+                  .lock()
+                  .await
+                  .insert(peer_key, from_tx);
+
+               info!(peer_addr = %peer_key, "Outbound peer connection established");
+            }
+            Err(response) => {
+               warn!(?response, "Unexpected response from outbound peer");
+            }
+            _ => {
+               debug!("Outbound peer connection failed");
+            }
+         }
+      });
+
       // Peer discovery loop
       let me_discovery = Arc::clone(&me);
       let stats_ref = Arc::clone(&self.stats);
@@ -453,7 +490,6 @@ impl TorrentEngine {
                            );
 
                            let listener = utp_listener.clone();
-                           let (to_tx, mut to_rx) = mpsc::channel(100);
                            let me_inner = me_discovery.clone();
 
                            tokio::spawn(async move {
@@ -465,43 +501,22 @@ impl TorrentEngine {
 
                               debug!("Initiating outbound connection to peer");
 
+                              let mut bitfield = BitVec::EMPTY;
+                              {
+                                 bitfield = me_inner.bitfield.read().await.clone();
+                              }
+
                               peer
                                  .handle_peer(
-                                    to_tx,
+                                    me_inner.from_peer_tx_rx.0.clone(),
                                     me_inner.metainfo.info_hash().unwrap(),
                                     Arc::clone(&me_inner.id),
                                     None,
                                     Some(listener),
-                                    Some(me_inner.bitfield.read().await.clone()),
+                                    Some(bitfield),
                                  )
                                  .await;
                            });
-
-                           match to_rx.recv().await {
-                              Some(PeerResponse::Init(from_tx)) => {
-                                 me_discovery
-                                    .clone()
-                                    .active_peers
-                                    .lock()
-                                    .await
-                                    .insert(peer_addr, (from_tx, to_rx));
-
-                                 info!(peer_addr = %peer_addr, "Outbound peer connection established");
-                              }
-                              Some(response) => {
-                                 warn!(
-                                     peer_addr = %peer_addr,
-                                     ?response,
-                                     "Unexpected response from outbound peer"
-                                 );
-                              }
-                              None => {
-                                 debug!(
-                                     peer_addr = %peer_addr,
-                                     "Outbound peer connection failed"
-                                 );
-                              }
-                           }
                         } else {
                            trace!(
                                peer_addr = %peer.socket_addr(),
@@ -518,36 +533,27 @@ impl TorrentEngine {
          }
       });
 
-      // Gather a single bitfield using to_rx
-      {
-         let mut peers = self.active_peers.lock().await;
-
-         trace!("Locked active_peers");
-
-         let mut receivers = FuturesUnordered::new();
-         for peer in peers.values_mut() {
-            let (_, rx) = peer;
-            receivers.push(rx.recv());
-         }
-
-         trace!("All peers' receivers were successfully put into a vec");
-         let response = receivers.next().await;
-
-         if let PeerResponse::Receive { message, .. } = response.unwrap().unwrap() {
-            if let PeerMessages::Bitfield(bitfield) = message {
-               let bitvec: BitVec<u8, Lsb0> = bitvec![u8, Lsb0; 0; bitfield.len()];
-               let mut bitfield_guard = self.bitfield.write().await;
-               *bitfield_guard = bitvec;
-            } else {
-               warn!("Did not receive a bitfield from a peer's to_tx");
-            }
-         } else {
-            warn!("Did not receive a PeerResponse::Receive message from a peer's to_tx");
+      // Gather a single bitfield
+      let mut bitfield_from_peer_rx = me.from_peer_tx_rx.0.subscribe();
+      loop {
+         let response = bitfield_from_peer_rx.recv().await;
+         trace!(bitfield_from_peer = ?response);
+         if let Ok(PeerResponse::Receive {
+            message: PeerMessages::Bitfield(bitfield),
+            ..
+         }) = response
+         {
+            trace!("Got bitfield message from peer in torrent()");
+            let bitvec: BitVec<u8, Lsb0> = bitvec![u8, Lsb0; 0; bitfield.len()];
+            let mut bitfield_guard = me.bitfield.write().await;
+            *bitfield_guard = bitvec;
+            trace!("Wrote to self.bitfield, exiting loop");
+            break;
          }
       }
 
       trace!(
-         bitfield_len = self.bitfield.read().await.len(),
+         bitfield_len = me.bitfield.read().await.len(),
          "Successfully updated bitfield"
       );
 

@@ -1,7 +1,5 @@
 use tokio::sync::mpsc;
 
-use crate::errors::PeerTransportError;
-
 use super::{messages::PeerMessages, PeerKey};
 
 #[derive(Debug)]
@@ -10,10 +8,18 @@ pub enum PeerCommand {
    Piece(u32),
 }
 
-#[derive(Debug)]
+/// All messages FROM peers must include PeerKeys due to the fact that peers use the broadcast channel instead
+/// of an mpsc or oneshot channel.
+///
+/// (This may shoot us in the foot later -- or more aptly, blow our entire leg off. But it
+/// shouldn't.)
+#[derive(Debug, Clone)]
 pub enum PeerResponse {
-   Init(mpsc::Sender<PeerCommand>),
-   Choking,
+   Init {
+      from_tx: mpsc::Sender<PeerCommand>,
+      peer_key: PeerKey,
+   },
+   Choking(PeerKey),
    Receive {
       message: PeerMessages,
       peer_key: PeerKey,
@@ -21,7 +27,7 @@ pub enum PeerResponse {
    /// The message that is sent when a peer fails to retrieve a piece.
    PieceFailure {
       piece_num: u32,
-      error: PeerTransportError,
+      error_message: String,
+      peer_key: PeerKey,
    },
-   Piece(PeerMessages),
 }

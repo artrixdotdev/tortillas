@@ -7,24 +7,25 @@ use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
 use core::fmt;
 use librqbit_utp::UtpSocketUdp;
-use messages::{MAGIC_STRING, PeerMessages};
+use messages::{PeerMessages, MAGIC_STRING};
 use std::{
    fmt::{Debug, Display},
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::{
-      Arc,
       atomic::{AtomicBool, AtomicU64, Ordering},
+      Arc,
    },
    time::Duration,
 };
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      Mutex,
+      broadcast,
       mpsc::{self, Sender},
+      Mutex,
    },
-   time::{Instant, timeout},
+   time::{timeout, Instant},
 };
 use tracing::{error, trace};
 
@@ -220,7 +221,7 @@ impl Peer {
    /// refactors that reduce its size are welcome.
    async fn handle_recv(
       message: PeerMessages,
-      to_tx: Sender<PeerResponse>,
+      to_tx: broadcast::Sender<PeerResponse>,
       state: PeerState,
       peer_addr: SocketAddr,
    ) {
@@ -228,8 +229,10 @@ impl Peer {
          PeerMessages::Piece(_, _, _) => {
             trace!("Received a Piece message from peer {}", peer_addr);
             to_tx
-               .send(PeerResponse::Piece(message))
-               .await
+               .send(PeerResponse::Receive {
+                  message,
+                  peer_key: peer_addr,
+               })
                .map_err(|e| {
                   error!(
                      "Failed to send Piece message from peer {}: {}",
@@ -267,7 +270,6 @@ impl Peer {
                   message,
                   peer_key: peer_addr,
                })
-               .await
                .map_err(|e| error!("Failed to send message from peer {}: {}", peer_addr, e))
                .unwrap();
          }
@@ -281,11 +283,12 @@ impl Peer {
       peer_addr: SocketAddr,
       state: PeerState,
       writer: Arc<Mutex<PeerWriter>>,
-      to_tx: Sender<PeerResponse>,
+      to_tx: broadcast::Sender<PeerResponse>,
    ) {
       trace!(
          "Received message from from_rx for peer {}: {:?}",
-         peer_addr, message
+         peer_addr,
+         message
       );
 
       match message {
@@ -300,8 +303,7 @@ impl Peer {
                   "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
                );
                to_tx
-                  .send(PeerResponse::Choking)
-                  .await
+                  .send(PeerResponse::Choking(peer_addr))
                   .map_err(|e| {
                      error!(
                         "Error when sending message back with to_tx from peer {}: {}",
@@ -335,7 +337,7 @@ impl Peer {
    /// the torrent swarm. Seeding will be implemented in the future.
    pub async fn handle_peer(
       mut self,
-      to_tx: mpsc::Sender<PeerResponse>,
+      to_tx: broadcast::Sender<PeerResponse>,
       info_hash: InfoHash,
       our_id: PeerId,
       stream: Option<PeerStream>,
@@ -345,7 +347,12 @@ impl Peer {
       let peer_addr = self.socket_addr();
       let (from_tx, mut from_rx) = mpsc::channel(100);
 
-      to_tx.send(PeerResponse::Init(from_tx)).await.unwrap();
+      to_tx
+         .send(PeerResponse::Init {
+            from_tx,
+            peer_key: peer_addr,
+         })
+         .unwrap();
 
       // For outgoing peers (we are connecting to them), we should create the stream ourselves and send the handshake & bitfield
       trace!("Attempting to connect to peer {}", peer_addr);
@@ -366,6 +373,8 @@ impl Peer {
       trace!("Connected to peer {}", peer_addr);
 
       let bitfield_to_send = init_bitfield.unwrap_or(BitVec::EMPTY);
+
+      trace!(%peer_addr, %bitfield_to_send, "Bitfield to send to peer");
 
       // Send empty bitfield. This may need to be refactored in the future to account for seeding.
       stream
@@ -389,7 +398,6 @@ impl Peer {
                   message: to_send,
                   peer_key: peer_addr,
                })
-               .await
                .map_err(|e| {
                   error!(
                      "Error sending bitfield with to_tx on peer {}: {}",
@@ -397,6 +405,8 @@ impl Peer {
                   )
                })
                .unwrap();
+
+            trace!("Successfully sent bitfield message back to function that spawned this thread (likely TorrentEngine)");
          }
          res => {
             error!(
@@ -480,7 +490,7 @@ mod tests {
       // This is a known good peer (as of 06/17/2025) for the torrent located in zenshuu.txt
       let known_good_peer = "78.192.97.58:51413";
       let peer = Peer::from_socket_addr(SocketAddr::from_str(known_good_peer).unwrap());
-      let (to_tx, mut to_rx) = mpsc::channel(100);
+      let (to_tx, mut to_rx) = broadcast::channel(100);
 
       let path = std::env::current_dir()
          .unwrap()
@@ -530,7 +540,7 @@ mod tests {
       // Start peer
       let peer = Peer::from_socket_addr(SocketAddr::from_str(peer_addr).unwrap());
       let peer_id = Hash::new(rand::random::<[u8; 20]>());
-      let (to_tx, mut to_rx) = mpsc::channel(100);
+      let (to_tx, mut to_rx) = broadcast::channel(100);
 
       tokio::spawn(async move {
          peer
@@ -539,7 +549,7 @@ mod tests {
       });
 
       let from_tx_wrapped = to_rx.recv().await.unwrap();
-      let from_tx = if let PeerResponse::Init(from_tx) = from_tx_wrapped {
+      let from_tx = if let PeerResponse::Init { from_tx, .. } = from_tx_wrapped {
          from_tx
       } else {
          panic!("Was not PeerResponse::Init");
@@ -554,14 +564,12 @@ mod tests {
       peer_stream.read_exact(&mut bytes).await.unwrap();
 
       // Ensure the handshake we received is valid
-      assert!(
-         validate_handshake(
-            &Handshake::from_bytes(&bytes).unwrap(),
-            SocketAddr::from_str(peer_addr).unwrap(),
-            Arc::new(info_hash),
-         )
-         .is_ok()
-      );
+      assert!(validate_handshake(
+         &Handshake::from_bytes(&bytes).unwrap(),
+         SocketAddr::from_str(peer_addr).unwrap(),
+         Arc::new(info_hash),
+      )
+      .is_ok());
 
       trace!("Received valid handshake");
 
@@ -610,7 +618,7 @@ mod tests {
       from_tx.send(PeerCommand::Piece(1)).await.unwrap();
 
       // A bit hacky, but it'll do.
-      if let PeerResponse::Choking = to_rx.recv().await.unwrap() {
+      if let PeerResponse::Choking(_) = to_rx.recv().await.unwrap() {
          sleep(Duration::from_millis(250));
          from_tx.send(PeerCommand::Piece(1)).await.unwrap();
       }
@@ -634,6 +642,12 @@ mod tests {
 
       // Wait for a piece from to_tx
       let peer_response_piece = to_rx.recv().await.unwrap();
-      assert!(matches!(peer_response_piece, PeerResponse::Piece { .. }))
+      assert!(matches!(
+         peer_response_piece,
+         PeerResponse::Receive {
+            message: PeerMessages::Piece(..),
+            ..
+         }
+      ))
    }
 }
