@@ -5,16 +5,16 @@ use std::{
    sync::Arc,
 };
 
-use anyhow::{anyhow, Error, Result};
+use anyhow::{Error, Result, anyhow};
 use bitvec::{bitvec, order::Lsb0, vec::BitVec};
 use futures::{
-   stream::{self, FuturesUnordered},
    StreamExt,
+   stream::{self, FuturesUnordered},
 };
 use librqbit_utp::{UtpSocket, UtpSocketUdp};
 use tokio::{
    net::TcpListener,
-   sync::{mpsc, Mutex, RwLock},
+   sync::{Mutex, RwLock, mpsc},
    task::JoinSet,
    time::{Duration, Instant},
 };
@@ -24,10 +24,10 @@ use crate::{
    hashes::Hash,
    parser::MetaInfo,
    peers::{
+      Peer, PeerId, PeerKey,
       commands::{PeerCommand, PeerResponse},
       messages::PeerMessages,
       stream::PeerStream,
-      Peer, PeerId, PeerKey,
    },
 };
 
@@ -407,122 +407,116 @@ impl TorrentEngine {
       let stats_ref = Arc::clone(&self.stats);
 
       tokio::spawn(async move {
-            let span = tracing::info_span!("peer_discovery");
-            let _enter = span.enter();
+         let span = tracing::info_span!("peer_discovery");
+         let _enter = span.enter();
 
-            let mut peers_in_action = HashSet::new();
-            let mut last_stats_log = Instant::now();
-            let stats_interval = Duration::from_secs(30);
+         let mut peers_in_action = HashSet::new();
+         let mut last_stats_log = Instant::now();
+         let stats_interval = Duration::from_secs(30);
 
-            info!("Starting peer discovery loop");
+         info!("Starting peer discovery loop");
 
-            loop {
-                // Log statistics periodically
-                if last_stats_log.elapsed() > stats_interval {
-                    me_discovery.log_statistics().await;
-                    last_stats_log = Instant::now();
-                }
-
-                for (tracker_index, rx) in rx_list.iter_mut().enumerate() {
-                    match rx.recv().await {
-                        Some(peers) => {
-                            let peer_count = peers.len();
-
-                            // Update statistics
-                            {
-                                let mut stats = stats_ref.lock().await;
-                                stats.total_peers_discovered += peer_count as u64;
-                            }
-
-                            debug!(
-                                tracker_index,
-                                peer_count,
-                                "Received peers from tracker"
-                            );
-
-                            for peer in peers {
-                                if peers_in_action.insert(peer.clone()) {
-                                    // Update unique peer count
-                                    {
-                                        let mut stats = stats_ref.lock().await;
-                                        stats.unique_peers_discovered += 1;
-                                    }
-
-                                    let peer_addr = peer.socket_addr();
-
-                                    trace!(
-                                        peer_addr = %peer_addr,
-                                        tracker_index,
-                                        "Discovered new unique peer"
-                                    );
-
-                                    let listener = utp_listener.clone();
-                                    let (to_tx, mut to_rx) = mpsc::channel(100);
-                                    let me_inner = me_discovery.clone();
-
-                                    tokio::spawn(async move {
-                                        let peer_span = tracing::debug_span!(
-                                            "outbound_peer_connection",
-                                            peer_addr = %peer_addr
-                                        );
-                                        let _peer_enter = peer_span.enter();
-
-                                        debug!("Initiating outbound connection to peer");
-
-                                        peer.handle_peer(
-                                            to_tx,
-                                            me_inner.metainfo.info_hash().unwrap(),
-                                            Arc::clone(&me_inner.id),
-                                            None,
-                                            Some(listener),
-                                            Some(me_inner.bitfield.read().await.clone()),
-                                        ).await;
-                                    });
-
-                                    match to_rx.recv().await {
-                                        Some(PeerResponse::Init(from_tx)) => {
-                                            me_discovery.clone()
-                                                .active_peers
-                                                .lock()
-                                                .await
-                                                .insert(peer_addr, (from_tx, to_rx));
-
-                                            info!(peer_addr = %peer_addr, "Outbound peer connection established");
-                                        }
-                                        Some(response) => {
-                                            warn!(
-                                                peer_addr = %peer_addr,
-                                                ?response,
-                                                "Unexpected response from outbound peer"
-                                            );
-                                        }
-                                        None => {
-                                            debug!(
-                                                peer_addr = %peer_addr,
-                                                "Outbound peer connection failed"
-                                            );
-                                        }
-                                    }
-                                } else {
-                                    trace!(
-                                        peer_addr = %peer.socket_addr(),
-                                        "Skipping duplicate peer"
-                                    );
-                                }
-                            }
-                        }
-                        None => {
-                            warn!(tracker_index, "Tracker channel closed unexpectedly");
-                        }
-                    }
-                }
+         loop {
+            // Log statistics periodically
+            if last_stats_log.elapsed() > stats_interval {
+               me_discovery.log_statistics().await;
+               last_stats_log = Instant::now();
             }
-        })
-        .await
-        .map_err(|e| {
-            error!(error = %e, "Peer discovery task failed");
-            anyhow!("Peer discovery failed: {}", e)
-        })?;
+
+            for (tracker_index, rx) in rx_list.iter_mut().enumerate() {
+               match rx.recv().await {
+                  Some(peers) => {
+                     let peer_count = peers.len();
+
+                     // Update statistics
+                     {
+                        let mut stats = stats_ref.lock().await;
+                        stats.total_peers_discovered += peer_count as u64;
+                     }
+
+                     debug!(tracker_index, peer_count, "Received peers from tracker");
+
+                     for peer in peers {
+                        if peers_in_action.insert(peer.clone()) {
+                           // Update unique peer count
+                           {
+                              let mut stats = stats_ref.lock().await;
+                              stats.unique_peers_discovered += 1;
+                           }
+
+                           let peer_addr = peer.socket_addr();
+
+                           trace!(
+                               peer_addr = %peer_addr,
+                               tracker_index,
+                               "Discovered new unique peer"
+                           );
+
+                           let listener = utp_listener.clone();
+                           let (to_tx, mut to_rx) = mpsc::channel(100);
+                           let me_inner = me_discovery.clone();
+
+                           tokio::spawn(async move {
+                              let peer_span = tracing::debug_span!(
+                                  "outbound_peer_connection",
+                                  peer_addr = %peer_addr
+                              );
+                              let _peer_enter = peer_span.enter();
+
+                              debug!("Initiating outbound connection to peer");
+
+                              peer
+                                 .handle_peer(
+                                    to_tx,
+                                    me_inner.metainfo.info_hash().unwrap(),
+                                    Arc::clone(&me_inner.id),
+                                    None,
+                                    Some(listener),
+                                    Some(me_inner.bitfield.read().await.clone()),
+                                 )
+                                 .await;
+                           });
+
+                           match to_rx.recv().await {
+                              Some(PeerResponse::Init(from_tx)) => {
+                                 me_discovery
+                                    .clone()
+                                    .active_peers
+                                    .lock()
+                                    .await
+                                    .insert(peer_addr, (from_tx, to_rx));
+
+                                 info!(peer_addr = %peer_addr, "Outbound peer connection established");
+                              }
+                              Some(response) => {
+                                 warn!(
+                                     peer_addr = %peer_addr,
+                                     ?response,
+                                     "Unexpected response from outbound peer"
+                                 );
+                              }
+                              None => {
+                                 debug!(
+                                     peer_addr = %peer_addr,
+                                     "Outbound peer connection failed"
+                                 );
+                              }
+                           }
+                        } else {
+                           trace!(
+                               peer_addr = %peer.socket_addr(),
+                               "Skipping duplicate peer"
+                           );
+                        }
+                     }
+                  }
+                  None => {
+                     warn!(tracker_index, "Tracker channel closed unexpectedly");
+                  }
+               }
+            }
+         }
+      });
 
       // Gather a single bitfield using to_rx
       {
@@ -537,8 +531,9 @@ impl TorrentEngine {
          }
 
          trace!("All peers' receivers were successfully put into a vec");
+         let response = receivers.next().await;
 
-         if let PeerResponse::Receive { message, .. } = receivers.next().await.unwrap().unwrap() {
+         if let PeerResponse::Receive { message, .. } = response.unwrap().unwrap() {
             if let PeerMessages::Bitfield(bitfield) = message {
                let bitvec: BitVec<u8, Lsb0> = bitvec![u8, Lsb0; 0; bitfield.len()];
                let mut bitfield_guard = self.bitfield.write().await;
@@ -592,12 +587,12 @@ mod tests {
          .finish();
       tracing::subscriber::set_global_default(subscriber).expect("subscriber already set");
 
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/zenshuu.txt");
-      let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
+      // let path = std::env::current_dir()
+      //    .unwrap()
+      //    .join("tests/magneturis/zenshuu.txt");
+      // let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
 
-      let metainfo = MetaInfo::new(magnet_uri).await.unwrap();
+      let metainfo = MetaInfo::new("magnet:?xt=urn:btih:8ce3333808beab9cb72db6101c5d9b339496ce1e&dn=%5BJudas%5D%20ZENSHUU%20-%20S01E11%20%5B1080p%5D%5BHEVC%20x265%2010bit%5D%5BMulti-Subs%5D%20%28Weekly%29&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce".into()).await.unwrap();
 
       let engine = Arc::new(TorrentEngine::new(metainfo).await);
 
