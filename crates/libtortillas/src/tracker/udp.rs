@@ -492,6 +492,10 @@ impl UdpTracker {
 
 #[async_trait]
 impl TrackerTrait for UdpTracker {
+   fn get_interval(&self) -> u32 {
+      self.interval
+   }
+
    async fn stream_peers(&mut self) -> anyhow::Result<mpsc::Receiver<Vec<Peer>>> {
       let (tx, rx) = mpsc::channel(100);
 

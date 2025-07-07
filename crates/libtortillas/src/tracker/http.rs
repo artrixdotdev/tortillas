@@ -1,66 +1,25 @@
 /// See https://www.bittorrent.org/beps/bep_0003.html
-use super::{Peer, TrackerTrait};
+use super::{Peer, TrackerRequest, TrackerTrait};
 use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::{Hash, InfoHash},
+   tracker::urlencode,
 };
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{
-   Deserialize, Serialize,
    de::{self, Visitor},
+   Deserialize, Serialize,
 };
-use std::{
-   net::{Ipv4Addr, SocketAddr},
-   str::FromStr,
-   time::Duration,
-};
-use tokio::{sync::mpsc, time::sleep};
+use std::net::{Ipv4Addr, SocketAddr};
 
 use tracing::{debug, error, info, instrument, trace, warn};
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)] // REMOVE SOON
 pub struct TrackerResponse {
    pub interval: usize,
    #[serde(deserialize_with = "deserialize_peers")]
    pub peers: Vec<Peer>,
-}
-
-/// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub enum Event {
-   Started,
-   Completed,
-   Stopped,
-   Empty,
-}
-
-/// Tracker request. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct TrackerRequest {
-   ip: Option<Ipv4Addr>,
-   port: u16,
-   uploaded: u8,
-   downloaded: u8,
-   left: Option<u8>,
-   event: Event,
-   peer_tracker_addr: SocketAddr,
-}
-
-impl TrackerRequest {
-   pub fn new(peer_tracker_addr: Option<SocketAddr>) -> TrackerRequest {
-      TrackerRequest {
-         ip: None,
-         port: 6881,
-         uploaded: 0,
-         downloaded: 0,
-         left: None,
-         event: Event::Stopped,
-         peer_tracker_addr: peer_tracker_addr
-            .unwrap_or(SocketAddr::from_str("0.0.0.0:6881").unwrap()),
-      }
-   }
 }
 
 /// Struct for handling tracker over HTTP
@@ -96,47 +55,11 @@ impl HttpTracker {
    }
 }
 
-fn urlencode(t: &[u8; 20]) -> String {
-   let mut encoded = String::with_capacity(3 * t.len());
-
-   for &byte in t {
-      encoded.push('%');
-
-      let byte = hex::encode([byte]);
-      encoded.push_str(&byte);
-   }
-
-   encoded
-}
-
 /// Fetches peers from tracker over HTTP and returns a stream of [Peers](Peer)
 #[async_trait]
 impl TrackerTrait for HttpTracker {
-   async fn stream_peers(&mut self) -> Result<mpsc::Receiver<Vec<Peer>>> {
-      let (tx, rx) = mpsc::channel(100);
-      let mut tracker = self.clone();
-      let tx = tx.clone();
-      // no pre‑captured interval – always read the latest value
-      tokio::spawn(async move {
-         loop {
-            let peers = tracker.get_peers().await.unwrap();
-            trace!(
-               "Successfully made request to get peers: {}",
-               peers.last().unwrap()
-            );
-
-            // stop gracefully if the receiver was dropped
-            if tx.send(peers).await.is_err() {
-               warn!("Receiver dropped – stopping peer stream");
-               break;
-            }
-
-            // pick up possibly updated interval (never sleep 0s)
-            let delay = tracker.interval.max(1);
-            sleep(Duration::from_secs(delay as u64)).await;
-         }
-      });
-      Ok(rx)
+   fn get_interval(&self) -> u32 {
+      self.interval
    }
 
    #[instrument(skip(self))]
