@@ -33,6 +33,12 @@ use crate::{
 
 type PeerMessenger = mpsc::Sender<PeerCommand>;
 
+/// Helper enum for spawning listeners in listen_for_incoming_peers
+pub enum ProtocolListener {
+   Utp(Arc<UtpSocketUdp>),
+   Tcp(TcpListener),
+}
+
 /// Helper enum for managing the input to the [torrent()] function.
 #[derive(Debug)]
 pub enum TorrentInput {
@@ -225,6 +231,108 @@ impl TorrentEngine {
          .await;
    }
 
+   /// A helper function for listening for peers trying to connect to us on either Tcp or Utp.
+   async fn listen_on_protocol(self: Arc<Self>, listener: ProtocolListener) {
+      match listener {
+         ProtocolListener::Utp(listener) => {
+            tokio::spawn(async move {
+               let span = tracing::info_span!("utp_peer_handler");
+               let _enter = span.enter();
+
+               info!("UTP peer handler started");
+
+               loop {
+                  match listener.accept().await {
+                     Ok(stream) => {
+                        let addr = stream.remote_addr();
+                        let engine_clone = self.clone();
+                        tokio::spawn(async move {
+                           let stream = PeerStream::Utp(stream);
+                           engine_clone.handle_peer_connection(stream, addr).await;
+                        });
+                     }
+                     Err(e) => {
+                        error!(error = %e, "Failed to accept UTP connection");
+                     }
+                  }
+               }
+            });
+
+            info!("UTP peer handler spawned successfully");
+         }
+         ProtocolListener::Tcp(listener) => {
+            let engine_ref = self.clone();
+            tokio::spawn(async move {
+               let span = tracing::info_span!("tcp_peer_handler");
+               let _enter = span.enter();
+
+               info!("TCP peer handler started");
+
+               loop {
+                  match listener.accept().await {
+                     Ok((stream, addr)) => {
+                        let engine_clone = engine_ref.clone();
+                        tokio::spawn(async move {
+                           let stream = PeerStream::Tcp(stream);
+                           engine_clone.handle_peer_connection(stream, addr).await;
+                        });
+                     }
+                     Err(e) => {
+                        error!(error = %e, "Failed to accept TCP connection");
+                     }
+                  }
+               }
+            });
+
+            info!("TCP peer handler spawned successfully");
+         }
+      }
+   }
+
+   /// Listens for any peers that are trying to connect to us over uTP or TCP. Returns the created
+   /// UtpListener for later use. This is unnecessary to do for TCP due to the nature of the
+   /// protocol itself.
+   async fn listen_for_incoming_peers(self: Arc<Self>) -> Result<Arc<UtpSocketUdp>, Error> {
+      let network_span = tracing::debug_span!("network_setup");
+      let me = self.clone();
+
+      let (utp_listener, tcp_listener) = {
+         let _network_enter = network_span.enter();
+         debug!("Initializing network listeners");
+         me.clone().listen().await?
+      };
+
+      // Update addresses with logging
+      {
+         let tcp_addr = tcp_listener.local_addr().ok();
+         let utp_addr = Some(utp_listener.bind_addr());
+
+         debug!(
+             tcp_addr = ?tcp_addr,
+             utp_addr = ?utp_addr,
+             "Updating local addresses in engine state"
+         );
+
+         let mut tcp_addr_guard = self.tcp_addr.lock().await;
+         *tcp_addr_guard = tcp_addr;
+
+         let mut utp_addr_guard = self.utp_addr.lock().await;
+         *utp_addr_guard = utp_addr;
+      }
+
+      let me_tcp_listener = me.clone();
+      me_tcp_listener
+         .listen_on_protocol(ProtocolListener::Tcp(tcp_listener))
+         .await;
+
+      let me_utp_listener = me.clone();
+      me_utp_listener
+         .listen_on_protocol(ProtocolListener::Utp(utp_listener.clone()))
+         .await;
+
+      Ok(utp_listener.clone())
+   }
+
    /// The full torrenting process, summarized in a single function. As of 5/23/25, the return
    /// value of this function is temporary.
    ///
@@ -245,96 +353,14 @@ impl TorrentEngine {
         peer_id = %self.id
     ))]
    pub async fn torrent(self: Arc<Self>) -> anyhow::Result<(), Error> {
+      let me = self.clone();
       let session_span = tracing::info_span!("torrent_session");
       let _session_enter = session_span.enter();
 
       info!("Starting torrent session");
 
-      // Network setup phase
-      let network_span = tracing::debug_span!("network_setup");
-      let me = self.clone();
-
-      let (utp_listener, tcp_listener) = {
-         let _network_enter = network_span.enter();
-         debug!("Initializing network listeners");
-         me.clone().listen().await?
-      };
-
-      // Update addresses with detailed logging
-      {
-         let tcp_addr = tcp_listener.local_addr().ok();
-         let utp_addr = Some(utp_listener.bind_addr());
-
-         debug!(
-             tcp_addr = ?tcp_addr,
-             utp_addr = ?utp_addr,
-             "Updating local addresses in engine state"
-         );
-
-         let mut tcp_addr_guard = self.tcp_addr.lock().await;
-         *tcp_addr_guard = tcp_addr;
-
-         let mut utp_addr_guard = self.utp_addr.lock().await;
-         *utp_addr_guard = utp_addr;
-      }
-
-      // TCP peer handler
-      {
-         let engine_ref = self.clone();
-         tokio::spawn(async move {
-            let span = tracing::info_span!("tcp_peer_handler");
-            let _enter = span.enter();
-
-            info!("TCP peer handler started");
-
-            loop {
-               match tcp_listener.accept().await {
-                  Ok((stream, addr)) => {
-                     let engine_clone = engine_ref.clone();
-                     tokio::spawn(async move {
-                        let stream = PeerStream::Tcp(stream);
-                        engine_clone.handle_peer_connection(stream, addr).await;
-                     });
-                  }
-                  Err(e) => {
-                     error!(error = %e, "Failed to accept TCP connection");
-                  }
-               }
-            }
-         });
-      }
-
-      info!("TCP peer handler spawned successfully");
-
-      // UTP peer handler
-      {
-         let listener = utp_listener.clone();
-         let engine_ref = self.clone();
-         tokio::spawn(async move {
-            let span = tracing::info_span!("utp_peer_handler");
-            let _enter = span.enter();
-
-            info!("UTP peer handler started");
-
-            loop {
-               match listener.accept().await {
-                  Ok(stream) => {
-                     let addr = stream.remote_addr();
-                     let engine_clone = engine_ref.clone();
-                     tokio::spawn(async move {
-                        let stream = PeerStream::Utp(stream);
-                        engine_clone.handle_peer_connection(stream, addr).await;
-                     });
-                  }
-                  Err(e) => {
-                     error!(error = %e, "Failed to accept UTP connection");
-                  }
-               }
-            }
-         });
-      }
-
-      info!("UTP peer handler spawned successfully");
+      let me_listen = me.clone();
+      let utp_listener = me_listen.listen_for_incoming_peers().await?;
 
       // Tracker communication setup
       let tracker_span = tracing::debug_span!("tracker_communication");
