@@ -542,8 +542,34 @@ impl TorrentEngine {
          "Successfully updated bitfield"
       );
 
-      // TODO: Implement the following phases with proper tracing:
-      // - Request pieces from peers that have them
+      // Request pieces from peers that have them
+      let me_request_pieces = me.clone();
+      tokio::spawn(async move {
+         loop {
+            // Potentially costly clone, but even for 1000 peers, this shouldn't be that bad.
+            let active_peers = me_request_pieces.active_peers.lock().await.clone();
+
+            for piece_num in 0..me_request_pieces.bitfield.read().await.len() {
+               for (peer_key, peer_tx) in &active_peers {
+                  match peer_tx.send(PeerCommand::Piece(piece_num as u32)).await {
+                     Ok(_) => {
+                        trace!(?peer_key, piece_num, "Sent PeerCommand::Piece to peer");
+                     }
+                     Err(e) => {
+                        error!(
+                           ?peer_key,
+                           piece_num,
+                           "An error occurred when trying to send PeerCommand::Piece to peer: {}",
+                           e
+                        )
+                     }
+                  }
+               }
+            }
+            sleep(Duration::from_secs(1)).await;
+         }
+      });
+
       // - Handle incoming piece messages
       // - Handle incoming request messages (seeding)
 
