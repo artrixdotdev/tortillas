@@ -36,8 +36,14 @@ impl TorrentFile {
       Self::parse(&file)
    }
 
-   pub fn announce_list(&self) -> Vec<Vec<Tracker>> {
-      self.announce_list.clone().unwrap_or_default()
+   pub fn announce_list(&self) -> Vec<Tracker> {
+      let mut announce_list = vec![self.announce.clone()];
+      if let Some(list) = self.announce_list.clone() {
+         for tracker in list.into_iter().flatten() {
+            announce_list.push(tracker);
+         }
+      }
+      announce_list
    }
 
    pub fn parse(bytes: &[u8]) -> Result<MetaInfo> {

@@ -5,7 +5,10 @@ mod magnet;
 pub use file::*;
 pub use magnet::*;
 
-use crate::{hashes::InfoHash, tracker::Tracker};
+use crate::{
+   hashes::{Hash, HashVec, InfoHash},
+   tracker::Tracker,
+};
 
 /// Always utilize MetaInfo instead of directly using TorrentFile or MagnetUri
 #[derive(Debug, Deserialize)]
@@ -41,12 +44,7 @@ impl MetaInfo {
 
    pub fn announce_list(&self) -> Vec<Tracker> {
       match &self {
-         MetaInfo::Torrent(file) => file
-            .announce_list()
-            .into_iter() // Iterate over the outer Vec
-            .flatten() // Flatten the inner Vecs of Strings
-            .collect(),
-
+         MetaInfo::Torrent(file) => file.announce_list(),
          MetaInfo::MagnetUri(magnet) => magnet.announce_list(),
       }
    }
