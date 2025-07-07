@@ -17,6 +17,7 @@ use std::{
       Arc,
    },
    time::Duration,
+   usize,
 };
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
@@ -178,8 +179,13 @@ impl Peer {
       Self::new(peer_addr.ip(), peer_addr.port())
    }
 
-   // Extract piece request handling into a separate method for clarity
-   async fn handle_piece_request(stream: &mut PeerWriter, piece_num: u32) {
+   /// Extract piece request handling into a separate method for clarity
+   async fn handle_piece_request(&self, stream: &mut PeerWriter, piece_num: u32) {
+      // If the peer does not have the piece, don't request it.
+      if self.pieces.get(piece_num as usize).unwrap() == false {
+         return;
+      }
+
       // https://github.com/vimpunk/cratetorrent/blob/master/PEER_MESSAGES.md#6-request
       //
       // > All current implementations use 2^14 (16 kiB)
@@ -279,12 +285,13 @@ impl Peer {
    /// A helper function for [handle_peer](Peer::handle_peer). This is a very beefy function --
    /// refactors that reduce its size are welcome.
    async fn handle_peer_command(
+      self,
       message: PeerCommand,
-      peer_addr: SocketAddr,
       state: PeerState,
       writer: Arc<Mutex<PeerWriter>>,
       to_tx: broadcast::Sender<PeerResponse>,
    ) {
+      let peer_addr = self.socket_addr();
       trace!(
          "Received message from from_rx for peer {}: {:?}",
          peer_addr,
@@ -297,7 +304,9 @@ impl Peer {
             if !state.am_choked.load(Ordering::Acquire) && state.interested.load(Ordering::Acquire)
             {
                let mut writer_guard = writer.lock().await;
-               Self::handle_piece_request(&mut writer_guard, piece_num).await;
+               self
+                  .handle_piece_request(&mut writer_guard, piece_num)
+                  .await;
             } else {
                trace!(
                   "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
@@ -446,14 +455,11 @@ impl Peer {
       // 2nd tokio::spawn (see comment above)
       tokio::spawn(async move {
          while let Some(message) = from_rx.recv().await {
-            Self::handle_peer_command(
-               message,
-               peer_addr,
-               state.clone(),
-               writer_clone.clone(),
-               to_tx.clone(),
-            )
-            .await;
+            // Is this clone horribly inefficient? Hopefully not.
+            self
+               .clone()
+               .handle_peer_command(message, state.clone(), writer_clone.clone(), to_tx.clone())
+               .await;
             Self::update_message(self.state.last_message_sent.clone());
          }
       });
@@ -464,6 +470,8 @@ impl Peer {
 mod tests {
    use std::{str::FromStr, thread::sleep};
 
+   use bitvec::bitvec;
+   use bitvec::order::Lsb0;
    use rand::RngCore;
    use tokio::io::AsyncReadExt;
    use tokio::io::AsyncWriteExt;
@@ -588,9 +596,9 @@ mod tests {
       assert!(matches!(bitfield, PeerMessages::Bitfield { .. }));
       trace!("Received bitfield from peer");
 
-      // Send empty bitfield in return
+      // Send bitfield in return
       peer_stream
-         .send(PeerMessages::Bitfield(BitVec::EMPTY))
+         .send(PeerMessages::Bitfield(bitvec![u8, Lsb0; 0, 1, 0]))
          .await
          .unwrap();
 
@@ -601,7 +609,7 @@ mod tests {
          PeerResponse::Receive { .. }
       ));
 
-      trace!("Sent empty bitfield");
+      trace!("Sent bitfield");
 
       // Receive an Interested message
       let peer_response_unchoke = peer_stream.recv().await.unwrap();
