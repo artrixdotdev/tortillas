@@ -151,68 +151,20 @@ impl TorrentEngine {
       Ok((utp_socket, tcp_listener))
    }
 
-   #[instrument(skip(self, stream, me), fields(
+   /// Handles new peer connections by means of a PeerStream, not a listener.
+   #[instrument(skip(self, stream), fields(
         peer_addr = %addr,
         protocol = stream.protocol()
     ))]
-   async fn handle_peer_connection(
-      &self,
-      stream: PeerStream,
-      addr: SocketAddr,
-      me: Arc<TorrentEngine>,
-   ) {
+   async fn handle_peer_connection(self: Arc<Self>, stream: PeerStream, addr: SocketAddr) {
       let protocol = stream.protocol();
       debug!("Processing new {protocol} peer connection");
 
       let peer = Peer::from_socket_addr(addr);
 
-      // Handle peer connection
-      let peer_span = tracing::trace_span!("peer_handshake");
-      let _peer_enter = peer_span.enter();
-
-      let mut bitfield = BitVec::EMPTY;
-      {
-         bitfield = self.bitfield.read().await.clone();
-      }
-
-      peer
-         .handle_peer(
-            self.from_peer_tx_rx.0.clone(),
-            me.metainfo.info_hash().unwrap(),
-            Arc::clone(&me.id),
-            Some(stream),
-            None,
-            Some(bitfield),
-         )
-         .await;
-
-      let mut peer_from_tx = self.from_peer_tx_rx.0.subscribe();
-
-      match peer_from_tx.recv().await {
-         Ok(PeerResponse::Init { from_tx, peer_key }) => {
-            self
-               .clone()
-               .active_peers
-               .lock()
-               .await
-               .insert(peer_key, from_tx);
-
-            info!(peer_addr = %addr, "Outbound peer connection established");
-         }
-         Err(response) => {
-            warn!(
-                peer_addr = %addr,
-                ?response,
-                "Unexpected response from outbound peer"
-            );
-         }
-         _ => {
-            debug!(
-                peer_addr = %addr,
-                "Outbound peer connection failed"
-            );
-         }
-      }
+      tokio::spawn(async move {
+         self.spawn_handle_peer(peer, None, Some(stream));
+      });
    }
 
    #[instrument(skip(self), fields(
@@ -233,6 +185,44 @@ impl TorrentEngine {
          bytes_uploaded = stats.bytes_uploaded,
          "Torrent session statistics"
       );
+   }
+
+   /// Helper function for spawning what we call a "peer thread". A peer thread is an
+   /// unnecessarily fancy phrase for the thread that handle_peer runs on -- the thread
+   /// that allows a peer to operate semi-autonomously from TorrentEngine.
+   ///
+   /// To be more specific, once we spawn this thread, we can only communicate with the peer
+   /// through the given channels. The peer thread handles the remote connection to the peer on
+   /// its own.
+   async fn spawn_handle_peer(
+      self: Arc<Self>,
+      peer: Peer,
+      listener: Option<Arc<UtpSocketUdp>>,
+      stream: Option<PeerStream>,
+   ) {
+      let peer_span = tracing::debug_span!(
+          "outbound_peer_connection",
+          peer_addr = %peer.socket_addr()
+      );
+      let _peer_enter = peer_span.enter();
+
+      debug!("Initiating outbound connection to peer");
+
+      let bitfield: BitVec<u8>;
+      {
+         bitfield = self.bitfield.read().await.clone();
+      }
+
+      peer
+         .handle_peer(
+            self.from_peer_tx_rx.0.clone(),
+            self.metainfo.info_hash().unwrap(),
+            Arc::clone(&self.id),
+            stream,
+            listener,
+            Some(bitfield),
+         )
+         .await;
    }
 
    /// The full torrenting process, summarized in a single function. As of 5/23/25, the return
@@ -290,7 +280,6 @@ impl TorrentEngine {
 
       // TCP peer handler
       {
-         let me = me.clone();
          let engine_ref = self.clone();
          tokio::spawn(async move {
             let span = tracing::info_span!("tcp_peer_handler");
@@ -301,13 +290,10 @@ impl TorrentEngine {
             loop {
                match tcp_listener.accept().await {
                   Ok((stream, addr)) => {
-                     let me_clone = me.clone();
                      let engine_clone = engine_ref.clone();
                      tokio::spawn(async move {
                         let stream = PeerStream::Tcp(stream);
-                        engine_clone
-                           .handle_peer_connection(stream, addr, me_clone)
-                           .await;
+                        engine_clone.handle_peer_connection(stream, addr).await;
                      });
                   }
                   Err(e) => {
@@ -322,7 +308,6 @@ impl TorrentEngine {
 
       // UTP peer handler
       {
-         let me = me.clone();
          let listener = utp_listener.clone();
          let engine_ref = self.clone();
          tokio::spawn(async move {
@@ -335,13 +320,10 @@ impl TorrentEngine {
                match listener.accept().await {
                   Ok(stream) => {
                      let addr = stream.remote_addr();
-                     let me_clone = me.clone();
                      let engine_clone = engine_ref.clone();
                      tokio::spawn(async move {
                         let stream = PeerStream::Utp(stream);
-                        engine_clone
-                           .handle_peer_connection(stream, addr, me_clone)
-                           .await;
+                        engine_clone.handle_peer_connection(stream, addr).await;
                      });
                   }
                   Err(e) => {
@@ -491,31 +473,8 @@ impl TorrentEngine {
 
                            let listener = utp_listener.clone();
                            let me_inner = me_discovery.clone();
-
                            tokio::spawn(async move {
-                              let peer_span = tracing::debug_span!(
-                                  "outbound_peer_connection",
-                                  peer_addr = %peer_addr
-                              );
-                              let _peer_enter = peer_span.enter();
-
-                              debug!("Initiating outbound connection to peer");
-
-                              let mut bitfield = BitVec::EMPTY;
-                              {
-                                 bitfield = me_inner.bitfield.read().await.clone();
-                              }
-
-                              peer
-                                 .handle_peer(
-                                    me_inner.from_peer_tx_rx.0.clone(),
-                                    me_inner.metainfo.info_hash().unwrap(),
-                                    Arc::clone(&me_inner.id),
-                                    None,
-                                    Some(listener),
-                                    Some(bitfield),
-                                 )
-                                 .await;
+                              me_inner.spawn_handle_peer(peer, Some(listener), None).await;
                            });
                         } else {
                            trace!(
