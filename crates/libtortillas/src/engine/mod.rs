@@ -615,7 +615,7 @@ impl TorrentEngine {
          }
       });
 
-      // - Handle incoming piece messages
+      // - Handle incoming piece messages and any failed requests
       // - Handle incoming request messages (seeding)
 
       info!("Torrent session completed");

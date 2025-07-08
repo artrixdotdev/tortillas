@@ -180,9 +180,9 @@ impl Peer {
    }
 
    /// Extract piece request handling into a separate method for clarity
-   async fn handle_piece_request(&self, stream: &mut PeerWriter, piece_num: u32) {
+   async fn handle_piece_request(stream: &mut PeerWriter, piece_num: u32, pieces: BitVec<u8>) {
       // If the peer does not have the piece, don't request it.
-      if self.pieces.get(piece_num as usize).unwrap() == false {
+      if pieces.get(piece_num as usize).unwrap() == false {
          return;
       }
 
@@ -223,6 +223,14 @@ impl Peer {
       }
    }
 
+   // Small helper function for sending messages witih to_tx.
+   fn send(to_tx: broadcast::Sender<PeerResponse>, message: PeerResponse, peer_addr: SocketAddr) {
+      to_tx
+         .send(message)
+         .map_err(|e| error!(%peer_addr, "Failed to send Piece message from peer: {}", e))
+         .unwrap();
+   }
+
    /// A helper function for [handle_peer](Peer::handle_peer). This is a very beefy function --
    /// refactors that reduce its size are welcome.
    async fn handle_recv(
@@ -234,18 +242,14 @@ impl Peer {
       match &message {
          PeerMessages::Piece(_, _, _) => {
             trace!("Received a Piece message from peer {}", peer_addr);
-            to_tx
-               .send(PeerResponse::Receive {
+            Self::send(
+               to_tx,
+               PeerResponse::Receive {
                   message,
                   peer_key: peer_addr,
-               })
-               .map_err(|e| {
-                  error!(
-                     "Failed to send Piece message from peer {}: {}",
-                     peer_addr, e
-                  )
-               })
-               .unwrap();
+               },
+               peer_addr,
+            );
          }
          PeerMessages::Choke => {
             state.am_choked.store(true, Ordering::Release);
@@ -285,13 +289,13 @@ impl Peer {
    /// A helper function for [handle_peer](Peer::handle_peer). This is a very beefy function --
    /// refactors that reduce its size are welcome.
    async fn handle_peer_command(
-      self,
       message: PeerCommand,
       state: PeerState,
       writer: Arc<Mutex<PeerWriter>>,
       to_tx: broadcast::Sender<PeerResponse>,
+      pieces: BitVec<u8>,
+      peer_addr: SocketAddr,
    ) {
-      let peer_addr = self.socket_addr();
       trace!(
          "Received message from from_rx for peer {}: {:?}",
          peer_addr,
@@ -304,9 +308,8 @@ impl Peer {
             if !state.am_choked.load(Ordering::Acquire) && state.interested.load(Ordering::Acquire)
             {
                let mut writer_guard = writer.lock().await;
-               self
-                  .handle_piece_request(&mut writer_guard, piece_num)
-                  .await;
+
+               Self::handle_piece_request(&mut writer_guard, piece_num, pieces).await;
             } else {
                trace!(
                   "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
@@ -455,11 +458,16 @@ impl Peer {
       // 2nd tokio::spawn (see comment above)
       tokio::spawn(async move {
          while let Some(message) = from_rx.recv().await {
-            // Is this clone horribly inefficient? Hopefully not.
-            self
-               .clone()
-               .handle_peer_command(message, state.clone(), writer_clone.clone(), to_tx.clone())
-               .await;
+            // Are all these clones horribly inefficient? Hopefully not.
+            Self::handle_peer_command(
+               message,
+               state.clone(),
+               writer_clone.clone(),
+               to_tx.clone(),
+               self.pieces.clone(),
+               peer_addr,
+            )
+            .await;
             Self::update_message(self.state.last_message_sent.clone());
          }
       });
