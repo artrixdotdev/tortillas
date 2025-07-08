@@ -1,3 +1,4 @@
+use std::ops::BitOrAssign;
 use std::{
    collections::{HashMap, HashSet},
    net::SocketAddr,
@@ -518,8 +519,12 @@ impl TorrentEngine {
          }
       });
 
+      // See the definition of "ready" below for an explanation of this.
+      let mut ready_bitfield: BitVec<u8>;
+
       // Gather a single bitfield
       let mut bitfield_from_peer_rx = me.from_peer_tx_rx.0.subscribe();
+
       loop {
          let response = bitfield_from_peer_rx.recv().await;
          trace!(bitfield_from_peer = ?response);
@@ -532,6 +537,7 @@ impl TorrentEngine {
             let bitvec: BitVec<u8, Lsb0> = bitvec![u8, Lsb0; 0; bitfield.len()];
             let mut bitfield_guard = me.bitfield.write().await;
             *bitfield_guard = bitvec;
+            ready_bitfield = bitfield;
             trace!("Wrote to self.bitfield, exiting loop");
             break;
          }
@@ -541,6 +547,45 @@ impl TorrentEngine {
          bitfield_len = me.bitfield.read().await.len(),
          "Successfully updated bitfield"
       );
+
+      // Gather peers until we are "ready". We define "ready" as having ~80% of the pieces of a torrent
+      // accounted for. For example, if a given torrent has 6 pieces, and peer A has pieces 0
+      // and 1, peer B has pieces 2 and 3, and peer C has pieces 4, but not 5, then we are ready.
+      //
+      // However, if peer A does not have piece 1, then we are not ready, because we only have ~66%
+      // of the pieces accounted for.
+      //
+      // Why 80%? Some peers appear to be consistently missing some (& the same) pieces of a
+      // torrent, and 80% should *ideally* guarantee that we have most of the pieces, and we'll get
+      // the ones that we don't have later.
+      //
+      // Additionally, overlap is allowed. If both peer A and B have piece 1, then we simply say
+      // that that piece is accounted for.
+      //
+      // This loop will run until we are ready.
+      const READY_VALUE: f64 = 0.80;
+
+      let mut accounted_bitfield_peer_rx = me.from_peer_tx_rx.0.subscribe();
+      loop {
+         let response = accounted_bitfield_peer_rx.recv().await;
+         trace!(bitfield_from_peer = ?response);
+         if let Ok(PeerResponse::Receive {
+            message: PeerMessages::Bitfield(bitfield),
+            ..
+         }) = response
+         {
+            trace!("Got bitfield message from peer in torrent()");
+            ready_bitfield.bitor_assign(bitfield);
+
+            if (ready_bitfield.count_ones() as f64 / ready_bitfield.len() as f64) >= READY_VALUE {
+               trace!(
+                  "Broke 'ready' loop -- {}% of pieces are accounted for.",
+                  READY_VALUE * 100.0
+               );
+               break;
+            }
+         }
+      }
 
       // Request pieces from peers that have them
       let me_request_pieces = me.clone();
