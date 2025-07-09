@@ -20,6 +20,7 @@ pub enum PeerResponse {
       peer_key: PeerKey,
    },
    Choking(PeerKey),
+   Unchoke(PeerKey),
    Receive {
       message: PeerMessages,
       peer_key: PeerKey,

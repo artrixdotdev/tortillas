@@ -28,7 +28,7 @@ use tokio::{
    },
    time::{timeout, Instant},
 };
-use tracing::{error, trace};
+use tracing::{error, instrument, trace};
 
 pub mod commands;
 pub mod messages;
@@ -238,6 +238,7 @@ impl Peer {
       to_tx: broadcast::Sender<PeerResponse>,
       state: PeerState,
       peer_addr: SocketAddr,
+      peer_tx: mpsc::Sender<PeerMessages>,
    ) {
       match &message {
          PeerMessages::Piece(_, _, _) => {
@@ -259,6 +260,7 @@ impl Peer {
             Self::update_message(state.last_optimistic_unchoke);
             state.am_choked.store(false, Ordering::Release);
             trace!("Peer {} is now unchoked", peer_addr);
+            Self::send(to_tx, PeerResponse::Unchoke(peer_addr), peer_addr);
          }
          PeerMessages::Interested => {
             state.am_interested.store(true, Ordering::Release);
@@ -268,20 +270,34 @@ impl Peer {
             state.am_interested.store(false, Ordering::Release);
             trace!("Peer {} is now not interested", peer_addr);
          }
-         _ => {
-            // Handle other message types or forward them
-            trace!(
-               peer_addr = %peer_addr,
-               "Received a message other than supported options from peer {:?}",
-               message
-            );
-            to_tx
-               .send(PeerResponse::Receive {
+         PeerMessages::KeepAlive => {
+            trace!(%peer_addr, "Received a keep alive message from peer");
+         }
+         PeerMessages::Have(piece) => {
+            trace!(%peer_addr, "Peer has piece {}", piece);
+         }
+         PeerMessages::Request(index, _, _) => {
+            trace!(%peer_addr, "Peer wants piece {}", index);
+            Self::send(
+               to_tx,
+               PeerResponse::Receive {
                   message,
                   peer_key: peer_addr,
-               })
-               .map_err(|e| error!("Failed to send message from peer {}: {}", peer_addr, e))
-               .unwrap();
+               },
+               peer_addr,
+            );
+         }
+         PeerMessages::Cancel(index, _, _) => {
+            trace!(%peer_addr, "Peer wants to cancel piece {}", index);
+            // TODO
+         }
+         PeerMessages::Bitfield(_) => {
+            trace!(%peer_addr, "Received new bitfield from peer");
+            // Let handle_peer handle this
+            peer_tx.send(message).await.unwrap();
+         }
+         PeerMessages::Handshake(handshake) => {
+            trace!(%peer_addr, "Peer sent a handshake for some reason: {:?}", handshake);
          }
       }
    }
@@ -437,40 +453,54 @@ impl Peer {
       let (mut reader, writer) = stream.split();
       let writer = Arc::new(Mutex::new(writer));
 
-      // Clone state to use (will be moved)
-      let state = self.state.clone();
-
-      // 1st of 2 tokio::spawn(s) that allow the peer to communicate (read + write) concurrently. See
-      // above `stream.split()`.
-      let reader_to_tx = to_tx.clone();
-      tokio::spawn(async move {
-         while let Ok(message) = reader.recv().await {
-            Self::update_message(state.last_message_received.clone());
-            Self::handle_recv(message, reader_to_tx.clone(), state.clone(), peer_addr).await;
-         }
-      });
-
-      let writer_clone = Arc::clone(&writer);
+      // These are for communication between this function and handle_peer_command/handle_recv
+      let (peer_tx, mut peer_rx) = mpsc::channel(100);
 
       // Clone state to use (will be moved)
       let state = self.state.clone();
 
-      // 2nd tokio::spawn (see comment above)
-      tokio::spawn(async move {
-         while let Some(message) = from_rx.recv().await {
-            // Are all these clones horribly inefficient? Hopefully not.
-            Self::handle_peer_command(
-               message,
-               state.clone(),
-               writer_clone.clone(),
-               to_tx.clone(),
-               self.pieces.clone(),
-               peer_addr,
-            )
-            .await;
-            Self::update_message(self.state.last_message_sent.clone());
+      loop {
+         tokio::select! {
+            message = reader.recv() => {
+               match message {
+                  Ok(inner) => {
+                     Self::update_message(state.last_message_received.clone());
+                     Self::handle_recv(
+                        inner,
+                        to_tx.clone(),
+                        state.clone(),
+                        peer_addr,
+                        peer_tx.clone(),
+                     )
+                     .await;
+                  }
+                  Err(e) => {
+                     error!(%peer_addr, "An error occured when receiving the message from the reader: {e}");
+                  }
+               }
+            }
+            message = from_rx.recv() => {
+               match message {
+                  Some(inner) => {
+                     // Are all these clones horribly inefficient? Hopefully not.
+                     Self::handle_peer_command(
+                        inner,
+                        state.clone(),
+                        writer.clone(),
+                        to_tx.clone(),
+                        self.pieces.clone(),
+                        peer_addr,
+                     )
+                     .await;
+                     Self::update_message(self.state.last_message_sent.clone());
+                  }
+                  None => {
+                     error!(%peer_addr, "Received a None message from from_rx");
+                  }
+               }
+            }
          }
-      });
+      }
    }
 }
 
@@ -630,14 +660,13 @@ mod tests {
 
       trace!("Sent an unchoke message");
 
+      let unchoke_message = to_rx.recv().await.unwrap();
+      assert!(matches!(unchoke_message, PeerResponse::Unchoke(..)));
+
+      trace!("Got unchoke message from to_rx");
+
       // Tell the peer to request piece 1
       from_tx.send(PeerCommand::Piece(1)).await.unwrap();
-
-      // A bit hacky, but it'll do.
-      if let PeerResponse::Choking(_) = to_rx.recv().await.unwrap() {
-         sleep(Duration::from_millis(250));
-         from_tx.send(PeerCommand::Piece(1)).await.unwrap();
-      }
 
       trace!("Sent piece message");
 
