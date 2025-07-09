@@ -180,9 +180,9 @@ impl Peer {
    }
 
    /// Extract piece request handling into a separate method for clarity
-   async fn handle_piece_request(stream: &mut PeerWriter, piece_num: u32, pieces: BitVec<u8>) {
+   async fn handle_piece_request(&mut self, stream: &mut PeerWriter, piece_num: u32) {
       // If the peer does not have the piece, don't request it.
-      if pieces.get(piece_num as usize).unwrap() == false {
+      if self.pieces.get(piece_num as usize).unwrap() == false {
          return;
       }
 
@@ -233,13 +233,8 @@ impl Peer {
 
    /// A helper function for [handle_peer](Peer::handle_peer). This is a very beefy function --
    /// refactors that reduce its size are welcome.
-   async fn handle_recv(
-      message: PeerMessages,
-      to_tx: broadcast::Sender<PeerResponse>,
-      state: PeerState,
-      peer_addr: SocketAddr,
-      peer_tx: mpsc::Sender<PeerMessages>,
-   ) {
+   async fn handle_recv(&mut self, message: PeerMessages, to_tx: broadcast::Sender<PeerResponse>) {
+      let peer_addr = self.socket_addr();
       match &message {
          PeerMessages::Piece(_, _, _) => {
             trace!("Received a Piece message from peer {}", peer_addr);
@@ -253,21 +248,21 @@ impl Peer {
             );
          }
          PeerMessages::Choke => {
-            state.am_choked.store(true, Ordering::Release);
+            self.state.am_choked.store(true, Ordering::Release);
             trace!("Peer {} is now choked", peer_addr);
          }
          PeerMessages::Unchoke => {
-            Self::update_message(state.last_optimistic_unchoke);
-            state.am_choked.store(false, Ordering::Release);
+            Self::update_message(self.state.last_optimistic_unchoke.clone());
+            self.state.am_choked.store(false, Ordering::Release);
             trace!("Peer {} is now unchoked", peer_addr);
             Self::send(to_tx, PeerResponse::Unchoke(peer_addr), peer_addr);
          }
          PeerMessages::Interested => {
-            state.am_interested.store(true, Ordering::Release);
+            self.state.am_interested.store(true, Ordering::Release);
             trace!("Peer {} is now interested", peer_addr);
          }
          PeerMessages::NotInterested => {
-            state.am_interested.store(false, Ordering::Release);
+            self.state.am_interested.store(false, Ordering::Release);
             trace!("Peer {} is now not interested", peer_addr);
          }
          PeerMessages::KeepAlive => {
@@ -293,8 +288,6 @@ impl Peer {
          }
          PeerMessages::Bitfield(_) => {
             trace!(%peer_addr, "Received new bitfield from peer");
-            // Let handle_peer handle this
-            peer_tx.send(message).await.unwrap();
          }
          PeerMessages::Handshake(handshake) => {
             trace!(%peer_addr, "Peer sent a handshake for some reason: {:?}", handshake);
@@ -305,13 +298,12 @@ impl Peer {
    /// A helper function for [handle_peer](Peer::handle_peer). This is a very beefy function --
    /// refactors that reduce its size are welcome.
    async fn handle_peer_command(
+      &mut self,
       message: PeerCommand,
-      state: PeerState,
       writer: Arc<Mutex<PeerWriter>>,
       to_tx: broadcast::Sender<PeerResponse>,
-      pieces: BitVec<u8>,
-      peer_addr: SocketAddr,
    ) {
+      let peer_addr = self.socket_addr();
       trace!(
          "Received message from from_rx for peer {}: {:?}",
          peer_addr,
@@ -321,11 +313,14 @@ impl Peer {
       match message {
          PeerCommand::Piece(piece_num) => {
             // If we're choking or the peer isn't interested, we can't do anything.
-            if !state.am_choked.load(Ordering::Acquire) && state.interested.load(Ordering::Acquire)
+            if !self.state.am_choked.load(Ordering::Acquire)
+               && self.state.interested.load(Ordering::Acquire)
             {
                let mut writer_guard = writer.lock().await;
 
-               Self::handle_piece_request(&mut writer_guard, piece_num, pieces).await;
+               self
+                  .handle_piece_request(&mut writer_guard, piece_num)
+                  .await;
             } else {
                trace!(
                   "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
@@ -453,29 +448,31 @@ impl Peer {
       let (mut reader, writer) = stream.split();
       let writer = Arc::new(Mutex::new(writer));
 
-      // These are for communication between this function and handle_peer_command/handle_recv
-      let (peer_tx, mut peer_rx) = mpsc::channel(100);
-
       // Clone state to use (will be moved)
       let state = self.state.clone();
 
+      // Continuously loop and handle messages from reader and from_rx. The only downside with this
+      // setup is that messages can only be handled one at a time. But realistically, there are few
+      // chokepoints that we would reach with this setup.
       loop {
          tokio::select! {
             message = reader.recv() => {
                match message {
                   Ok(inner) => {
                      Self::update_message(state.last_message_received.clone());
-                     Self::handle_recv(
+                     self.handle_recv(
                         inner,
                         to_tx.clone(),
-                        state.clone(),
-                        peer_addr,
-                        peer_tx.clone(),
                      )
                      .await;
                   }
                   Err(e) => {
                      error!(%peer_addr, "An error occured when receiving the message from the reader: {e}");
+
+                     // Is this the best practice? Eh. But realistically, if a peer sends us
+                     // something that is simply invalid, we probably don't want to work with them
+                     // anymore.
+                     panic!("Error occured when receiving a message from the peer");
                   }
                }
             }
@@ -483,13 +480,10 @@ impl Peer {
                match message {
                   Some(inner) => {
                      // Are all these clones horribly inefficient? Hopefully not.
-                     Self::handle_peer_command(
+                     self.handle_peer_command(
                         inner,
-                        state.clone(),
                         writer.clone(),
                         to_tx.clone(),
-                        self.pieces.clone(),
-                        peer_addr,
                      )
                      .await;
                      Self::update_message(self.state.last_message_sent.clone());
@@ -506,7 +500,7 @@ impl Peer {
 
 #[cfg(test)]
 mod tests {
-   use std::{str::FromStr, thread::sleep};
+   use std::str::FromStr;
 
    use bitvec::bitvec;
    use bitvec::order::Lsb0;
