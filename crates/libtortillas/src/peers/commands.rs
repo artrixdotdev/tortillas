@@ -16,12 +16,12 @@ pub enum PeerCommand {
 #[derive(Debug, Clone)]
 pub enum PeerResponse {
    Init {
-      from_tx: mpsc::Sender<PeerCommand>,
+      from_engine_tx: mpsc::Sender<PeerCommand>,
       peer_key: PeerKey,
    },
    Choking(PeerKey),
    Unchoke {
-      from_tx: mpsc::Sender<PeerCommand>,
+      from_engine_tx: mpsc::Sender<PeerCommand>,
       peer_key: PeerKey,
    },
    Receive {

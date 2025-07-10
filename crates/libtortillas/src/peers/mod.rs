@@ -223,9 +223,13 @@ impl Peer {
       }
    }
 
-   // Small helper function for sending messages witih to_tx.
-   fn send(to_tx: broadcast::Sender<PeerResponse>, message: PeerResponse, peer_addr: SocketAddr) {
-      to_tx
+   // Small helper function for sending messages witih to_engine_tx.
+   fn send(
+      to_engine_tx: broadcast::Sender<PeerResponse>,
+      message: PeerResponse,
+      peer_addr: SocketAddr,
+   ) {
+      to_engine_tx
          .send(message)
          .map_err(|e| error!(%peer_addr, "Failed to send Piece message from peer: {}", e))
          .unwrap();
@@ -236,15 +240,15 @@ impl Peer {
    async fn handle_recv(
       &mut self,
       message: PeerMessages,
-      to_tx: broadcast::Sender<PeerResponse>,
-      from_tx: mpsc::Sender<PeerCommand>,
+      to_engine_tx: broadcast::Sender<PeerResponse>,
+      from_engine_tx: mpsc::Sender<PeerCommand>,
    ) {
       let peer_addr = self.socket_addr();
       match &message {
          PeerMessages::Piece(_, _, _) => {
             trace!("Received a Piece message from peer {}", peer_addr);
             Self::send(
-               to_tx,
+               to_engine_tx,
                PeerResponse::Receive {
                   message,
                   peer_key: peer_addr,
@@ -261,9 +265,9 @@ impl Peer {
             self.state.am_choked.store(false, Ordering::Release);
             trace!("Peer {} is now unchoked", peer_addr);
             Self::send(
-               to_tx,
+               to_engine_tx,
                PeerResponse::Unchoke {
-                  from_tx,
+                  from_engine_tx,
                   peer_key: peer_addr,
                },
                peer_addr,
@@ -286,7 +290,7 @@ impl Peer {
          PeerMessages::Request(index, _, _) => {
             trace!(%peer_addr, "Peer wants piece {}", index);
             Self::send(
-               to_tx,
+               to_engine_tx,
                PeerResponse::Receive {
                   message,
                   peer_key: peer_addr,
@@ -313,11 +317,11 @@ impl Peer {
       &mut self,
       message: PeerCommand,
       writer: Arc<Mutex<PeerWriter>>,
-      to_tx: broadcast::Sender<PeerResponse>,
+      to_engine_tx: broadcast::Sender<PeerResponse>,
    ) {
       let peer_addr = self.socket_addr();
       trace!(
-         "Received message from from_rx for peer {}: {:?}",
+         "Received message from from_engine_rx for peer {}: {:?}",
          peer_addr,
          message
       );
@@ -337,11 +341,11 @@ impl Peer {
                trace!(
                   "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
                );
-               to_tx
+               to_engine_tx
                   .send(PeerResponse::Choking(peer_addr))
                   .map_err(|e| {
                      error!(
-                        "Error when sending message back with to_tx from peer {}: {}",
+                        "Error when sending message back with to_engine_tx from peer {}: {}",
                         peer_addr, e
                      )
                   })
@@ -364,15 +368,15 @@ impl Peer {
       message.store(Some(Instant::now().into()), Ordering::Release);
    }
 
-   /// Autonomously handles the connection & messages between a peer. The from_tx/from_rx is provided to
+   /// Autonomously handles the connection & messages between a peer. The from_engine_tx/from_engine_rx is provided to
    /// facilitate communication to this function from the caller (likely TorrentEngine -- if so, this channel will be used to communicate what pieces TorrentEngine still needs).
-   /// to_tx is provided to allow communication from handle_peer to the caller.
+   /// to_engine_tx is provided to allow communication from handle_peer to the caller.
    ///
    /// At the moment, handle_peer is a leecher. In that, it is not a seeder -- it only takes from
    /// the torrent swarm. Seeding will be implemented in the future.
    pub async fn handle_peer(
       mut self,
-      to_tx: broadcast::Sender<PeerResponse>,
+      to_engine_tx: broadcast::Sender<PeerResponse>,
       info_hash: InfoHash,
       our_id: PeerId,
       stream: Option<PeerStream>,
@@ -380,11 +384,11 @@ impl Peer {
       init_bitfield: Option<BitVec<u8>>,
    ) {
       let peer_addr = self.socket_addr();
-      let (from_tx, mut from_rx) = mpsc::channel(100);
+      let (from_engine_tx, mut from_engine_rx) = mpsc::channel(100);
 
-      to_tx
+      to_engine_tx
          .send(PeerResponse::Init {
-            from_tx: from_tx.clone(),
+            from_engine_tx: from_engine_tx.clone(),
             peer_key: peer_addr,
          })
          .unwrap();
@@ -428,14 +432,14 @@ impl Peer {
             trace!("Received bitfield message from peer {}", peer_addr);
             self.pieces = bitfield;
 
-            to_tx
+            to_engine_tx
                .send(PeerResponse::Receive {
                   message: to_send,
                   peer_key: peer_addr,
                })
                .map_err(|e| {
                   error!(
-                     "Error sending bitfield with to_tx on peer {}: {}",
+                     "Error sending bitfield with to_engine_tx on peer {}: {}",
                      peer_addr, e
                   )
                })
@@ -463,7 +467,7 @@ impl Peer {
       // Clone state to use (will be moved)
       let state = self.state.clone();
 
-      // Continuously loop and handle messages from reader and from_rx. The only downside with this
+      // Continuously loop and handle messages from reader and from_engine_rx. The only downside with this
       // setup is that messages can only be handled one at a time. But realistically, there are few
       // chokepoints that we would reach with this setup.
       loop {
@@ -474,8 +478,8 @@ impl Peer {
                      Self::update_message(state.last_message_received.clone());
                      self.handle_recv(
                         inner,
-                        to_tx.clone(),
-                        from_tx.clone(),
+                        to_engine_tx.clone(),
+                        from_engine_tx.clone(),
                      )
                      .await;
                   }
@@ -489,20 +493,20 @@ impl Peer {
                   }
                }
             }
-            message = from_rx.recv() => {
+            message = from_engine_rx.recv() => {
                match message {
                   Some(inner) => {
                      // Are all these clones horribly inefficient? Hopefully not.
                      self.handle_peer_command(
                         inner,
                         writer.clone(),
-                        to_tx.clone(),
+                        to_engine_tx.clone(),
                      )
                      .await;
                      Self::update_message(self.state.last_message_sent.clone());
                   }
                   None => {
-                     error!(%peer_addr, "Received a None message from from_rx");
+                     error!(%peer_addr, "Received a None message from from_engine_rx");
                   }
                }
             }
@@ -543,7 +547,7 @@ mod tests {
       // This is a known good peer (as of 06/17/2025) for the torrent located in zenshuu.txt
       let known_good_peer = "78.192.97.58:51413";
       let peer = Peer::from_socket_addr(SocketAddr::from_str(known_good_peer).unwrap());
-      let (to_tx, mut to_rx) = broadcast::channel(100);
+      let (to_engine_tx, mut to_engine_rx) = broadcast::channel(100);
 
       let path = std::env::current_dir()
          .unwrap()
@@ -558,7 +562,7 @@ mod tests {
 
       peer
          .handle_peer(
-            to_tx,
+            to_engine_tx,
             data.info_hash().unwrap(),
             Arc::new(our_id),
             None,
@@ -567,9 +571,9 @@ mod tests {
          )
          .await;
 
-      let _ = to_rx.recv().await.unwrap();
+      let _ = to_engine_rx.recv().await.unwrap();
 
-      let peer_response_bitfield = to_rx.recv().await.unwrap();
+      let peer_response_bitfield = to_engine_rx.recv().await.unwrap();
       assert!(matches!(
          peer_response_bitfield,
          PeerResponse::Receive {
@@ -593,22 +597,23 @@ mod tests {
       // Start peer
       let peer = Peer::from_socket_addr(SocketAddr::from_str(peer_addr).unwrap());
       let peer_id = Hash::new(rand::random::<[u8; 20]>());
-      let (to_tx, mut to_rx) = broadcast::channel(100);
+      let (to_engine_tx, mut to_engine_rx) = broadcast::channel(100);
 
       tokio::spawn(async move {
          peer
-            .handle_peer(to_tx, info_hash, Arc::new(peer_id), None, None, None)
+            .handle_peer(to_engine_tx, info_hash, Arc::new(peer_id), None, None, None)
             .await;
       });
 
-      let from_tx_wrapped = to_rx.recv().await.unwrap();
-      let from_tx = if let PeerResponse::Init { from_tx, .. } = from_tx_wrapped {
-         from_tx
+      let from_engine_tx_wrapped = to_engine_rx.recv().await.unwrap();
+      let from_engine_tx = if let PeerResponse::Init { from_engine_tx, .. } = from_engine_tx_wrapped
+      {
+         from_engine_tx
       } else {
          panic!("Was not PeerResponse::Init");
       };
 
-      trace!("Got from_tx from peer");
+      trace!("Got from_engine_tx from peer");
 
       // First message should be a handshake
       let stream = listener.accept().await.unwrap().0;
@@ -647,8 +652,8 @@ mod tests {
          .await
          .unwrap();
 
-      // Wait for a bitfield from to_tx
-      let peer_response_bitfield = to_rx.recv().await.unwrap();
+      // Wait for a bitfield from to_engine_tx
+      let peer_response_bitfield = to_engine_rx.recv().await.unwrap();
       assert!(matches!(
          peer_response_bitfield,
          PeerResponse::Receive { .. }
@@ -667,13 +672,13 @@ mod tests {
 
       trace!("Sent an unchoke message");
 
-      let unchoke_message = to_rx.recv().await.unwrap();
+      let unchoke_message = to_engine_rx.recv().await.unwrap();
       assert!(matches!(unchoke_message, PeerResponse::Unchoke { .. }));
 
-      trace!("Got unchoke message from to_rx");
+      trace!("Got unchoke message from to_engine_rx");
 
       // Tell the peer to request piece 1
-      from_tx.send(PeerCommand::Piece(1)).await.unwrap();
+      from_engine_tx.send(PeerCommand::Piece(1)).await.unwrap();
 
       trace!("Sent piece message");
 
@@ -692,8 +697,8 @@ mod tests {
 
       trace!("Sent fake piece message to peer");
 
-      // Wait for a piece from to_tx
-      let peer_response_piece = to_rx.recv().await.unwrap();
+      // Wait for a piece from to_engine_tx
+      let peer_response_piece = to_engine_rx.recv().await.unwrap();
       assert!(matches!(
          peer_response_piece,
          PeerResponse::Receive {

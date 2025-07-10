@@ -63,7 +63,7 @@ pub struct TorrentEngine {
    metainfo: MetaInfo,
    id: PeerId,
    active_peers: Arc<Mutex<HashMap<PeerKey, PeerMessenger>>>,
-   from_peer_tx_rx: (
+   to_engine_tx_rx: (
       broadcast::Sender<PeerResponse>,
       broadcast::Receiver<PeerResponse>,
    ),
@@ -93,7 +93,7 @@ impl TorrentEngine {
    async fn new(metainfo: MetaInfo) -> Self {
       let info_hash = metainfo.info_hash().unwrap();
       let peer_id = Arc::new(Hash::from_bytes(rand::random::<[u8; 20]>()));
-      let from_peer_tx_rx = broadcast::channel(100);
+      let to_engine_tx_rx = broadcast::channel(100);
 
       info!(
           info_hash = %info_hash,
@@ -110,7 +110,7 @@ impl TorrentEngine {
          active_peers: Arc::new(Mutex::new(HashMap::new())),
          tcp_addr: Arc::new(Mutex::new(None)),
          utp_addr: Arc::new(Mutex::new(None)),
-         from_peer_tx_rx,
+         to_engine_tx_rx,
          bitfield: Arc::new(RwLock::new(BitVec::EMPTY)),
          session_start: Instant::now(),
          stats: Arc::new(Mutex::new(TorrentStats::default())),
@@ -222,7 +222,7 @@ impl TorrentEngine {
 
       peer
          .handle_peer(
-            self.from_peer_tx_rx.0.clone(),
+            self.to_engine_tx_rx.0.clone(),
             self.metainfo.info_hash().unwrap(),
             Arc::clone(&self.id),
             stream,
@@ -422,31 +422,40 @@ impl TorrentEngine {
          primary_addr
       };
 
-      // Spawns a loop to handle responses from `from_peer_tx_rx.1` (AKA the receiver that all
+      // Spawns a loop to handle responses from `to_engine_tx_rx.1` (AKA the receiver that all
       // peer threads send messages to)
       let me_handle_peer = self.clone();
       tokio::spawn(async move {
-         let mut peer_from_rx = me_handle_peer.from_peer_tx_rx.0.subscribe();
+         let mut to_engine_tx = me_handle_peer.to_engine_tx_rx.0.subscribe();
 
-         while let Ok(message) = peer_from_rx.recv().await {
+         while let Ok(message) = to_engine_tx.recv().await {
             match message {
-               PeerResponse::Init { from_tx, peer_key } => {
+               PeerResponse::Init {
+                  from_engine_tx,
+                  peer_key,
+               } => {
                   me_handle_peer
                      .clone()
                      .active_peers
                      .lock()
                      .await
-                     .insert(peer_key, from_tx);
+                     .insert(peer_key, from_engine_tx);
 
                   info!(peer_addr = %peer_key, "Outbound peer connection established");
                }
                // This shouldn't (ideally) result in any peers being sent pieces before we have a
                // bitfield saved, as the first peer that sends us a bitfield will not have unchoked
                // yet.
-               PeerResponse::Unchoke { from_tx, peer_key } => {
+               PeerResponse::Unchoke {
+                  from_engine_tx,
+                  peer_key,
+               } => {
                   trace!(%peer_key, "torrent() now sees that peer is unchoked");
                   for piece_num in 0..me_handle_peer.bitfield.read().await.len() {
-                     match from_tx.send(PeerCommand::Piece(piece_num as u32)).await {
+                     match from_engine_tx
+                        .send(PeerCommand::Piece(piece_num as u32))
+                        .await
+                     {
                         Ok(_) => {
                            trace!(?peer_key, piece_num, "Sent PeerCommand::Piece to peer");
                         }
@@ -541,10 +550,10 @@ impl TorrentEngine {
       let mut ready_bitfield: BitVec<u8>;
 
       // Gather a single bitfield
-      let mut bitfield_from_peer_rx = me.from_peer_tx_rx.0.subscribe();
+      let mut bitfield_to_engine_tx = me.to_engine_tx_rx.0.subscribe();
 
       loop {
-         let response = bitfield_from_peer_rx.recv().await;
+         let response = bitfield_to_engine_tx.recv().await;
          trace!(bitfield_from_peer = ?response);
          if let Ok(PeerResponse::Receive {
             message: PeerMessages::Bitfield(bitfield),
@@ -583,7 +592,7 @@ impl TorrentEngine {
       // This loop will run until we are ready.
       const READY_VALUE: f64 = 0.80;
 
-      let mut accounted_bitfield_peer_rx = me.from_peer_tx_rx.0.subscribe();
+      let mut accounted_bitfield_peer_rx = me.to_engine_tx_rx.0.subscribe();
       loop {
          let response = accounted_bitfield_peer_rx.recv().await;
          trace!(bitfield_from_peer = ?response);
