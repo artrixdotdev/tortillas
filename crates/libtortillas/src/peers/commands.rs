@@ -20,7 +20,10 @@ pub enum PeerResponse {
       peer_key: PeerKey,
    },
    Choking(PeerKey),
-   Unchoke(PeerKey),
+   Unchoke {
+      from_tx: mpsc::Sender<PeerCommand>,
+      peer_key: PeerKey,
+   },
    Receive {
       message: PeerMessages,
       peer_key: PeerKey,

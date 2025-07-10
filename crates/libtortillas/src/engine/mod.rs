@@ -170,7 +170,7 @@ impl TorrentEngine {
       let peer = Peer::from_socket_addr(addr);
 
       tokio::spawn(async move {
-         self.spawn_handle_peer(peer, None, Some(stream));
+         self.spawn_handle_peer(peer, None, Some(stream)).await;
       });
    }
 
@@ -428,22 +428,40 @@ impl TorrentEngine {
       tokio::spawn(async move {
          let mut peer_from_rx = me_handle_peer.from_peer_tx_rx.0.subscribe();
 
-         match peer_from_rx.recv().await {
-            Ok(PeerResponse::Init { from_tx, peer_key }) => {
-               me_handle_peer
-                  .clone()
-                  .active_peers
-                  .lock()
-                  .await
-                  .insert(peer_key, from_tx);
+         while let Ok(message) = peer_from_rx.recv().await {
+            match message {
+               PeerResponse::Init { from_tx, peer_key } => {
+                  me_handle_peer
+                     .clone()
+                     .active_peers
+                     .lock()
+                     .await
+                     .insert(peer_key, from_tx);
 
-               info!(peer_addr = %peer_key, "Outbound peer connection established");
-            }
-            Err(response) => {
-               warn!(?response, "Unexpected response from outbound peer");
-            }
-            _ => {
-               debug!("Outbound peer connection failed");
+                  info!(peer_addr = %peer_key, "Outbound peer connection established");
+               }
+               // This shouldn't (ideally) result in any peers being sent pieces before we have a
+               // bitfield saved, as the first peer that sends us a bitfield will not have unchoked
+               // yet.
+               PeerResponse::Unchoke { from_tx, peer_key } => {
+                  trace!(%peer_key, "torrent() now sees that peer is unchoked");
+                  for piece_num in 0..me_handle_peer.bitfield.read().await.len() {
+                     match from_tx.send(PeerCommand::Piece(piece_num as u32)).await {
+                        Ok(_) => {
+                           trace!(?peer_key, piece_num, "Sent PeerCommand::Piece to peer");
+                        }
+                        Err(e) => {
+                           error!(
+                           ?peer_key,
+                           piece_num,
+                           "An error occurred when trying to send PeerCommand::Piece to peer: {}",
+                           e
+                        )
+                        }
+                     }
+                  }
+               }
+               _ => {}
             }
          }
       });
@@ -587,33 +605,7 @@ impl TorrentEngine {
          }
       }
 
-      // Request pieces from peers that have them
-      let me_request_pieces = me.clone();
-      tokio::spawn(async move {
-         loop {
-            // Potentially costly clone, but even for 1000 peers, this shouldn't be that bad.
-            let active_peers = me_request_pieces.active_peers.lock().await.clone();
-
-            for piece_num in 0..me_request_pieces.bitfield.read().await.len() {
-               for (peer_key, peer_tx) in &active_peers {
-                  match peer_tx.send(PeerCommand::Piece(piece_num as u32)).await {
-                     Ok(_) => {
-                        trace!(?peer_key, piece_num, "Sent PeerCommand::Piece to peer");
-                     }
-                     Err(e) => {
-                        error!(
-                           ?peer_key,
-                           piece_num,
-                           "An error occurred when trying to send PeerCommand::Piece to peer: {}",
-                           e
-                        )
-                     }
-                  }
-               }
-            }
-            sleep(Duration::from_secs(1)).await;
-         }
-      });
+      sleep(Duration::from_secs(3)).await;
 
       // - Handle incoming piece messages and any failed requests
       // - Handle incoming request messages (seeding)

@@ -233,7 +233,12 @@ impl Peer {
 
    /// A helper function for [handle_peer](Peer::handle_peer). This is a very beefy function --
    /// refactors that reduce its size are welcome.
-   async fn handle_recv(&mut self, message: PeerMessages, to_tx: broadcast::Sender<PeerResponse>) {
+   async fn handle_recv(
+      &mut self,
+      message: PeerMessages,
+      to_tx: broadcast::Sender<PeerResponse>,
+      from_tx: mpsc::Sender<PeerCommand>,
+   ) {
       let peer_addr = self.socket_addr();
       match &message {
          PeerMessages::Piece(_, _, _) => {
@@ -255,7 +260,14 @@ impl Peer {
             Self::update_message(self.state.last_optimistic_unchoke.clone());
             self.state.am_choked.store(false, Ordering::Release);
             trace!("Peer {} is now unchoked", peer_addr);
-            Self::send(to_tx, PeerResponse::Unchoke(peer_addr), peer_addr);
+            Self::send(
+               to_tx,
+               PeerResponse::Unchoke {
+                  from_tx,
+                  peer_key: peer_addr,
+               },
+               peer_addr,
+            );
          }
          PeerMessages::Interested => {
             self.state.am_interested.store(true, Ordering::Release);
@@ -372,7 +384,7 @@ impl Peer {
 
       to_tx
          .send(PeerResponse::Init {
-            from_tx,
+            from_tx: from_tx.clone(),
             peer_key: peer_addr,
          })
          .unwrap();
@@ -463,6 +475,7 @@ impl Peer {
                      self.handle_recv(
                         inner,
                         to_tx.clone(),
+                        from_tx.clone(),
                      )
                      .await;
                   }
@@ -655,7 +668,7 @@ mod tests {
       trace!("Sent an unchoke message");
 
       let unchoke_message = to_rx.recv().await.unwrap();
-      assert!(matches!(unchoke_message, PeerResponse::Unchoke(..)));
+      assert!(matches!(unchoke_message, PeerResponse::Unchoke { .. }));
 
       trace!("Got unchoke message from to_rx");
 
