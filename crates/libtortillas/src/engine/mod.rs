@@ -70,6 +70,7 @@ pub struct TorrentEngine {
    tcp_addr: Arc<Mutex<Option<SocketAddr>>>,
    utp_addr: Arc<Mutex<Option<SocketAddr>>>,
    bitfield: Arc<RwLock<BitVec<u8>>>,
+
    // Statistics tracking
    session_start: Instant,
    stats: Arc<Mutex<TorrentStats>>,
@@ -475,6 +476,38 @@ impl TorrentEngine {
          }
       });
 
+      // Oneshot channel to notify the following tokio::spawn when the bitfield is populated
+      let (bitfield_populated_tx, bitfield_populated_rx) = oneshot::channel();
+
+      let me_recv_pieces = me.clone();
+      tokio::spawn(async move {
+         // We use the bitfield to track what pieces we've received. When the bitfield is
+         // populated, it is populated with 0's. When a piece is received, we flip the
+         // corresponding bit in the bitfield.
+         bitfield_populated_rx.await.unwrap();
+
+         let mut to_engine_tx = me_recv_pieces.to_engine_tx_rx.0.subscribe();
+
+         while !me_recv_pieces.bitfield.read().await.all() {
+            while let Ok(message) = to_engine_tx.recv().await {
+               if let PeerResponse::Receive {
+                  message: PeerMessages::Piece(index, begin, piece),
+                  ..
+               } = message
+               {
+                  {
+                     let mut bitfield = me_recv_pieces.bitfield.write().await;
+                     if let Some(mut bit) = bitfield.get_mut(index as usize) {
+                        *bit = true;
+                     }
+                  }
+
+                  // TODO: Save piece
+               }
+            }
+         }
+      });
+
       // Peer discovery loop
       let me_discovery = Arc::clone(&me);
       let stats_ref = Arc::clone(&self.stats);
@@ -565,6 +598,9 @@ impl TorrentEngine {
             let mut bitfield_guard = me.bitfield.write().await;
             *bitfield_guard = bitvec;
             ready_bitfield = bitfield;
+
+            // Exists to tell request loop when to start
+            bitfield_populated_tx.send(true).unwrap();
             trace!("Wrote to self.bitfield, exiting loop");
             break;
          }
@@ -614,9 +650,8 @@ impl TorrentEngine {
          }
       }
 
-      sleep(Duration::from_secs(3)).await;
-
       // - Handle incoming piece messages and any failed requests
+      // - Save files to disk one by one when each piece is done downloading
       // - Handle incoming request messages (seeding)
 
       info!("Torrent session completed");
