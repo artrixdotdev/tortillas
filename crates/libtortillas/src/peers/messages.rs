@@ -1,8 +1,13 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use bitvec::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::{errors::PeerTransportError, hashes::Hash};
-use std::sync::Arc;
+use std::{
+   collections::HashMap,
+   net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+   sync::Arc,
+};
 
 pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
 
@@ -56,6 +61,7 @@ pub enum PeerMessages {
    ///
    /// Unexpected pieces might arrive; refer to the [specification](https://www.bittorrent.org/beps/bep_0003.html) for details.
    Piece(u32, u32, Vec<u8>) = 7u8,
+
    /// Cancels a pending `Request` message.
    ///
    /// Sent to indicate that a requested block is no longer needed. Typically
@@ -68,6 +74,19 @@ pub enum PeerMessages {
    /// |-------|---------|--------|
    /// | index |  begin  | length |
    Cancel(u32, u32, u32) = 8u8,
+
+   /// This message, similar to the [Handshake](Self::Handshake) message, is special. It is an
+   /// extension of the BitTorrent peer messages specified in [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html#peer-messages).
+   ///
+   /// # Binary Layout
+   ///
+   /// |          0-?          |
+   /// |-----------------------|
+   /// |  extended message id  |
+   ///
+   /// If the extended message id (EMI for short) is 0, then the following message is the
+   /// handshake, which is a bencoded dictionary, where all items are optional.
+   Extended(u8, Option<ExtendedHandshakeMessage>) = 20u8,
 
    /// This message is special, as it is not technically part of the standard [BitTorrent peer messages](https://www.bittorrent.org/beps/bep_0003.html#peer-messages),
    /// And does not have a specified Message ID, unlike the other messages that have a defined ID.
@@ -97,6 +116,16 @@ impl PeerMessages {
          PeerMessages::NotInterested => Self::create_message_with_id(3, &[]),
          PeerMessages::Have(index) => Self::create_message_with_id(4, &index.to_be_bytes()),
          PeerMessages::Bitfield(bits) => Self::create_message_with_id(5, bits.as_raw_slice()),
+         PeerMessages::Extended(extended_id, handshake_message) => {
+            if let Some(inner) = handshake_message {
+               let mut payload = vec![];
+               payload.extend_from_slice(&serde_bencode::to_bytes(inner).unwrap());
+               return Ok(Self::create_message_with_id(20, &payload));
+            }
+            let mut payload = vec![];
+            payload.extend_from_slice(&extended_id.to_be_bytes());
+            Self::create_message_with_id(20, &payload)
+         }
          PeerMessages::Request(index, begin, length) => {
             let mut payload = Vec::with_capacity(12);
             payload.extend_from_slice(&index.to_be_bytes());
@@ -210,7 +239,91 @@ impl PeerMessages {
             let length = u32::from_be_bytes(payload[8..12].try_into().unwrap());
             Ok(PeerMessages::Cancel(index, begin, length))
          }
+         20 => {
+            let extended_id = u8::from_be_bytes(payload[0..1].try_into().unwrap());
+            if payload.len() > 1 {
+               let handshake_message: ExtendedHandshakeMessage =
+                  serde_bencode::from_bytes(&payload[1..payload.len()]).unwrap();
+               return Ok(PeerMessages::Extended(extended_id, Some(handshake_message)));
+            }
+            Ok(PeerMessages::Extended(extended_id, None))
+         }
          _ => Err(PeerTransportError::Other(anyhow!("Unknown message type"))),
+      }
+   }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// The payload of the handshake message as described in [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html).
+///
+/// It is valid to send an handshake message more than once during the lifetime of a
+/// connection with a peer, but they may be ignored. Subsequent handshake message can be used to
+/// enable/disable extensions.
+///
+/// When utilized, this struct should be bencoded.
+///
+/// All fields are intentionally optional, and including this in a [PeerMessages::Extended] is
+/// optional as well.
+pub struct ExtendedHandshakeMessage {
+   /// Dictionary of extension messages. Maps names of extensions -> extended message ID for each
+   /// extension message.
+   ///
+   /// The extension message IDs are the IDs used to send the extension messages to the peer
+   /// sending this handshake. i.e. The IDs are local to this particular peer.
+   ///
+   /// No extension message may share the same ID. Setting an extension number to 0 = extension is
+   /// not supported or is disabled.
+   ///
+   /// We should ignore any extension names it doesn't recognize.
+   pub m: HashMap<String, u8>,
+   /// Local TCP listen port that allows each side to learn about the TCP port number of the other
+   /// side. If sent, there is no need for the receiving side to send this extension message.
+   pub p: Option<u32>,
+   /// Client name and version (UTF-8 string).
+   pub v: Option<String>,
+   /// The IP address that a given peer sees you as. I.e., the receiver's external ip address. No
+   /// port should be included. Either an IPv4 or IPv6 address.
+   pub yourip: Option<IpAddr>,
+   /// If we have an IPv6 interface, this acts as a different IP that a peer could connect back
+   /// with.
+   pub ipv6: Option<Ipv6Addr>,
+   /// If we have an IPv4 interface, this acts as a different IP that a peer could connect back
+   /// with.
+   pub ipv4: Option<Ipv4Addr>,
+   /// The number of outstanding request messages this client supports without dropping any.
+   /// Default in libtorrent is 250.
+   pub reqq: Option<u32>,
+}
+
+impl ExtendedHandshakeMessage {
+   pub fn new() -> Self {
+      Self {
+         m: HashMap::new(),
+         p: None,
+         v: None,
+         yourip: None,
+         ipv6: None,
+         ipv4: None,
+         reqq: None,
+      }
+   }
+   pub fn new_with_values(
+      m: HashMap<String, u8>,
+      p: Option<u32>,
+      v: Option<String>,
+      yourip: Option<IpAddr>,
+      ipv6: Option<Ipv6Addr>,
+      ipv4: Option<Ipv4Addr>,
+      reqq: Option<u32>,
+   ) -> Self {
+      Self {
+         m,
+         p,
+         v,
+         yourip,
+         ipv6,
+         ipv4,
+         reqq,
       }
    }
 }
