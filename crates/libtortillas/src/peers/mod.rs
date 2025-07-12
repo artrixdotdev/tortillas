@@ -298,6 +298,12 @@ impl Peer {
                peer_addr,
             );
          }
+         PeerMessages::Extended(extended_id, extended_handshake_message) => {
+            trace!(%peer_addr, "Peer sent an Extended message with id {}", extended_id);
+            if let Some(inner) = extended_handshake_message {
+               trace!(%peer_addr, "Peer sent a payload with Extended message: {:?}", inner);
+            }
+         }
          PeerMessages::Cancel(index, _, _) => {
             trace!(%peer_addr, "Peer wants to cancel piece {}", index);
             // TODO
