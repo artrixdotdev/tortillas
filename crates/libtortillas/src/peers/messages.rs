@@ -264,6 +264,16 @@ impl PeerMessages {
 ///
 /// All fields are intentionally optional, and including this in a [PeerMessages::Extended] is
 /// optional as well.
+///
+/// # Examples
+/// ```
+/// let handshake_message = ExtendedHandshakeMessage::new();
+/// let other_handshake_message: ExtendedHandshakeMessage = Default::default();
+///
+/// // Note that you are required to manually create an ExtendedHandshakeMessage if you wish to add
+/// // certain fields on initalization. That being said, all fields are public.
+/// let another_handshake_message = ExtendedHandshakeMessage { .. };
+/// ```
 pub struct ExtendedHandshakeMessage {
    /// Dictionary of extension messages. Maps names of extensions -> extended message ID for each
    /// extension message.
@@ -293,6 +303,34 @@ pub struct ExtendedHandshakeMessage {
    /// The number of outstanding request messages this client supports without dropping any.
    /// Default in libtorrent is 250.
    pub reqq: Option<u32>,
+   /// This should only be used with [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html). It
+   /// refers to the number of bytes for a torrents metadata.
+   ///
+   /// It is only used for the inital handshake described in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
+   pub metadata_size: Option<u64>,
+   /// Refers to the type of a message, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
+   /// - 0: `request` message
+   /// - 1: 'data' message
+   /// - 2: 'reject' message
+   ///
+   /// An unrecognized message ID MUST be ignored in order to support future extensibility.
+   pub msg_type: Option<u8>,
+   /// Indicates which part of the metadata this message refers to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
+   ///
+   /// This is a u32 because, while unlikely, a torrent's metadata *could* take up more than 256
+   /// pieces.
+   pub piece: Option<u32>,
+   /// The size of the piece of metadata that was just sent, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
+   ///
+   /// If the piece is the last piece of the metadata, it may be less than 16kiB. If it is
+   /// not the last piece of the metadata, it MUST be 16kiB.
+   pub total_size: Option<u64>,
+}
+
+impl Default for ExtendedHandshakeMessage {
+   fn default() -> Self {
+      Self::new()
+   }
 }
 
 impl ExtendedHandshakeMessage {
@@ -305,25 +343,10 @@ impl ExtendedHandshakeMessage {
          ipv6: None,
          ipv4: None,
          reqq: None,
-      }
-   }
-   pub fn new_with_values(
-      m: HashMap<String, u8>,
-      p: Option<u32>,
-      v: Option<String>,
-      yourip: Option<IpAddr>,
-      ipv6: Option<Ipv6Addr>,
-      ipv4: Option<Ipv4Addr>,
-      reqq: Option<u32>,
-   ) -> Self {
-      Self {
-         m,
-         p,
-         v,
-         yourip,
-         ipv6,
-         ipv4,
-         reqq,
+         metadata_size: None,
+         msg_type: None,
+         piece: None,
+         total_size: None,
       }
    }
 }
