@@ -271,7 +271,7 @@ impl PeerMessages {
 /// let other_handshake_message: ExtendedHandshakeMessage = Default::default();
 ///
 /// // Note that you are required to manually create an ExtendedHandshakeMessage if you wish to add
-/// // certain fields on initalization. That being said, all fields are public.
+/// // certain fields on initialization. That being said, all fields are public.
 /// let another_handshake_message = ExtendedHandshakeMessage { .. };
 /// ```
 pub struct ExtendedHandshakeMessage {
@@ -306,7 +306,7 @@ pub struct ExtendedHandshakeMessage {
    /// This should only be used with [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html). It
    /// refers to the number of bytes for a torrents metadata.
    ///
-   /// It is only used for the inital handshake described in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
+   /// It is only used for the initial handshake described in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
    pub metadata_size: Option<u64>,
    /// Refers to the type of a message, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
    /// - 0: `request` message
