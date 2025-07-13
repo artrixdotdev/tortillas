@@ -425,6 +425,8 @@ impl TorrentEngine {
 
       // Spawns a loop to handle responses from `to_engine_tx_rx.1` (AKA the receiver that all
       // peer threads send messages to)
+      //
+      // In other words, this thread handles all PeerResponses from each spawn of handle_peer.
       let me_handle_peer = self.clone();
       tokio::spawn(async move {
          let mut to_engine_tx = me_handle_peer.to_engine_tx_rx.0.subscribe();
@@ -471,39 +473,27 @@ impl TorrentEngine {
                      }
                   }
                }
-               _ => {}
-            }
-         }
-      });
+               PeerResponse::Receive { message, peer_key } => {
+                  // This is guaranteed to not run until self.bitfield is set to the correct length.
+                  match message {
+                     PeerMessages::Piece(index, _, _) => {
+                        {
+                           let mut bitfield = me_handle_peer.bitfield.write().await;
+                           if let Some(mut bit) = bitfield.get_mut(index as usize) {
+                              *bit = true;
+                           }
+                        }
 
-      // Oneshot channel to notify the following tokio::spawn when the bitfield is populated
-      let (bitfield_populated_tx, bitfield_populated_rx) = oneshot::channel();
-
-      let me_recv_pieces = me.clone();
-      tokio::spawn(async move {
-         // We use the bitfield to track what pieces we've received. When the bitfield is
-         // populated, it is populated with 0's. When a piece is received, we flip the
-         // corresponding bit in the bitfield.
-         bitfield_populated_rx.await.unwrap();
-
-         let mut to_engine_tx = me_recv_pieces.to_engine_tx_rx.0.subscribe();
-
-         while !me_recv_pieces.bitfield.read().await.all() {
-            while let Ok(message) = to_engine_tx.recv().await {
-               if let PeerResponse::Receive {
-                  message: PeerMessages::Piece(index, begin, piece),
-                  ..
-               } = message
-               {
-                  {
-                     let mut bitfield = me_recv_pieces.bitfield.write().await;
-                     if let Some(mut bit) = bitfield.get_mut(index as usize) {
-                        *bit = true;
+                        // TODO: Save piece
                      }
+                     PeerMessages::KeepAlive => {
+                        // As far as I am aware, we don't have to do anything for KeepAlive
+                        // messages.
+                     }
+                     _ => {}
                   }
-
-                  // TODO: Save piece
                }
+               _ => {}
             }
          }
       });
@@ -580,36 +570,7 @@ impl TorrentEngine {
       });
 
       // See the definition of "ready" below for an explanation of this.
-      let mut ready_bitfield: BitVec<u8>;
-
-      // Gather a single bitfield
-      let mut bitfield_to_engine_tx = me.to_engine_tx_rx.0.subscribe();
-
-      loop {
-         let response = bitfield_to_engine_tx.recv().await;
-         trace!(bitfield_from_peer = ?response);
-         if let Ok(PeerResponse::Receive {
-            message: PeerMessages::Bitfield(bitfield),
-            ..
-         }) = response
-         {
-            trace!("Got bitfield message from peer in torrent()");
-            let bitvec: BitVec<u8, Lsb0> = bitvec![u8, Lsb0; 0; bitfield.len()];
-            let mut bitfield_guard = me.bitfield.write().await;
-            *bitfield_guard = bitvec;
-            ready_bitfield = bitfield;
-
-            // Exists to tell request loop when to start
-            bitfield_populated_tx.send(true).unwrap();
-            trace!("Wrote to self.bitfield, exiting loop");
-            break;
-         }
-      }
-
-      trace!(
-         bitfield_len = me.bitfield.read().await.len(),
-         "Successfully updated bitfield"
-      );
+      let mut ready_bitfield: BitVec<u8> = BitVec::EMPTY;
 
       // Gather peers until we are "ready". We define "ready" as having ~80% of the pieces of a torrent
       // accounted for. For example, if a given torrent has 6 pieces, and peer A has pieces 0
@@ -625,10 +586,14 @@ impl TorrentEngine {
       // Additionally, overlap is allowed. If both peer A and B have piece 1, then we simply say
       // that that piece is accounted for.
       //
+      // Yes, there are other ways to do this such as using the pieces field of the info
+      // dictionary. However, this is simple and effective.
+      //
       // This loop will run until we are ready.
       const READY_VALUE: f64 = 0.80;
 
       let mut accounted_bitfield_peer_rx = me.to_engine_tx_rx.0.subscribe();
+
       loop {
          let response = accounted_bitfield_peer_rx.recv().await;
          trace!(bitfield_from_peer = ?response);
@@ -638,9 +603,16 @@ impl TorrentEngine {
          }) = response
          {
             trace!("Got bitfield message from peer in torrent()");
-            ready_bitfield.bitor_assign(bitfield);
 
-            if (ready_bitfield.count_ones() as f64 / ready_bitfield.len() as f64) >= READY_VALUE {
+            // Hacky way to initialize bitfield to correct length
+            if ready_bitfield.is_empty() {
+               ready_bitfield = bitfield.clone();
+            } else {
+               ready_bitfield.bitor_assign(bitfield);
+            }
+
+            let ready_ratio = ready_bitfield.count_ones() as f64 / ready_bitfield.len() as f64;
+            if ready_ratio >= READY_VALUE {
                trace!(
                   "Broke 'ready' loop -- {}% of pieces are accounted for.",
                   READY_VALUE * 100.0
