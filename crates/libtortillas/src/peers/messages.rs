@@ -253,6 +253,20 @@ impl PeerMessages {
    }
 }
 
+/// Refers to the type of a message, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
+/// - 0: `request` message
+/// - 1: 'data' message
+/// - 2: 'reject' message
+///
+/// An unrecognized message ID MUST be ignored in order to support future extensibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(u8)]
+pub enum MessageType {
+   Request = 0u8,
+   Data = 1u8,
+   Reject = 2u8,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// The payload of the handshake message as described in [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html).
 ///
@@ -309,12 +323,9 @@ pub struct ExtendedHandshakeMessage {
    /// It is only used for the initial handshake described in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
    pub metadata_size: Option<u64>,
    /// Refers to the type of a message, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
-   /// - 0: `request` message
-   /// - 1: 'data' message
-   /// - 2: 'reject' message
    ///
-   /// An unrecognized message ID MUST be ignored in order to support future extensibility.
-   pub msg_type: Option<u8>,
+   /// See documentation for (MessageType)[MessageType]
+   pub msg_type: Option<MessageType>,
    /// Indicates which part of the metadata this message refers to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
    ///
    /// This is a u32 because, while unlikely, a torrent's metadata *could* take up more than 256
