@@ -80,13 +80,16 @@ pub enum PeerMessages {
    ///
    /// # Binary Layout
    ///
-   /// |          0-?          |
-   /// |-----------------------|
-   /// |  extended message id  |
+   /// |          0-1          |         1-?        |     ?-?    |
+   /// |-----------------------|--------------------|------------|
+   /// |  extended message id  |  extended message  |  metadata  |
    ///
    /// If the extended message id (EMI for short) is 0, then the following message is the
    /// handshake, which is a bencoded dictionary, where all items are optional.
-   Extended(u8, Option<ExtendedHandshakeMessage>) = 20u8,
+   ///
+   /// The metadata is only for the data response of [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
+   /// where the info dictionary for a given torrent is tacked onto the end of an extended message.
+   Extended(u8, Option<ExtendedMessage>, Option<Vec<u8>>) = 20u8,
 
    /// This message is special, as it is not technically part of the standard [BitTorrent peer messages](https://www.bittorrent.org/beps/bep_0003.html#peer-messages),
    /// And does not have a specified Message ID, unlike the other messages that have a defined ID.
@@ -116,10 +119,13 @@ impl PeerMessages {
          PeerMessages::NotInterested => Self::create_message_with_id(3, &[]),
          PeerMessages::Have(index) => Self::create_message_with_id(4, &index.to_be_bytes()),
          PeerMessages::Bitfield(bits) => Self::create_message_with_id(5, bits.as_raw_slice()),
-         PeerMessages::Extended(extended_id, handshake_message) => {
+         PeerMessages::Extended(extended_id, handshake_message, metadata) => {
             if let Some(inner) = handshake_message {
                let mut payload = vec![];
                payload.extend_from_slice(&serde_bencode::to_bytes(inner).unwrap());
+               if let Some(metadata) = metadata {
+                  payload.extend_from_slice(&metadata);
+               }
                return Ok(Self::create_message_with_id(20, &payload));
             }
             let mut payload = vec![];
@@ -242,11 +248,15 @@ impl PeerMessages {
          20 => {
             let extended_id = u8::from_be_bytes(payload[0..1].try_into().unwrap());
             if payload.len() > 1 {
-               let handshake_message: ExtendedHandshakeMessage =
+               let handshake_message: ExtendedMessage =
                   serde_bencode::from_bytes(&payload[1..payload.len()]).unwrap();
-               return Ok(PeerMessages::Extended(extended_id, Some(handshake_message)));
+               return Ok(PeerMessages::Extended(
+                  extended_id,
+                  Some(handshake_message),
+                  None,
+               ));
             }
-            Ok(PeerMessages::Extended(extended_id, None))
+            Ok(PeerMessages::Extended(extended_id, None, None))
          }
          _ => Err(PeerTransportError::Other(anyhow!("Unknown message type"))),
       }
@@ -281,14 +291,14 @@ pub enum MessageType {
 ///
 /// # Examples
 /// ```
-/// let handshake_message = ExtendedHandshakeMessage::new();
-/// let other_handshake_message: ExtendedHandshakeMessage = Default::default();
+/// let handshake_message = ExtendedMessage::new();
+/// let other_handshake_message: ExtendedMessage = Default::default();
 ///
-/// // Note that you are required to manually create an ExtendedHandshakeMessage if you wish to add
+/// // Note that you are required to manually create an ExtendedMessage if you wish to add
 /// // certain fields on initialization. That being said, all fields are public.
-/// let another_handshake_message = ExtendedHandshakeMessage { .. };
+/// let another_handshake_message = ExtendedMessage { .. };
 /// ```
-pub struct ExtendedHandshakeMessage {
+pub struct ExtendedMessage {
    /// Dictionary of extension messages. Maps names of extensions -> extended message ID for each
    /// extension message.
    ///
@@ -338,13 +348,13 @@ pub struct ExtendedHandshakeMessage {
    pub total_size: Option<u64>,
 }
 
-impl Default for ExtendedHandshakeMessage {
+impl Default for ExtendedMessage {
    fn default() -> Self {
       Self::new()
    }
 }
 
-impl ExtendedHandshakeMessage {
+impl ExtendedMessage {
    pub fn new() -> Self {
       Self {
          m: HashMap::new(),
