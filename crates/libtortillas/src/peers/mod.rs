@@ -1,14 +1,17 @@
 use crate::{
    hashes::{Hash, InfoHash},
+   parser::{Info, MetaInfo},
    peers::stream::PeerWriter,
 };
+use anyhow::{bail, Error};
 use atomic_time::AtomicOptionInstant;
 use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
 use core::fmt;
 use librqbit_utp::UtpSocketUdp;
-use messages::{PeerMessages, MAGIC_STRING};
+use messages::{ExtendedMessage, MessageType, PeerMessages, MAGIC_STRING};
 use std::{
+   collections::HashMap,
    fmt::{Debug, Display},
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -21,14 +24,15 @@ use std::{
 };
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
+   io::AsyncWriteExt,
    sync::{
       broadcast,
-      mpsc::{self, Sender},
+      mpsc::{self, Receiver, Sender},
       Mutex,
    },
    time::{timeout, Instant},
 };
-use tracing::{error, instrument, trace};
+use tracing::{debug, error, info, trace, warn};
 
 pub mod commands;
 pub mod messages;
@@ -39,6 +43,28 @@ pub mod stream;
 /// though.
 pub type PeerKey = SocketAddr;
 pub type PeerId = Arc<Hash<20>>;
+
+/// A helper struct to determine what BEPs a given peer supports.
+///
+/// BEP support that is derived from the m dictionary in [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html) is denoted by a u8, and
+/// BEP support that is derived from the handshake is denoted by a boolean.
+///
+/// When initalized with new, every field is initialized as unsupported: a 0 for u8s, and a false
+/// for booleans.
+#[derive(Clone)]
+pub struct PeerSupports {
+   pub bep_0009: u8,
+   pub bep_0010: bool,
+}
+
+impl PeerSupports {
+   fn new() -> Self {
+      PeerSupports {
+         bep_0009: 0,
+         bep_0010: false,
+      }
+   }
+}
 
 /// A helper struct for Peer that maintains a given peers state. This state includes both the state
 /// defined in [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html) and our own state which we
@@ -100,6 +126,56 @@ impl PeerState {
    }
 }
 
+#[derive(Clone)]
+/// A helper struct for Peer. Manages and handles any metadata (informally called an Info dict, as
+/// is the case here) from a Peer.
+///
+/// If you're unfamiliar, you can get metadata from a peer using the protocol described in [BEP
+/// 0009](https://www.bittorrent.org/beps/bep_0009.html) and [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html)
+pub struct PeerInfo {
+   pub info_size: u64,
+   pub info_bytes: Vec<u8>,
+}
+
+impl PeerInfo {
+   pub fn new(info_size: u64, info_bytes: Vec<u8>) -> Self {
+      PeerInfo {
+         info_size,
+         info_bytes,
+      }
+   }
+
+   /// Generates an Info dict from the current bytes in info_bytes. If the hash of the created Info
+   /// dict is not the same as the inputted info hash, an error will be returned. If the hash is the
+   /// same, the newly created Info will be returned.
+   pub async fn generate_info_from_bytes(&self, info_hash: InfoHash) -> Result<Info, Error> {
+      // Put bytes into Info struct
+      // The metadata should be bencoded bytes.
+      let info_dict: Info = serde_bencode::from_bytes(&self.info_bytes).unwrap();
+
+      trace!(?info_dict, "Made info dict from bytes");
+
+      // Validate hash of struct with given info hash
+      let generated_info_hash = info_dict.hash().unwrap();
+      if generated_info_hash != info_hash {
+         trace!(
+            generated_info_hash = ?generated_info_hash,
+            inputted_info_hash = ?info_hash,
+            "Inputted info_hash was not the same as generated info_hash"
+         );
+         bail!("Inputted info_hash was not the same as generated info_hash")
+      }
+
+      Ok(info_dict)
+   }
+
+   // Resets the PeerInfo struct.
+   pub fn reset(&mut self) {
+      self.info_bytes = vec![];
+      self.info_size = 0;
+   }
+}
+
 /// Represents a BitTorrent peer with connection state and statistics
 /// Download rate and upload rate are measured in kilobytes per second.
 #[derive(Clone)]
@@ -108,7 +184,12 @@ pub struct Peer {
    pub port: u16,
    pub state: PeerState,
    pub pieces: BitVec<u8>,
+   /// The reserved bytes that the peer sent us in their handshake. This indicates what extensions
+   /// the peer supports.
+   pub reserved: [u8; 8],
+   pub peer_supports: PeerSupports,
    pub id: Option<Hash<20>>,
+   pub info: PeerInfo,
 }
 
 impl Debug for Peer {
@@ -155,7 +236,10 @@ impl Peer {
          port,
          state: PeerState::new(),
          pieces: BitVec::EMPTY,
+         reserved: [0u8; 8],
+         peer_supports: PeerSupports::new(),
          id: None,
+         info: PeerInfo::new(0, vec![]),
       }
    }
 
