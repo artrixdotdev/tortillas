@@ -1,9 +1,9 @@
 use crate::errors::PeerTransportError;
 use crate::hashes::Hash;
-use crate::peers::InfoHash;
 use crate::peers::messages::Handshake;
-use anyhow::Result;
+use crate::peers::InfoHash;
 use anyhow::anyhow;
+use anyhow::Result;
 use async_trait::async_trait;
 use librqbit_utp::UtpSocketUdp;
 use librqbit_utp::UtpStreamReadHalf;
@@ -23,9 +23,9 @@ use std::{
    task::{Context, Poll},
 };
 
-use super::MAGIC_STRING;
-use super::PeerId;
 use super::messages::PeerMessages;
+use super::PeerId;
+use super::MAGIC_STRING;
 use librqbit_utp::UtpStream;
 use tokio::{
    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
@@ -133,7 +133,7 @@ impl PeerStream {
       &mut self,
       our_id: PeerId,
       info_hash: Arc<InfoHash>,
-   ) -> Result<PeerId, PeerTransportError> {
+   ) -> Result<(PeerId, [u8; 8]), PeerTransportError> {
       let handshake = Handshake::new(info_hash.clone(), our_id.clone());
       let remote_addr = self.remote_addr().unwrap();
       self.write_all(&handshake.to_bytes()).await.unwrap();
@@ -157,7 +157,7 @@ impl PeerStream {
 
       info!(%remote_addr, "Peer connected");
 
-      Ok(handshake.peer_id)
+      Ok((handshake.peer_id, handshake.reserved))
    }
 
    /// Receives an incoming handshake from a peer.
@@ -423,7 +423,7 @@ mod tests {
             .await
             .unwrap();
 
-         assert_eq!(response, client_server_id);
+         assert_eq!(response.0, client_server_id);
       });
 
       // Server side

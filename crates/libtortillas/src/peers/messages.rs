@@ -1,11 +1,12 @@
 use anyhow::{anyhow, Result};
 use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
+use serde_repr::Serialize_repr;
 
 use crate::{errors::PeerTransportError, hashes::Hash};
 use std::{
    collections::HashMap,
-   net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+   net::{Ipv4Addr, Ipv6Addr},
    sync::Arc,
 };
 
@@ -269,7 +270,7 @@ impl PeerMessages {
 /// - 2: 'reject' message
 ///
 /// An unrecognized message ID MUST be ignored in order to support future extensibility.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Serialize_repr, Debug, Clone, PartialEq, Eq, Deserialize)]
 #[repr(u8)]
 pub enum MessageType {
    Request = 0u8,
@@ -317,7 +318,7 @@ pub struct ExtendedMessage {
    pub v: Option<String>,
    /// The IP address that a given peer sees you as. I.e., the receiver's external ip address. No
    /// port should be included. Either an IPv4 or IPv6 address.
-   pub yourip: Option<IpAddr>,
+   pub yourip: Option<String>,
    /// If we have an IPv6 interface, this acts as a different IP that a peer could connect back
    /// with.
    pub ipv6: Option<Ipv6Addr>,
@@ -388,9 +389,14 @@ pub struct Handshake {
 impl Handshake {
    /// Create a new handshake with the given info hash and peer ID
    pub fn new(info_hash: Arc<Hash<20>>, peer_id: Arc<Hash<20>>) -> Self {
+      let mut reserved = [0u8; 8];
+
+      // We support BEP 0010
+      reserved[5] = 0x10;
+
       Self {
          protocol: MAGIC_STRING.to_vec(),
-         reserved: [0u8; 8],
+         reserved,
          info_hash,
          peer_id,
       }
