@@ -60,7 +60,7 @@ pub trait PeerRecv: AsyncRead + Unpin {
    /// use this function.
    async fn recv(&mut self) -> Result<PeerMessages, PeerTransportError> {
       // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
-      let mut buf = vec![0; 5];
+      let mut buf = vec![0; 4];
 
       self.read_exact(&mut buf).await.map_err(|e| {
          error!("Error occurred when reading the peer's response: {e}");
@@ -69,11 +69,26 @@ pub trait PeerRecv: AsyncRead + Unpin {
 
       let length = u32::from_be_bytes(buf[..4].try_into().unwrap());
 
+      trace!(message_length = length);
+
+      // Safety check -- BitTorrent docs do not specify if KeepAlive messages have an ID (and I'm
+      // pretty sure they don't)
+      if length == 0 {
+         return Ok(PeerMessages::KeepAlive);
+      }
+
+      let mut message_type = vec![0; 1];
+      self.read_exact(&mut message_type).await.map_err(|e| {
+         error!("Error occurred when reading the peer's response: {e}");
+         PeerTransportError::InvalidPeerResponse("Error occured".into())
+      })?;
+
       trace!(
-         message_type = buf[4],
-         length = length,
+         message_type = message_type[0],
          "Recieved message headers, requesting rest..."
       );
+
+      buf.extend_from_slice(&message_type);
 
       // Why do we have to do length - 1? Only a higher power knows.
       let mut rest = vec![0; (length - 1) as usize];
@@ -82,6 +97,7 @@ pub trait PeerRecv: AsyncRead + Unpin {
          error!("Error occurred when reading the peer's response: {e}");
          PeerTransportError::InvalidPeerResponse("Error occured".into())
       })?;
+
       let full_length = length + buf.len() as u32;
 
       debug!("Read {} action ({} bytes)", buf[4], full_length,);
