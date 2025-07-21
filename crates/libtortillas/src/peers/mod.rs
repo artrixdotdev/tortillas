@@ -10,6 +10,7 @@ use commands::{PeerCommand, PeerResponse};
 use core::fmt;
 use librqbit_utp::UtpSocketUdp;
 use messages::{ExtendedMessage, MessageType, PeerMessages, MAGIC_STRING};
+use rand::seq::IndexedRandom;
 use std::{
    fmt::{Debug, Display},
    hash::{Hash as InternalHash, Hasher},
@@ -27,7 +28,7 @@ use tokio::{
       mpsc::{self, Receiver, Sender},
       Mutex,
    },
-   time::{timeout, Instant},
+   time::{sleep, timeout, Instant},
 };
 use tracing::{debug, error, info, trace, warn};
 
@@ -148,6 +149,7 @@ impl PeerInfo {
    pub async fn generate_info_from_bytes(&self, info_hash: InfoHash) -> Result<Info, Error> {
       // Put bytes into Info struct
       // The metadata should be bencoded bytes.
+      trace!(info_hash = ?info_hash, bytes = ?self.info_bytes, "Generating info dict from bytes");
       let info_dict: Info = serde_bencode::from_bytes(&self.info_bytes).unwrap();
 
       trace!(?info_dict, "Made info dict from bytes");
@@ -176,14 +178,16 @@ impl PeerInfo {
       Ok(())
    }
 
-   /// The number of bytes we have collected from the Peer in total
-   pub fn have_bytes(&self) -> usize {
-      self.info_bytes.len()
-   }
-
    /// Helper for checking if we have all required bytes
+   ///
+   /// If [info_bytes](Self::info_bytes) is 0, this function automatically returns false due to the
+   /// redundancy (and incorrectness) of comparing the length of [info_bytes](Self::info_bytes) to
+   /// [info_size](Self::info_size).
    pub fn have_all_bytes(&self) -> bool {
-      self.have_bytes() >= self.info_size as usize
+      if self.info_size == 0 {
+         return false;
+      }
+      self.info_bytes.len() >= self.info_size as usize
    }
 
    /// Resets the PeerInfo struct.
@@ -419,14 +423,17 @@ impl Peer {
                   self.peer_supports.bep_0009 = *id;
                   // If peer has metadata and we don't already have it, request metadata from peer
                   if let Some(metadata_size) = extended_message.metadata_size {
-                     if metadata_size > 0 && !self.info.have_all_bytes() {
+                     self.info.info_size = metadata_size;
+                     if self.info.info_size > 0 && !self.info.have_all_bytes() {
                         inner_send_tx.send(message).await.unwrap();
+                        trace!("Sent message with inner_send_tx for Extended message");
                      }
                   }
                }
             }
 
             if self.info.have_all_bytes() {
+               trace!("All bytes for info dict were sent by peer -- assembling Info struct");
                let info = self.info.generate_info_from_bytes(info_hash).await;
                if let Err(e) = info {
                   error!("{e}");
@@ -533,29 +540,36 @@ impl Peer {
    ) {
       let peer_addr = self.socket_addr();
 
-      // Request metadata with BEP 0009 (if peer supports BEP 0010)
+      // Request metadata with an Extended message (if peer supports BEP 0010 and BEP 0009)
       //
       // Note that when we receive the info-dictionary from a peer, we absolutely must compare the
       // hash of it to our info hash.
       if let PeerMessages::Extended(id, extended_message, metadata) = message {
          if self.peer_supports.bep_0010 && self.peer_supports.bep_0009 > 0 {
-            // Because we will only get to this point if the peer sent us a Data (BEP 0009)
-            // message, we can confidently unwrap this.
-            let next_piece = extended_message.unwrap().piece.unwrap();
+            // The "forwarded" message could be a handshake. If it is, request piece 0.
+            let next_piece = extended_message.unwrap().piece.unwrap_or(0);
 
             let mut eh = ExtendedMessage::new();
-            eh.msg_type = Some(MessageType::Request);
-            eh.piece = Some(next_piece);
-            let message = PeerMessages::Extended(self.peer_supports.bep_0009, Some(eh), None);
+            let mut eh_id = 0;
 
-            info!(?message, "Made message to send to peer");
+            if id != 0 {
+               eh.msg_type = Some(MessageType::Request);
+               eh.piece = Some(next_piece);
+
+               // NOTE: I'm not sure if this is correct
+               eh_id = self.peer_supports.bep_0009;
+            }
+
+            let message = PeerMessages::Extended(eh_id, Some(eh), None);
+
+            info!(?message, %peer_addr, "Made message to send to peer");
 
             {
                let mut writer_guard = writer.lock().await;
                writer_guard.send(message).await.unwrap();
             }
 
-            trace!(%peer_addr, "Sent message to peer");
+            info!(%peer_addr, "Sent message to peer");
          }
       }
    }
@@ -627,34 +641,48 @@ impl Peer {
          stream.unwrap()
       };
 
-      debug!(%peer_addr, "Connected to peer");
-
-      // Send an "interested" message
-      stream.send(PeerMessages::Interested).await.unwrap();
-      self.state.interested.store(true, Ordering::Release);
-      trace!("Sent an Interested message to peer {}", peer_addr);
-
-      // Wait for unchoke
-      if let Ok(PeerMessages::Unchoke) = stream.recv().await {
-         trace!("Unchoked");
-         self.state.am_choked.store(false, Ordering::Release);
-      }
-
-      let bitfield_to_send = init_bitfield.unwrap_or(BitVec::EMPTY);
-
-      trace!(%peer_addr, %bitfield_to_send, "Bitfield to send to peer");
-
-      // Send empty bitfield. This may need to be refactored in the future to account for seeding.
-      stream
-         .send(PeerMessages::Bitfield(bitfield_to_send.clone()))
-         .await
-         .unwrap();
-
-      trace!(%peer_addr, "Sent empty bitfield to peer");
-
-      // Start of request/piece message loop
       let (mut reader, writer) = stream.split();
       let writer = Arc::new(Mutex::new(writer));
+
+      debug!(%peer_addr, "Connected to peer");
+
+      // Wait for peer to be unchoked, then send these messages.
+      let writer_clone = writer.clone();
+      let am_choked_clone = self.state.am_choked.clone();
+      let interested_clone = self.state.interested.clone();
+      tokio::spawn(async move {
+         let bitfield_to_send = init_bitfield.unwrap_or(BitVec::EMPTY);
+
+         trace!(%peer_addr, %bitfield_to_send, "Bitfield to send to peer");
+
+         loop {
+            if !am_choked_clone.load(Ordering::Acquire) {
+               // Send an "interested" message (NOTE: I'm 99% sure we can send this before being unchoked)
+               {
+                  let mut writer_guard = writer_clone.lock().await;
+                  writer_guard.send(PeerMessages::Interested).await.unwrap();
+                  interested_clone.store(true, Ordering::Release);
+               }
+
+               trace!("Sent an Interested message to peer {}", peer_addr);
+
+               // Send empty bitfield. This may need to be refactored in the future to account for seeding.
+               {
+                  let mut writer_guard = writer_clone.lock().await;
+                  writer_guard
+                     .send(PeerMessages::Bitfield(bitfield_to_send.clone()))
+                     .await
+                     .unwrap();
+               }
+
+               trace!(%peer_addr, "Sent empty bitfield to peer");
+               break;
+            }
+            sleep(Duration::from_millis(250)).await;
+         }
+      });
+
+      // Start of request/piece message loop
 
       // Clone state to use (will be moved)
       let state = self.state.clone();
@@ -786,7 +814,7 @@ mod tests {
    /// in the general tests for sake of completeness.
    async fn test_peer_connection() {
       // This is a known good peer (as of 06/17/2025) for the torrent located in zenshuu.txt
-      let known_good_peer = "79.12.80.79:40063";
+      let known_good_peer = "81.170.27.38:49999";
       let peer = Peer::from_socket_addr(SocketAddr::from_str(known_good_peer).unwrap());
       let (to_engine_tx, mut to_engine_rx) = broadcast::channel(100);
 
