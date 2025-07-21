@@ -120,19 +120,6 @@ impl PeerMessages {
          PeerMessages::NotInterested => Self::create_message_with_id(3, &[]),
          PeerMessages::Have(index) => Self::create_message_with_id(4, &index.to_be_bytes()),
          PeerMessages::Bitfield(bits) => Self::create_message_with_id(5, bits.as_raw_slice()),
-         PeerMessages::Extended(extended_id, handshake_message, metadata) => {
-            if let Some(inner) = handshake_message {
-               let mut payload = vec![];
-               payload.extend_from_slice(&serde_bencode::to_bytes(inner).unwrap());
-               if let Some(metadata) = metadata {
-                  payload.extend_from_slice(&metadata);
-               }
-               return Ok(Self::create_message_with_id(20, &payload));
-            }
-            let mut payload = vec![];
-            payload.extend_from_slice(&extended_id.to_be_bytes());
-            Self::create_message_with_id(20, &payload)
-         }
          PeerMessages::Request(index, begin, length) => {
             let mut payload = Vec::with_capacity(12);
             payload.extend_from_slice(&index.to_be_bytes());
@@ -153,6 +140,20 @@ impl PeerMessages {
             payload.extend_from_slice(&begin.to_be_bytes());
             payload.extend_from_slice(&length.to_be_bytes());
             Self::create_message_with_id(8, &payload)
+         }
+         PeerMessages::Extended(extended_id, handshake_message, metadata) => {
+            let mut payload = vec![];
+            payload.extend_from_slice(&extended_id.to_be_bytes());
+
+            if let Some(inner) = handshake_message {
+               payload.extend_from_slice(&serde_bencode::to_bytes(inner).unwrap());
+            }
+
+            if let Some(metadata) = metadata {
+               payload.extend_from_slice(metadata);
+            }
+
+            Self::create_message_with_id(20, &payload)
          }
          _ => return Err(PeerTransportError::Other(anyhow!("Unknown message type"))),
       })
