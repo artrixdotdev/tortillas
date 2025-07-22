@@ -1,11 +1,15 @@
 use tokio::sync::mpsc;
 
-use super::{messages::PeerMessages, PeerKey};
+use super::{
+   messages::{ExtendedMessage, PeerMessages},
+   PeerKey,
+};
 
 #[derive(Debug)]
 pub enum PeerCommand {
    /// Just the index of the piece that we're asking the peer for.
    Piece(u32),
+   Extended(u32, Option<ExtendedMessage>),
 }
 
 /// All messages FROM peers must include PeerKeys due to the fact that peers use the broadcast channel instead

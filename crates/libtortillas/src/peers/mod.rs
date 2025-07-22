@@ -347,7 +347,7 @@ impl Peer {
       message: PeerMessages,
       to_engine_tx: broadcast::Sender<PeerResponse>,
       from_engine_tx: mpsc::Sender<PeerCommand>,
-      inner_send_tx: mpsc::Sender<PeerMessages>,
+      inner_send_tx: mpsc::Sender<PeerCommand>,
       info_hash: InfoHash,
    ) {
       let peer_addr = self.socket_addr();
@@ -408,8 +408,17 @@ impl Peer {
          PeerMessages::Extended(extended_id, extended_message, metadata) => {
             trace!(%peer_addr, "Peer sent an Extended message with id {}", extended_id);
 
+            // If this is an Extended handshake, send a handshake in response.
+            if *extended_id == 0 {
+               let command = PeerCommand::Extended(0, None);
+
+               inner_send_tx.send(command).await.unwrap();
+               trace!("Sent Extended handshake to handle_send with inner_send_tx")
+            }
+
+            // Save to Peer.
             if let Some(inner_metadata) = metadata {
-               // Save to Peer. This to_vec() is a bit sloppy. Could be improved in a refactor.
+               // This to_vec() is a bit sloppy. Could be improved in a refactor.
                self.info.append_to_bytes(inner_metadata.to_vec()).unwrap();
             }
 
@@ -419,19 +428,33 @@ impl Peer {
                if let Some(size) = extended_message.metadata_size {
                   info!(size, "Received metadata size");
                }
-               if let Some(id) = extended_message.m.get("ut_metadata") {
-                  self.peer_supports.bep_0009 = *id;
+
+               if let Ok(id) = extended_message.supports_bep_0009() {
+                  self.peer_supports.bep_0009 = id;
+
                   // If peer has metadata and we don't already have it, request metadata from peer
                   if let Some(metadata_size) = extended_message.metadata_size {
                      self.info.info_size = metadata_size;
                      if self.info.info_size > 0 && !self.info.have_all_bytes() {
-                        inner_send_tx.send(message).await.unwrap();
+                        let piece_num = extended_message.piece.unwrap_or(0);
+                        let mut extended_message_command = ExtendedMessage::new();
+                        extended_message_command.piece = Some(piece_num);
+                        extended_message_command.msg_type = Some(MessageType::Data);
+
+                        // No idea what ID we should use here
+                        let command = PeerCommand::Extended(1, Some(extended_message_command));
+
+                        inner_send_tx.send(command).await.unwrap();
                         trace!("Sent message with inner_send_tx for Extended message");
                      }
                   }
                }
             }
 
+            // If we have everything, validate it and send it back to the engine.
+            //
+            // If the info dicts hash is not correct, there is currently no error handling (only an
+            // error message is shown)
             if self.info.have_all_bytes() {
                trace!("All bytes for info dict were sent by peer -- assembling Info struct");
                let info = self.info.generate_info_from_bytes(info_hash).await;
@@ -498,41 +521,39 @@ impl Peer {
          message
       );
 
-      match message {
-         PeerCommand::Piece(piece_num) => {
-            // If we're choking or the peer isn't interested, we can't do anything.
-            if !self.state.am_choked.load(Ordering::Acquire)
-               && self.state.interested.load(Ordering::Acquire)
-            {
-               let mut writer_guard = writer.lock().await;
+      if let PeerCommand::Piece(piece_num) = message {
+         // If we're choking or the peer isn't interested, we can't do anything.
+         if !self.state.am_choked.load(Ordering::Acquire)
+            && self.state.interested.load(Ordering::Acquire)
+         {
+            let mut writer_guard = writer.lock().await;
 
-               self
-                  .handle_piece_request(&mut writer_guard, piece_num)
-                  .await;
-            } else {
-               trace!(
-                  "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
-               );
-               to_engine_tx
-                  .send(PeerResponse::Choking {
-                     peer_key: peer_addr,
-                     from_engine_tx,
-                  })
-                  .map_err(|e| {
-                     error!(
-                        "Error when sending message back with to_engine_tx from peer {}: {}",
-                        peer_addr, e
-                     )
-                  })
-                  .unwrap();
-            }
+            self
+               .handle_piece_request(&mut writer_guard, piece_num)
+               .await;
+         } else {
+            trace!(
+               "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
+            );
+            to_engine_tx
+               .send(PeerResponse::Choking {
+                  peer_key: peer_addr,
+                  from_engine_tx,
+               })
+               .map_err(|e| {
+                  error!(
+                     "Error when sending message back with to_engine_tx from peer {}: {}",
+                     peer_addr, e
+                  )
+               })
+               .unwrap();
          }
       }
    }
 
    async fn handle_send(
       &mut self,
-      message: PeerMessages,
+      message: PeerCommand,
       writer: Arc<Mutex<PeerWriter>>,
       to_engine_tx: broadcast::Sender<PeerResponse>,
       from_engine_tx: mpsc::Sender<PeerCommand>,
@@ -544,10 +565,13 @@ impl Peer {
       //
       // Note that when we receive the info-dictionary from a peer, we absolutely must compare the
       // hash of it to our info hash.
-      if let PeerMessages::Extended(id, extended_message, metadata) = message {
+      if let PeerCommand::Extended(id, extended_message) = message {
          if self.peer_supports.bep_0010 && self.peer_supports.bep_0009 > 0 {
             // The "forwarded" message could be a handshake. If it is, request piece 0.
-            let next_piece = extended_message.unwrap().piece.unwrap_or(0);
+            let next_piece = extended_message
+               .unwrap_or(ExtendedMessage::new())
+               .piece
+               .unwrap_or(0);
 
             let mut eh = ExtendedMessage::new();
             let mut eh_id = 0;
@@ -704,7 +728,7 @@ impl Peer {
       // Read from Peer
       // `inner_send_tx.send(some_response)`
       // Send some_response to Peer
-      let (inner_send_tx, mut inner_send_rx): (Sender<PeerMessages>, Receiver<PeerMessages>) =
+      let (inner_send_tx, mut inner_send_rx): (Sender<PeerCommand>, Receiver<PeerCommand>) =
          mpsc::channel(32);
       let (inner_recv_tx, mut inner_recv_rx) = mpsc::channel(32);
 

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Error, Result};
 use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_repr::Serialize_repr;
@@ -311,7 +311,7 @@ pub struct ExtendedMessage {
    /// not supported or is disabled.
    ///
    /// We should ignore any extension names it doesn't recognize.
-   pub m: HashMap<String, u8>,
+   pub m: Option<HashMap<String, u8>>,
    /// Local TCP listen port that allows each side to learn about the TCP port number of the other
    /// side. If sent, there is no need for the receiving side to send this extension message.
    pub p: Option<u32>,
@@ -359,7 +359,7 @@ impl Default for ExtendedMessage {
 impl ExtendedMessage {
    pub fn new() -> Self {
       Self {
-         m: HashMap::new(),
+         m: None,
          p: None,
          v: None,
          yourip: None,
@@ -371,6 +371,19 @@ impl ExtendedMessage {
          piece: None,
          total_size: None,
       }
+   }
+
+   /// Returns true if a peer supports [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
+   /// based on the m dictionary passed with the Extended handshake.
+   pub fn supports_bep_0009(&self) -> Result<u8, Error> {
+      // We have to clone here for some reason?
+      if let Some(m) = self.m.clone() {
+         if let Some(id) = m.get("ut_metadata") {
+            return Ok(*id);
+         }
+         bail!("Peer does not support BEP 0009");
+      }
+      bail!("Peer did not send an m dict with the given Extended message");
    }
 }
 
