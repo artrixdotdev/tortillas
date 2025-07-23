@@ -12,6 +12,7 @@ use librqbit_utp::UtpSocketUdp;
 use messages::{ExtendedMessage, MessageType, PeerMessages, MAGIC_STRING};
 use rand::seq::IndexedRandom;
 use std::{
+   collections::HashMap,
    fmt::{Debug, Display},
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -410,9 +411,16 @@ impl Peer {
 
             // If this is an Extended handshake, send a handshake in response.
             if *extended_id == 0 {
-               let command = PeerCommand::Extended(0, None);
+               let mut m = HashMap::new();
+               m.insert("ut_metadata".into(), 2);
+               let mut extended_message = ExtendedMessage::new();
+               extended_message.m = Some(m);
+               let command = PeerCommand::Extended(0, Some(extended_message));
+
+               trace!(?command, "Handshake to send to handle_send");
 
                inner_send_tx.send(command).await.unwrap();
+
                trace!("Sent Extended handshake to handle_send with inner_send_tx")
             }
 
@@ -439,10 +447,14 @@ impl Peer {
                         let piece_num = extended_message.piece.unwrap_or(0);
                         let mut extended_message_command = ExtendedMessage::new();
                         extended_message_command.piece = Some(piece_num);
-                        extended_message_command.msg_type = Some(MessageType::Data);
+                        extended_message_command.msg_type = Some(MessageType::Request);
 
-                        // No idea what ID we should use here
-                        let command = PeerCommand::Extended(1, Some(extended_message_command));
+                        // The Extended ID as specified in BEP 0009 is the ID from the m dictionary
+                        // -- in this case the ID listed under ut_metadata
+                        let command = PeerCommand::Extended(
+                           self.peer_supports.bep_0009.into(),
+                           Some(extended_message_command),
+                        );
 
                         inner_send_tx.send(command).await.unwrap();
                         trace!("Sent message with inner_send_tx for Extended message");
@@ -461,8 +473,7 @@ impl Peer {
                if let Err(e) = info {
                   error!("{e}");
                } else {
-                  // We have to convert back to bytes due to issues with deriving Clone on the Info
-                  // struct.
+                  // We have to convert back to bytes due to issues with deriving Clone on the Info struct.
                   to_engine_tx
                      .send(PeerResponse::Info {
                         bytes: self.info.info_bytes.clone(),
@@ -567,26 +578,7 @@ impl Peer {
       // hash of it to our info hash.
       if let PeerCommand::Extended(id, extended_message) = message {
          if self.peer_supports.bep_0010 && self.peer_supports.bep_0009 > 0 {
-            // The "forwarded" message could be a handshake. If it is, request piece 0.
-            let next_piece = extended_message
-               .unwrap_or(ExtendedMessage::new())
-               .piece
-               .unwrap_or(0);
-
-            let mut eh = ExtendedMessage::new();
-            let mut eh_id = 0;
-
-            if id != 0 {
-               eh.msg_type = Some(MessageType::Request);
-               eh.piece = Some(next_piece);
-
-               // NOTE: I'm not sure if this is correct
-               eh_id = self.peer_supports.bep_0009;
-            }
-
-            let message = PeerMessages::Extended(eh_id, Some(eh), None);
-
-            info!(?message, %peer_addr, "Made message to send to peer");
+            let message = PeerMessages::Extended(id as u8, extended_message, None);
 
             {
                let mut writer_guard = writer.lock().await;
