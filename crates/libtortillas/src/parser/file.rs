@@ -62,6 +62,17 @@ pub struct Info {
    pieces: HashVec<20>,
    #[serde(flatten)]
    file: InfoKeys,
+   /// If it is set to "1", the client MUST publish its presence to get other peers ONLY via the trackers explicitly described in the metainfo file. If this field is set to "0" or is not present, the client may obtain peer from other means, e.g. PEX peer exchange, dht. Here, "private" may be read as "no external peer source".
+   ///
+   /// From <https://wiki.theory.org/BitTorrentSpecification#Info_Dictionary>
+   private: Option<u8>,
+
+   /// This is undocumented, AFAIK
+   publisher: Option<String>,
+
+   /// This is undocumented, AFAIK
+   #[serde(rename = "publisher-url")]
+   publisher_url: Option<String>,
 
    source: Option<String>,
 }
@@ -79,6 +90,9 @@ impl Eq for Info {}
 pub enum InfoKeys {
    Single {
       length: u64,
+      /// A 32-character hex string corresponding to the MD5 sum of the file. Not used by BitTorrent
+      /// at all, but included by some programs for greater compatablility.
+      md5sum: Option<String>,
    },
    Multi {
       #[serde(default)]
@@ -94,6 +108,10 @@ pub struct InfoFile {
    /// Subdirectory names for this file, the last of which is the actual file name
    /// (a zero length list is an error case).
    path: Vec<String>,
+
+   /// A 32-character hex string corresponding to the MD5 sum of the file. Not used by BitTorrent
+   /// at all, but included by some programs for greater compatablility.
+   md5sum: Option<String>,
 }
 
 impl Info {
