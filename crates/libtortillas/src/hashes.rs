@@ -1,5 +1,9 @@
-use std::fmt::{self, Display};
+use std::{
+   array::TryFromSliceError,
+   fmt::{self, Display},
+};
 
+use anyhow::anyhow;
 use serde::{
    Deserialize, Deserializer, Serialize, Serializer,
    de::{self, Visitor},
@@ -118,6 +122,18 @@ impl<const N: usize> Hash<N> {
       } else {
          Err(hex::FromHexError::InvalidStringLength)
       }
+   }
+}
+
+impl<const N: usize> TryFrom<Vec<u8>> for Hash<N> {
+   type Error = anyhow::Error;
+   fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+      if value.len() != N {
+         return Err(anyhow!("Expected length is {}, found {}", N, value.len()));
+      }
+      Ok(Self::from_bytes(
+         value.try_into().expect("guaranteed to be length N"),
+      ))
    }
 }
 

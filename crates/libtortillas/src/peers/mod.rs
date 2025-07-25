@@ -147,26 +147,29 @@ impl PeerInfo {
    /// dict is not the same as the inputted info hash, an error will be returned. If the hash is the
    /// same, the newly created Info will be returned.
    pub async fn generate_info_from_bytes(&self, info_hash: InfoHash) -> Result<Info, Error> {
+      // We have to do this because sometimes info dicts have non-standard properties that get
+      // discared by serde automatically, causing the hash to be different.
+      //
+      // The solution? Hash the raw bytes of it instead of parsing it first.
+      let real_info_hash: InfoHash = {
+         use sha1::{Digest, Sha1};
+         let mut hasher = Sha1::new();
+
+         hasher.update(&self.info_bytes);
+         let hash = hasher.finalize();
+         hash.to_vec().try_into()?
+      };
+
       // Put bytes into Info struct
       // The metadata should be bencoded bytes.
       trace!("Generating info dict from bytes");
       let info_dict: Info = serde_bencode::from_bytes(&self.info_bytes).unwrap();
 
-      trace!(%info_hash);
-
-      trace!(?info_dict, "Made info dict from bytes");
-
       // Validate hash of struct with given info hash
-      let generated_info_hash = info_dict.hash().unwrap();
-      if generated_info_hash != info_hash {
-         trace!(
-            %generated_info_hash,
-            inputted_info_hash = %info_hash,
-            "Inputted info_hash was not the same as generated info_hash"
-         );
-         bail!("Inputted info_hash was not the same as generated info_hash")
-      }
-
+      assert_eq!(
+         real_info_hash, info_hash,
+         "Inputted info_hash was not the same as generated info_hash"
+      );
       Ok(info_dict)
    }
 
