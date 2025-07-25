@@ -3,13 +3,13 @@ use crate::{
    parser::Info,
    peers::stream::PeerWriter,
 };
-use anyhow::{bail, Error};
+use anyhow::{Error, bail};
 use atomic_time::AtomicOptionInstant;
 use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
 use core::fmt;
 use librqbit_utp::UtpSocketUdp;
-use messages::{ExtendedMessage, MessageType, PeerMessages, MAGIC_STRING};
+use messages::{ExtendedMessage, ExtendedMessageType, MAGIC_STRING, PeerMessages};
 use rand::seq::IndexedRandom;
 use std::{
    collections::HashMap,
@@ -17,19 +17,18 @@ use std::{
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::{
-      atomic::{AtomicBool, AtomicU64, Ordering},
       Arc,
+      atomic::{AtomicBool, AtomicU64, Ordering},
    },
    time::Duration,
 };
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      broadcast,
+      Mutex, broadcast,
       mpsc::{self, Receiver, Sender},
-      Mutex,
    },
-   time::{sleep, timeout, Instant},
+   time::{Instant, sleep, timeout},
 };
 use tracing::{debug, error, info, trace, warn};
 
@@ -450,7 +449,7 @@ impl Peer {
                         let piece_num = extended_message.piece.unwrap_or(0);
                         let mut extended_message_command = ExtendedMessage::new();
                         extended_message_command.piece = Some(piece_num);
-                        extended_message_command.msg_type = Some(MessageType::Request);
+                        extended_message_command.msg_type = Some(ExtendedMessageType::Request);
 
                         // The Extended ID as specified in BEP 0009 is the ID from the m dictionary
                         // -- in this case the ID listed under ut_metadata
@@ -510,7 +509,9 @@ impl Peer {
                })
                .unwrap();
 
-            trace!("Successfully sent bitfield message back to function that spawned this thread (likely TorrentEngine)");
+            trace!(
+               "Successfully sent bitfield message back to function that spawned this thread (likely TorrentEngine)"
+            );
          }
          PeerMessages::Handshake(handshake) => {
             trace!(%peer_addr, "Peer sent a handshake for some reason: {:?}", handshake);
@@ -531,8 +532,7 @@ impl Peer {
       let peer_addr = self.socket_addr();
       trace!(
          "Received message from from_engine_rx for peer {}: {:?}",
-         peer_addr,
-         message
+         peer_addr, message
       );
 
       if let PeerCommand::Piece(piece_num) = message {
@@ -910,12 +910,14 @@ mod tests {
       peer_stream.read_exact(&mut bytes).await.unwrap();
 
       // Ensure the handshake we received is valid
-      assert!(validate_handshake(
-         &Handshake::from_bytes(&bytes).unwrap(),
-         SocketAddr::from_str(peer_addr).unwrap(),
-         Arc::new(info_hash),
-      )
-      .is_ok());
+      assert!(
+         validate_handshake(
+            &Handshake::from_bytes(&bytes).unwrap(),
+            SocketAddr::from_str(peer_addr).unwrap(),
+            Arc::new(info_hash),
+         )
+         .is_ok()
+      );
 
       trace!("Received valid handshake");
 

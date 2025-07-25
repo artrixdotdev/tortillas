@@ -377,7 +377,7 @@ impl PeerMessages {
 /// An unrecognized message ID MUST be ignored in order to support future extensibility.
 #[derive(Serialize_repr, Debug, Clone, PartialEq, Eq, Deserialize_repr)]
 #[repr(u8)]
-pub enum MessageType {
+pub enum ExtendedMessageType {
    Request = 0u8,
    Data = 1u8,
    Reject = 2u8,
@@ -446,7 +446,7 @@ pub struct ExtendedMessage {
    /// Refers to the type of a message, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
    ///
    /// See documentation for (MessageType)[MessageType]
-   pub msg_type: Option<MessageType>,
+   pub msg_type: Option<ExtendedMessageType>,
    /// Indicates which part of the metadata this message refers to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
    ///
    /// This is a u32 because, while unlikely, a torrent's metadata *could* take up more than 256
