@@ -160,8 +160,8 @@ impl PeerInfo {
       let generated_info_hash = info_dict.hash().unwrap();
       if generated_info_hash != info_hash {
          trace!(
-            generated_info_hash = ?generated_info_hash,
-            inputted_info_hash = ?info_hash,
+            %generated_info_hash,
+            inputted_info_hash = %info_hash,
             "Inputted info_hash was not the same as generated info_hash"
          );
          bail!("Inputted info_hash was not the same as generated info_hash")

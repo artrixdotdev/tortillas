@@ -105,4 +105,25 @@ mod tests {
          _ => panic!("Expected MagnetUri"),
       };
    }
+
+   #[tokio::test]
+   #[traced_test]
+   async fn test_compare_magnet_and_torrent_info_hash() {
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/big-buck-bunny.txt");
+      let contents = tokio::fs::read_to_string(path).await.unwrap();
+
+      let metainfo = MagnetUri::parse(contents).unwrap();
+      let info_hash = metainfo.info_hash().unwrap();
+
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/torrents/big-buck-bunny.torrent");
+      let file = TorrentFile::read(path).await.unwrap();
+
+      let torrent_info_hash = file.info_hash().unwrap();
+
+      assert_eq!(info_hash, torrent_info_hash);
+   }
 }
