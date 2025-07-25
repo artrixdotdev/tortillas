@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{Error, Result, anyhow, bail};
 use bencode::streaming::{BencodeEvent, StreamingParser};
 use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -420,12 +420,15 @@ pub struct ExtendedMessage {
    /// not supported or is disabled.
    ///
    /// We should ignore any extension names it doesn't recognize.
-   pub m: Option<HashMap<String, u8>>,
+   #[serde(rename = "m")]
+   pub supported_extensions: Option<HashMap<String, u8>>,
    /// Local TCP listen port that allows each side to learn about the TCP port number of the other
    /// side. If sent, there is no need for the receiving side to send this extension message.
-   pub p: Option<u32>,
+   #[serde(rename = "p")]
+   pub local_port: Option<u32>,
    /// Client name and version (UTF-8 string).
-   pub v: Option<String>,
+   #[serde(rename = "v")]
+   pub version: Option<String>,
    /// The IP address that a given peer sees you as. I.e., the receiver's external ip address. No
    /// port should be included. Either an IPv4 or IPv6 address.
    #[serde(
@@ -433,7 +436,8 @@ pub struct ExtendedMessage {
       skip_serializing_if = "Option::is_none",
       default
    )]
-   pub yourip: Option<IpAddr>,
+   #[serde(rename = "yourip")]
+   pub your_ip: Option<IpAddr>,
    /// If we have an IPv6 interface, this acts as a different IP that a peer could connect back
    /// with.
    pub ipv6: Option<Ipv6Addr>,
@@ -442,7 +446,8 @@ pub struct ExtendedMessage {
    pub ipv4: Option<Ipv4Addr>,
    /// The number of outstanding request messages this client supports without dropping any.
    /// Default in libtorrent is 250.
-   pub reqq: Option<u32>,
+   #[serde(rename = "reqq")]
+   pub outstanding_requests: Option<u32>,
    /// This should only be used with [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html). It
    /// refers to the number of bytes for a torrents metadata.
    ///
@@ -473,13 +478,13 @@ impl Default for ExtendedMessage {
 impl ExtendedMessage {
    pub fn new() -> Self {
       Self {
-         m: None,
-         p: None,
-         v: None,
-         yourip: None,
+         supported_extensions: None,
+         local_port: None,
+         version: None,
+         your_ip: None,
          ipv6: None,
          ipv4: None,
-         reqq: None,
+         outstanding_requests: None,
          metadata_size: None,
          msg_type: None,
          piece: None,
@@ -491,7 +496,7 @@ impl ExtendedMessage {
    /// based on the m dictionary passed with the Extended handshake.
    pub fn supports_bep_0009(&self) -> Result<u8, Error> {
       // We have to clone here for some reason?
-      if let Some(m) = self.m.clone() {
+      if let Some(m) = self.supported_extensions.clone() {
          if let Some(id) = m.get("ut_metadata") {
             return Ok(*id);
          }
@@ -597,7 +602,7 @@ impl Handshake {
 /// Needed because the bencoded IpAddr is a list of bytes instead of a string, and serde for some
 /// reason doesn't automatically deserialize it as a list of bytes.
 mod ipaddr_serde {
-   use serde::{de::Error, Deserializer, Serializer};
+   use serde::{Deserializer, Serializer, de::Error};
    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
    pub fn serialize<S>(ip: &Option<IpAddr>, serializer: S) -> Result<S::Ok, S::Error>
