@@ -388,7 +388,7 @@ pub enum ExtendedMessageType {
    Reject = 2u8,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 /// The payload of the handshake message as described in [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html).
 ///
 /// It is valid to send an handshake message more than once during the lifetime of a
@@ -469,27 +469,9 @@ pub struct ExtendedMessage {
    pub total_size: Option<u64>,
 }
 
-impl Default for ExtendedMessage {
-   fn default() -> Self {
-      Self::new()
-   }
-}
-
 impl ExtendedMessage {
    pub fn new() -> Self {
-      Self {
-         supported_extensions: None,
-         local_port: None,
-         version: None,
-         your_ip: None,
-         ipv6: None,
-         ipv4: None,
-         outstanding_requests: None,
-         metadata_size: None,
-         msg_type: None,
-         piece: None,
-         total_size: None,
-      }
+      Self::default()
    }
 
    /// Returns true if a peer supports [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
