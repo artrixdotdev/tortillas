@@ -149,8 +149,10 @@ impl PeerInfo {
    pub async fn generate_info_from_bytes(&self, info_hash: InfoHash) -> Result<Info, Error> {
       // Put bytes into Info struct
       // The metadata should be bencoded bytes.
-      trace!(info_hash = ?info_hash, bytes = ?self.info_bytes, "Generating info dict from bytes");
+      trace!("Generating info dict from bytes");
       let info_dict: Info = serde_bencode::from_bytes(&self.info_bytes).unwrap();
+
+      trace!(%info_hash);
 
       trace!(?info_dict, "Made info dict from bytes");
 
@@ -172,6 +174,7 @@ impl PeerInfo {
    /// info_bytes
    pub fn append_to_bytes(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
       if self.info_bytes.len() + bytes.len() > self.info_size as usize {
+         trace!(bytes_len = bytes.len(), info_size = self.info_size);
          bail!("The inputted bytes + pre-existing bytes were longer than the metadata size")
       }
       self.info_bytes.extend_from_slice(&bytes);
@@ -184,6 +187,10 @@ impl PeerInfo {
    /// redundancy (and incorrectness) of comparing the length of [info_bytes](Self::info_bytes) to
    /// [info_size](Self::info_size).
    pub fn have_all_bytes(&self) -> bool {
+      trace!(
+         info_size = self.info_size,
+         current_info_size = self.info_bytes.len()
+      );
       if self.info_size == 0 {
          return false;
       }
@@ -425,11 +432,7 @@ impl Peer {
 
             // Save to Peer.
             if let Some(inner_metadata) = metadata {
-               // This to_vec() is a bit sloppy. Could be improved in a refactor.
-               self
-                  .info
-                  .append_to_bytes(serde_bencode::to_bytes(inner_metadata).unwrap())
-                  .unwrap();
+               self.info.append_to_bytes(inner_metadata.to_vec()).unwrap();
             }
 
             if let Some(extended_message) = &**extended_message {

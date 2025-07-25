@@ -1,4 +1,4 @@
-use anyhow::{Error, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Error, Result};
 use bencode::streaming::{BencodeEvent, StreamingParser};
 use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -584,7 +584,7 @@ impl Handshake {
 /// Needed because the bencoded IpAddr is a list of bytes instead of a string, and serde for some
 /// reason doesn't automatically deserialize it as a list of bytes.
 mod ipaddr_serde {
-   use serde::{Deserializer, Serializer, de::Error};
+   use serde::{de::Error, Deserializer, Serializer};
    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
    pub fn serialize<S>(ip: &Option<IpAddr>, serializer: S) -> Result<S::Ok, S::Error>
