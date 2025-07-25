@@ -53,7 +53,7 @@ impl TorrentFile {
 }
 
 /// Struct for TorrentFile
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Info {
    name: String,
    #[serde(rename = "piece length")]
@@ -65,6 +65,14 @@ pub struct Info {
 
    source: Option<String>,
 }
+
+impl PartialEq for Info {
+   fn eq(&self, other: &Self) -> bool {
+      (self.name == other.name) && (self.pieces == other.pieces)
+   }
+}
+
+impl Eq for Info {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]

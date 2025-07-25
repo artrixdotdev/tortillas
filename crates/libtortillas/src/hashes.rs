@@ -1,8 +1,8 @@
 use std::fmt::{self, Display};
 
 use serde::{
-   Deserialize, Deserializer, Serialize, Serializer,
    de::{self, Visitor},
+   Deserialize, Deserializer, Serialize, Serializer,
 };
 
 /// A fixed-length byte array that can represent various hash values or identifiers.
@@ -211,7 +211,7 @@ impl<const N: usize> Visitor<'_> for HashVisitor<N> {
 ///     println!("Hash: {}", hash);
 /// }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HashVec<const N: usize>(Vec<Hash<N>>);
 
 impl<const N: usize> Default for HashVec<N> {

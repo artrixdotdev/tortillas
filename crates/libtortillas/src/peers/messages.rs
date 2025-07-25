@@ -1,9 +1,11 @@
-use anyhow::{anyhow, bail, Error, Result};
+use anyhow::{Error, Result, anyhow, bail};
+use bencode::streaming::{BencodeEvent, StreamingParser};
 use bitvec::prelude::*;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_repr::Serialize_repr;
+use tracing::{error, info, trace};
 
-use crate::{errors::PeerTransportError, hashes::Hash};
+use crate::{errors::PeerTransportError, hashes::Hash, parser::Info};
 use std::{
    collections::HashMap,
    net::{Ipv4Addr, Ipv6Addr},
@@ -90,7 +92,7 @@ pub enum PeerMessages {
    ///
    /// The metadata is only for the data response of [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
    /// where the info dictionary for a given torrent is tacked onto the end of an extended message.
-   Extended(u8, Option<ExtendedMessage>, Option<Vec<u8>>) = 20u8,
+   Extended(u8, Option<ExtendedMessage>, Option<Info>) = 20u8,
 
    /// This message is special, as it is not technically part of the standard [BitTorrent peer messages](https://www.bittorrent.org/beps/bep_0003.html#peer-messages),
    /// And does not have a specified Message ID, unlike the other messages that have a defined ID.
@@ -150,7 +152,7 @@ impl PeerMessages {
             }
 
             if let Some(metadata) = metadata {
-               payload.extend_from_slice(metadata);
+               payload.extend_from_slice(&serde_bencode::to_bytes(metadata).unwrap());
             }
 
             Self::create_message_with_id(20, &payload)
@@ -250,12 +252,114 @@ impl PeerMessages {
          20 => {
             let extended_id = u8::from_be_bytes(payload[0..1].try_into().unwrap());
             if payload.len() > 1 {
-               let handshake_message: ExtendedMessage =
-                  serde_bencode::from_bytes(&payload[1..payload.len()]).unwrap();
+               // Literally just the original payload with the ID removed from it.
+               let payload_no_id = &payload[1..payload.len()];
+
+               // We can't utilize Serde here because an Extended message could potentially have
+               // two dictionaries back to back like so:
+               //
+               // {Extended Message}{Info Dict}
+               //
+               // AFAIK, this only for data messages as specified in BEP 0009
+               //
+               // (If you are aware of way to utilize Serde here, PLEASE make an issue/PR)
+               let streaming = StreamingParser::new(payload_no_id.iter().cloned());
+               let mut stack = vec![];
+               let mut extended_message_length = 0;
+
+               // Loop through payload until we reach the end of the first dictionariy (the
+               // Extended message).
+               trace!("Starting loop to find length of extended message");
+               for event in streaming {
+                  match event {
+                     BencodeEvent::DictStart => {
+                        // d
+                        extended_message_length += 1;
+                        trace!("Got a DictStart event");
+                        stack.push(event.clone());
+                     }
+                     BencodeEvent::DictEnd => {
+                        // e
+                        extended_message_length += 1;
+                        trace!("Got a DictEnd event");
+                        stack.pop();
+                        if stack.is_empty() {
+                           break;
+                        }
+                     }
+                     BencodeEvent::NumberValue(val) => {
+                        // i + num value + e
+                        let inserted_length = val.to_string().len() + 2;
+                        extended_message_length += inserted_length;
+                        trace!(
+                           inserted_length = inserted_length,
+                           val = val,
+                           "Got a NumberValue event"
+                        );
+                     }
+                     BencodeEvent::ByteStringValue(vec) => {
+                        // len + : + len of value
+                        let value_len = vec.len();
+                        extended_message_length += value_len.to_string().len() + 1 + vec.len();
+                        trace!(len = vec.len(), val = ?String::from_utf8_lossy(&vec), "Got a ByteStringValue event");
+                     }
+                     BencodeEvent::ListStart => {
+                        // l
+                        extended_message_length += 1;
+                        trace!("Got a ListStart event");
+                     }
+                     BencodeEvent::ListEnd => {
+                        // e
+                        extended_message_length += 1;
+                        trace!("Got a ListEnd event");
+                     }
+                     BencodeEvent::DictKey(vec) => {
+                        // len + : + len of value
+                        let value_len = vec.len();
+                        extended_message_length += value_len.to_string().len() + 1 + vec.len();
+                        trace!(
+                           len = vec.len(),
+                           val = ?String::from_utf8_lossy(&vec),
+                           "Got a DictKey event"
+                        );
+                     }
+                     BencodeEvent::ParseError(e) => {
+                        error!("Parse error encountered: {:?}", e);
+                        break;
+                     }
+                  }
+               }
+
+               info!(
+                  extended_message_length = extended_message_length,
+                  payload_len = payload_no_id.len()
+               );
+
+               // If the peer only sent an Extended message (and no Info dict)...
+               if extended_message_length == (payload_no_id.len()) {
+                  let extended_message: ExtendedMessage =
+                     serde_bencode::from_bytes(payload_no_id).unwrap();
+
+                  return Ok(PeerMessages::Extended(
+                     extended_id,
+                     Some(extended_message),
+                     None,
+                  ));
+               }
+
+               let extended_message_bytes = &payload_no_id[..extended_message_length];
+               let metadata_bytes = &payload_no_id[extended_message_length..payload_no_id.len()];
+
+               trace!(extended_message_bytes = extended_message_bytes);
+
+               let extended_message: ExtendedMessage =
+                  serde_bencode::from_bytes(extended_message_bytes).unwrap();
+               let metadata: Info = serde_bencode::from_bytes(metadata_bytes).unwrap();
+
                return Ok(PeerMessages::Extended(
                   extended_id,
-                  Some(handshake_message),
-                  None,
+                  Some(extended_message),
+                  Some(metadata),
                ));
             }
             Ok(PeerMessages::Extended(extended_id, None, None))

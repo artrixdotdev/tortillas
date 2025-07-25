@@ -427,7 +427,10 @@ impl Peer {
             // Save to Peer.
             if let Some(inner_metadata) = metadata {
                // This to_vec() is a bit sloppy. Could be improved in a refactor.
-               self.info.append_to_bytes(inner_metadata.to_vec()).unwrap();
+               self
+                  .info
+                  .append_to_bytes(serde_bencode::to_bytes(inner_metadata).unwrap())
+                  .unwrap();
             }
 
             if let Some(extended_message) = extended_message {
