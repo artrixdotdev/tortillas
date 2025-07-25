@@ -2,7 +2,7 @@ use anyhow::{Error, Result, anyhow, bail};
 use bencode::streaming::{BencodeEvent, StreamingParser};
 use bitvec::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize};
-use serde_repr::Serialize_repr;
+use serde_repr::{Deserialize_repr, Serialize_repr};
 use tracing::{error, info, trace};
 
 use crate::{errors::PeerTransportError, hashes::Hash, parser::Info};
@@ -375,7 +375,7 @@ impl PeerMessages {
 /// - 2: 'reject' message
 ///
 /// An unrecognized message ID MUST be ignored in order to support future extensibility.
-#[derive(Serialize_repr, Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Serialize_repr, Debug, Clone, PartialEq, Eq, Deserialize_repr)]
 #[repr(u8)]
 pub enum MessageType {
    Request = 0u8,
