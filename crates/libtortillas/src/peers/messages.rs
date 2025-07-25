@@ -255,81 +255,8 @@ impl PeerMessages {
                // Literally just the original payload with the ID removed from it.
                let payload_no_id = &payload[1..payload.len()];
 
-               // We can't utilize Serde here because an Extended message could potentially have
-               // two dictionaries back to back like so:
-               //
-               // {Extended Message}{Info Dict}
-               //
-               // AFAIK, this only for data messages as specified in BEP 0009
-               //
-               // (If you are aware of way to utilize Serde here, PLEASE make an issue/PR)
-               let streaming = StreamingParser::new(payload_no_id.iter().cloned());
-               let mut stack = vec![];
-               let mut extended_message_length = 0;
-
-               // Loop through payload until we reach the end of the first dictionariy (the
-               // Extended message).
-               trace!("Starting loop to find length of extended message");
-               for event in streaming {
-                  match event {
-                     BencodeEvent::DictStart => {
-                        // d
-                        extended_message_length += 1;
-                        trace!("Got a DictStart event");
-                        stack.push(event.clone());
-                     }
-                     BencodeEvent::DictEnd => {
-                        // e
-                        extended_message_length += 1;
-                        trace!("Got a DictEnd event");
-                        stack.pop();
-                        if stack.is_empty() {
-                           break;
-                        }
-                     }
-                     BencodeEvent::NumberValue(val) => {
-                        // i + num value + e
-                        let inserted_length = val.to_string().len() + 2;
-                        extended_message_length += inserted_length;
-                        trace!(
-                           inserted_length = inserted_length,
-                           val = val,
-                           "Got a NumberValue event"
-                        );
-                     }
-                     BencodeEvent::ByteStringValue(vec) => {
-                        // len + : + len of value
-                        let value_len = vec.len();
-                        extended_message_length += value_len.to_string().len() + 1 + vec.len();
-                        trace!(len = vec.len(), val = ?String::from_utf8_lossy(&vec), "Got a ByteStringValue event");
-                     }
-                     BencodeEvent::ListStart => {
-                        // l
-                        extended_message_length += 1;
-                        trace!("Got a ListStart event");
-                     }
-                     BencodeEvent::ListEnd => {
-                        // e
-                        extended_message_length += 1;
-                        trace!("Got a ListEnd event");
-                     }
-                     BencodeEvent::DictKey(vec) => {
-                        // len + : + len of value
-                        let value_len = vec.len();
-                        extended_message_length += value_len.to_string().len() + 1 + vec.len();
-                        trace!(
-                           len = vec.len(),
-                           val = ?String::from_utf8_lossy(&vec),
-                           "Got a DictKey event"
-                        );
-                     }
-                     BencodeEvent::ParseError(e) => {
-                        error!("Parse error encountered: {:?}", e);
-                        break;
-                     }
-                  }
-               }
-
+               let extended_message_length =
+                  PeerMessages::get_extended_message_length(payload_no_id);
                info!(
                   extended_message_length = extended_message_length,
                   payload_len = payload_no_id.len()
@@ -366,6 +293,85 @@ impl PeerMessages {
          }
          _ => Err(PeerTransportError::Other(anyhow!("Unknown message type"))),
       }
+   }
+
+   /// Helper function for finding the length of an extended message
+   fn get_extended_message_length(payload: &[u8]) -> usize {
+      // We can't utilize Serde here because an Extended message could potentially have
+      // two dictionaries back to back like so:
+      //
+      // {Extended Message}{Info Dict}
+      //
+      // AFAIK, this only for data messages as specified in BEP 0009
+      //
+      // (If you are aware of way to utilize Serde here, PLEASE make an issue/PR)
+      let streaming = StreamingParser::new(payload.iter().cloned());
+      let mut stack = vec![];
+      let mut extended_message_length = 0;
+
+      // Loop through payload until we reach the end of the first dictionariy (the
+      // Extended message).
+      trace!("Starting loop to find length of extended message");
+      for event in streaming {
+         match event {
+            BencodeEvent::DictStart => {
+               // d
+               extended_message_length += 1;
+               trace!("Got a DictStart event");
+               stack.push(event.clone());
+            }
+            BencodeEvent::DictEnd => {
+               // e
+               extended_message_length += 1;
+               trace!("Got a DictEnd event");
+               stack.pop();
+               if stack.is_empty() {
+                  break;
+               }
+            }
+            BencodeEvent::NumberValue(val) => {
+               // i + num value + e
+               let inserted_length = val.to_string().len() + 2;
+               extended_message_length += inserted_length;
+               trace!(
+                  inserted_length = inserted_length,
+                  val = val,
+                  "Got a NumberValue event"
+               );
+            }
+            BencodeEvent::ByteStringValue(vec) => {
+               // len + : + len of value
+               let value_len = vec.len();
+               extended_message_length += value_len.to_string().len() + 1 + vec.len();
+               trace!(len = vec.len(), val = ?String::from_utf8_lossy(&vec), "Got a ByteStringValue event");
+            }
+            BencodeEvent::ListStart => {
+               // l
+               extended_message_length += 1;
+               trace!("Got a ListStart event");
+            }
+            BencodeEvent::ListEnd => {
+               // e
+               extended_message_length += 1;
+               trace!("Got a ListEnd event");
+            }
+            BencodeEvent::DictKey(vec) => {
+               // len + : + len of value
+               let value_len = vec.len();
+               extended_message_length += value_len.to_string().len() + 1 + vec.len();
+               trace!(
+                  len = vec.len(),
+                  val = ?String::from_utf8_lossy(&vec),
+                  "Got a DictKey event"
+               );
+            }
+            BencodeEvent::ParseError(e) => {
+               error!("Parse error encountered: {:?}", e);
+               break;
+            }
+         };
+      }
+      extended_message_length
    }
 }
 
