@@ -1,14 +1,14 @@
 use anyhow::{Error, Result, anyhow, bail};
 use bencode::streaming::{BencodeEvent, StreamingParser};
 use bitvec::prelude::*;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tracing::{error, info, trace};
 
 use crate::{errors::PeerTransportError, hashes::Hash, parser::Info};
 use std::{
    collections::HashMap,
-   net::{Ipv4Addr, Ipv6Addr},
+   net::{IpAddr, Ipv4Addr, Ipv6Addr},
    sync::Arc,
 };
 
@@ -423,7 +423,12 @@ pub struct ExtendedMessage {
    pub v: Option<String>,
    /// The IP address that a given peer sees you as. I.e., the receiver's external ip address. No
    /// port should be included. Either an IPv4 or IPv6 address.
-   pub yourip: Option<String>,
+   #[serde(
+      with = "ipaddr_serde",
+      skip_serializing_if = "Option::is_none",
+      default
+   )]
+   pub yourip: Option<IpAddr>,
    /// If we have an IPv6 interface, this acts as a different IP that a peer could connect back
    /// with.
    pub ipv6: Option<Ipv6Addr>,
@@ -579,5 +584,73 @@ impl Handshake {
          info_hash,
          peer_id,
       })
+   }
+}
+
+/// Helper functions for serializing and deserializing IpAddr into [u8; 4] and [u8; 16] respectively.
+///
+/// Needed because the bencoded IpAddr is a list of bytes instead of a string, and serde for some
+/// reason doesn't automatically deserialize it as a list of bytes.
+mod ipaddr_serde {
+   use serde::{Deserializer, Serializer, de::Error};
+   use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+   pub fn serialize<S>(ip: &Option<IpAddr>, serializer: S) -> Result<S::Ok, S::Error>
+   where
+      S: Serializer,
+   {
+      match ip {
+         // Octects convert to a u8 array, e.g "127.0.0.1" converts to [127, 0, 0, 1]
+         Some(IpAddr::V4(ipv4)) => serializer.serialize_some(&ipv4.octets().as_slice()),
+         Some(IpAddr::V6(ipv6)) => serializer.serialize_some(&ipv6.octets().as_slice()),
+         None => serializer.serialize_none(),
+      }
+   }
+   pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<IpAddr>, D::Error>
+   where
+      D: Deserializer<'de>,
+   {
+      struct Visitor;
+
+      impl<'de> serde::de::Visitor<'de> for Visitor {
+         type Value = Option<IpAddr>;
+
+         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a byte string of length 4 or 16")
+         }
+
+         fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+         where
+            E: Error,
+         {
+            match v.len() {
+               4 => {
+                  let ipv4 = Ipv4Addr::from(*<&[u8; 4]>::try_from(v).map_err(E::custom)?);
+                  Ok(Some(IpAddr::V4(ipv4)))
+               }
+               16 => {
+                  let ipv6 = Ipv6Addr::from(*<&[u8; 16]>::try_from(v).map_err(E::custom)?);
+                  Ok(Some(IpAddr::V6(ipv6)))
+               }
+               _ => Err(E::custom("Invalid IP address byte length")),
+            }
+         }
+
+         fn visit_none<E>(self) -> Result<Self::Value, E>
+         where
+            E: Error,
+         {
+            Ok(None)
+         }
+
+         fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+         where
+            D: Deserializer<'de>,
+         {
+            deserializer.deserialize_bytes(self)
+         }
+      }
+
+      deserializer.deserialize_option(Visitor)
    }
 }
