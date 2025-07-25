@@ -395,14 +395,9 @@ impl<const N: usize> Display for HashVec<N> {
 
 impl<const N: usize> std::fmt::Debug for HashVec<N> {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      write!(f, "HashVec([")?;
-      for (i, hash) in self.0.iter().enumerate() {
-         if i > 0 {
-            write!(f, ", ")?;
-         }
-         write!(f, "{}", hash.to_hex())?;
-      }
-      write!(f, "])")
+      f.debug_list()
+         .entries(self.clone().into_iter().map(|x| x.to_hex()))
+         .finish()
    }
 }
 
