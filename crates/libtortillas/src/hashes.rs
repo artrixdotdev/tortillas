@@ -1,8 +1,8 @@
 use std::fmt::{self, Display};
 
 use serde::{
-   de::{self, Visitor},
    Deserialize, Deserializer, Serialize, Serializer,
+   de::{self, Visitor},
 };
 
 /// A fixed-length byte array that can represent various hash values or identifiers.
@@ -211,7 +211,7 @@ impl<const N: usize> Visitor<'_> for HashVisitor<N> {
 ///     println!("Hash: {}", hash);
 /// }
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HashVec<const N: usize>(Vec<Hash<N>>);
 
 impl<const N: usize> Default for HashVec<N> {
@@ -378,6 +378,31 @@ impl<const N: usize> Visitor<'_> for HashVecVisitor<N> {
          ));
       }
       Ok(HashVec(vec))
+   }
+}
+
+impl<const N: usize> From<Vec<Hash<N>>> for HashVec<N> {
+   fn from(vec: Vec<Hash<N>>) -> Self {
+      HashVec(vec)
+   }
+}
+
+impl<const N: usize> Display for HashVec<N> {
+   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      write!(f, "HashVec({})", self.flatten().len())
+   }
+}
+
+impl<const N: usize> std::fmt::Debug for HashVec<N> {
+   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      write!(f, "HashVec([")?;
+      for (i, hash) in self.0.iter().enumerate() {
+         if i > 0 {
+            write!(f, ", ")?;
+         }
+         write!(f, "{}", hash.to_hex())?;
+      }
+      write!(f, "])")
    }
 }
 
