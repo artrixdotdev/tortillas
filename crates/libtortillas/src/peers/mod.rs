@@ -432,7 +432,7 @@ impl Peer {
                   .unwrap();
             }
 
-            if let Some(extended_message) = extended_message {
+            if let Some(extended_message) = &**extended_message {
                trace!(%peer_addr, "Peer sent a payload with Extended message: {:?}", extended_message);
 
                if let Some(size) = extended_message.metadata_size {
@@ -581,7 +581,7 @@ impl Peer {
       // hash of it to our info hash.
       if let PeerCommand::Extended(id, extended_message) = message {
          if self.peer_supports.bep_0010 && self.peer_supports.bep_0009 > 0 {
-            let message = PeerMessages::Extended(id as u8, extended_message, None);
+            let message = PeerMessages::Extended(id as u8, Box::new(extended_message), None);
 
             {
                let mut writer_guard = writer.lock().await;

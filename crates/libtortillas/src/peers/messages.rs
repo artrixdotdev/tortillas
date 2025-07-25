@@ -92,7 +92,7 @@ pub enum PeerMessages {
    ///
    /// The metadata is only for the data response of [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
    /// where the info dictionary for a given torrent is tacked onto the end of an extended message.
-   Extended(u8, Option<ExtendedMessage>, Option<Info>) = 20u8,
+   Extended(u8, Box<Option<ExtendedMessage>>, Option<Info>) = 20u8,
 
    /// This message is special, as it is not technically part of the standard [BitTorrent peer messages](https://www.bittorrent.org/beps/bep_0003.html#peer-messages),
    /// And does not have a specified Message ID, unlike the other messages that have a defined ID.
@@ -147,7 +147,7 @@ impl PeerMessages {
             let mut payload = vec![];
             payload.extend_from_slice(&extended_id.to_be_bytes());
 
-            if let Some(inner) = handshake_message {
+            if let Some(inner) = &**handshake_message {
                payload.extend_from_slice(&serde_bencode::to_bytes(inner).unwrap());
             }
 
@@ -269,7 +269,7 @@ impl PeerMessages {
 
                   return Ok(PeerMessages::Extended(
                      extended_id,
-                     Some(extended_message),
+                     Box::new(Some(extended_message)),
                      None,
                   ));
                }
@@ -285,11 +285,11 @@ impl PeerMessages {
 
                return Ok(PeerMessages::Extended(
                   extended_id,
-                  Some(extended_message),
+                  Box::new(Some(extended_message)),
                   Some(metadata),
                ));
             }
-            Ok(PeerMessages::Extended(extended_id, None, None))
+            Ok(PeerMessages::Extended(extended_id, Box::new(None), None))
          }
          _ => Err(PeerTransportError::Other(anyhow!("Unknown message type"))),
       }
