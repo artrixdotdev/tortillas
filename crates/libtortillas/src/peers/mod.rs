@@ -654,10 +654,14 @@ impl Peer {
          })
          .unwrap();
 
-      // For outgoing peers (we are connecting to them), we should create the stream
-      // ourselves and send the handshake & bitfield
       trace!("Attempting to connect to peer {}", peer_addr);
       let stream = if let Some(stream) = stream {
+         // For incoming peers (they're connecting to them), since they have already sent
+         // their handshake and been verified, we can skip that part.
+         stream
+      } else {
+         // For outgoing peers (we are connecting to them), we should create the stream
+         // ourselves and send the handshake & bitfield
          let mut stream = PeerStream::connect(peer_addr, utp_socket).await;
          // Send handshake to peer
          let (peer_id, reserved) = stream
@@ -669,10 +673,6 @@ impl Peer {
          self.reserved = reserved;
          self.determine_supported().await;
          stream
-      } else {
-         // Otherwise, since they have already sent their handshake and been verified, we
-         // can skip that part.
-         stream.unwrap()
       };
 
       let (mut reader, writer) = stream.split();
