@@ -19,8 +19,8 @@ Follow [FreeCodeCamp's commit message style guide](https://www.freecodecamp.org/
 - Keep changes **small and focused**
 - Make changes **atomic** (one topic per PR)
 - Add **tests** for complex features
-- **All** PRs must pass:
-  - Code linting
+- **All** PRs must pass the following before merging:
+ - Code linting
   - Formatting checks
   - Tests
 - Use [**clear, detailed logging**](#Logging)
