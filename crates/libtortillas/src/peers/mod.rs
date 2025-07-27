@@ -3,13 +3,13 @@ use crate::{
    parser::Info,
    peers::stream::PeerWriter,
 };
-use anyhow::{Error, bail};
+use anyhow::{bail, Error};
 use atomic_time::AtomicOptionInstant;
 use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
 use core::fmt;
 use librqbit_utp::UtpSocketUdp;
-use messages::{ExtendedMessage, ExtendedMessageType, MAGIC_STRING, PeerMessages};
+use messages::{ExtendedMessage, ExtendedMessageType, PeerMessages, MAGIC_STRING};
 use rand::seq::IndexedRandom;
 use std::{
    collections::HashMap,
@@ -17,18 +17,19 @@ use std::{
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
    sync::{
-      Arc,
       atomic::{AtomicBool, AtomicU64, Ordering},
+      Arc,
    },
    time::Duration,
 };
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
-      Mutex, broadcast,
+      broadcast,
       mpsc::{self, Receiver, Sender},
+      Mutex,
    },
-   time::{Instant, sleep, timeout},
+   time::{sleep, timeout, Instant},
 };
 use tracing::{debug, error, info, trace, warn};
 
@@ -170,6 +171,9 @@ impl PeerInfo {
          real_info_hash, info_hash,
          "Inputted info_hash was not the same as generated info_hash"
       );
+
+      trace!("Inputted info_hash was the same as generated info_hash");
+
       Ok(info_dict)
    }
 
@@ -538,7 +542,8 @@ impl Peer {
       let peer_addr = self.socket_addr();
       trace!(
          "Received message from from_engine_rx for peer {}: {:?}",
-         peer_addr, message
+         peer_addr,
+         message
       );
 
       if let PeerCommand::Piece(piece_num) = message {
@@ -916,14 +921,12 @@ mod tests {
       peer_stream.read_exact(&mut bytes).await.unwrap();
 
       // Ensure the handshake we received is valid
-      assert!(
-         validate_handshake(
-            &Handshake::from_bytes(&bytes).unwrap(),
-            SocketAddr::from_str(peer_addr).unwrap(),
-            Arc::new(info_hash),
-         )
-         .is_ok()
-      );
+      assert!(validate_handshake(
+         &Handshake::from_bytes(&bytes).unwrap(),
+         SocketAddr::from_str(peer_addr).unwrap(),
+         Arc::new(info_hash),
+      )
+      .is_ok());
 
       trace!("Received valid handshake");
 
