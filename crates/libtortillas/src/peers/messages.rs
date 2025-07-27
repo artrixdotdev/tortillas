@@ -1,11 +1,14 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Error, Result};
+use bencode::streaming::{BencodeEvent, StreamingParser};
 use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
+use serde_repr::{Deserialize_repr, Serialize_repr};
+use tracing::{error, info, trace};
 
-use crate::{errors::PeerTransportError, hashes::Hash};
+use crate::{errors::PeerTransportError, hashes::Hash, parser::Info};
 use std::{
    collections::HashMap,
-   net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+   net::{IpAddr, Ipv4Addr, Ipv6Addr},
    sync::Arc,
 };
 
@@ -80,13 +83,16 @@ pub enum PeerMessages {
    ///
    /// # Binary Layout
    ///
-   /// |          0-?          |
-   /// |-----------------------|
-   /// |  extended message id  |
+   /// |          0-1          |         1-?        |     ?-?    |
+   /// |-----------------------|--------------------|------------|
+   /// |  extended message id  |  extended message  |  metadata  |
    ///
    /// If the extended message id (EMI for short) is 0, then the following message is the
    /// handshake, which is a bencoded dictionary, where all items are optional.
-   Extended(u8, Option<ExtendedHandshakeMessage>) = 20u8,
+   ///
+   /// The metadata is only for the data response of [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
+   /// where the info dictionary for a given torrent is tacked onto the end of an extended message.
+   Extended(u8, Box<Option<ExtendedMessage>>, Option<Vec<u8>>) = 20u8,
 
    /// This message is special, as it is not technically part of the standard [BitTorrent peer messages](https://www.bittorrent.org/beps/bep_0003.html#peer-messages),
    /// And does not have a specified Message ID, unlike the other messages that have a defined ID.
@@ -116,16 +122,6 @@ impl PeerMessages {
          PeerMessages::NotInterested => Self::create_message_with_id(3, &[]),
          PeerMessages::Have(index) => Self::create_message_with_id(4, &index.to_be_bytes()),
          PeerMessages::Bitfield(bits) => Self::create_message_with_id(5, bits.as_raw_slice()),
-         PeerMessages::Extended(extended_id, handshake_message) => {
-            if let Some(inner) = handshake_message {
-               let mut payload = vec![];
-               payload.extend_from_slice(&serde_bencode::to_bytes(inner).unwrap());
-               return Ok(Self::create_message_with_id(20, &payload));
-            }
-            let mut payload = vec![];
-            payload.extend_from_slice(&extended_id.to_be_bytes());
-            Self::create_message_with_id(20, &payload)
-         }
          PeerMessages::Request(index, begin, length) => {
             let mut payload = Vec::with_capacity(12);
             payload.extend_from_slice(&index.to_be_bytes());
@@ -146,6 +142,20 @@ impl PeerMessages {
             payload.extend_from_slice(&begin.to_be_bytes());
             payload.extend_from_slice(&length.to_be_bytes());
             Self::create_message_with_id(8, &payload)
+         }
+         PeerMessages::Extended(extended_id, handshake_message, metadata) => {
+            let mut payload = vec![];
+            payload.extend_from_slice(&extended_id.to_be_bytes());
+
+            if let Some(inner) = &**handshake_message {
+               payload.extend_from_slice(&serde_bencode::to_bytes(inner).unwrap());
+            }
+
+            if let Some(metadata) = metadata {
+               payload.extend_from_slice(&serde_bencode::to_bytes(metadata).unwrap());
+            }
+
+            Self::create_message_with_id(20, &payload)
          }
          _ => return Err(PeerTransportError::Other(anyhow!("Unknown message type"))),
       })
@@ -242,18 +252,143 @@ impl PeerMessages {
          20 => {
             let extended_id = u8::from_be_bytes(payload[0..1].try_into().unwrap());
             if payload.len() > 1 {
-               let handshake_message: ExtendedHandshakeMessage =
-                  serde_bencode::from_bytes(&payload[1..payload.len()]).unwrap();
-               return Ok(PeerMessages::Extended(extended_id, Some(handshake_message)));
+               // Literally just the original payload with the ID removed from it.
+               let payload_no_id = &payload[1..payload.len()];
+
+               let extended_message_length =
+                  PeerMessages::get_extended_message_length(payload_no_id);
+               info!(
+                  extended_message_length = extended_message_length,
+                  payload_len = payload_no_id.len()
+               );
+
+               // If the peer only sent an Extended message (and no Info dict)...
+               if extended_message_length == (payload_no_id.len()) {
+                  let extended_message: ExtendedMessage =
+                     serde_bencode::from_bytes(payload_no_id).unwrap();
+
+                  return Ok(PeerMessages::Extended(
+                     extended_id,
+                     Box::new(Some(extended_message)),
+                     None,
+                  ));
+               }
+
+               let extended_message_bytes = &payload_no_id[..extended_message_length];
+               let metadata_bytes = &payload_no_id[extended_message_length..payload_no_id.len()];
+
+               trace!(extended_message_bytes = extended_message_bytes);
+
+               let extended_message: ExtendedMessage =
+                  serde_bencode::from_bytes(extended_message_bytes).unwrap();
+
+               return Ok(PeerMessages::Extended(
+                  extended_id,
+                  Box::new(Some(extended_message)),
+                  Some(metadata_bytes.to_vec()),
+               ));
             }
-            Ok(PeerMessages::Extended(extended_id, None))
+            Ok(PeerMessages::Extended(extended_id, Box::new(None), None))
          }
          _ => Err(PeerTransportError::Other(anyhow!("Unknown message type"))),
       }
    }
+
+   /// Helper function for finding the length of an extended message
+   fn get_extended_message_length(payload: &[u8]) -> usize {
+      // We can't utilize Serde here because an Extended message could potentially have
+      // two dictionaries back to back like so:
+      //
+      // {Extended Message}{Info Dict}
+      //
+      // AFAIK, this only for data messages as specified in BEP 0009
+      //
+      // (If you are aware of way to utilize Serde here, PLEASE make an issue/PR)
+      let streaming = StreamingParser::new(payload.iter().cloned());
+      let mut stack = vec![];
+      let mut extended_message_length = 0;
+
+      // Loop through payload until we reach the end of the first dictionariy (the
+      // Extended message).
+      trace!("Starting loop to find length of extended message");
+      for event in streaming {
+         match event {
+            BencodeEvent::DictStart => {
+               // d
+               extended_message_length += 1;
+               trace!("Got a DictStart event");
+               stack.push(event.clone());
+            }
+            BencodeEvent::DictEnd => {
+               // e
+               extended_message_length += 1;
+               trace!("Got a DictEnd event");
+               stack.pop();
+               if stack.is_empty() {
+                  break;
+               }
+            }
+            BencodeEvent::NumberValue(val) => {
+               // i + num value + e
+               let inserted_length = val.to_string().len() + 2;
+               extended_message_length += inserted_length;
+               trace!(
+                  inserted_length = inserted_length,
+                  val = val,
+                  "Got a NumberValue event"
+               );
+            }
+            BencodeEvent::ByteStringValue(vec) => {
+               // len + : + len of value
+               let value_len = vec.len();
+               extended_message_length += value_len.to_string().len() + 1 + vec.len();
+               trace!(len = vec.len(), val = ?String::from_utf8_lossy(&vec), "Got a ByteStringValue event");
+            }
+            BencodeEvent::ListStart => {
+               // l
+               extended_message_length += 1;
+               trace!("Got a ListStart event");
+            }
+            BencodeEvent::ListEnd => {
+               // e
+               extended_message_length += 1;
+               trace!("Got a ListEnd event");
+            }
+            BencodeEvent::DictKey(vec) => {
+               // len + : + len of value
+               let value_len = vec.len();
+               extended_message_length += value_len.to_string().len() + 1 + vec.len();
+               trace!(
+                  len = vec.len(),
+                  val = ?String::from_utf8_lossy(&vec),
+                  "Got a DictKey event"
+               );
+            }
+            BencodeEvent::ParseError(e) => {
+               error!("Parse error encountered: {:?}", e);
+               break;
+            }
+         };
+      }
+      extended_message_length
+   }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Refers to the type of a message, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
+/// - 0: `request` message
+/// - 1: 'data' message
+/// - 2: 'reject' message
+///
+/// An unrecognized message ID MUST be ignored in order to support future extensibility.
+#[derive(Serialize_repr, Debug, Clone, PartialEq, Eq, Deserialize_repr)]
+#[repr(u8)]
+pub enum ExtendedMessageType {
+   Request = 0u8,
+   Data = 1u8,
+   Reject = 2u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 /// The payload of the handshake message as described in [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html).
 ///
 /// It is valid to send an handshake message more than once during the lifetime of a
@@ -264,7 +399,17 @@ impl PeerMessages {
 ///
 /// All fields are intentionally optional, and including this in a [PeerMessages::Extended] is
 /// optional as well.
-pub struct ExtendedHandshakeMessage {
+///
+/// # Examples
+/// ```
+/// let handshake_message = ExtendedMessage::new();
+/// let other_handshake_message: ExtendedMessage = Default::default();
+///
+/// // Note that you are required to manually create an ExtendedMessage if you wish to add
+/// // certain fields on initialization. That being said, all fields are public.
+/// let another_handshake_message = ExtendedMessage { .. };
+/// ```
+pub struct ExtendedMessage {
    /// Dictionary of extension messages. Maps names of extensions -> extended message ID for each
    /// extension message.
    ///
@@ -275,15 +420,24 @@ pub struct ExtendedHandshakeMessage {
    /// not supported or is disabled.
    ///
    /// We should ignore any extension names it doesn't recognize.
-   pub m: HashMap<String, u8>,
+   #[serde(rename = "m")]
+   pub supported_extensions: Option<HashMap<String, u8>>,
    /// Local TCP listen port that allows each side to learn about the TCP port number of the other
    /// side. If sent, there is no need for the receiving side to send this extension message.
-   pub p: Option<u32>,
+   #[serde(rename = "p")]
+   pub local_port: Option<u32>,
    /// Client name and version (UTF-8 string).
-   pub v: Option<String>,
+   #[serde(rename = "v")]
+   pub version: Option<String>,
    /// The IP address that a given peer sees you as. I.e., the receiver's external ip address. No
    /// port should be included. Either an IPv4 or IPv6 address.
-   pub yourip: Option<IpAddr>,
+   #[serde(
+      with = "ipaddr_serde",
+      skip_serializing_if = "Option::is_none",
+      default
+   )]
+   #[serde(rename = "yourip")]
+   pub your_ip: Option<IpAddr>,
    /// If we have an IPv6 interface, this acts as a different IP that a peer could connect back
    /// with.
    pub ipv6: Option<Ipv6Addr>,
@@ -292,39 +446,45 @@ pub struct ExtendedHandshakeMessage {
    pub ipv4: Option<Ipv4Addr>,
    /// The number of outstanding request messages this client supports without dropping any.
    /// Default in libtorrent is 250.
-   pub reqq: Option<u32>,
+   #[serde(rename = "reqq")]
+   pub outstanding_requests: Option<u32>,
+   /// This should only be used with [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html). It
+   /// refers to the number of bytes for a torrents metadata.
+   ///
+   /// It is only used for the initial handshake described in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
+   pub metadata_size: Option<u64>,
+   /// Refers to the type of a message, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
+   ///
+   /// See documentation for (MessageType)[MessageType]
+   pub msg_type: Option<ExtendedMessageType>,
+   /// Indicates which part of the metadata this message refers to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
+   ///
+   /// This is a u32 because, while unlikely, a torrent's metadata *could* take up more than 256
+   /// pieces.
+   pub piece: Option<u32>,
+   /// The size of the piece of metadata that was just sent, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
+   ///
+   /// If the piece is the last piece of the metadata, it may be less than 16kiB. If it is
+   /// not the last piece of the metadata, it MUST be 16kiB.
+   pub total_size: Option<u64>,
 }
 
-impl ExtendedHandshakeMessage {
+impl ExtendedMessage {
    pub fn new() -> Self {
-      Self {
-         m: HashMap::new(),
-         p: None,
-         v: None,
-         yourip: None,
-         ipv6: None,
-         ipv4: None,
-         reqq: None,
-      }
+      Self::default()
    }
-   pub fn new_with_values(
-      m: HashMap<String, u8>,
-      p: Option<u32>,
-      v: Option<String>,
-      yourip: Option<IpAddr>,
-      ipv6: Option<Ipv6Addr>,
-      ipv4: Option<Ipv4Addr>,
-      reqq: Option<u32>,
-   ) -> Self {
-      Self {
-         m,
-         p,
-         v,
-         yourip,
-         ipv6,
-         ipv4,
-         reqq,
+
+   /// Returns true if a peer supports [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
+   /// based on the m dictionary passed with the Extended handshake.
+   pub fn supports_bep_0009(&self) -> Result<u8, Error> {
+      // We have to clone here for some reason?
+      if let Some(m) = self.supported_extensions.clone() {
+         if let Some(id) = m.get("ut_metadata") {
+            return Ok(*id);
+         }
+         bail!("Peer does not support BEP 0009");
       }
+      bail!("Peer did not send an m dict with the given Extended message");
    }
 }
 
@@ -344,9 +504,14 @@ pub struct Handshake {
 impl Handshake {
    /// Create a new handshake with the given info hash and peer ID
    pub fn new(info_hash: Arc<Hash<20>>, peer_id: Arc<Hash<20>>) -> Self {
+      let mut reserved = [0u8; 8];
+
+      // We support BEP 0010
+      reserved[5] = 0x10;
+
       Self {
          protocol: MAGIC_STRING.to_vec(),
-         reserved: [0u8; 8],
+         reserved,
          info_hash,
          peer_id,
       }
@@ -411,5 +576,73 @@ impl Handshake {
          info_hash,
          peer_id,
       })
+   }
+}
+
+/// Helper functions for serializing and deserializing IpAddr into [u8; 4] and [u8; 16] respectively.
+///
+/// Needed because the bencoded IpAddr is a list of bytes instead of a string, and serde for some
+/// reason doesn't automatically deserialize it as a list of bytes.
+mod ipaddr_serde {
+   use serde::{de::Error, Deserializer, Serializer};
+   use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+   pub fn serialize<S>(ip: &Option<IpAddr>, serializer: S) -> Result<S::Ok, S::Error>
+   where
+      S: Serializer,
+   {
+      match ip {
+         // Octects convert to a u8 array, e.g "127.0.0.1" converts to [127, 0, 0, 1]
+         Some(IpAddr::V4(ipv4)) => serializer.serialize_some(&ipv4.octets().as_slice()),
+         Some(IpAddr::V6(ipv6)) => serializer.serialize_some(&ipv6.octets().as_slice()),
+         None => serializer.serialize_none(),
+      }
+   }
+   pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<IpAddr>, D::Error>
+   where
+      D: Deserializer<'de>,
+   {
+      struct Visitor;
+
+      impl<'de> serde::de::Visitor<'de> for Visitor {
+         type Value = Option<IpAddr>;
+
+         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("a byte string of length 4 or 16")
+         }
+
+         fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
+         where
+            E: Error,
+         {
+            match v.len() {
+               4 => {
+                  let ipv4 = Ipv4Addr::from(*<&[u8; 4]>::try_from(v).map_err(E::custom)?);
+                  Ok(Some(IpAddr::V4(ipv4)))
+               }
+               16 => {
+                  let ipv6 = Ipv6Addr::from(*<&[u8; 16]>::try_from(v).map_err(E::custom)?);
+                  Ok(Some(IpAddr::V6(ipv6)))
+               }
+               _ => Err(E::custom("Invalid IP address byte length")),
+            }
+         }
+
+         fn visit_none<E>(self) -> Result<Self::Value, E>
+         where
+            E: Error,
+         {
+            Ok(None)
+         }
+
+         fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+         where
+            D: Deserializer<'de>,
+         {
+            deserializer.deserialize_bytes(self)
+         }
+      }
+
+      deserializer.deserialize_option(Visitor)
    }
 }

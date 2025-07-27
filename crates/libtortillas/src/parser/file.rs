@@ -7,6 +7,7 @@ use crate::{
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_bencode as bencode;
+use serde_with::{BoolFromInt, serde_as};
 use sha1::{Digest, Sha1};
 use std::path::PathBuf;
 
@@ -53,7 +54,8 @@ impl TorrentFile {
 }
 
 /// Struct for TorrentFile
-#[derive(Debug, Serialize, Deserialize)]
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Info {
    name: String,
    #[serde(rename = "piece length")]
@@ -62,15 +64,42 @@ pub struct Info {
    pieces: HashVec<20>,
    #[serde(flatten)]
    file: InfoKeys,
+   /// If true, the client MUST publish its presence to get other peers ONLY via the trackers
+   /// explicitly described in the metainfo file. If false, the client may obtain peers from
+   /// other means, e.g. PEX peer exchange, DHT. This corresponds to the "private" field in the
+   /// torrent file, where 1 means private and 0 means public (or missing field).
+   ///
+   /// From <https://wiki.theory.org/BitTorrentSpecification#Info_Dictionary>
+   #[serde(rename = "private", default)]
+   #[serde_as(as = "BoolFromInt")]
+   is_private: bool,
+
+   /// This is undocumented, AFAIK
+   publisher: Option<String>,
+
+   /// This is undocumented, AFAIK
+   #[serde(rename = "publisher-url")]
+   publisher_url: Option<String>,
 
    source: Option<String>,
 }
+
+impl PartialEq for Info {
+   fn eq(&self, other: &Self) -> bool {
+      (self.name == other.name) && (self.pieces == other.pieces)
+   }
+}
+
+impl Eq for Info {}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum InfoKeys {
    Single {
       length: u64,
+      /// A 32-character hex string corresponding to the MD5 sum of the file. Not used by BitTorrent
+      /// at all, but included by some programs for greater compatablility.
+      md5sum: Option<String>,
    },
    Multi {
       #[serde(default)]
@@ -86,6 +115,10 @@ pub struct InfoFile {
    /// Subdirectory names for this file, the last of which is the actual file name
    /// (a zero length list is an error case).
    path: Vec<String>,
+
+   /// A 32-character hex string corresponding to the MD5 sum of the file. Not used by BitTorrent
+   /// at all, but included by some programs for greater compatablility.
+   md5sum: Option<String>,
 }
 
 impl Info {
