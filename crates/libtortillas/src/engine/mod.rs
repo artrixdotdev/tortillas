@@ -35,7 +35,8 @@ pub enum ProtocolListener {
    Tcp(TcpListener),
 }
 
-/// Helper enum for managing the input to the [torrent()] function.
+/// Helper enum for managing the input to the [torrent](TorrentEngine::torrent)
+/// function.
 #[derive(Debug)]
 pub enum TorrentInput {
    MagnetUri(String),

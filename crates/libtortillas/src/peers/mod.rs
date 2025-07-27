@@ -654,25 +654,25 @@ impl Peer {
          })
          .unwrap();
 
-      trace!("Attempting to connect to peer {}", peer_addr);
-
       // For outgoing peers (we are connecting to them), we should create the stream
       // ourselves and send the handshake & bitfield
+      trace!("Attempting to connect to peer {}", peer_addr);
       let stream = if let Some(stream) = stream {
-         // Otherwise, since they have already sent their handshake and been verified, we
-         // can skip that part.
-         stream
-      } else {
          let mut stream = PeerStream::connect(peer_addr, utp_socket).await;
          // Send handshake to peer
          let (peer_id, reserved) = stream
             .send_handshake(our_id, Arc::new(info_hash))
             .await
             .unwrap();
+
          self.id = Some(*peer_id);
          self.reserved = reserved;
          self.determine_supported().await;
          stream
+      } else {
+         // Otherwise, since they have already sent their handshake and been verified, we
+         // can skip that part.
+         stream.unwrap()
       };
 
       let (mut reader, writer) = stream.split();

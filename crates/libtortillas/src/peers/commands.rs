@@ -26,7 +26,7 @@ pub enum PeerResponse {
       from_engine_tx: mpsc::Sender<PeerCommand>,
       peer_key: PeerKey,
    },
-   /// A message for the metadata (info dict) retrieved from an Extended message (see (BEP 0010)[https://www.bittorrent.org/beps/bep_0010.html] and (BEP 0009)[https://www.bittorrent.org/beps/bep_0009.html])
+   /// A message for the metadata (info dict) retrieved from an Extended message see [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html) and [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html)
    /// These bytes MUST be checked before sending this message, like so:
    /// ```
    /// let info_dict: Info = serde_bencode::from_bytes(&info_bytes).unwrap();

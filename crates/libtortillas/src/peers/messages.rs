@@ -464,7 +464,7 @@ pub struct ExtendedMessage {
    pub metadata_size: Option<u64>,
    /// Refers to the type of a message, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
    ///
-   /// See documentation for (MessageType)[MessageType]
+   /// See documentation for [ExtendedMessageType]
    pub msg_type: Option<ExtendedMessageType>,
    /// Indicates which part of the metadata this message refers to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
    ///

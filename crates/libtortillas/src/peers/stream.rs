@@ -24,8 +24,8 @@ use crate::{
 };
 /// A very simple enum to help differentiate between streams. TcpStream and
 /// UtpStream are so incredibly similar in functionality that it's ususally
-/// possible to simply make a blanket function, such as
-/// [write_all](PeerStream::write_all)
+/// possible to simply make a blanket function as it implements both [AsyncRead]
+/// and [AsyncWrite]
 pub enum PeerStream {
    Tcp(TcpStream),
    Utp(UtpStream),
@@ -101,12 +101,12 @@ pub trait PeerRecv: AsyncRead + Unpin {
 
 impl PeerStream {
    /// Connect to a peer with the given peer_addr (ip & port in the form of a
-   /// [SocketAddr](std::net::SocketAddr))
+   /// [SocketAddr])
    ///
    /// When connecting to a peer, we attempt to connect over both TCP and uTP,
    /// and use whichever one works. While this may seem "not to spec", this
    /// is how the transmission BitTorrent client does it:
-   /// https://github.com/transmission/transmission/discussions/7603
+   /// <https://github.com/transmission/transmission/discussions/7603>
    ///
    /// utp_socket should be None ONLY for testing, when we only wish to utilize
    /// a TcpStream.
@@ -128,7 +128,7 @@ impl PeerStream {
    }
 
    /// Handshakes with a peer and returns the socket address of the peer. This
-   /// socket address is also a (PeerKey)[super::PeerKey].
+   /// socket address is also a [PeerKey](super::PeerKey).
    #[instrument(
       skip(self)
       fields(
