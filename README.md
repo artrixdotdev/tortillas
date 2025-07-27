@@ -1,84 +1,60 @@
-# tortillas
+# Tortillas
+A terminal-based TUI (Text User Interface) torrent client built in Rust 🫓.
 
-A terminal TUI torrent client.
+## 🚧 Project Status
 
-## Roadmap
+**Note:** This project is currently under active development and is not yet feature-complete. It is by no means ready for use.
 
-This serves as a very general and broad roadmap of what we intend to do with this library/CLI. If you see anything that you would like to contribute to, please see `CONTRIBUTING.md`! We're always happy to have a bit of help.
+## 🛠️ Roadmap
+See our roadmap [here](https://github.com/users/artrixdotdev/projects/6).
 
-We plan to support:
+### ✅ Currently Supported
+- Parsing and handling Magnet URIs
+- Parsing and handling `.torrent` files
+- uTP and TCP peer connections
+- Full implementation of the BitTorrent protocol
 
-- uTP peer connections
-- TCP peer connections
+### 🔄 In Development
+- Completion of [libtortillas](crates/libtortillas) library
 
-We currently support:
 
-- Handling Magnet URIs
-- Handling Torrent files
+### 📈 Future Plans
+- Frontend TUI (Text User Interface)
 
-We are currently working on (this may be a little bit out of date, feel free to ask/open an issue):
+### ❌ Not Planned
+- WebTorrent connections: Due to the lack of clear documentation and complex, undocumented protocols WebTorrent support is not currently planned.
 
-- uTP peer connections
-- TCP peer connections
+## 🧪 Testing
 
-We do NOT plan to support:
+We use [Nextest](https://nexte.st/) for running tests. To run tests locally, you may need to install Nextest:
 
-- WebTorrent connections: Until WebTorrent's documentation and source code is greatly improved, it is not worth the time and energy required to decipher the many protocols and undocumented spec(s) that WebTorrent utilizes (SDP, DTLS, WebRTC -- more specifically how WebTorrent treats and uses these protocols).
-
-## Testing
-
-We use [Nextest](https://nexte.st/) for testing. You may have to install Nextest locally on your machine in order to run tests. You can see how to do so [here](https://nexte.st/docs/installation/pre-built-binaries/).
-
-![Alt](https://repobeats.axiom.co/api/embed/2937f666319e74a9467ef1d5442edf89beabd516.svg "Repobeats analytics image")
-
-## Usage
-
-Please keep in mind that as of April 6th, 2025, this library is not complete.
-
-### Handshaking with peers
-
-#### uTP
-
-Given a vector of peers `peers`:
-
-```rs
-            let tx = utp_transport_handler.tx.clone();
-
-            // This is one way that UtpTransports could be handled async
-            // This tidbit is just for confirming that we successfully connected to at least one
-            // peer
-            let (success_tx, mut success_rx) = mpsc::channel(100);
-
-            // For each peer, spawn a task to connect
-            for peer in peers {
-               // Clone tx (see Tokio docs on why we need to clone tx: <https://tokio.rs/tokio/tutorial/channels>)
-               let tx = tx.clone();
-               let success_tx_clone = success_tx.clone();
-               tokio::spawn(async move {
-                  let (oneshot_tx, oneshot_rx) = oneshot::channel();
-                  let cmd = TransportCommand::Connect { peer, oneshot_tx };
-
-                  tx.send(cmd).await.unwrap();
-
-                  // Receive message. There is no error handling present here as there's no reason
-                  // to -- all we're doing is handshaking, and then ending the process. If you'd
-                  // like to see a more rigorous (perhaps) way of handling errors, take a look at
-                  // the torrent() function in TorrentEngine
-                  success_tx_clone
-                     .send(oneshot_rx.await.unwrap())
-                     .await
-                     .unwrap();
-               });
-            }
-
-            // Start handling mpsc messages from the join set
-            tokio::spawn(async move {
-               utp_transport_handler.handle_commands().await.unwrap();
-            });
-
-            // As long as this unwraps correctly, we have successfully made a handshake.
-            let res = success_rx.recv().await.unwrap().unwrap();
-            trace!("{:?}", res);
+```bash
+# Install Nextest (example using pre-built binaries)
+# See: https://nexte.st/docs/installation/pre-built-binaries/
 ```
 
-Please keep in mind that this code is heavily redacted and is not an entirely optimal way to do this (specifically in reference to error handling). See `test_utp_peer_handshake` for more.
+## 📦 Installation
+### Tortillas
+Tortillas is the frontend TUI (Text User Interface) application (what most people want)
+
+There are plans to publish tortillas to registries such as [crates.io](https://crates.io) and [the AUR](https://aur.archlinux.org). However, for now, you can install it from source using cargo:
+```bash
+cargo install --git https://github.com/artrixdotdev/tortillas
+```
+
+This will install `tortillas` to your local Rust toolchain.
+
+
+### Libtortillas
+Libtortillas is the library that powers the frontend TUI application. It is a library that can be used to build your own frontend application or integrate with existing frontend applications.
+
+```bash
+cargo add --package libtortillas --git https://github.com/artrixdotdev/tortillas libtortillas
+```
+## 🤝 Contributing
+
+We welcome contributions! If you'd like to help improve `tortillas`, please check out our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and tips.
+
+## 📊 Analytics
+
+![Repobeats Analytics](https://repobeats.axiom.co/api/embed/2937f666319e74a9467ef1d5442edf89beabd516.svg "Repobeats analytics image")

@@ -1,3 +1,11 @@
 indent_style = "Block"
 tab_spaces = 3
 edition = "2024"
+imports_granularity = "Crate"
+comment_width = 80
+wrap_comments = true
+format_code_in_doc_comments = true
+normalize_comments = true
+merge_derives = false
+group_imports = "StdExternalCrate"
+fn_params_layout = "Compressed"

@@ -1,3 +1,5 @@
+use std::{fmt, net::SocketAddr};
+
 use anyhow::Result;
 use async_trait::async_trait;
 use http::HttpTracker;
@@ -6,7 +8,6 @@ use serde::{
    Deserialize,
    de::{self, Visitor},
 };
-use std::{fmt, net::SocketAddr};
 use tokio::sync::mpsc;
 use udp::UdpTracker;
 
@@ -19,7 +20,8 @@ pub mod udp;
 
 #[async_trait]
 pub trait TrackerTrait: Clone {
-   /// Acts as a wrapper function for get_peers. Should be spawned with tokio::spawn.
+   /// Acts as a wrapper function for get_peers. Should be spawned with
+   /// tokio::spawn.
    async fn stream_peers(&mut self) -> Result<mpsc::Receiver<Vec<Peer>>>;
 
    async fn get_peers(&mut self) -> Result<Vec<Peer>>;
@@ -42,9 +44,7 @@ pub enum Tracker {
 impl Tracker {
    /// Gets peers based off of given tracker
    pub async fn get_peers(
-      &self,
-      info_hash: InfoHash,
-      peer_id: Option<Hash<20>>,
+      &self, info_hash: InfoHash, peer_id: Option<Hash<20>>,
    ) -> Result<Vec<Peer>> {
       match self {
          Tracker::Http(uri) => {
@@ -72,10 +72,7 @@ impl Tracker {
 
    /// Streams peers based off of given tracker
    pub async fn stream_peers(
-      &self,
-      info_hash: InfoHash,
-      peer_addr: Option<SocketAddr>,
-      peer_id: Option<Hash<20>>,
+      &self, info_hash: InfoHash, peer_addr: Option<SocketAddr>, peer_id: Option<Hash<20>>,
    ) -> Result<mpsc::Receiver<Vec<Peer>>> {
       match self {
          Tracker::Http(uri) => {

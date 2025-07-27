@@ -1,23 +1,18 @@
-use std::ops::BitOrAssign;
 use std::{
    collections::{HashMap, HashSet},
    net::SocketAddr,
+   ops::BitOrAssign,
    str::FromStr,
    sync::Arc,
 };
 
-use anyhow::{anyhow, Error, Result};
-use bitvec::{bitvec, order::Lsb0, vec::BitVec};
-use futures::{
-   stream::{self, FuturesUnordered},
-   StreamExt,
-};
+use anyhow::{Error, Result, anyhow};
+use bitvec::vec::BitVec;
 use librqbit_utp::{UtpSocket, UtpSocketUdp};
 use tokio::{
    net::TcpListener,
-   sync::{broadcast, mpsc, oneshot, Mutex, RwLock},
-   task::JoinSet,
-   time::{sleep, Duration, Instant},
+   sync::{Mutex, RwLock, broadcast, mpsc},
+   time::{Duration, Instant},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -25,10 +20,10 @@ use crate::{
    hashes::Hash,
    parser::MetaInfo,
    peers::{
+      Peer, PeerId, PeerKey,
       commands::{PeerCommand, PeerResponse},
       messages::PeerMessages,
       stream::PeerStream,
-      Peer, PeerId, PeerKey,
    },
 };
 
@@ -40,24 +35,25 @@ pub enum ProtocolListener {
    Tcp(TcpListener),
 }
 
-/// Helper enum for managing the input to the [torrent()] function.
+/// Helper enum for managing the input to the [torrent](TorrentEngine::torrent)
+/// function.
 #[derive(Debug)]
 pub enum TorrentInput {
    MagnetUri(String),
    File(String),
 }
 
-/// The main engine that any outside libraries/programs should be interacting with.
-/// Automatically handles all supported protocols.
+/// The main engine that any outside libraries/programs should be interacting
+/// with. Automatically handles all supported protocols.
 ///
-/// TorrentEngine only supports torrenting a single file at a time (at the moment).
-/// However, it should be noted that it does support all supported protocols on initialization.
-/// In other words, both tcp_handler and utp_handler are available directly after
-/// TorrentEngine::new() is called.
+/// TorrentEngine only supports torrenting a single file at a time (at the
+/// moment). However, it should be noted that it does support all supported
+/// protocols on initialization. In other words, both tcp_handler and
+/// utp_handler are available directly after TorrentEngine::new() is called.
 ///
-/// It should be noted that TorrentEngine does not seed files at the moment. In other words,
-/// TorrentEngine is a leecher. The ability to seed files will be added in a future
-/// commit/issue/pull request.
+/// It should be noted that TorrentEngine does not seed files at the moment. In
+/// other words, TorrentEngine is a leecher. The ability to seed files will be
+/// added in a future commit/issue/pull request.
 #[derive(Debug)]
 pub struct TorrentEngine {
    metainfo: MetaInfo,
@@ -99,11 +95,9 @@ impl TorrentEngine {
       info!(
           info_hash = %info_hash,
           peer_id = %peer_id,
-          trackers = metainfo.announce_list().len(),
+          tracker_count = metainfo.announce_list().len(),
           "Creating new torrent engine"
       );
-
-      debug!("Torrent metadata loaded");
 
       TorrentEngine {
          metainfo,
@@ -122,9 +116,6 @@ impl TorrentEngine {
         info_hash = %self.metainfo.info_hash().unwrap()
     ))]
    async fn listen(self: Arc<Self>) -> Result<(Arc<UtpSocketUdp>, TcpListener), Error> {
-      let span = tracing::debug_span!("network_setup");
-      let _enter = span.enter();
-
       debug!("Setting up network listeners");
 
       let utp_socket = match UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").unwrap()).await {
@@ -153,7 +144,7 @@ impl TorrentEngine {
       info!(
           tcp_addr = %tcp_addr,
           utp_addr = %utp_addr,
-          "Network listeners established successfully"
+          "Network listeners established"
       );
 
       Ok((utp_socket, tcp_listener))
@@ -166,7 +157,7 @@ impl TorrentEngine {
     ))]
    async fn handle_peer_connection(self: Arc<Self>, stream: PeerStream, addr: SocketAddr) {
       let protocol = stream.protocol();
-      debug!("Processing new {protocol} peer connection");
+      debug!(protocol, "Processing new peer connection");
 
       let peer = Peer::from_socket_addr(addr);
 
@@ -195,26 +186,18 @@ impl TorrentEngine {
       );
    }
 
-   /// Helper function for spawning what we call a "peer thread". A peer thread is an
-   /// unnecessarily fancy phrase for the thread that handle_peer runs on -- the thread
-   /// that allows a peer to operate semi-autonomously from TorrentEngine.
+   /// Helper function for spawning what we call a "peer thread". A peer thread
+   /// is an unnecessarily fancy phrase for the thread that handle_peer runs
+   /// on -- the thread that allows a peer to operate semi-autonomously from
+   /// TorrentEngine.
    ///
-   /// To be more specific, once we spawn this thread, we can only communicate with the peer
-   /// through the given channels. The peer thread handles the remote connection to the peer on
-   /// its own.
+   /// To be more specific, once we spawn this thread, we can only communicate
+   /// with the peer through the given channels. The peer thread handles the
+   /// remote connection to the peer on its own.
    async fn spawn_handle_peer(
-      self: Arc<Self>,
-      peer: Peer,
-      listener: Option<Arc<UtpSocketUdp>>,
-      stream: Option<PeerStream>,
+      self: Arc<Self>, peer: Peer, listener: Option<Arc<UtpSocketUdp>>, stream: Option<PeerStream>,
    ) {
-      let peer_span = tracing::debug_span!(
-          "outbound_peer_connection",
-          peer_addr = %peer.socket_addr()
-      );
-      let _peer_enter = peer_span.enter();
-
-      debug!("Initiating outbound connection to peer");
+      debug!(peer_addr = %peer.socket_addr(), "Initiating outbound connection to peer");
 
       let bitfield: BitVec<u8>;
       {
@@ -233,14 +216,12 @@ impl TorrentEngine {
          .await;
    }
 
-   /// A helper function for listening for peers trying to connect to us on either Tcp or Utp.
+   /// A helper function for listening for peers trying to connect to us on
+   /// either Tcp or Utp.
    async fn listen_on_protocol(self: Arc<Self>, listener: ProtocolListener) {
       match listener {
          ProtocolListener::Utp(listener) => {
             tokio::spawn(async move {
-               let span = tracing::info_span!("utp_peer_handler");
-               let _enter = span.enter();
-
                info!("UTP peer handler started");
 
                loop {
@@ -260,14 +241,11 @@ impl TorrentEngine {
                }
             });
 
-            info!("UTP peer handler spawned successfully");
+            debug!("UTP peer handler spawned");
          }
          ProtocolListener::Tcp(listener) => {
             let engine_ref = self.clone();
             tokio::spawn(async move {
-               let span = tracing::info_span!("tcp_peer_handler");
-               let _enter = span.enter();
-
                info!("TCP peer handler started");
 
                loop {
@@ -286,25 +264,21 @@ impl TorrentEngine {
                }
             });
 
-            info!("TCP peer handler spawned successfully");
+            debug!("TCP peer handler spawned");
          }
       }
    }
 
-   /// Listens for any peers that are trying to connect to us over uTP or TCP. Returns the created
-   /// UtpListener for later use. This is unnecessary to do for TCP due to the nature of the
-   /// protocol itself.
+   /// Listens for any peers that are trying to connect to us over uTP or TCP.
+   /// Returns the created UtpListener for later use. This is unnecessary to
+   /// do for TCP due to the nature of the protocol itself.
    async fn listen_for_incoming_peers(self: Arc<Self>) -> Result<Arc<UtpSocketUdp>, Error> {
-      let network_span = tracing::debug_span!("network_setup");
+      debug!("Initializing network listeners");
       let me = self.clone();
 
-      let (utp_listener, tcp_listener) = {
-         let _network_enter = network_span.enter();
-         debug!("Initializing network listeners");
-         me.clone().listen().await?
-      };
+      let (utp_listener, tcp_listener) = me.clone().listen().await?;
 
-      // Update addresses with logging
+      // Update addresses
       {
          let tcp_addr = tcp_listener.local_addr().ok();
          let utp_addr = Some(utp_listener.bind_addr());
@@ -335,29 +309,29 @@ impl TorrentEngine {
       Ok(utp_listener.clone())
    }
 
-   /// The full torrenting process, summarized in a single function. As of 5/23/25, the return
-   /// value of this function is temporary.
+   /// The full torrenting process, summarized in a single function. As of
+   /// 5/23/25, the return value of this function is temporary.
    ///
    /// The general flow of this function is as follows:
    /// - Get initial peers from trackers
-   /// - Go through standard protocol for each peer (ex. handshake, then wait for bitfield, etc.).
+   /// - Go through standard protocol for each peer (ex. handshake, then wait
+   ///   for bitfield, etc.).
    /// - Pieces will be maintained in the TorrentEngine struct
    /// - Get new peers from each tracker
    /// - Remove any duplicate peers
    /// - Repeat
    ///
-   /// This also makes seeding very easy -- when a peer asks for a piece, just send them
-   /// self.pieces at whatever index they asked for.
+   /// This also makes seeding very easy -- when a peer asks for a piece, just
+   /// send them self.pieces at whatever index they asked for.
    ///
-   /// TODO: This function will likely return a torrented file, or a path to a locally torrented file.
+   /// TODO: This function will likely return a torrented file, or a path to a
+   /// locally torrented file.
    #[instrument(skip(self), fields(
         info_hash = %self.metainfo.info_hash().unwrap(),
         peer_id = %self.id
     ))]
    pub async fn torrent(self: Arc<Self>) -> anyhow::Result<(), Error> {
       let me = self.clone();
-      let session_span = tracing::info_span!("torrent_session");
-      let _session_enter = session_span.enter();
 
       info!("Starting torrent session");
 
@@ -365,12 +339,9 @@ impl TorrentEngine {
       let utp_listener = me_listen.listen_for_incoming_peers().await?;
 
       // Tracker communication setup
-      let tracker_span = tracing::debug_span!("tracker_communication");
       let mut rx_list = vec![];
 
       {
-         let _tracker_enter = tracker_span.enter();
-
          let primary_addr = if let Some(addr) = *me.tcp_addr.lock().await {
             debug!(primary_addr = %addr, protocol = "tcp", "Using TCP as primary address");
             addr
@@ -397,13 +368,12 @@ impl TorrentEngine {
                .await
             {
                Ok(rx) => {
-                  debug!(tracker_index = index, tracker_url = ?tracker, "Successfully connected to tracker");
+                  debug!(tracker_index = index, "Successfully connected to tracker");
                   rx_list.push(rx);
                }
                Err(e) => {
                   warn!(
                       tracker_index = index,
-                      tracker_url = ?tracker,
                       error = %e,
                       "Failed to connect to tracker"
                   );
@@ -423,10 +393,11 @@ impl TorrentEngine {
          primary_addr
       };
 
-      // Spawns a loop to handle responses from `to_engine_tx_rx.1` (AKA the receiver that all
-      // peer threads send messages to)
+      // Spawns a loop to handle responses from `to_engine_tx_rx.1` (AKA the receiver
+      // that all peer threads send messages to)
       //
-      // In other words, this thread handles all PeerResponses from each spawn of handle_peer.
+      // In other words, this thread handles all PeerResponses from each spawn of
+      // handle_peer.
       let me_handle_peer = self.clone();
       tokio::spawn(async move {
          let mut to_engine_tx = me_handle_peer.to_engine_tx_rx.0.subscribe();
@@ -453,28 +424,29 @@ impl TorrentEngine {
                   from_engine_tx,
                   peer_key,
                } => {
-                  trace!(%peer_key, "torrent() now sees that peer is unchoked");
+                  trace!(peer_key = %peer_key, "Peer unchoked, requesting pieces");
                   for piece_num in 0..me_handle_peer.bitfield.read().await.len() {
                      match from_engine_tx
                         .send(PeerCommand::Piece(piece_num as u32))
                         .await
                      {
                         Ok(_) => {
-                           trace!(?peer_key, piece_num, "Sent PeerCommand::Piece to peer");
+                           trace!(peer_key = %peer_key, piece_num, "Sent piece request to peer");
                         }
                         Err(e) => {
                            error!(
-                           ?peer_key,
-                           piece_num,
-                           "An error occurred when trying to send PeerCommand::Piece to peer: {}",
-                           e
-                        )
+                              peer_key = %peer_key,
+                              piece_num,
+                              error = %e,
+                              "Failed to send piece request to peer"
+                           )
                         }
                      }
                   }
                }
-               PeerResponse::Receive { message, peer_key } => {
-                  // This is guaranteed to not run until self.bitfield is set to the correct length.
+               PeerResponse::Receive { message, .. } => {
+                  // This is guaranteed to not run until self.bitfield is set to the correct
+                  // length.
                   match message {
                      PeerMessages::Piece(index, _, _) => {
                         {
@@ -484,11 +456,12 @@ impl TorrentEngine {
                            }
                         }
 
+                        trace!(piece_index = index, "Received piece from peer");
                         // TODO: Save piece
                      }
                      PeerMessages::KeepAlive => {
-                        // As far as I am aware, we don't have to do anything for KeepAlive
-                        // messages.
+                        // As far as I am aware, we don't have to do anything
+                        // for KeepAlive messages.
                      }
                      _ => {}
                   }
@@ -503,9 +476,6 @@ impl TorrentEngine {
       let stats_ref = Arc::clone(&self.stats);
 
       tokio::spawn(async move {
-         let span = tracing::info_span!("peer_discovery");
-         let _enter = span.enter();
-
          let mut peers_in_action = HashSet::new();
          let mut last_stats_log = Instant::now();
          let stats_interval = Duration::from_secs(30);
@@ -572,22 +542,23 @@ impl TorrentEngine {
       // See the definition of "ready" below for an explanation of this.
       let mut ready_bitfield: BitVec<u8> = BitVec::EMPTY;
 
-      // Gather peers until we are "ready". We define "ready" as having ~80% of the pieces of a torrent
-      // accounted for. For example, if a given torrent has 6 pieces, and peer A has pieces 0
-      // and 1, peer B has pieces 2 and 3, and peer C has pieces 4, but not 5, then we are ready.
+      // Gather peers until we are "ready". We define "ready" as having ~80% of the
+      // pieces of a torrent accounted for. For example, if a given torrent has
+      // 6 pieces, and peer A has pieces 0 and 1, peer B has pieces 2 and 3, and
+      // peer C has pieces 4, but not 5, then we are ready.
       //
-      // However, if peer A does not have piece 1, then we are not ready, because we only have ~66%
-      // of the pieces accounted for.
+      // However, if peer A does not have piece 1, then we are not ready, because we
+      // only have ~66% of the pieces accounted for.
       //
-      // Why 80%? Some peers appear to be consistently missing some (& the same) pieces of a
-      // torrent, and 80% should *ideally* guarantee that we have most of the pieces, and we'll get
-      // the ones that we don't have later.
+      // Why 80%? Some peers appear to be consistently missing some (& the same)
+      // pieces of a torrent, and 80% should *ideally* guarantee that we have
+      // most of the pieces, and we'll get the ones that we don't have later.
       //
-      // Additionally, overlap is allowed. If both peer A and B have piece 1, then we simply say
-      // that that piece is accounted for.
+      // Additionally, overlap is allowed. If both peer A and B have piece 1, then we
+      // simply say that that piece is accounted for.
       //
-      // Yes, there are other ways to do this such as using the pieces field of the info
-      // dictionary. However, this is simple and effective.
+      // Yes, there are other ways to do this such as using the pieces field of the
+      // info dictionary. However, this is simple and effective.
       //
       // This loop will run until we are ready.
       const READY_VALUE: f64 = 0.80;
@@ -596,13 +567,13 @@ impl TorrentEngine {
 
       loop {
          let response = accounted_bitfield_peer_rx.recv().await;
-         trace!(bitfield_from_peer = ?response);
+         trace!(response = ?response, "Received bitfield response");
          if let Ok(PeerResponse::Receive {
             message: PeerMessages::Bitfield(bitfield),
             ..
          }) = response
          {
-            trace!("Got bitfield message from peer in torrent()");
+            trace!("Processing bitfield message from peer");
 
             // Hacky way to initialize bitfield to correct length
             if ready_bitfield.is_empty() {
@@ -613,9 +584,11 @@ impl TorrentEngine {
 
             let ready_ratio = ready_bitfield.count_ones() as f64 / ready_bitfield.len() as f64;
             if ready_ratio >= READY_VALUE {
-               trace!(
-                  "Broke 'ready' loop -- {}% of pieces are accounted for.",
-                  READY_VALUE * 100.0
+               info!(
+                  ready_percentage = ready_ratio * 100.0,
+                  pieces_available = ready_bitfield.count_ones(),
+                  total_pieces = ready_bitfield.len(),
+                  "Reached readiness threshold for piece availability"
                );
                break;
             }
@@ -641,13 +614,15 @@ mod tests {
 
    // THIS TEST IS NOT COMPLETE!!! (DELETEME when torrent() is completed)
    // Until torrent() is fully implemented, this test is not complete.
-   // The purpose of this test at this point in time is to ensure that torrent() works to the expected point.
+   // The purpose of this test at this point in time is to ensure that torrent()
+   // works to the expected point.
    //
-   // This test uses its own subscriber in lieu of traced_test as it desperately needs to show
-   // line numbers (which requires the use of tracing_subscriber).
+   // This test uses its own subscriber in lieu of traced_test as it desperately
+   // needs to show line numbers (which requires the use of tracing_subscriber).
    //
-   // If debugging, a known good peer for the torrent in zenshuu.txt is 95.234.80.134:46519 (as of 06/17/2025).
-   // This was confirmed through use of the transmission BitTorrent client.
+   // If debugging, a known good peer for the torrent in zenshuu.txt is
+   // 95.234.80.134:46519 (as of 06/17/2025). This was confirmed through use of
+   // the transmission BitTorrent client.
    #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
    async fn test_torrent_with_magnet_uri() {
       let subscriber = fmt()

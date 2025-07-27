@@ -6,4 +6,3 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 anyhow = "1.0"
-cargo-nextest = "0.9.93"
