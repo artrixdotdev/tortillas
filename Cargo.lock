@@ -1676,6 +1676,7 @@ dependencies = [
  "atomic-time",
  "bencode",
  "bitvec",
+ "cargo-nextest",
  "futures",
  "hex",
  "librqbit-utp",
@@ -3597,7 +3598,6 @@ name = "tortillas"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "cargo-nextest",
  "tokio",
 ]
 
