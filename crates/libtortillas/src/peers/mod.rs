@@ -25,7 +25,7 @@ use tokio::{
    },
    time::{Instant, sleep, timeout},
 };
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
    hashes::{Hash, InfoHash},
@@ -168,7 +168,7 @@ impl PeerInfo {
 
       // Put bytes into Info struct
       // The metadata should be bencoded bytes.
-      trace!("Generating info dict from bytes");
+      trace!("Generating info dict from metadata bytes");
       let info_dict: Info = serde_bencode::from_bytes(&self.info_bytes).unwrap();
 
       // Validate hash of struct with given info hash
@@ -177,7 +177,7 @@ impl PeerInfo {
          "Inputted info_hash was not the same as generated info_hash"
       );
 
-      trace!("Inputted info_hash was the same as generated info_hash");
+      trace!("Info hash validation successful");
 
       Ok(info_dict)
    }
@@ -185,8 +185,18 @@ impl PeerInfo {
    /// A helper function for handling any issues with appending the new bytes to
    /// the current info_bytes
    pub fn append_to_bytes(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
-      if self.info_bytes.len() + bytes.len() > self.info_size as usize {
-         trace!(bytes_len = bytes.len(), info_size = self.info_size);
+      let bytes_len = bytes.len();
+      let current_len = self.info_bytes.len();
+      let total_len = current_len + bytes_len;
+
+      if total_len > self.info_size as usize {
+         warn!(
+            bytes_len,
+            current_len,
+            info_size = self.info_size,
+            total_len,
+            "Metadata bytes exceed expected size"
+         );
          bail!("The inputted bytes + pre-existing bytes were longer than the metadata size")
       }
       self.info_bytes.extend_from_slice(&bytes);
@@ -200,18 +210,20 @@ impl PeerInfo {
    /// the length of [info_bytes](Self::info_bytes) to
    /// [info_size](Self::info_size).
    pub fn have_all_bytes(&self) -> bool {
+      let current_size = self.info_bytes.len();
       trace!(
          info_size = self.info_size,
-         current_info_size = self.info_bytes.len()
+         current_size, "Checking metadata completeness"
       );
       if self.info_size == 0 {
          return false;
       }
-      self.info_bytes.len() >= self.info_size as usize
+      current_size >= self.info_size as usize
    }
 
    /// Resets the PeerInfo struct.
    pub fn reset(&mut self) {
+      trace!("Resetting peer info metadata");
       self.info_bytes = vec![];
       self.info_size = 0;
    }
@@ -306,8 +318,11 @@ impl Peer {
 
    /// Extract piece request handling into a separate method for clarity
    async fn handle_piece_request(&mut self, stream: &mut PeerWriter, piece_num: u32) {
+      let peer_addr = self.socket_addr();
+
       // If the peer does not have the piece, don't request it.
       if self.pieces.get(piece_num as usize).unwrap() == false {
+         trace!(%peer_addr, piece_num, "Peer does not have requested piece");
          return;
       }
 
@@ -326,27 +341,13 @@ impl Peer {
 
       match request_result {
          Ok(Ok(())) => {
-            trace!("Successfully made request");
+            trace!(%peer_addr, piece_num, "Piece request sent successfully");
          }
-         Ok(Err(_)) => {
-            let error_msg = match request_result {
-               Ok(Err(err)) => format!("Send error: {err}"),
-               Err(_) => "Request timeout".to_string(),
-               _ => unreachable!(),
-            };
-
-            error!("Failed to send request: {}", error_msg);
-
-            // Note: We don't wait for a piece response here since the request
-            // failed The piece response will be handled in the main
-            // select! loop if it arrives
+         Ok(Err(send_err)) => {
+            error!(%peer_addr, piece_num, error = %send_err, "Failed to send piece request");
          }
          Err(_) => {
-            error!("Failed to send request to peer: {}", "Request timeout");
-
-            // Note: We don't wait for a piece response here since the request
-            // failed The piece response will be handled in the main
-            // select! loop if it arrives
+            warn!(%peer_addr, piece_num, timeout_secs = REQUEST_TIMEOUT, "Piece request timed out");
          }
       }
    }
@@ -355,10 +356,9 @@ impl Peer {
    fn send(
       to_engine_tx: broadcast::Sender<PeerResponse>, message: PeerResponse, peer_addr: SocketAddr,
    ) {
-      to_engine_tx
-         .send(message)
-         .map_err(|e| error!(%peer_addr, "Failed to send Piece message from peer: {}", e))
-         .unwrap();
+      if let Err(e) = to_engine_tx.send(message) {
+         error!(%peer_addr, error = %e, "Failed to send message to engine");
+      }
    }
 
    /// A helper function for [handle_peer](Peer::handle_peer). This is a very
@@ -370,8 +370,8 @@ impl Peer {
    ) {
       let peer_addr = self.socket_addr();
       match &message {
-         PeerMessages::Piece(_, _, _) => {
-            trace!("Received a Piece message from peer {}", peer_addr);
+         PeerMessages::Piece(index, offset, data) => {
+            trace!(%peer_addr, piece_index = index, offset, data_len = data.len(), "Received piece data");
             Self::send(
                to_engine_tx,
                PeerResponse::Receive {
@@ -383,12 +383,12 @@ impl Peer {
          }
          PeerMessages::Choke => {
             self.state.am_choked.store(true, Ordering::Release);
-            trace!("Peer {} is now choked", peer_addr);
+            debug!(%peer_addr, "Peer choked us");
          }
          PeerMessages::Unchoke => {
             Self::update_message(self.state.last_optimistic_unchoke.clone());
             self.state.am_choked.store(false, Ordering::Release);
-            trace!("Peer {} is now unchoked", peer_addr);
+            debug!(%peer_addr, "Peer unchoked us");
             Self::send(
                to_engine_tx,
                PeerResponse::Unchoke {
@@ -400,20 +400,20 @@ impl Peer {
          }
          PeerMessages::Interested => {
             self.state.am_interested.store(true, Ordering::Release);
-            trace!("Peer {} is now interested", peer_addr);
+            debug!(%peer_addr, "Peer is interested in our pieces");
          }
          PeerMessages::NotInterested => {
             self.state.am_interested.store(false, Ordering::Release);
-            trace!("Peer {} is now not interested", peer_addr);
+            debug!(%peer_addr, "Peer is not interested in our pieces");
          }
          PeerMessages::KeepAlive => {
-            trace!(%peer_addr, "Received a keep alive message from peer");
+            trace!(%peer_addr, "Received keep alive");
          }
-         PeerMessages::Have(piece) => {
-            trace!(%peer_addr, "Peer has piece {}", piece);
+         PeerMessages::Have(piece_index) => {
+            trace!(%peer_addr, piece_index, "Peer has piece");
          }
-         PeerMessages::Request(index, _, _) => {
-            trace!(%peer_addr, "Peer wants piece {}", index);
+         PeerMessages::Request(index, offset, length) => {
+            trace!(%peer_addr, piece_index = index, offset, length, "Peer requested piece data");
             Self::send(
                to_engine_tx,
                PeerResponse::Receive {
@@ -424,7 +424,7 @@ impl Peer {
             );
          }
          PeerMessages::Extended(extended_id, extended_message, metadata) => {
-            trace!(%peer_addr, "Peer sent an Extended message with id {}", extended_id);
+            trace!(%peer_addr, extended_id, "Received extended message");
 
             // If this is an Extended handshake, send a handshake in response.
             if *extended_id == 0 {
@@ -434,23 +434,23 @@ impl Peer {
                extended_message.supported_extensions = Some(m);
                let command = PeerCommand::Extended(0, Some(extended_message));
 
-               trace!(?command, "Handshake to send to handle_send");
+               trace!(%peer_addr, "Sending extended handshake response");
 
-               inner_send_tx.send(command).await.unwrap();
-
-               trace!("Sent Extended handshake to handle_send with inner_send_tx")
+               if let Err(e) = inner_send_tx.send(command).await {
+                  error!(%peer_addr, error = %e, "Failed to send extended handshake response");
+               }
             }
 
             // Save to Peer.
             if let Some(inner_metadata) = metadata {
-               self.info.append_to_bytes(inner_metadata.to_vec()).unwrap();
+               if let Err(e) = self.info.append_to_bytes(inner_metadata.to_vec()) {
+                  warn!(%peer_addr, error = %e, "Failed to append metadata bytes");
+               }
             }
 
             if let Some(extended_message) = &**extended_message {
-               trace!(%peer_addr, "Peer sent a payload with Extended message: {:?}", extended_message);
-
                if let Some(size) = extended_message.metadata_size {
-                  info!(size, "Received metadata size");
+                  debug!(%peer_addr, metadata_size = size, "Received metadata size from peer");
                }
 
                if let Ok(id) = extended_message.supports_bep_0009() {
@@ -472,8 +472,11 @@ impl Peer {
                            Some(extended_message_command),
                         );
 
-                        inner_send_tx.send(command).await.unwrap();
-                        trace!("Sent message with inner_send_tx for Extended message");
+                        if let Err(e) = inner_send_tx.send(command).await {
+                           error!(%peer_addr, error = %e, "Failed to send metadata request");
+                        } else {
+                           trace!(%peer_addr, piece_num, "Requested metadata piece");
+                        }
                      }
                   }
                }
@@ -484,52 +487,45 @@ impl Peer {
             // If the info dicts hash is not correct, there is currently no error handling
             // (only an error message is shown)
             if self.info.have_all_bytes() {
-               trace!("All bytes for info dict were sent by peer -- assembling Info struct");
+               debug!(%peer_addr, "Received complete metadata, validating");
                let info = self.info.generate_info_from_bytes(info_hash).await;
                if let Err(e) = info {
-                  error!("{e}");
+                  error!(%peer_addr, error = %e, "Metadata validation failed");
                } else {
                   // We have to convert back to bytes due to issues with deriving Clone on the
                   // Info struct.
-                  to_engine_tx
-                     .send(PeerResponse::Info {
-                        bytes: self.info.info_bytes.clone(),
-                        peer_key: peer_addr,
-                        from_engine_tx: from_engine_tx.clone(),
-                     })
-                     .unwrap();
-
-                  trace!(info_dict = ?info, "to_engine_tx sent an info dict");
+                  if let Err(e) = to_engine_tx.send(PeerResponse::Info {
+                     bytes: self.info.info_bytes.clone(),
+                     peer_key: peer_addr,
+                     from_engine_tx: from_engine_tx.clone(),
+                  }) {
+                     error!(%peer_addr, error = %e, "Failed to send validated metadata to engine");
+                  } else {
+                     info!(%peer_addr, "Successfully received and validated metadata from peer");
+                  }
                }
             }
          }
-         PeerMessages::Cancel(index, _, _) => {
-            trace!(%peer_addr, "Peer wants to cancel piece {}", index);
+         PeerMessages::Cancel(index, offset, length) => {
+            trace!(%peer_addr, piece_index = index, offset, length, "Peer cancelled piece request");
             // TODO
          }
          PeerMessages::Bitfield(bitfield) => {
-            trace!(%peer_addr, "Received new bitfield from peer");
+            let piece_count = bitfield.len();
+            debug!(%peer_addr, piece_count, "Received bitfield from peer");
             self.pieces = bitfield.clone();
 
-            to_engine_tx
-               .send(PeerResponse::Receive {
+            Self::send(
+               to_engine_tx,
+               PeerResponse::Receive {
                   message,
                   peer_key: peer_addr,
-               })
-               .map_err(|e| {
-                  error!(
-                     "Error sending bitfield with to_engine_tx on peer {}: {}",
-                     peer_addr, e
-                  )
-               })
-               .unwrap();
-
-            trace!(
-               "Successfully sent bitfield message back to function that spawned this thread (likely TorrentEngine)"
+               },
+               peer_addr,
             );
          }
          PeerMessages::Handshake(handshake) => {
-            trace!(%peer_addr, "Peer sent a handshake for some reason: {:?}", handshake);
+            warn!(%peer_addr, "Received unexpected handshake from peer");
          }
       }
    }
@@ -542,10 +538,7 @@ impl Peer {
       inner_recv_tx: mpsc::Sender<PeerMessages>,
    ) {
       let peer_addr = self.socket_addr();
-      trace!(
-         "Received message from from_engine_rx for peer {}: {:?}",
-         peer_addr, message
-      );
+      trace!(%peer_addr, "Processing command from engine");
 
       if let PeerCommand::Piece(piece_num) = message {
          // If we're choking or the peer isn't interested, we can't do anything.
@@ -558,21 +551,19 @@ impl Peer {
                .handle_piece_request(&mut writer_guard, piece_num)
                .await;
          } else {
-            trace!(
-               "Couldn't accept PeerCommand::Piece because peer is choking and/or not interested"
-            );
-            to_engine_tx
-               .send(PeerResponse::Choking {
+            let am_choked = self.state.am_choked.load(Ordering::Acquire);
+            let interested = self.state.interested.load(Ordering::Acquire);
+
+            debug!(%peer_addr, piece_num, am_choked, interested, "Cannot request piece - peer state prevents it");
+
+            Self::send(
+               to_engine_tx,
+               PeerResponse::Choking {
                   peer_key: peer_addr,
                   from_engine_tx,
-               })
-               .map_err(|e| {
-                  error!(
-                     "Error when sending message back with to_engine_tx from peer {}: {}",
-                     peer_addr, e
-                  )
-               })
-               .unwrap();
+               },
+               peer_addr,
+            );
          }
       }
    }
@@ -597,10 +588,13 @@ impl Peer {
 
          {
             let mut writer_guard = writer.lock().await;
-            writer_guard.send(message).await.unwrap();
+            if let Err(e) = writer_guard.send(message).await {
+               error!(%peer_addr, error = %e, "Failed to send extended message");
+               return;
+            }
          }
 
-         info!(%peer_addr, "Sent message to peer");
+         trace!(%peer_addr, extended_id = id, "Sent extended message to peer");
       }
    }
 
@@ -626,6 +620,7 @@ impl Peer {
    async fn determine_supported(&mut self) {
       if self.reserved[5] == 0x10 {
          self.peer_supports.bep_0010 = true;
+         trace!("Peer supports BEP 0010 (extended messages)");
       }
    }
 
@@ -647,38 +642,44 @@ impl Peer {
       let peer_addr = self.socket_addr();
       let (from_engine_tx, mut from_engine_rx) = mpsc::channel(100);
 
-      to_engine_tx
-         .send(PeerResponse::Init {
-            from_engine_tx: from_engine_tx.clone(),
-            peer_key: peer_addr,
-         })
-         .unwrap();
+      if let Err(e) = to_engine_tx.send(PeerResponse::Init {
+         from_engine_tx: from_engine_tx.clone(),
+         peer_key: peer_addr,
+      }) {
+         error!(%peer_addr, error = %e, "Failed to send init message to engine");
+         return;
+      }
 
-      trace!("Attempting to connect to peer {}", peer_addr);
+      debug!(%peer_addr, "Attempting to connect to peer");
       let stream = if let Some(stream) = stream {
          // For incoming peers (they're connecting to them), since they have already sent
          // their handshake and been verified, we can skip that part.
+         debug!(%peer_addr, "Using existing connection from incoming peer");
          stream
       } else {
          // For outgoing peers (we are connecting to them), we should create the stream
          // ourselves and send the handshake & bitfield
          let mut stream = PeerStream::connect(peer_addr, utp_socket).await;
          // Send handshake to peer
-         let (peer_id, reserved) = stream
-            .send_handshake(our_id, Arc::new(info_hash))
-            .await
-            .unwrap();
+         let (peer_id, reserved) = match stream.send_handshake(our_id, Arc::new(info_hash)).await {
+            Ok(result) => result,
+            Err(e) => {
+               error!(%peer_addr, error = %e, "Failed to complete handshake with peer");
+               return;
+            }
+         };
 
          self.id = Some(*peer_id);
          self.reserved = reserved;
          self.determine_supported().await;
+         debug!(%peer_addr, "Completed handshake with outgoing peer");
          stream
       };
 
       let (mut reader, writer) = stream.split();
       let writer = Arc::new(Mutex::new(writer));
 
-      debug!(%peer_addr, "Connected to peer");
+      info!(%peer_addr, "Successfully connected to peer");
 
       // Wait for peer to be unchoked, then send these messages.
       let writer_clone = writer.clone();
@@ -686,8 +687,9 @@ impl Peer {
       let interested_clone = self.state.interested.clone();
       tokio::spawn(async move {
          let bitfield_to_send = init_bitfield.unwrap_or(BitVec::EMPTY);
+         let piece_count = bitfield_to_send.len();
 
-         trace!(%peer_addr, %bitfield_to_send, "Bitfield to send to peer");
+         trace!(%peer_addr, piece_count, "Waiting to send initial messages");
 
          loop {
             if !am_choked_clone.load(Ordering::Acquire) {
@@ -695,23 +697,29 @@ impl Peer {
                // being unchoked)
                {
                   let mut writer_guard = writer_clone.lock().await;
-                  writer_guard.send(PeerMessages::Interested).await.unwrap();
+                  if let Err(e) = writer_guard.send(PeerMessages::Interested).await {
+                     error!(%peer_addr, error = %e, "Failed to send interested message");
+                     return;
+                  }
                   interested_clone.store(true, Ordering::Release);
                }
 
-               trace!("Sent an Interested message to peer {}", peer_addr);
+               debug!(%peer_addr, "Sent interested message to peer");
 
                // Send empty bitfield. This may need to be refactored in the future to account
                // for seeding.
                {
                   let mut writer_guard = writer_clone.lock().await;
-                  writer_guard
+                  if let Err(e) = writer_guard
                      .send(PeerMessages::Bitfield(bitfield_to_send.clone()))
                      .await
-                     .unwrap();
+                  {
+                     error!(%peer_addr, error = %e, "Failed to send bitfield");
+                     return;
+                  }
                }
 
-               trace!(%peer_addr, "Sent empty bitfield to peer");
+               debug!(%peer_addr, piece_count, "Sent bitfield to peer");
                break;
             }
             sleep(Duration::from_millis(250)).await;
@@ -746,6 +754,8 @@ impl Peer {
       let (inner_send_tx, mut inner_send_rx): (Sender<PeerCommand>, Receiver<PeerCommand>) =
          mpsc::channel(32);
       let (inner_recv_tx, mut inner_recv_rx) = mpsc::channel(32);
+
+      debug!(%peer_addr, "Starting peer message handling loop");
 
       // Continuously loop and handle messages from reader and from_engine_rx. The
       // only downside with this setup is that messages can only be handled one
@@ -791,7 +801,7 @@ impl Peer {
                      .await;
                   }
                   Err(e) => {
-                     error!(%peer_addr, "An error occured when receiving the message from the reader: {e}");
+                     error!(%peer_addr, error = %e, "Failed to receive message from peer");
 
                      // Is this the best practice? Eh. But realistically, if a peer sends us
                      // something that is simply invalid, we probably don't want to work with them
@@ -815,7 +825,8 @@ impl Peer {
                      Self::update_message(self.state.last_message_sent.clone());
                   }
                   None => {
-                     error!(%peer_addr, "Received a None message from from_engine_rx");
+                     warn!(%peer_addr, "Engine channel closed, terminating peer handler");
+                     break;
                   }
                }
             }

@@ -95,11 +95,9 @@ impl TorrentEngine {
       info!(
           info_hash = %info_hash,
           peer_id = %peer_id,
-          trackers = metainfo.announce_list().len(),
+          tracker_count = metainfo.announce_list().len(),
           "Creating new torrent engine"
       );
-
-      debug!("Torrent metadata loaded");
 
       TorrentEngine {
          metainfo,
@@ -118,9 +116,6 @@ impl TorrentEngine {
         info_hash = %self.metainfo.info_hash().unwrap()
     ))]
    async fn listen(self: Arc<Self>) -> Result<(Arc<UtpSocketUdp>, TcpListener), Error> {
-      let span = tracing::debug_span!("network_setup");
-      let _enter = span.enter();
-
       debug!("Setting up network listeners");
 
       let utp_socket = match UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").unwrap()).await {
@@ -149,7 +144,7 @@ impl TorrentEngine {
       info!(
           tcp_addr = %tcp_addr,
           utp_addr = %utp_addr,
-          "Network listeners established successfully"
+          "Network listeners established"
       );
 
       Ok((utp_socket, tcp_listener))
@@ -162,7 +157,7 @@ impl TorrentEngine {
     ))]
    async fn handle_peer_connection(self: Arc<Self>, stream: PeerStream, addr: SocketAddr) {
       let protocol = stream.protocol();
-      debug!("Processing new {protocol} peer connection");
+      debug!(protocol, "Processing new peer connection");
 
       let peer = Peer::from_socket_addr(addr);
 
@@ -202,13 +197,7 @@ impl TorrentEngine {
    async fn spawn_handle_peer(
       self: Arc<Self>, peer: Peer, listener: Option<Arc<UtpSocketUdp>>, stream: Option<PeerStream>,
    ) {
-      let peer_span = tracing::debug_span!(
-          "outbound_peer_connection",
-          peer_addr = %peer.socket_addr()
-      );
-      let _peer_enter = peer_span.enter();
-
-      debug!("Initiating outbound connection to peer");
+      debug!(peer_addr = %peer.socket_addr(), "Initiating outbound connection to peer");
 
       let bitfield: BitVec<u8>;
       {
@@ -233,9 +222,6 @@ impl TorrentEngine {
       match listener {
          ProtocolListener::Utp(listener) => {
             tokio::spawn(async move {
-               let span = tracing::info_span!("utp_peer_handler");
-               let _enter = span.enter();
-
                info!("UTP peer handler started");
 
                loop {
@@ -255,14 +241,11 @@ impl TorrentEngine {
                }
             });
 
-            info!("UTP peer handler spawned successfully");
+            debug!("UTP peer handler spawned");
          }
          ProtocolListener::Tcp(listener) => {
             let engine_ref = self.clone();
             tokio::spawn(async move {
-               let span = tracing::info_span!("tcp_peer_handler");
-               let _enter = span.enter();
-
                info!("TCP peer handler started");
 
                loop {
@@ -281,7 +264,7 @@ impl TorrentEngine {
                }
             });
 
-            info!("TCP peer handler spawned successfully");
+            debug!("TCP peer handler spawned");
          }
       }
    }
@@ -290,16 +273,12 @@ impl TorrentEngine {
    /// Returns the created UtpListener for later use. This is unnecessary to
    /// do for TCP due to the nature of the protocol itself.
    async fn listen_for_incoming_peers(self: Arc<Self>) -> Result<Arc<UtpSocketUdp>, Error> {
-      let network_span = tracing::debug_span!("network_setup");
+      debug!("Initializing network listeners");
       let me = self.clone();
 
-      let (utp_listener, tcp_listener) = {
-         let _network_enter = network_span.enter();
-         debug!("Initializing network listeners");
-         me.clone().listen().await?
-      };
+      let (utp_listener, tcp_listener) = me.clone().listen().await?;
 
-      // Update addresses with logging
+      // Update addresses
       {
          let tcp_addr = tcp_listener.local_addr().ok();
          let utp_addr = Some(utp_listener.bind_addr());
@@ -353,8 +332,6 @@ impl TorrentEngine {
     ))]
    pub async fn torrent(self: Arc<Self>) -> anyhow::Result<(), Error> {
       let me = self.clone();
-      let session_span = tracing::info_span!("torrent_session");
-      let _session_enter = session_span.enter();
 
       info!("Starting torrent session");
 
@@ -362,12 +339,9 @@ impl TorrentEngine {
       let utp_listener = me_listen.listen_for_incoming_peers().await?;
 
       // Tracker communication setup
-      let tracker_span = tracing::debug_span!("tracker_communication");
       let mut rx_list = vec![];
 
       {
-         let _tracker_enter = tracker_span.enter();
-
          let primary_addr = if let Some(addr) = *me.tcp_addr.lock().await {
             debug!(primary_addr = %addr, protocol = "tcp", "Using TCP as primary address");
             addr
@@ -394,13 +368,12 @@ impl TorrentEngine {
                .await
             {
                Ok(rx) => {
-                  debug!(tracker_index = index, tracker_url = ?tracker, "Successfully connected to tracker");
+                  debug!(tracker_index = index, "Successfully connected to tracker");
                   rx_list.push(rx);
                }
                Err(e) => {
                   warn!(
                       tracker_index = index,
-                      tracker_url = ?tracker,
                       error = %e,
                       "Failed to connect to tracker"
                   );
@@ -451,21 +424,21 @@ impl TorrentEngine {
                   from_engine_tx,
                   peer_key,
                } => {
-                  trace!(%peer_key, "torrent() now sees that peer is unchoked");
+                  trace!(peer_key = %peer_key, "Peer unchoked, requesting pieces");
                   for piece_num in 0..me_handle_peer.bitfield.read().await.len() {
                      match from_engine_tx
                         .send(PeerCommand::Piece(piece_num as u32))
                         .await
                      {
                         Ok(_) => {
-                           trace!(?peer_key, piece_num, "Sent PeerCommand::Piece to peer");
+                           trace!(peer_key = %peer_key, piece_num, "Sent piece request to peer");
                         }
                         Err(e) => {
                            error!(
-                              ?peer_key,
+                              peer_key = %peer_key,
                               piece_num,
-                              "An error occurred when trying to send PeerCommand::Piece to peer: {}",
-                              e
+                              error = %e,
+                              "Failed to send piece request to peer"
                            )
                         }
                      }
@@ -483,6 +456,7 @@ impl TorrentEngine {
                            }
                         }
 
+                        trace!(piece_index = index, "Received piece from peer");
                         // TODO: Save piece
                      }
                      PeerMessages::KeepAlive => {
@@ -502,9 +476,6 @@ impl TorrentEngine {
       let stats_ref = Arc::clone(&self.stats);
 
       tokio::spawn(async move {
-         let span = tracing::info_span!("peer_discovery");
-         let _enter = span.enter();
-
          let mut peers_in_action = HashSet::new();
          let mut last_stats_log = Instant::now();
          let stats_interval = Duration::from_secs(30);
@@ -596,13 +567,13 @@ impl TorrentEngine {
 
       loop {
          let response = accounted_bitfield_peer_rx.recv().await;
-         trace!(bitfield_from_peer = ?response);
+         trace!(response = ?response, "Received bitfield response");
          if let Ok(PeerResponse::Receive {
             message: PeerMessages::Bitfield(bitfield),
             ..
          }) = response
          {
-            trace!("Got bitfield message from peer in torrent()");
+            trace!("Processing bitfield message from peer");
 
             // Hacky way to initialize bitfield to correct length
             if ready_bitfield.is_empty() {
@@ -613,9 +584,11 @@ impl TorrentEngine {
 
             let ready_ratio = ready_bitfield.count_ones() as f64 / ready_bitfield.len() as f64;
             if ready_ratio >= READY_VALUE {
-               trace!(
-                  "Broke 'ready' loop -- {}% of pieces are accounted for.",
-                  READY_VALUE * 100.0
+               info!(
+                  ready_percentage = ready_ratio * 100.0,
+                  pieces_available = ready_bitfield.count_ones(),
+                  total_pieces = ready_bitfield.len(),
+                  "Reached readiness threshold for piece availability"
                );
                break;
             }
