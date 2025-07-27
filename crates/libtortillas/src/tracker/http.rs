@@ -1,25 +1,26 @@
-/// See https://www.bittorrent.org/beps/bep_0003.html
-use super::{Peer, TrackerTrait};
-use crate::{
-   errors::{HttpTrackerError, TrackerError},
-   hashes::{Hash, InfoHash},
+use std::{
+   net::{IpAddr, Ipv4Addr, SocketAddr},
+   str::FromStr,
 };
+
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{
    Deserialize, Serialize,
    de::{self, Visitor},
 };
-use std::{
-   net::{IpAddr, Ipv4Addr, SocketAddr},
-   str::FromStr,
-};
 use tokio::{
    sync::mpsc,
    time::{Duration, Instant, sleep},
 };
-
 use tracing::{debug, error, info, instrument, trace, warn};
+
+/// See https://www.bittorrent.org/beps/bep_0003.html
+use super::{Peer, TrackerTrait};
+use crate::{
+   errors::{HttpTrackerError, TrackerError},
+   hashes::{Hash, InfoHash},
+};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)] // REMOVE SOON
@@ -57,7 +58,8 @@ impl TrackerRequest {
          debug!(default_addr = %default_addr, "Using default peer tracker address");
          default_addr
       });
-      // If the ip address is 127.0.0.1 or 0.0.0.0 just dont send it since its optional
+      // If the ip address is 127.0.0.1 or 0.0.0.0 just dont send it since its
+      // optional
       let ip = if addr.ip().is_loopback() | addr.ip().is_unspecified() {
          None
       } else {
@@ -130,9 +132,7 @@ impl HttpTracker {
         peer_tracker_addr = ?peer_tracker_addr
     ))]
    pub fn new(
-      uri: String,
-      info_hash: InfoHash,
-      peer_id: Option<Hash<20>>,
+      uri: String, info_hash: InfoHash, peer_id: Option<Hash<20>>,
       peer_tracker_addr: Option<SocketAddr>,
    ) -> HttpTracker {
       let creation_span = tracing::debug_span!("http_tracker_creation");
@@ -535,7 +535,8 @@ impl TrackerTrait for HttpTracker {
    }
 }
 
-/// Serde related code. Used for deserializing response from HTTP request made in get_peers
+/// Serde related code. Used for deserializing response from HTTP request made
+/// in get_peers
 struct PeerVisitor;
 
 impl Visitor<'_> for PeerVisitor {
@@ -555,8 +556,8 @@ impl Visitor<'_> for PeerVisitor {
 
       debug!("Starting peer bytes parsing");
 
-      // Decodes response from get_peers' HTTP request according to BEP 23's compact form:
-      // <https://www.bittorrent.org/beps/bep_0023.html>
+      // Decodes response from get_peers' HTTP request according to BEP 23's compact
+      // form: <https://www.bittorrent.org/beps/bep_0023.html>
       let mut peers = Vec::new();
       const PEER_SIZE: usize = 6; // 4 bytes IP + 2 bytes port
 
@@ -651,12 +652,11 @@ where
 mod tests {
    use tracing_test::traced_test;
 
+   use super::HttpTracker;
    use crate::{
       parser::{MagnetUri, MetaInfo},
       tracker::TrackerTrait,
    };
-
-   use super::HttpTracker;
 
    #[tokio::test]
    #[traced_test]

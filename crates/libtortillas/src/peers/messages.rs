@@ -1,4 +1,10 @@
-use anyhow::{anyhow, bail, Error, Result};
+use std::{
+   collections::HashMap,
+   net::{IpAddr, Ipv4Addr, Ipv6Addr},
+   sync::Arc,
+};
+
+use anyhow::{Error, Result, anyhow, bail};
 use bencode::streaming::{BencodeEvent, StreamingParser};
 use bitvec::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -6,11 +12,6 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use tracing::{error, info, trace};
 
 use crate::{errors::PeerTransportError, hashes::Hash, parser::Info};
-use std::{
-   collections::HashMap,
-   net::{IpAddr, Ipv4Addr, Ipv6Addr},
-   sync::Arc,
-};
 
 pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
 
@@ -21,7 +22,8 @@ pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
 /// See the "peer messages" section of the BitTorrent specification:
 /// <https://www.bittorrent.org/beps/bep_0003.html#peer-messages>
 pub enum PeerMessages {
-   /// Refers to peer choke status. Choking occurs when a peer is "throttled" in order to maintain a constant download rate, among other reasons.
+   /// Refers to peer choke status. Choking occurs when a peer is "throttled" in
+   /// order to maintain a constant download rate, among other reasons.
    Choke = 0u8,
    /// Refers to the inverse of the choke status. See `Self::Choke`
    Unchoke = 1u8,
@@ -78,8 +80,8 @@ pub enum PeerMessages {
    /// | index |  begin  | length |
    Cancel(u32, u32, u32) = 8u8,
 
-   /// This message, similar to the [Handshake](Self::Handshake) message, is special. It is an
-   /// extension of the BitTorrent peer messages specified in [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html#peer-messages).
+   /// This message, similar to the [Handshake](Self::Handshake) message, is
+   /// special. It is an extension of the BitTorrent peer messages specified in [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html#peer-messages).
    ///
    /// # Binary Layout
    ///
@@ -87,16 +89,19 @@ pub enum PeerMessages {
    /// |-----------------------|--------------------|------------|
    /// |  extended message id  |  extended message  |  metadata  |
    ///
-   /// If the extended message id (EMI for short) is 0, then the following message is the
-   /// handshake, which is a bencoded dictionary, where all items are optional.
+   /// If the extended message id (EMI for short) is 0, then the following
+   /// message is the handshake, which is a bencoded dictionary, where all
+   /// items are optional.
    ///
    /// The metadata is only for the data response of [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
-   /// where the info dictionary for a given torrent is tacked onto the end of an extended message.
+   /// where the info dictionary for a given torrent is tacked onto the end of
+   /// an extended message.
    Extended(u8, Box<Option<ExtendedMessage>>, Option<Vec<u8>>) = 20u8,
 
    /// This message is special, as it is not technically part of the standard [BitTorrent peer messages](https://www.bittorrent.org/beps/bep_0003.html#peer-messages),
-   /// And does not have a specified Message ID, unlike the other messages that have a defined ID.
-   /// This message should only be sent on the initial connection to a new peer.
+   /// And does not have a specified Message ID, unlike the other messages that
+   /// have a defined ID. This message should only be sent on the initial
+   /// connection to a new peer.
    ///
    /// Refer to this paper for more information about the handshake:
    /// <https://netfuture.ch/wp-content/uploads/2015/02/zink2012efficient.pdf>
@@ -296,8 +301,8 @@ impl PeerMessages {
 
    /// Helper function for finding the length of an extended message
    fn get_extended_message_length(payload: &[u8]) -> usize {
-      // We can't utilize Serde here because an Extended message could potentially have
-      // two dictionaries back to back like so:
+      // We can't utilize Serde here because an Extended message could potentially
+      // have two dictionaries back to back like so:
       //
       // {Extended Message}{Info Dict}
       //
@@ -379,7 +384,8 @@ impl PeerMessages {
 /// - 1: 'data' message
 /// - 2: 'reject' message
 ///
-/// An unrecognized message ID MUST be ignored in order to support future extensibility.
+/// An unrecognized message ID MUST be ignored in order to support future
+/// extensibility.
 #[derive(Serialize_repr, Debug, Clone, PartialEq, Eq, Deserialize_repr)]
 #[repr(u8)]
 pub enum ExtendedMessageType {
@@ -391,14 +397,14 @@ pub enum ExtendedMessageType {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 /// The payload of the handshake message as described in [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html).
 ///
-/// It is valid to send an handshake message more than once during the lifetime of a
-/// connection with a peer, but they may be ignored. Subsequent handshake message can be used to
-/// enable/disable extensions.
+/// It is valid to send an handshake message more than once during the lifetime
+/// of a connection with a peer, but they may be ignored. Subsequent handshake
+/// message can be used to enable/disable extensions.
 ///
 /// When utilized, this struct should be bencoded.
 ///
-/// All fields are intentionally optional, and including this in a [PeerMessages::Extended] is
-/// optional as well.
+/// All fields are intentionally optional, and including this in a
+/// [PeerMessages::Extended] is optional as well.
 ///
 /// # Examples
 /// ```
@@ -410,27 +416,30 @@ pub enum ExtendedMessageType {
 /// let another_handshake_message = ExtendedMessage { .. };
 /// ```
 pub struct ExtendedMessage {
-   /// Dictionary of extension messages. Maps names of extensions -> extended message ID for each
-   /// extension message.
+   /// Dictionary of extension messages. Maps names of extensions -> extended
+   /// message ID for each extension message.
    ///
-   /// The extension message IDs are the IDs used to send the extension messages to the peer
-   /// sending this handshake. i.e. The IDs are local to this particular peer.
+   /// The extension message IDs are the IDs used to send the extension messages
+   /// to the peer sending this handshake. i.e. The IDs are local to this
+   /// particular peer.
    ///
-   /// No extension message may share the same ID. Setting an extension number to 0 = extension is
-   /// not supported or is disabled.
+   /// No extension message may share the same ID. Setting an extension number
+   /// to 0 = extension is not supported or is disabled.
    ///
    /// We should ignore any extension names it doesn't recognize.
    #[serde(rename = "m")]
    pub supported_extensions: Option<HashMap<String, u8>>,
-   /// Local TCP listen port that allows each side to learn about the TCP port number of the other
-   /// side. If sent, there is no need for the receiving side to send this extension message.
+   /// Local TCP listen port that allows each side to learn about the TCP port
+   /// number of the other side. If sent, there is no need for the receiving
+   /// side to send this extension message.
    #[serde(rename = "p")]
    pub local_port: Option<u32>,
    /// Client name and version (UTF-8 string).
    #[serde(rename = "v")]
    pub version: Option<String>,
-   /// The IP address that a given peer sees you as. I.e., the receiver's external ip address. No
-   /// port should be included. Either an IPv4 or IPv6 address.
+   /// The IP address that a given peer sees you as. I.e., the receiver's
+   /// external ip address. No port should be included. Either an IPv4 or
+   /// IPv6 address.
    #[serde(
       with = "ipaddr_serde",
       skip_serializing_if = "Option::is_none",
@@ -438,14 +447,14 @@ pub struct ExtendedMessage {
    )]
    #[serde(rename = "yourip")]
    pub your_ip: Option<IpAddr>,
-   /// If we have an IPv6 interface, this acts as a different IP that a peer could connect back
-   /// with.
+   /// If we have an IPv6 interface, this acts as a different IP that a peer
+   /// could connect back with.
    pub ipv6: Option<Ipv6Addr>,
-   /// If we have an IPv4 interface, this acts as a different IP that a peer could connect back
-   /// with.
+   /// If we have an IPv4 interface, this acts as a different IP that a peer
+   /// could connect back with.
    pub ipv4: Option<Ipv4Addr>,
-   /// The number of outstanding request messages this client supports without dropping any.
-   /// Default in libtorrent is 250.
+   /// The number of outstanding request messages this client supports without
+   /// dropping any. Default in libtorrent is 250.
    #[serde(rename = "reqq")]
    pub outstanding_requests: Option<u32>,
    /// This should only be used with [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html). It
@@ -459,13 +468,13 @@ pub struct ExtendedMessage {
    pub msg_type: Option<ExtendedMessageType>,
    /// Indicates which part of the metadata this message refers to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
    ///
-   /// This is a u32 because, while unlikely, a torrent's metadata *could* take up more than 256
-   /// pieces.
+   /// This is a u32 because, while unlikely, a torrent's metadata *could* take
+   /// up more than 256 pieces.
    pub piece: Option<u32>,
    /// The size of the piece of metadata that was just sent, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
    ///
-   /// If the piece is the last piece of the metadata, it may be less than 16kiB. If it is
-   /// not the last piece of the metadata, it MUST be 16kiB.
+   /// If the piece is the last piece of the metadata, it may be less than
+   /// 16kiB. If it is not the last piece of the metadata, it MUST be 16kiB.
    pub total_size: Option<u64>,
 }
 
@@ -519,7 +528,8 @@ impl Handshake {
 
    /// Serialize the handshake to bytes in the BitTorrent wire format
    pub fn to_bytes(&self) -> Vec<u8> {
-      // Calculate total size: 1 byte for length + protocol + 8 reserved + 20 info_hash + 20 peer_id
+      // Calculate total size: 1 byte for length + protocol + 8 reserved + 20
+      // info_hash + 20 peer_id
       let mut bytes = Vec::with_capacity(1 + self.protocol.len() + 8 + 40);
 
       // Protocol length (as a single byte)
@@ -579,13 +589,16 @@ impl Handshake {
    }
 }
 
-/// Helper functions for serializing and deserializing IpAddr into [u8; 4] and [u8; 16] respectively.
+/// Helper functions for serializing and deserializing IpAddr into [u8; 4] and
+/// [u8; 16] respectively.
 ///
-/// Needed because the bencoded IpAddr is a list of bytes instead of a string, and serde for some
-/// reason doesn't automatically deserialize it as a list of bytes.
+/// Needed because the bencoded IpAddr is a list of bytes instead of a string,
+/// and serde for some reason doesn't automatically deserialize it as a list of
+/// bytes.
 mod ipaddr_serde {
-   use serde::{de::Error, Deserializer, Serializer};
    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+   use serde::{Deserializer, Serializer, de::Error};
 
    pub fn serialize<S>(ip: &Option<IpAddr>, serializer: S) -> Result<S::Ok, S::Error>
    where

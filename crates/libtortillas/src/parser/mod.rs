@@ -26,9 +26,10 @@ impl MetaInfo {
       })
    }
 
-   /// Returns the info hash for the given MetaInfo enum. If the enum is a [Torrent](TorrentFile), then this
-   /// function will calculate and return the hash. If the enum is a [MagnetUri], then this
-   /// function will grab the existing hash and return it, as the MagnetUri spec already contains
+   /// Returns the info hash for the given MetaInfo enum. If the enum is a
+   /// [Torrent](TorrentFile), then this function will calculate and return
+   /// the hash. If the enum is a [MagnetUri], then this function will grab
+   /// the existing hash and return it, as the MagnetUri spec already contains
    /// the hash.
    pub fn info_hash(&self) -> Result<InfoHash, anyhow::Error> {
       match &self {
@@ -52,10 +53,10 @@ impl MetaInfo {
 
 #[cfg(test)]
 mod tests {
-   use crate::tracker::Tracker;
    use tracing_test::traced_test;
 
    use super::*;
+   use crate::tracker::Tracker;
 
    #[tokio::test]
    #[traced_test]

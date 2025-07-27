@@ -5,11 +5,6 @@ use std::{
    sync::Arc,
 };
 
-use super::{Peer, TrackerTrait};
-use crate::{
-   errors::{TrackerError, UdpTrackerError},
-   hashes::{Hash, InfoHash},
-};
 use async_trait::async_trait;
 /// UDP protocol
 /// https://en.wikipedia.org/wiki/User_Datagram_Protocol
@@ -26,6 +21,12 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 
+use super::{Peer, TrackerTrait};
+use crate::{
+   errors::{TrackerError, UdpTrackerError},
+   hashes::{Hash, InfoHash},
+};
+
 /// Types and constants
 type ConnectionId = u64;
 type TransactionId = u32;
@@ -38,7 +39,16 @@ const MIN_ERROR_RESPONSE_SIZE: usize = 8;
 const PEER_SIZE: usize = 6;
 
 /// Enum for UDP Tracker Protocol Action parameter. See this resource for more information: <https://xbtt.sourceforge.net/udp_tracker_protocol.html>
-#[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[derive(
+   Debug,
+   Serialize_repr,
+   Deserialize_repr,
+   Clone,
+   Copy,
+   PartialEq,
+   Eq,
+   TryFromPrimitive
+)]
 #[repr(u32)]
 pub enum Action {
    Connect = 0u32,
@@ -48,7 +58,16 @@ pub enum Action {
 }
 
 /// Enum for UDP Tracker Protocol Events parameter. See this resource for more information: <https://xbtt.sourceforge.net/udp_tracker_protocol.html>
-#[derive(Debug, Serialize_repr, Deserialize_repr, Clone, Copy, PartialEq, Eq, TryFromPrimitive)]
+#[derive(
+   Debug,
+   Serialize_repr,
+   Deserialize_repr,
+   Clone,
+   Copy,
+   PartialEq,
+   Eq,
+   TryFromPrimitive
+)]
 #[repr(u32)]
 pub enum Events {
    None = 0u32,
@@ -107,7 +126,8 @@ enum TrackerRequest {
 #[derive(Debug)]
 #[allow(dead_code)]
 enum TrackerResponse {
-   /// Note that the response headers for TrackerResponse are somewhat different in comparison to TrackerRequest:
+   /// Note that the response headers for TrackerResponse are somewhat different
+   /// in comparison to TrackerRequest:
    ///
    /// Binary Layout for the Connect variant:
    /// - [Action](Action::Connect) (4 bytes)
@@ -327,7 +347,8 @@ impl TrackerResponse {
 
             // Parse peers (each peer is 6 bytes: 4 for IP, 2 for port)
             let mut peers = Vec::new();
-            // Subtract the size of the current bytes we've already dealt with (20) from the total length of the bytes, then divide by the size of a peer ip (6 bytes)
+            // Subtract the size of the current bytes we've already dealt with (20) from the
+            // total length of the bytes, then divide by the size of a peer ip (6 bytes)
             let num_peers = (bytes.len() - 20) / PEER_SIZE;
             let available_peer_bytes = bytes.len() - 20;
 
@@ -492,11 +513,8 @@ impl UdpTracker {
         peer_socket_addr = ?peer_socket_addr
     ))]
    pub async fn new(
-      uri: String,
-      socket: Option<UdpSocket>,
-      info_hash: InfoHash,
-      peer_socket_addr: Option<SocketAddr>,
-      peer_id: Option<Hash<20>>,
+      uri: String, socket: Option<UdpSocket>, info_hash: InfoHash,
+      peer_socket_addr: Option<SocketAddr>, peer_id: Option<Hash<20>>,
    ) -> Result<UdpTracker> {
       let creation_span = tracing::debug_span!("udp_tracker_creation");
       let _enter = creation_span.enter();
@@ -888,7 +906,8 @@ impl TrackerTrait for UdpTracker {
       Ok(rx)
    }
 
-   // Makes a request using the UDP tracker protocol to connect. Returns a u64 connection ID
+   // Makes a request using the UDP tracker protocol to connect. Returns a u64
+   // connection ID
    #[instrument(skip(self), fields(
         tracker_uri = %self.uri,
         ready_state = ?self.ready_state
@@ -1014,8 +1033,9 @@ impl TrackerTrait for UdpTracker {
             transaction_id: resp_tid,
             ..
          } => {
-            // Transaction ID's have to be the same per request. If I send a request to the tracker,
-            // the tracker should respond with the same transaction ID. These should be unique per request though.
+            // Transaction ID's have to be the same per request. If I send a request to the
+            // tracker, the tracker should respond with the same transaction ID.
+            // These should be unique per request though.
             if resp_tid != transaction_id {
                error!(
                   expected_tid = transaction_id,
@@ -1086,10 +1106,11 @@ impl TrackerTrait for UdpTracker {
 
 #[cfg(test)]
 mod tests {
-   use super::*;
-   use crate::parser::{MagnetUri, MetaInfo};
    use rand::random_range;
    use tracing_test::traced_test;
+
+   use super::*;
+   use crate::parser::{MagnetUri, MetaInfo};
 
    #[tokio::test]
    #[traced_test]

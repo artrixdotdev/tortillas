@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 
+use anyhow::Result;
+use serde::Deserialize;
+use serde_qs;
+
 use crate::{
    hashes::{Hash, InfoHash},
    parser::MetaInfo,
    tracker::Tracker,
 };
-
-use anyhow::Result;
-use serde::Deserialize;
-use serde_qs;
 
 /// Magnet URI Spec: <https://en.wikipedia.org/wiki/Magnet_URI_scheme> or <https://www.bittorrent.org/beps/bep_0053.html>
 #[derive(Debug, Deserialize)]
@@ -67,7 +67,8 @@ impl MagnetUri {
          grouped_params.entry(key).or_default().push(value);
       }
 
-      // Second pass: construct the new query string with array notation for repeating keys
+      // Second pass: construct the new query string with array notation for repeating
+      // keys
       let mut final_params = Vec::new();
 
       for (key, values) in grouped_params {
@@ -107,8 +108,9 @@ impl MagnetUri {
 #[cfg(test)]
 mod tests {
 
-   use super::*;
    use tracing_test::traced_test;
+
+   use super::*;
 
    #[tokio::test]
    #[traced_test]

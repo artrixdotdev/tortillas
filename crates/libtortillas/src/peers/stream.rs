@@ -1,40 +1,31 @@
-use crate::errors::PeerTransportError;
-use crate::hashes::Hash;
-use crate::peers::messages::Handshake;
-use crate::peers::InfoHash;
-use anyhow::anyhow;
-use anyhow::Result;
-use async_trait::async_trait;
-use librqbit_utp::UtpSocketUdp;
-use librqbit_utp::UtpStreamReadHalf;
-use librqbit_utp::UtpStreamWriteHalf;
-use tokio::net::tcp;
-use tracing::debug;
-use tracing::error;
-use tracing::info;
-use tracing::instrument;
-
-use std::fmt;
-use std::fmt::Display;
-use std::sync::Arc;
 use std::{
+   fmt,
+   fmt::Display,
    net::SocketAddr,
    pin::Pin,
+   sync::Arc,
    task::{Context, Poll},
 };
 
-use super::messages::PeerMessages;
-use super::PeerId;
-use super::MAGIC_STRING;
-use librqbit_utp::UtpStream;
+use anyhow::{Result, anyhow};
+use async_trait::async_trait;
+use librqbit_utp::{UtpSocketUdp, UtpStream, UtpStreamReadHalf, UtpStreamWriteHalf};
 use tokio::{
    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
-   net::TcpStream,
+   net::{TcpStream, tcp},
 };
-use tracing::trace;
-/// A very simple enum to help differentiate between streams. TcpStream and UtpStream are so
-/// incredibly similar in functionality that it's ususally possible to simply make a blanket
-/// function, such as [write_all](PeerStream::write_all)
+use tracing::{debug, error, info, instrument, trace};
+
+use super::{MAGIC_STRING, PeerId, messages::PeerMessages};
+use crate::{
+   errors::PeerTransportError,
+   hashes::Hash,
+   peers::{InfoHash, messages::Handshake},
+};
+/// A very simple enum to help differentiate between streams. TcpStream and
+/// UtpStream are so incredibly similar in functionality that it's ususally
+/// possible to simply make a blanket function, such as
+/// [write_all](PeerStream::write_all)
 pub enum PeerStream {
    Tcp(TcpStream),
    Utp(UtpStream),
@@ -56,10 +47,11 @@ pub trait PeerSend: AsyncWrite + Unpin {
 
 #[async_trait]
 pub trait PeerRecv: AsyncRead + Unpin {
-   /// Receives data from a peers stream. In other words, if you wish to directly contact a peer,
-   /// use this function.
+   /// Receives data from a peers stream. In other words, if you wish to
+   /// directly contact a peer, use this function.
    async fn recv(&mut self) -> Result<PeerMessages, PeerTransportError> {
-      // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
+      // First 4 bytes is the big endian encoded length field and the 5th byte is a
+      // PeerMessage tag
       let mut buf = vec![0; 4];
 
       self.read_exact(&mut buf).await.map_err(|e| {
@@ -71,8 +63,8 @@ pub trait PeerRecv: AsyncRead + Unpin {
 
       trace!(message_length = length);
 
-      // Safety check -- BitTorrent docs do not specify if KeepAlive messages have an ID (and I'm
-      // pretty sure they don't)
+      // Safety check -- BitTorrent docs do not specify if KeepAlive messages have an
+      // ID (and I'm pretty sure they don't)
       if length == 0 {
          return Ok(PeerMessages::KeepAlive);
       }
@@ -111,12 +103,13 @@ impl PeerStream {
    /// Connect to a peer with the given peer_addr (ip & port in the form of a
    /// [SocketAddr](std::net::SocketAddr))
    ///
-   /// When connecting to a peer, we attempt to connect over both TCP and uTP, and use whichever
-   /// one works. While this may seem "not to spec", this is how the transmission BitTorrent
-   /// client does it:
+   /// When connecting to a peer, we attempt to connect over both TCP and uTP,
+   /// and use whichever one works. While this may seem "not to spec", this
+   /// is how the transmission BitTorrent client does it:
    /// https://github.com/transmission/transmission/discussions/7603
    ///
-   /// utp_socket should be None ONLY for testing, when we only wish to utilize a TcpStream.
+   /// utp_socket should be None ONLY for testing, when we only wish to utilize
+   /// a TcpStream.
    pub async fn connect(peer_addr: SocketAddr, utp_socket: Option<Arc<UtpSocketUdp>>) -> Self {
       trace!("Attemping connection to {}", peer_addr);
       if let Some(utp_socket) = utp_socket {
@@ -134,8 +127,8 @@ impl PeerStream {
       }
    }
 
-   /// Handshakes with a peer and returns the socket address of the peer. This socket address is
-   /// also a (PeerKey)[super::PeerKey].
+   /// Handshakes with a peer and returns the socket address of the peer. This
+   /// socket address is also a (PeerKey)[super::PeerKey].
    #[instrument(
       skip(self)
       fields(
@@ -146,9 +139,7 @@ impl PeerStream {
       )
    )]
    pub async fn send_handshake(
-      &mut self,
-      our_id: PeerId,
-      info_hash: Arc<InfoHash>,
+      &mut self, our_id: PeerId, info_hash: Arc<InfoHash>,
    ) -> Result<(PeerId, [u8; 8]), PeerTransportError> {
       let handshake = Handshake::new(info_hash.clone(), our_id.clone());
       let remote_addr = self.remote_addr().unwrap();
@@ -187,11 +178,10 @@ impl PeerStream {
       )
    )]
    pub async fn receive_handshake(
-      &mut self,
-      info_hash: Arc<InfoHash>,
-      id: Arc<Hash<20>>,
+      &mut self, info_hash: Arc<InfoHash>, id: Arc<Hash<20>>,
    ) -> Result<PeerId, PeerTransportError> {
-      // First 4 bytes is the big endian encoded length field and the 5th byte is a PeerMessage tag
+      // First 4 bytes is the big endian encoded length field and the 5th byte is a
+      // PeerMessage tag
       let mut buf = vec![0; 5];
 
       self.read_exact(&mut buf).await.map_err(|e| {
@@ -286,9 +276,7 @@ impl PeerRecv for PeerStream {}
 
 impl AsyncRead for PeerStream {
    fn poll_read(
-      mut self: Pin<&mut Self>,
-      cx: &mut Context<'_>,
-      buf: &mut ReadBuf<'_>,
+      mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>,
    ) -> Poll<io::Result<()>> {
       match &mut *self {
          PeerStream::Tcp(s) => Pin::new(s).poll_read(cx, buf),
@@ -299,9 +287,7 @@ impl AsyncRead for PeerStream {
 
 impl AsyncWrite for PeerStream {
    fn poll_write(
-      mut self: Pin<&mut Self>,
-      cx: &mut Context<'_>,
-      buf: &[u8],
+      mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8],
    ) -> Poll<Result<usize, io::Error>> {
       match &mut *self {
          PeerStream::Tcp(s) => Pin::new(s).poll_write(cx, buf),
@@ -336,9 +322,7 @@ pub enum PeerWriter {
 
 impl AsyncRead for PeerReader {
    fn poll_read(
-      mut self: Pin<&mut Self>,
-      cx: &mut Context<'_>,
-      buf: &mut ReadBuf<'_>,
+      mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>,
    ) -> Poll<io::Result<()>> {
       match &mut *self {
          PeerReader::Tcp(s) => Pin::new(s).poll_read(cx, buf),
@@ -349,9 +333,7 @@ impl AsyncRead for PeerReader {
 
 impl AsyncWrite for PeerWriter {
    fn poll_write(
-      mut self: Pin<&mut Self>,
-      cx: &mut Context<'_>,
-      buf: &[u8],
+      mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8],
    ) -> Poll<Result<usize, io::Error>> {
       match &mut *self {
          PeerWriter::Tcp(s) => Pin::new(s).poll_write(cx, buf),
@@ -378,11 +360,10 @@ impl AsyncWrite for PeerWriter {
 impl PeerRecv for PeerReader {}
 impl PeerSend for PeerWriter {}
 
-/// Takes in a received handshake and returns the handshake we should respond with as well as the new peer. It preassigns the our_id to the peer.
+/// Takes in a received handshake and returns the handshake we should respond
+/// with as well as the new peer. It preassigns the our_id to the peer.
 pub(super) fn validate_handshake(
-   received_handshake: &Handshake,
-   peer_addr: SocketAddr,
-   info_hash: Arc<InfoHash>,
+   received_handshake: &Handshake, peer_addr: SocketAddr, info_hash: Arc<InfoHash>,
 ) -> Result<(), PeerTransportError> {
    // Validate protocol string
    if MAGIC_STRING != received_handshake.protocol {

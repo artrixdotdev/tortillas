@@ -1,23 +1,24 @@
-use crate::{
-   hashes::{Hash, HashVec, InfoHash},
-   parser::MetaInfo,
-   tracker::Tracker,
-};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_bencode as bencode;
 use serde_with::{BoolFromInt, serde_as};
 use sha1::{Digest, Sha1};
-use std::path::PathBuf;
-
 use tokio::fs;
+
+use crate::{
+   hashes::{Hash, HashVec, InfoHash},
+   parser::MetaInfo,
+   tracker::Tracker,
+};
 
 #[derive(Debug, Deserialize)]
 pub struct TorrentFile {
    /// The primary announce URI for the torrent.
    pub announce: Tracker,
-   /// Secondary announce URIs for different trackers, and protocols. Also can be used as a backup
+   /// Secondary announce URIs for different trackers, and protocols. Also can
+   /// be used as a backup
    #[serde(rename(deserialize = "announce-list"))]
    pub announce_list: Option<Vec<Vec<Tracker>>>, // Note: This is a list of lists
    pub comment: Option<String>,
@@ -64,10 +65,11 @@ pub struct Info {
    pieces: HashVec<20>,
    #[serde(flatten)]
    file: InfoKeys,
-   /// If true, the client MUST publish its presence to get other peers ONLY via the trackers
-   /// explicitly described in the metainfo file. If false, the client may obtain peers from
-   /// other means, e.g. PEX peer exchange, DHT. This corresponds to the "private" field in the
-   /// torrent file, where 1 means private and 0 means public (or missing field).
+   /// If true, the client MUST publish its presence to get other peers ONLY via
+   /// the trackers explicitly described in the metainfo file. If false, the
+   /// client may obtain peers from other means, e.g. PEX peer exchange, DHT.
+   /// This corresponds to the "private" field in the torrent file, where 1
+   /// means private and 0 means public (or missing field).
    ///
    /// From <https://wiki.theory.org/BitTorrentSpecification#Info_Dictionary>
    #[serde(rename = "private", default)]
@@ -97,8 +99,9 @@ impl Eq for Info {}
 pub enum InfoKeys {
    Single {
       length: u64,
-      /// A 32-character hex string corresponding to the MD5 sum of the file. Not used by BitTorrent
-      /// at all, but included by some programs for greater compatablility.
+      /// A 32-character hex string corresponding to the MD5 sum of the file.
+      /// Not used by BitTorrent at all, but included by some programs for
+      /// greater compatablility.
       md5sum: Option<String>,
    },
    Multi {
@@ -112,12 +115,13 @@ pub struct InfoFile {
    /// The length of the file, in bytes.
    length: usize,
 
-   /// Subdirectory names for this file, the last of which is the actual file name
-   /// (a zero length list is an error case).
+   /// Subdirectory names for this file, the last of which is the actual file
+   /// name (a zero length list is an error case).
    path: Vec<String>,
 
-   /// A 32-character hex string corresponding to the MD5 sum of the file. Not used by BitTorrent
-   /// at all, but included by some programs for greater compatablility.
+   /// A 32-character hex string corresponding to the MD5 sum of the file. Not
+   /// used by BitTorrent at all, but included by some programs for greater
+   /// compatablility.
    md5sum: Option<String>,
 }
 
@@ -133,8 +137,9 @@ impl Info {
 
 #[cfg(test)]
 mod tests {
-   use super::*;
    use tracing_test::traced_test;
+
+   use super::*;
 
    #[tokio::test]
    #[traced_test]
