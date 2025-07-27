@@ -7,17 +7,12 @@ use std::{
 };
 
 use anyhow::{Error, Result, anyhow};
-use bitvec::{bitvec, order::Lsb0, vec::BitVec};
-use futures::{
-   StreamExt,
-   stream::{self, FuturesUnordered},
-};
+use bitvec::vec::BitVec;
 use librqbit_utp::{UtpSocket, UtpSocketUdp};
 use tokio::{
    net::TcpListener,
-   sync::{Mutex, RwLock, broadcast, mpsc, oneshot},
-   task::JoinSet,
-   time::{Duration, Instant, sleep},
+   sync::{Mutex, RwLock, broadcast, mpsc},
+   time::{Duration, Instant},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -475,7 +470,7 @@ impl TorrentEngine {
                      }
                   }
                }
-               PeerResponse::Receive { message, peer_key } => {
+               PeerResponse::Receive { message, .. } => {
                   // This is guaranteed to not run until self.bitfield is set to the correct
                   // length.
                   match message {

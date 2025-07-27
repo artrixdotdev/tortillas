@@ -78,7 +78,7 @@ impl MagnetUri {
          } else {
             // Multiple values become key[0]=value1&key[1]=value2...
             for (idx, value) in values.iter().enumerate() {
-               final_params.push(format!("{}[{}]={}", key, idx, value));
+               final_params.push(format!("{key}[{idx}]={value}"));
             }
          }
       }

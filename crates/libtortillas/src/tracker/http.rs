@@ -393,10 +393,8 @@ impl TrackerTrait for HttpTracker {
       };
 
       // URI construction
-      let uri_params = format!(
-         "{}&info_hash={}&peer_id={}",
-         params_encoded, info_hash_encoded, peer_id_encoded
-      );
+      let uri_params =
+         format!("{params_encoded}&info_hash={info_hash_encoded}&peer_id={peer_id_encoded}");
 
       let uri = format!("{}?{}", self.uri, &uri_params);
 
@@ -561,7 +559,7 @@ impl Visitor<'_> for PeerVisitor {
       let mut peers = Vec::new();
       const PEER_SIZE: usize = 6; // 4 bytes IP + 2 bytes port
 
-      if bytes.len() % PEER_SIZE != 0 {
+      if !bytes.len().is_multiple_of(PEER_SIZE) {
          error!(
             bytes_length = bytes.len(),
             peer_size = PEER_SIZE,

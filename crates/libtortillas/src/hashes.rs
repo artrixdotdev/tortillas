@@ -1,7 +1,4 @@
-use std::{
-   array::TryFromSliceError,
-   fmt::{self, Display},
-};
+use std::fmt::{self, Display};
 
 use anyhow::anyhow;
 use serde::{
@@ -184,7 +181,7 @@ impl<const N: usize> Visitor<'_> for HashVisitor<N> {
    type Value = Hash<N>;
 
    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-      formatter.write_str(&format!("a byte string whose length is {}", N))
+      formatter.write_str(&format!("a byte string whose length is {N}"))
    }
 
    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
@@ -372,17 +369,14 @@ impl<const N: usize> Visitor<'_> for HashVecVisitor<N> {
    type Value = HashVec<N>;
 
    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-      formatter.write_str(&format!(
-         "a byte string whose length is a multiple of {}",
-         N
-      ))
+      formatter.write_str(&format!("a byte string whose length is a multiple of {N}"))
    }
 
    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
    where
       E: de::Error,
    {
-      if v.len() % N != 0 {
+      if !v.len().is_multiple_of(N) {
          return Err(E::custom(format!(
             "Expected length to be a multiple of {}, found {}",
             N,

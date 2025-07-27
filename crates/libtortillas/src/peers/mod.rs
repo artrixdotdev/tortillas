@@ -17,7 +17,6 @@ use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
 use librqbit_utp::UtpSocketUdp;
 use messages::{ExtendedMessage, ExtendedMessageType, MAGIC_STRING, PeerMessages};
-use rand::seq::IndexedRandom;
 use stream::{PeerRecv, PeerSend, PeerStream};
 use tokio::{
    sync::{
@@ -26,7 +25,7 @@ use tokio::{
    },
    time::{Instant, sleep, timeout},
 };
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, trace};
 
 use crate::{
    hashes::{Hash, InfoHash},
@@ -331,7 +330,7 @@ impl Peer {
          }
          Ok(Err(_)) => {
             let error_msg = match request_result {
-               Ok(Err(err)) => format!("Send error: {}", err),
+               Ok(Err(err)) => format!("Send error: {err}"),
                Err(_) => "Request timeout".to_string(),
                _ => unreachable!(),
             };
@@ -590,17 +589,18 @@ impl Peer {
       //
       // Note that when we receive the info-dictionary from a peer, we absolutely must
       // compare the hash of it to our info hash.
-      if let PeerCommand::Extended(id, extended_message) = message {
-         if self.peer_supports.bep_0010 && self.peer_supports.bep_0009 > 0 {
-            let message = PeerMessages::Extended(id as u8, Box::new(extended_message), None);
+      if let PeerCommand::Extended(id, extended_message) = message
+         && self.peer_supports.bep_0010
+         && self.peer_supports.bep_0009 > 0
+      {
+         let message = PeerMessages::Extended(id as u8, Box::new(extended_message), None);
 
-            {
-               let mut writer_guard = writer.lock().await;
-               writer_guard.send(message).await.unwrap();
-            }
-
-            info!(%peer_addr, "Sent message to peer");
+         {
+            let mut writer_guard = writer.lock().await;
+            writer_guard.send(message).await.unwrap();
          }
+
+         info!(%peer_addr, "Sent message to peer");
       }
    }
 
@@ -654,10 +654,15 @@ impl Peer {
          })
          .unwrap();
 
+      trace!("Attempting to connect to peer {}", peer_addr);
+
       // For outgoing peers (we are connecting to them), we should create the stream
       // ourselves and send the handshake & bitfield
-      trace!("Attempting to connect to peer {}", peer_addr);
-      let mut stream = if let None = stream {
+      let stream = if let Some(stream) = stream {
+         // Otherwise, since they have already sent their handshake and been verified, we
+         // can skip that part.
+         stream
+      } else {
          let mut stream = PeerStream::connect(peer_addr, utp_socket).await;
          // Send handshake to peer
          let (peer_id, reserved) = stream
@@ -668,10 +673,6 @@ impl Peer {
          self.reserved = reserved;
          self.determine_supported().await;
          stream
-      } else {
-         // Otherwise, since they have already sent their handshake and been verified, we
-         // can skip that part.
-         stream.unwrap()
       };
 
       let (mut reader, writer) = stream.split();

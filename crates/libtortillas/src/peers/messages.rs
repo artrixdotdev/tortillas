@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tracing::{error, info, trace};
 
-use crate::{errors::PeerTransportError, hashes::Hash, parser::Info};
+use crate::{errors::PeerTransportError, hashes::Hash};
 
 pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
 

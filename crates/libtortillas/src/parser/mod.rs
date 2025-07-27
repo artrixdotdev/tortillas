@@ -5,10 +5,7 @@ mod magnet;
 pub use file::*;
 pub use magnet::*;
 
-use crate::{
-   hashes::{Hash, HashVec, InfoHash},
-   tracker::Tracker,
-};
+use crate::{hashes::InfoHash, tracker::Tracker};
 
 /// Always utilize MetaInfo instead of directly using TorrentFile or MagnetUri
 #[derive(Debug, Deserialize)]
@@ -20,7 +17,7 @@ pub enum MetaInfo {
 impl MetaInfo {
    pub async fn new(path_or_url: String) -> Result<Self, anyhow::Error> {
       Ok(if path_or_url.starts_with("magnet:") {
-         MagnetUri::parse(path_or_url.into())?
+         MagnetUri::parse(path_or_url)?
       } else {
          TorrentFile::read(path_or_url.into()).await?
       })

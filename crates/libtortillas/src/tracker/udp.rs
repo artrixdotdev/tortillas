@@ -448,8 +448,7 @@ impl TrackerResponse {
          _ => {
             error!(unsupported_action = ?action, "Received unsupported action in response");
             Err(UdpTrackerError::InvalidResponse(format!(
-               "Unsupported action: {:?}",
-               action
+               "Unsupported action: {action:?}"
             )))
          }
       }
@@ -525,7 +524,7 @@ impl UdpTracker {
          Some(sock) => {
             let local_addr = sock.local_addr().map_err(|e| {
                error!(error = %e, "Failed to get local address from provided socket");
-               UdpTrackerError::ConnectionFailed(format!("Failed to get socket address: {}", e))
+               UdpTrackerError::ConnectionFailed(format!("Failed to get socket address: {e}"))
             })?;
             debug!(local_addr = %local_addr, "Using provided socket");
             sock
@@ -534,12 +533,12 @@ impl UdpTracker {
             debug!("Creating new socket on 0.0.0.0:0");
             let sock = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| {
                error!(error = %e, "Failed to bind new UDP socket");
-               UdpTrackerError::ConnectionFailed(format!("Failed to bind socket: {}", e))
+               UdpTrackerError::ConnectionFailed(format!("Failed to bind socket: {e}"))
             })?;
 
             let local_addr = sock.local_addr().map_err(|e| {
                error!(error = %e, "Failed to get local address from new socket");
-               UdpTrackerError::ConnectionFailed(format!("Failed to get socket address: {}", e))
+               UdpTrackerError::ConnectionFailed(format!("Failed to get socket address: {e}"))
             })?;
             debug!(local_addr = %local_addr, "Created new UDP socket");
             sock
@@ -645,8 +644,7 @@ impl UdpTracker {
          Err(e) => {
             error!(error = %e, "Failed to send announce request");
             return Err(UdpTrackerError::ConnectionFailed(format!(
-               "Failed to send announce request: {}",
-               e
+               "Failed to send announce request: {e}"
             )));
          }
       }
@@ -668,8 +666,7 @@ impl UdpTracker {
          Err(e) => {
             error!(error = %e, "Failed to receive announce response");
             return Err(UdpTrackerError::ConnectionFailed(format!(
-               "Failed to receive announce response: {}",
-               e
+               "Failed to receive announce response: {e}"
             )));
          }
       }
@@ -945,7 +942,7 @@ impl TrackerTrait for UdpTracker {
             Ok(()) => {
                let peer_addr = self.socket.peer_addr().map_err(|e| {
                   error!(error = %e, "Failed to get peer address after connect");
-                  UdpTrackerError::ConnectionFailed(format!("Failed to get peer address: {}", e))
+                  UdpTrackerError::ConnectionFailed(format!("Failed to get peer address: {e}"))
                })?;
 
                info!(peer_addr = %peer_addr, "UDP socket connected to tracker");
@@ -957,7 +954,7 @@ impl TrackerTrait for UdpTracker {
             Err(e) => {
                error!(error = %e, target_uri = %uri, "Failed to connect to tracker");
                return Err(
-                  UdpTrackerError::ConnectionFailed(format!("Failed to connect to tracker: {}", e))
+                  UdpTrackerError::ConnectionFailed(format!("Failed to connect to tracker: {e}"))
                      .into(),
                );
             }
@@ -991,7 +988,7 @@ impl TrackerTrait for UdpTracker {
          Err(e) => {
             error!(error = %e, "Failed to send connect request");
             return Err(
-               UdpTrackerError::ConnectionFailed(format!("Failed to send connect request: {}", e))
+               UdpTrackerError::ConnectionFailed(format!("Failed to send connect request: {e}"))
                   .into(),
             );
          }
@@ -1015,8 +1012,7 @@ impl TrackerTrait for UdpTracker {
             error!(error = %e, "Failed to receive connect response");
             return Err(
                UdpTrackerError::ConnectionFailed(format!(
-                  "Failed to receive connect response: {}",
-                  e
+                  "Failed to receive connect response: {e}"
                ))
                .into(),
             );
