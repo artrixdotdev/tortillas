@@ -255,9 +255,10 @@ impl Peer {
 
             // Save to Peer.
             if let Some(inner_metadata) = metadata
-               && let Err(e) = self.info.append_to_bytes(inner_metadata.to_vec()) {
-                  warn!(%peer_addr, error = %e, "Failed to append metadata bytes");
-               }
+               && let Err(e) = self.info.append_to_bytes(inner_metadata.to_vec())
+            {
+               warn!(%peer_addr, error = %e, "Failed to append metadata bytes");
+            }
 
             if let Some(extended_message) = &**extended_message {
                if let Some(size) = extended_message.metadata_size {
@@ -351,61 +352,55 @@ impl Peer {
       let peer_addr = self.socket_addr();
       trace!(%peer_addr, "Processing command from engine");
 
-      if let PeerCommand::Piece(piece_num) = message {
-         // If we're choking or the peer isn't interested, we can't do anything.
-         if !self.state.am_choked.load(Ordering::Acquire)
-            && self.state.interested.load(Ordering::Acquire)
-         {
-            let mut writer_guard = writer.lock().await;
+      match message {
+         PeerCommand::Piece(piece_num) => {
+            // If we're choking or the peer isn't interested, we can't do anything.
+            if !self.state.am_choked.load(Ordering::Acquire)
+               && self.state.interested.load(Ordering::Acquire)
+            {
+               let mut writer_guard = writer.lock().await;
 
-            self
-               .handle_piece_request(&mut writer_guard, piece_num)
-               .await;
-         } else {
-            let am_choked = self.state.am_choked.load(Ordering::Acquire);
-            let interested = self.state.interested.load(Ordering::Acquire);
+               self
+                  .handle_piece_request(&mut writer_guard, piece_num)
+                  .await;
+            } else {
+               let am_choked = self.state.am_choked.load(Ordering::Acquire);
+               let interested = self.state.interested.load(Ordering::Acquire);
 
-            debug!(%peer_addr, piece_num, am_choked, interested, "Cannot request piece - peer state prevents it");
+               debug!(%peer_addr, piece_num, am_choked, interested, "Cannot request piece - peer state prevents it");
 
-            Self::send(
-               to_engine_tx,
-               PeerResponse::Choking {
-                  peer_key: peer_addr,
-                  from_engine_tx,
-               },
-               peer_addr,
-            );
-         }
-      }
-   }
-
-   async fn handle_send(
-      &mut self, message: PeerCommand, writer: Arc<Mutex<PeerWriter>>,
-      to_engine_tx: broadcast::Sender<PeerResponse>, from_engine_tx: mpsc::Sender<PeerCommand>,
-      inner_recv_tx: mpsc::Sender<PeerMessages>,
-   ) {
-      let peer_addr = self.socket_addr();
-
-      // Request metadata with an Extended message (if peer supports BEP 0010 and BEP
-      // 0009)
-      //
-      // Note that when we receive the info-dictionary from a peer, we absolutely must
-      // compare the hash of it to our info hash.
-      if let PeerCommand::Extended(id, extended_message) = message
-         && self.peer_supports.bep_0010
-         && self.peer_supports.bep_0009 > 0
-      {
-         let message = PeerMessages::Extended(id as u8, Box::new(extended_message), None);
-
-         {
-            let mut writer_guard = writer.lock().await;
-            if let Err(e) = writer_guard.send(message).await {
-               error!(%peer_addr, error = %e, "Failed to send extended message");
-               return;
+               Self::send(
+                  to_engine_tx,
+                  PeerResponse::Choking {
+                     peer_key: peer_addr,
+                     from_engine_tx,
+                  },
+                  peer_addr,
+               );
             }
          }
+         PeerCommand::Extended(id, extended_message) => {
+            // Request metadata with an Extended message (if peer supports BEP 0010 and BEP
+            // 0009)
+            //
+            // Note that when we receive the info-dictionary from a peer, we absolutely must
+            // compare the hash of it to our info hash.
+            if self.peer_supports.bep_0009 > 0 && self.peer_supports.bep_0010 {
+               let message = PeerMessages::Extended(id as u8, Box::new(extended_message), None);
 
-         trace!(%peer_addr, extended_id = id, "Sent extended message to peer");
+               {
+                  let mut writer_guard = writer.lock().await;
+                  if let Err(e) = writer_guard.send(message).await {
+                     error!(%peer_addr, error = %e, "Failed to send extended message");
+                     return;
+                  }
+               }
+
+               trace!(%peer_addr, extended_id = id, "Sent extended message to peer");
+            }
+
+            trace!("Peer does not support BEP 0009 or BEP 0010");
+         }
       }
    }
 
@@ -576,7 +571,7 @@ impl Peer {
          tokio::select! {
             message = inner_send_rx.recv() => {
                if let Some(inner) = message {
-                  self.handle_send(
+                  self.handle_peer_command(
                      inner,
                      writer.clone(),
                      to_engine_tx.clone(),
