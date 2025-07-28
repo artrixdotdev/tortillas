@@ -11,8 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tracing::{debug, error, trace};
 
-use crate::{errors::PeerTransportError, hashes::Hash};
-
+use crate::{errors::PeerTransportError, hashes::Hash, peers::MAGIC_STRING};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[repr(u8)]
