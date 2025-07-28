@@ -16,11 +16,11 @@ use tokio::{
 };
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use super::{MAGIC_STRING, PeerId, messages::PeerMessages};
+use super::messages::{Handshake, PeerMessages};
 use crate::{
    errors::PeerTransportError,
    hashes::Hash,
-   peers::{InfoHash, messages::Handshake},
+   peers::{InfoHash, MAGIC_STRING, PeerId},
 };
 
 /// A very simple enum to help differentiate between streams. TcpStream and
@@ -408,7 +408,7 @@ impl PeerSend for PeerWriter {}
 
 /// Takes in a received handshake and returns the handshake we should respond
 /// with as well as the new peer. It preassigns the our_id to the peer.
-pub(super) fn validate_handshake(
+pub fn validate_handshake(
    received_handshake: &Handshake, peer_addr: SocketAddr, info_hash: Arc<InfoHash>,
 ) -> Result<(), PeerTransportError> {
    // Validate protocol string

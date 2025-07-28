@@ -21,9 +21,11 @@ use crate::{
    parser::MetaInfo,
    peers::{
       Peer, PeerId, PeerKey,
-      commands::{PeerCommand, PeerResponse},
-      messages::PeerMessages,
-      stream::PeerStream,
+      peer_comms::{
+         commands::{PeerCommand, PeerResponse},
+         messages::PeerMessages,
+         stream::PeerStream,
+      },
    },
 };
 

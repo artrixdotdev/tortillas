@@ -13,7 +13,6 @@ use tracing::{debug, error, trace};
 
 use crate::{errors::PeerTransportError, hashes::Hash};
 
-pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[repr(u8)]

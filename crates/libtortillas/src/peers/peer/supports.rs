@@ -11,6 +11,12 @@ pub struct PeerSupports {
    pub bep_0010: bool,
 }
 
+impl Default for PeerSupports {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PeerSupports {
    pub fn new() -> Self {
       PeerSupports {

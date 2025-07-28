@@ -10,10 +10,13 @@ use std::{
 
 use atomic_time::AtomicOptionInstant;
 use bitvec::vec::BitVec;
-use commands::{PeerCommand, PeerResponse};
 use librqbit_utp::UtpSocketUdp;
-use messages::{ExtendedMessage, ExtendedMessageType, MAGIC_STRING, PeerMessages};
-use stream::{PeerRecv, PeerSend, PeerStream};
+use peer::{info::PeerInfo, state::PeerState, supports::PeerSupports};
+use peer_comms::{
+   commands::{PeerCommand, PeerResponse},
+   messages::{ExtendedMessage, ExtendedMessageType, PeerMessages},
+   stream::{PeerRecv, PeerSend, PeerStream},
+};
 use tokio::{
    sync::{
       Mutex, broadcast,
@@ -25,22 +28,18 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::{
    hashes::{Hash, InfoHash},
-   peers::{
-      peer::{info::PeerInfo, state::PeerState, supports::PeerSupports},
-      stream::PeerWriter,
-   },
+   peers::peer_comms::stream::PeerWriter,
 };
-
-pub mod commands;
-pub mod messages;
-pub mod peer;
-pub mod stream;
+mod peer;
+pub mod peer_comms;
 
 /// It should be noted that the *name* PeerKey is slightly deprecated from
 /// previous renditions of libtortillas. The idea of having a type for the "key"
 /// of a peer is still completely relevant though.
 pub type PeerKey = SocketAddr;
 pub type PeerId = Arc<Hash<20>>;
+
+pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
 
 /// Represents a BitTorrent peer with connection state and statistics
 /// Download rate and upload rate are measured in kilobytes per second.
@@ -255,11 +254,10 @@ impl Peer {
             }
 
             // Save to Peer.
-            if let Some(inner_metadata) = metadata {
-               if let Err(e) = self.info.append_to_bytes(inner_metadata.to_vec()) {
+            if let Some(inner_metadata) = metadata
+               && let Err(e) = self.info.append_to_bytes(inner_metadata.to_vec()) {
                   warn!(%peer_addr, error = %e, "Failed to append metadata bytes");
                }
-            }
 
             if let Some(extended_message) = &**extended_message {
                if let Some(size) = extended_message.metadata_size {
@@ -660,8 +658,8 @@ mod tests {
    };
    use tracing_test::traced_test;
 
-   use super::{stream::validate_handshake, *};
-   use crate::{parser::MagnetUri, peers::messages::Handshake};
+   use super::{peer_comms::stream::validate_handshake, *};
+   use crate::{parser::MagnetUri, peers::peer_comms::messages::Handshake};
 
    #[tokio::test]
    #[traced_test]

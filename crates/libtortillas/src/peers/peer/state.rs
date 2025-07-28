@@ -50,6 +50,12 @@ pub struct PeerState {
    pub bytes_uploaded: Arc<AtomicU64>,
 }
 
+impl Default for PeerState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PeerState {
    pub fn new() -> Self {
       PeerState {
