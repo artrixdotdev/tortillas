@@ -5,16 +5,10 @@
 ///
 /// When initalized with new, every field is initialized as unsupported: a 0 for
 /// u8s, and a false for booleans.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct PeerSupports {
    pub bep_0009: u8,
    pub bep_0010: bool,
-}
-
-impl Default for PeerSupports {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl PeerSupports {
