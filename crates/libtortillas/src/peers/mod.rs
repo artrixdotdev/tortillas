@@ -4,14 +4,10 @@ use std::{
    fmt::{Debug, Display},
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-   sync::{
-      Arc,
-      atomic::{AtomicBool, AtomicU64, Ordering},
-   },
+   sync::{Arc, atomic::Ordering},
    time::Duration,
 };
 
-use anyhow::{Error, bail};
 use atomic_time::AtomicOptionInstant;
 use bitvec::vec::BitVec;
 use commands::{PeerCommand, PeerResponse};
@@ -29,12 +25,15 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::{
    hashes::{Hash, InfoHash},
-   parser::Info,
-   peers::stream::PeerWriter,
+   peers::{
+      peer::{info::PeerInfo, state::PeerState, supports::PeerSupports},
+      stream::PeerWriter,
+   },
 };
 
 pub mod commands;
 pub mod messages;
+pub mod peer;
 pub mod stream;
 
 /// It should be noted that the *name* PeerKey is slightly deprecated from
@@ -42,192 +41,6 @@ pub mod stream;
 /// of a peer is still completely relevant though.
 pub type PeerKey = SocketAddr;
 pub type PeerId = Arc<Hash<20>>;
-
-/// A helper struct to determine what BEPs a given peer supports.
-///
-/// BEP support that is derived from the m dictionary in [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html) is denoted by a u8, and
-/// BEP support that is derived from the handshake is denoted by a boolean.
-///
-/// When initalized with new, every field is initialized as unsupported: a 0 for
-/// u8s, and a false for booleans.
-#[derive(Clone)]
-pub struct PeerSupports {
-   pub bep_0009: u8,
-   pub bep_0010: bool,
-}
-
-impl PeerSupports {
-   fn new() -> Self {
-      PeerSupports {
-         bep_0009: 0,
-         bep_0010: false,
-      }
-   }
-}
-
-/// A helper struct for Peer that maintains a given peers state. This state
-/// includes both the state defined in [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html) and our own state which we
-/// wish to maintain (ex. total bytes downloaded).
-///
-/// The general intent of this struct is to make it easier for us to "throw"
-/// state across threads -- every field in here is an atomic Arc, which means
-/// that it's very easy to do something like this (in an impl of the Peer
-/// struct):
-///
-/// ```no_run
-/// tokio::spawn(async move {
-///    some_fn(self.state.clone());
-/// })
-/// ```
-///
-/// `clone()` operations on this struct should be relatively lightweight, seeing
-/// that everything is contained in an Arc.
-#[derive(Clone)]
-pub struct PeerState {
-   /// Download rate measured in kilobytes per second
-   pub download_rate: Arc<AtomicU64>,
-   /// Upload rate measured in kilobytes per second
-   pub upload_rate: Arc<AtomicU64>,
-   /// The remote peer's choke status
-   pub choked: Arc<AtomicBool>,
-   /// The remote peer's interest status
-   pub interested: Arc<AtomicBool>,
-   /// Our choke status
-   pub am_choked: Arc<AtomicBool>,
-   /// Our interest status
-   pub am_interested: Arc<AtomicBool>,
-   /// The timestamp of the last time that a peer unchoked us
-   pub last_optimistic_unchoke: Arc<AtomicOptionInstant>,
-   /// Defaults to None. Does not update on initial handshake, initial sending
-   /// of bitfield, or initial sending of Interested message.
-   pub last_message_sent: Arc<AtomicOptionInstant>,
-   /// Defaults to None. Does not update on initial handshake, initial sending
-   /// of bitfield, or initial sending of Interested message.
-   pub last_message_received: Arc<AtomicOptionInstant>,
-   /// Total bytes downloaded
-   pub bytes_downloaded: Arc<AtomicU64>,
-   /// Total bytes uploaded
-   pub bytes_uploaded: Arc<AtomicU64>,
-}
-
-impl PeerState {
-   fn new() -> Self {
-      PeerState {
-         choked: Arc::new(true.into()),
-         interested: Arc::new(false.into()),
-         am_choked: Arc::new(true.into()),
-         am_interested: Arc::new(false.into()),
-         download_rate: Arc::new(0u64.into()),
-         upload_rate: Arc::new(0u64.into()),
-         last_optimistic_unchoke: Arc::new(AtomicOptionInstant::none()),
-         last_message_received: Arc::new(AtomicOptionInstant::none()),
-         last_message_sent: Arc::new(AtomicOptionInstant::none()),
-         bytes_downloaded: Arc::new(0u64.into()),
-         bytes_uploaded: Arc::new(0u64.into()),
-      }
-   }
-}
-
-#[derive(Clone)]
-/// A helper struct for Peer. Manages and handles any metadata (informally
-/// called an Info dict, as is the case here) from a Peer.
-///
-/// If you're unfamiliar, you can get metadata from a peer using the protocol
-/// described in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html) and [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html)
-pub struct PeerInfo {
-   pub info_size: u64,
-   pub info_bytes: Vec<u8>,
-}
-
-impl PeerInfo {
-   pub fn new(info_size: u64, info_bytes: Vec<u8>) -> Self {
-      PeerInfo {
-         info_size,
-         info_bytes,
-      }
-   }
-
-   /// Generates an Info dict from the current bytes in info_bytes. If the hash
-   /// of the created Info dict is not the same as the inputted info hash, an
-   /// error will be returned. If the hash is the same, the newly created
-   /// Info will be returned.
-   pub async fn generate_info_from_bytes(&self, info_hash: InfoHash) -> Result<Info, Error> {
-      // We have to do this because sometimes info dicts have non-standard properties
-      // that get discared by serde automatically, causing the hash to be
-      // different.
-      //
-      // The solution? Hash the raw bytes of it instead of parsing it first.
-      let real_info_hash: InfoHash = {
-         use sha1::{Digest, Sha1};
-         let mut hasher = Sha1::new();
-
-         hasher.update(&self.info_bytes);
-         let hash = hasher.finalize();
-         hash.to_vec().try_into()?
-      };
-
-      // Put bytes into Info struct
-      // The metadata should be bencoded bytes.
-      trace!("Generating info dict from metadata bytes");
-      let info_dict: Info = serde_bencode::from_bytes(&self.info_bytes).unwrap();
-
-      // Validate hash of struct with given info hash
-      assert_eq!(
-         real_info_hash, info_hash,
-         "Inputted info_hash was not the same as generated info_hash"
-      );
-
-      trace!("Info hash validation successful");
-
-      Ok(info_dict)
-   }
-
-   /// A helper function for handling any issues with appending the new bytes to
-   /// the current info_bytes
-   pub fn append_to_bytes(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
-      let bytes_len = bytes.len();
-      let current_len = self.info_bytes.len();
-      let total_len = current_len + bytes_len;
-
-      if total_len > self.info_size as usize {
-         warn!(
-            bytes_len,
-            current_len,
-            info_size = self.info_size,
-            total_len,
-            "Metadata bytes exceed expected size"
-         );
-         bail!("The inputted bytes + pre-existing bytes were longer than the metadata size")
-      }
-      self.info_bytes.extend_from_slice(&bytes);
-      Ok(())
-   }
-
-   /// Helper for checking if we have all required bytes
-   ///
-   /// If [info_bytes](Self::info_bytes) is 0, this function automatically
-   /// returns false due to the redundancy (and incorrectness) of comparing
-   /// the length of [info_bytes](Self::info_bytes) to
-   /// [info_size](Self::info_size).
-   pub fn have_all_bytes(&self) -> bool {
-      let current_size = self.info_bytes.len();
-      trace!(
-         info_size = self.info_size,
-         current_size, "Checking metadata completeness"
-      );
-      if self.info_size == 0 {
-         return false;
-      }
-      current_size >= self.info_size as usize
-   }
-
-   /// Resets the PeerInfo struct.
-   pub fn reset(&mut self) {
-      trace!("Resetting peer info metadata");
-      self.info_bytes = vec![];
-      self.info_size = 0;
-   }
-}
 
 /// Represents a BitTorrent peer with connection state and statistics
 /// Download rate and upload rate are measured in kilobytes per second.
