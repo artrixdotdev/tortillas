@@ -1,3 +1,8 @@
+use std::sync::{
+   atomic::{AtomicBool, AtomicU8, Ordering},
+   Arc,
+};
+
 use tracing::trace;
 
 use crate::peers::Peer;
@@ -11,38 +16,38 @@ use crate::peers::Peer;
 /// u8s, and a false for booleans.
 #[derive(Clone, Default)]
 pub struct PeerSupports {
-   pub bep_0009: u8,
-   pub bep_0010: bool,
+   pub bep_0009: Arc<AtomicU8>,
+   pub bep_0010: Arc<AtomicBool>,
 }
 
 impl PeerSupports {
    pub fn new() -> Self {
       PeerSupports {
-         bep_0009: 0,
-         bep_0010: false,
+         bep_0009: Arc::new(AtomicU8::new(0)),
+         bep_0010: Arc::new(AtomicBool::new(false)),
       }
    }
 }
 
 impl Peer {
    pub fn supports_bep_0009(&self) -> bool {
-      self.peer_supports.bep_0009 > 0
+      self.bep_0009_id() > 0
    }
 
    pub fn bep_0009_id(&self) -> u8 {
-      self.peer_supports.bep_0009
+      self.peer_supports.bep_0009.load(Ordering::Acquire)
    }
 
    pub fn supports_bep_0010(&self) -> bool {
-      self.peer_supports.bep_0010
+      self.peer_supports.bep_0010.load(Ordering::Acquire)
    }
 
    pub fn set_bep_0009(&mut self, id: u8) {
-      self.peer_supports.bep_0009 = id;
+      self.peer_supports.bep_0009.store(id, Ordering::Release);
    }
 
    pub fn set_bep_0010(&mut self, status: bool) {
-      self.peer_supports.bep_0010 = status;
+      self.peer_supports.bep_0010.store(status, Ordering::Release);
    }
 
    /// Determines and updates what BEPs a given peer supports based off of the
