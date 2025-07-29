@@ -559,7 +559,7 @@ impl ExtendedMessage {
    /// based on the m dictionary passed with the Extended handshake.
    pub fn supports_bep_0009(&self) -> Result<u8, Error> {
       // We have to clone here for some reason?
-      if let Some(m) = self.supported_extensions.clone() {
+      if let Some(m) = &self.supported_extensions {
          if let Some(id) = m.get("ut_metadata") {
             debug!(extension_id = *id, "Peer supports BEP 0009");
             return Ok(*id);

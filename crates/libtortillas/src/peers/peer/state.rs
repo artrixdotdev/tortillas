@@ -1,9 +1,14 @@
-use std::sync::{
-   Arc,
-   atomic::{AtomicBool, AtomicU64},
+use std::{
+   sync::{
+      Arc,
+      atomic::{AtomicBool, AtomicU64, Ordering},
+   },
+   time::Instant,
 };
 
 use atomic_time::AtomicOptionInstant;
+
+use crate::peers::Peer;
 
 /// A helper struct for Peer that maintains a given peers state. This state
 /// includes both the state defined in [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html) and our own state which we
@@ -51,9 +56,9 @@ pub struct PeerState {
 }
 
 impl Default for PeerState {
-    fn default() -> Self {
-        Self::new()
-    }
+   fn default() -> Self {
+      Self::new()
+   }
 }
 
 impl PeerState {
@@ -71,5 +76,117 @@ impl PeerState {
          bytes_downloaded: Arc::new(0u64.into()),
          bytes_uploaded: Arc::new(0u64.into()),
       }
+   }
+}
+
+/// A bunch of helper methods (basically getter and setter wrappers)
+impl Peer {
+   pub fn set_choked(&self, is_choked: bool) {
+      self.state.choked.store(is_choked, Ordering::Release);
+   }
+
+   pub fn set_interested(&self, is_interested: bool) {
+      self
+         .state
+         .interested
+         .store(is_interested, Ordering::Release);
+   }
+
+   pub fn set_am_choked(&self, is_choked: bool) {
+      self.state.am_choked.store(is_choked, Ordering::Release);
+   }
+
+   pub fn set_am_interested(&self, is_interested: bool) {
+      self
+         .state
+         .am_interested
+         .store(is_interested, Ordering::Release);
+   }
+
+   pub fn set_download_rate(&self, rate_kbps: u64) {
+      self.state.download_rate.store(rate_kbps, Ordering::Release);
+   }
+
+   pub fn set_upload_rate(&self, rate_kbps: u64) {
+      self.state.upload_rate.store(rate_kbps, Ordering::Release);
+   }
+
+   pub fn update_last_optimistic_unchoke(&self) {
+      self
+         .state
+         .last_optimistic_unchoke
+         .store(Some(Instant::now()), Ordering::Release);
+   }
+
+   pub fn update_last_message_sent(&self) {
+      self
+         .state
+         .last_message_sent
+         .store(Some(Instant::now()), Ordering::Release);
+   }
+
+   pub fn update_last_message_received(&self) {
+      self
+         .state
+         .last_message_received
+         .store(Some(Instant::now()), Ordering::Release);
+   }
+
+   pub fn increment_bytes_downloaded(&self, bytes: u64) {
+      self
+         .state
+         .bytes_downloaded
+         .fetch_add(bytes, Ordering::Relaxed);
+   }
+
+   pub fn increment_bytes_uploaded(&self, bytes: u64) {
+      self
+         .state
+         .bytes_uploaded
+         .fetch_add(bytes, Ordering::Relaxed);
+   }
+
+   pub fn choked(&self) -> bool {
+      self.state.choked.load(Ordering::Acquire)
+   }
+
+   pub fn interested(&self) -> bool {
+      self.state.interested.load(Ordering::Acquire)
+   }
+
+   pub fn am_choked(&self) -> bool {
+      self.state.am_choked.load(Ordering::Acquire)
+   }
+
+   pub fn am_interested(&self) -> bool {
+      self.state.am_interested.load(Ordering::Acquire)
+   }
+
+   pub fn download_rate(&self) -> u64 {
+      self.state.download_rate.load(Ordering::Acquire)
+   }
+
+   pub fn upload_rate(&self) -> u64 {
+      self.state.upload_rate.load(Ordering::Acquire)
+   }
+
+   pub fn last_optimistic_unchoke(&self) -> Option<Instant> {
+      self.state.last_optimistic_unchoke.load(Ordering::Acquire)
+   }
+
+   pub fn last_message_sent(&self) -> Option<Instant> {
+      self.state.last_message_sent.load(Ordering::Acquire)
+   }
+
+   pub fn last_message_received(&self) -> Option<Instant> {
+      self.state.last_message_received.load(Ordering::Acquire)
+   }
+
+   pub fn bytes_downloaded(&self) -> u64 {
+      self.state.bytes_downloaded.load(Ordering::Relaxed)
+   }
+
+   pub fn bytes_uploaded(&self) -> u64 {
+      self.state.bytes_uploaded.load(Ordering::Relaxed)
    }
 }
