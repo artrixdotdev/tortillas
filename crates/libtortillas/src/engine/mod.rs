@@ -76,12 +76,12 @@ pub struct TorrentEngine {
 
 #[derive(Debug, Default)]
 struct TorrentStats {
-   total_peers_discovered: u64,
-   unique_peers_discovered: u64,
-   active_connections: u64,
-   failed_connections: u64,
-   bytes_downloaded: u64,
-   bytes_uploaded: u64,
+   total_peers_discovered: usize,
+   unique_peers_discovered: usize,
+   active_connections: usize,
+   failed_connections: usize,
+   bytes_downloaded: usize,
+   bytes_uploaded: usize,
 }
 
 impl TorrentEngine {
@@ -428,10 +428,7 @@ impl TorrentEngine {
                } => {
                   trace!(peer_key = %peer_key, "Peer unchoked, requesting pieces");
                   for piece_num in 0..me_handle_peer.bitfield.read().await.len() {
-                     match from_engine_tx
-                        .send(PeerCommand::Piece(piece_num as u32))
-                        .await
-                     {
+                     match from_engine_tx.send(PeerCommand::Piece(piece_num)).await {
                         Ok(_) => {
                            trace!(peer_key = %peer_key, piece_num, "Sent piece request to peer");
                         }
@@ -499,7 +496,7 @@ impl TorrentEngine {
                      // Update statistics
                      {
                         let mut stats = stats_ref.lock().await;
-                        stats.total_peers_discovered += peer_count as u64;
+                        stats.total_peers_discovered += peer_count;
                      }
 
                      debug!(tracker_index, peer_count, "Received peers from tracker");

@@ -10,20 +10,20 @@ use crate::{hashes::InfoHash, parser::Info};
 /// described in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html) and [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html)
 #[derive(Clone)]
 pub struct PeerInfo {
-   info_size: u64,
+   info_size: usize,
    info_bytes: Vec<u8>,
 }
 
 #[allow(dead_code)]
 impl PeerInfo {
-   pub fn new(info_size: u64, info_bytes: Vec<u8>) -> Self {
+   pub fn new(info_size: usize, info_bytes: Vec<u8>) -> Self {
       PeerInfo {
          info_size,
          info_bytes,
       }
    }
 
-   pub(crate) fn set_info_size(&mut self, info_size: u64) {
+   pub(crate) fn set_info_size(&mut self, info_size: usize) {
       self.info_size = info_size;
    }
 
@@ -73,7 +73,7 @@ impl PeerInfo {
       let current_len = self.info_bytes.len();
       let total_len = current_len + bytes_len;
 
-      if total_len > self.info_size as usize {
+      if total_len > self.info_size {
          warn!(
             bytes_len,
             current_len,
@@ -102,10 +102,10 @@ impl PeerInfo {
       if self.info_size == 0 {
          return false;
       }
-      current_size >= self.info_size as usize
+      current_size >= self.info_size
    }
 
-   pub(crate) fn info_size(&self) -> u64 {
+   pub(crate) fn info_size(&self) -> usize {
       self.info_size
    }
 

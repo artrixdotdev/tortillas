@@ -6,8 +6,8 @@ use crate::peers::PeerKey;
 #[derive(Debug)]
 pub enum PeerCommand {
    /// Just the index of the piece that we're asking the peer for.
-   Piece(u32),
-   Extended(u32, Option<ExtendedMessage>),
+   Piece(usize),
+   Extended(usize, Option<ExtendedMessage>),
 }
 
 /// All messages FROM peers must include PeerKeys due to the fact that peers use
@@ -60,7 +60,7 @@ pub enum PeerResponse {
    },
    /// The message that is sent when a peer fails to retrieve a piece.
    PieceFailure {
-      piece_num: u32,
+      piece_num: usize,
       error_message: String,
       peer_key: PeerKey,
    },

@@ -420,13 +420,13 @@ enum ReadyState {
 
 #[derive(Clone, Debug)]
 struct TrackerStats {
-   connect_attempts: u64,
-   connect_successes: u64,
-   announce_attempts: u64,
-   announce_successes: u64,
-   total_peers_received: u64,
-   bytes_sent: u64,
-   bytes_received: u64,
+   connect_attempts: usize,
+   connect_successes: usize,
+   announce_attempts: usize,
+   announce_successes: usize,
+   total_peers_received: usize,
+   bytes_sent: usize,
+   bytes_received: usize,
    last_successful_announce: Option<Instant>,
    session_start: Instant,
 }
@@ -573,7 +573,7 @@ impl UdpTracker {
          Ok(bytes_sent) => {
             trace!(bytes_sent = bytes_sent, "Announce request sent");
             let mut stats = self.stats.lock().await;
-            stats.bytes_sent += bytes_sent as u64;
+            stats.bytes_sent += bytes_sent;
          }
          Err(e) => {
             error!(error = %e, "Failed to send announce request");
@@ -594,7 +594,7 @@ impl UdpTracker {
                 "Received announce response"
             );
             let mut stats = self.stats.lock().await;
-            stats.bytes_received += bytes_received as u64;
+            stats.bytes_received += bytes_received;
          }
          Err(e) => {
             error!(error = %e, "Failed to receive announce response");
@@ -628,7 +628,7 @@ impl UdpTracker {
             {
                let mut stats = self.stats.lock().await;
                stats.announce_successes += 1;
-               stats.total_peers_received += peers.len() as u64;
+               stats.total_peers_received += peers.len();
                stats.last_successful_announce = Some(Instant::now());
             }
 
@@ -731,8 +731,8 @@ impl TrackerTrait for UdpTracker {
       let mut tracker = self.clone();
 
       tokio::spawn(async move {
-         let mut iteration = 0u64;
-         let mut consecutive_failures = 0u64;
+         let mut iteration = 0usize;
+         let mut consecutive_failures = 0usize;
          let max_consecutive_failures = 5;
          let mut last_stats_log = Instant::now();
          let stats_interval = Duration::from_secs(300); // Log stats every 5 minutes
@@ -865,7 +865,7 @@ impl TrackerTrait for UdpTracker {
          Ok(bytes_sent) => {
             trace!(bytes_sent = bytes_sent, "Connect request sent");
             let mut stats = self.stats.lock().await;
-            stats.bytes_sent += bytes_sent as u64;
+            stats.bytes_sent += bytes_sent;
          }
          Err(e) => {
             error!(error = %e, "Failed to send connect request");
@@ -884,7 +884,7 @@ impl TrackerTrait for UdpTracker {
          Ok(bytes_received) => {
             trace!(bytes_received = bytes_received, "Received connect response");
             let mut stats = self.stats.lock().await;
-            stats.bytes_received += bytes_received as u64;
+            stats.bytes_received += bytes_received;
          }
          Err(e) => {
             error!(error = %e, "Failed to receive connect response");

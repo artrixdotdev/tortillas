@@ -71,7 +71,7 @@ impl Peer {
       match &message {
          PeerMessages::Piece(index, offset, data) => {
             trace!(%peer_addr, piece_index = index, offset, data_len = data.len(), "Received piece data");
-            self.increment_bytes_downloaded(data.len() as u64);
+            self.increment_bytes_downloaded(data.len());
             Self::send_to_engine(
                to_engine_tx,
                PeerResponse::Receive {
@@ -227,7 +227,7 @@ impl Peer {
 
    /// Requests metadata, given a piece number.
    async fn request_metadata(
-      &mut self, metadata_size: u64, inner_send_tx: &mpsc::Sender<PeerCommand>, piece: u32,
+      &mut self, metadata_size: usize, inner_send_tx: &mpsc::Sender<PeerCommand>, piece: usize,
    ) {
       let peer_addr = self.socket_addr();
       self.info.set_info_size(metadata_size);
@@ -240,7 +240,7 @@ impl Peer {
          // The Extended ID as specified in BEP 0009 is the ID from the m dictionary
          // -- in this case the ID listed under ut_metadata
          let command =
-            PeerCommand::Extended(self.bep_0009_id() as u32, Some(extended_message_command));
+            PeerCommand::Extended(self.bep_0009_id() as usize, Some(extended_message_command));
 
          if let Err(e) = inner_send_tx.send(command).await {
             error!(%peer_addr, error = %e, "Failed to send metadata request");
@@ -297,7 +297,9 @@ impl Peer {
             if !self.am_choked() && self.interested() {
                let mut writer_guard = writer.lock().await;
 
-               self.request_piece(&mut writer_guard, piece_num).await;
+               self
+                  .request_piece(&mut writer_guard, piece_num as u32)
+                  .await;
             } else {
                let am_choked = self.am_choked();
                let interested = self.am_interested();

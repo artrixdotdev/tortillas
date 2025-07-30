@@ -1,7 +1,7 @@
 use std::{
    sync::{
       Arc,
-      atomic::{AtomicBool, AtomicU64, Ordering},
+      atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
    },
    time::Instant,
 };
@@ -30,9 +30,9 @@ use crate::peers::Peer;
 #[derive(Clone)]
 pub struct PeerState {
    /// Download rate measured in kilobytes per second
-   download_rate: Arc<AtomicU64>,
+   download_rate: Arc<AtomicUsize>,
    /// Upload rate measured in kilobytes per second
-   upload_rate: Arc<AtomicU64>,
+   upload_rate: Arc<AtomicUsize>,
    /// The remote peer's choke status
    choked: Arc<AtomicBool>,
    /// The remote peer's interest status
@@ -50,9 +50,9 @@ pub struct PeerState {
    /// of bitfield, or initial sending of Interested message.
    last_message_received: Arc<AtomicOptionInstant>,
    /// Total bytes downloaded
-   bytes_downloaded: Arc<AtomicU64>,
+   bytes_downloaded: Arc<AtomicUsize>,
    /// Total bytes uploaded
-   bytes_uploaded: Arc<AtomicU64>,
+   bytes_uploaded: Arc<AtomicUsize>,
 }
 
 impl Default for PeerState {
@@ -68,13 +68,13 @@ impl PeerState {
          interested: Arc::new(false.into()),
          am_choked: Arc::new(true.into()),
          am_interested: Arc::new(false.into()),
-         download_rate: Arc::new(0u64.into()),
-         upload_rate: Arc::new(0u64.into()),
+         download_rate: Arc::new(0.into()),
+         upload_rate: Arc::new(0.into()),
          last_optimistic_unchoke: Arc::new(AtomicOptionInstant::none()),
          last_message_received: Arc::new(AtomicOptionInstant::none()),
          last_message_sent: Arc::new(AtomicOptionInstant::none()),
-         bytes_downloaded: Arc::new(0u64.into()),
-         bytes_uploaded: Arc::new(0u64.into()),
+         bytes_downloaded: Arc::new(0.into()),
+         bytes_uploaded: Arc::new(0.into()),
       }
    }
 }
@@ -104,11 +104,11 @@ impl Peer {
          .store(is_interested, Ordering::Release);
    }
 
-   pub(crate) fn set_download_rate(&self, rate_kbps: u64) {
+   pub(crate) fn set_download_rate(&self, rate_kbps: usize) {
       self.state.download_rate.store(rate_kbps, Ordering::Release);
    }
 
-   pub(crate) fn set_upload_rate(&self, rate_kbps: u64) {
+   pub(crate) fn set_upload_rate(&self, rate_kbps: usize) {
       self.state.upload_rate.store(rate_kbps, Ordering::Release);
    }
 
@@ -133,14 +133,14 @@ impl Peer {
          .store(Some(Instant::now()), Ordering::Release);
    }
 
-   pub(crate) fn increment_bytes_downloaded(&self, bytes: u64) {
+   pub(crate) fn increment_bytes_downloaded(&self, bytes: usize) {
       self
          .state
          .bytes_downloaded
          .fetch_add(bytes, Ordering::Relaxed);
    }
 
-   pub(crate) fn increment_bytes_uploaded(&self, bytes: u64) {
+   pub(crate) fn increment_bytes_uploaded(&self, bytes: usize) {
       self
          .state
          .bytes_uploaded
@@ -163,11 +163,11 @@ impl Peer {
       self.state.am_interested.load(Ordering::Acquire)
    }
 
-   pub fn download_rate(&self) -> u64 {
+   pub fn download_rate(&self) -> usize {
       self.state.download_rate.load(Ordering::Acquire)
    }
 
-   pub fn upload_rate(&self) -> u64 {
+   pub fn upload_rate(&self) -> usize {
       self.state.upload_rate.load(Ordering::Acquire)
    }
 
@@ -183,11 +183,11 @@ impl Peer {
       self.state.last_message_received.load(Ordering::Acquire)
    }
 
-   pub(crate) fn bytes_downloaded(&self) -> u64 {
+   pub(crate) fn bytes_downloaded(&self) -> usize {
       self.state.bytes_downloaded.load(Ordering::Relaxed)
    }
 
-   pub(crate) fn bytes_uploaded(&self) -> u64 {
+   pub(crate) fn bytes_uploaded(&self) -> usize {
       self.state.bytes_uploaded.load(Ordering::Relaxed)
    }
 }

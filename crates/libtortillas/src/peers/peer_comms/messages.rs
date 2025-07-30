@@ -166,8 +166,8 @@ impl PeerMessages {
 
    // Helper method to create a message with length prefix, ID, and payload
    fn create_message_with_id(id: u8, payload: &[u8]) -> Vec<u8> {
-      let length = 1 + payload.len() as u32; // ID (1 byte) + payload length
-      let mut message = Vec::with_capacity(4 + length as usize);
+      let length = 1 + payload.len(); // ID (1 byte) + payload length
+      let mut message = Vec::with_capacity(4 + length);
 
       // Length prefix (4 bytes)
       message.extend_from_slice(&length.to_be_bytes());
@@ -528,26 +528,23 @@ pub struct ExtendedMessage {
    /// The number of outstanding request messages this client supports without
    /// dropping any. Default in libtorrent is 250.
    #[serde(rename = "reqq")]
-   pub outstanding_requests: Option<u32>,
+   pub outstanding_requests: Option<usize>,
    /// This should only be used with [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html). It
    /// refers to the number of bytes for a torrents metadata.
    ///
    /// It is only used for the initial handshake described in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
-   pub metadata_size: Option<u64>,
+   pub metadata_size: Option<usize>,
    /// Refers to the type of a message, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
    ///
    /// See documentation for [ExtendedMessageType]
    pub msg_type: Option<ExtendedMessageType>,
    /// Indicates which part of the metadata this message refers to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
-   ///
-   /// This is a u32 because, while unlikely, a torrent's metadata *could* take
-   /// up more than 256 pieces.
-   pub piece: Option<u32>,
+   pub piece: Option<usize>,
    /// The size of the piece of metadata that was just sent, according to [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html).
    ///
    /// If the piece is the last piece of the metadata, it may be less than
    /// 16kiB. If it is not the last piece of the metadata, it MUST be 16kiB.
-   pub total_size: Option<u64>,
+   pub total_size: Option<usize>,
 }
 
 impl ExtendedMessage {
