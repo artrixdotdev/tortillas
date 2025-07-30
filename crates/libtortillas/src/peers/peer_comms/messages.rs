@@ -161,7 +161,8 @@ impl PeerMessages {
       let bytes_len = bytes.len();
 
       // Check if it's a handshake (handshakes don't have length prefix)
-      if bytes_len >= 68 && bytes[0] == 19 && &bytes[1..20] == b"BitTorrent protocol" {
+      if bytes_len >= 68 && bytes[0] as usize == MAGIC_STRING.len() && &bytes[1..20] == MAGIC_STRING
+      {
          trace!(bytes_len, "Parsing handshake message");
          return Ok(PeerMessages::Handshake(
             Handshake::from_bytes(&bytes).map_err(|e| {
