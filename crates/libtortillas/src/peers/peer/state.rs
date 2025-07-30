@@ -183,11 +183,11 @@ impl Peer {
       self.state.last_message_received.load(Ordering::Acquire)
    }
 
-   pub(crate) fn bytes_downloaded(&self) -> usize {
+   pub fn bytes_downloaded(&self) -> usize {
       self.state.bytes_downloaded.load(Ordering::Relaxed)
    }
 
-   pub(crate) fn bytes_uploaded(&self) -> usize {
+   pub fn bytes_uploaded(&self) -> usize {
       self.state.bytes_uploaded.load(Ordering::Relaxed)
    }
 }
