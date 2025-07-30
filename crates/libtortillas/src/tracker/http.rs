@@ -44,9 +44,9 @@ pub enum Event {
 struct TrackerRequest {
    ip: Option<IpAddr>,
    port: u16,
-   uploaded: u8,
-   downloaded: u8,
-   left: Option<u8>,
+   uploaded: usize,
+   downloaded: usize,
+   left: Option<usize>,
    event: Event,
 }
 
@@ -82,14 +82,14 @@ impl TrackerRequest {
 
 #[derive(Debug)]
 struct HttpTrackerStats {
-   request_attempts: u64,
-   request_successes: u64,
-   total_peers_received: u64,
-   bytes_sent: u64,
-   bytes_received: u64,
+   request_attempts: usize,
+   request_successes: usize,
+   total_peers_received: usize,
+   bytes_sent: usize,
+   bytes_received: usize,
    last_successful_request: Option<Instant>,
    session_start: Instant,
-   consecutive_failures: u64,
+   consecutive_failures: usize,
 }
 
 impl Default for HttpTrackerStats {
@@ -108,14 +108,14 @@ impl Default for HttpTrackerStats {
 }
 
 /// Struct for handling tracker over HTTP
-/// Interval is set to `u32::MAX` by default.
+/// Interval is set to `[usize::MAX]` by default.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HttpTracker {
    uri: String,
    pub peer_id: Hash<20>,
    info_hash: InfoHash,
    params: TrackerRequest,
-   interval: u32,
+   interval: usize,
    #[serde(skip)]
    stats: std::sync::Arc<tokio::sync::Mutex<HttpTrackerStats>>,
 }
@@ -146,7 +146,7 @@ impl HttpTracker {
       );
 
       HttpTracker {
-         interval: u32::MAX,
+         interval: usize::MAX,
          uri,
          peer_id,
          params,
@@ -219,8 +219,8 @@ impl TrackerTrait for HttpTracker {
       let tx = tx.clone();
 
       tokio::spawn(async move {
-         let mut iteration = 0u64;
-         let max_consecutive_failures = 5u64;
+         let mut iteration = 0usize;
+         let max_consecutive_failures = 5usize;
          let mut last_stats_log = Instant::now();
          let stats_interval = Duration::from_secs(300); // Log stats every 5 minutes
 
@@ -363,8 +363,8 @@ impl TrackerTrait for HttpTracker {
       // Update network statistics
       {
          let mut stats = self.stats.lock().await;
-         stats.bytes_sent += uri.len() as u64; // Approximate bytes sent
-         stats.bytes_received += response_bytes.len() as u64;
+         stats.bytes_sent += uri.len(); // Approximate bytes sent
+         stats.bytes_received += response_bytes.len();
       }
 
       // Response parsing phase
@@ -381,7 +381,7 @@ impl TrackerTrait for HttpTracker {
       {
          let mut stats = self.stats.lock().await;
          stats.request_successes += 1;
-         stats.total_peers_received += response.peers.len() as u64;
+         stats.total_peers_received += response.peers.len();
          stats.last_successful_request = Some(Instant::now());
          stats.consecutive_failures = 0;
       }
@@ -394,7 +394,7 @@ impl TrackerTrait for HttpTracker {
       );
 
       // Update interval
-      self.interval = response.interval as u32;
+      self.interval = response.interval;
 
       Ok(response.peers)
    }

@@ -1,41 +1,33 @@
 use core::fmt;
 use std::{
-   collections::HashMap,
    fmt::{Debug, Display},
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-   sync::{
-      Arc,
-      atomic::{AtomicBool, AtomicU64, Ordering},
-   },
+   sync::{Arc, atomic::Ordering},
    time::Duration,
 };
 
-use anyhow::{Error, bail};
-use atomic_time::AtomicOptionInstant;
 use bitvec::vec::BitVec;
-use commands::{PeerCommand, PeerResponse};
 use librqbit_utp::UtpSocketUdp;
-use messages::{ExtendedMessage, ExtendedMessageType, MAGIC_STRING, PeerMessages};
-use stream::{PeerRecv, PeerSend, PeerStream};
+use peer::{info::PeerInfo, state::PeerState, supports::PeerSupports};
+use peer_comms::{
+   commands::{PeerCommand, PeerResponse},
+   messages::PeerMessages,
+   stream::{PeerRecv, PeerSend, PeerStream},
+};
 use tokio::{
    sync::{
       Mutex, broadcast,
       mpsc::{self, Receiver, Sender},
    },
-   time::{Instant, sleep, timeout},
+   time::sleep,
 };
 use tracing::{debug, error, info, trace, warn};
 
-use crate::{
-   hashes::{Hash, InfoHash},
-   parser::Info,
-   peers::stream::PeerWriter,
-};
+use crate::hashes::{Hash, InfoHash};
 
-pub mod commands;
-pub mod messages;
-pub mod stream;
+mod peer;
+pub mod peer_comms;
 
 /// It should be noted that the *name* PeerKey is slightly deprecated from
 /// previous renditions of libtortillas. The idea of having a type for the "key"
@@ -43,191 +35,7 @@ pub mod stream;
 pub type PeerKey = SocketAddr;
 pub type PeerId = Arc<Hash<20>>;
 
-/// A helper struct to determine what BEPs a given peer supports.
-///
-/// BEP support that is derived from the m dictionary in [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html) is denoted by a u8, and
-/// BEP support that is derived from the handshake is denoted by a boolean.
-///
-/// When initalized with new, every field is initialized as unsupported: a 0 for
-/// u8s, and a false for booleans.
-#[derive(Clone)]
-pub struct PeerSupports {
-   pub bep_0009: u8,
-   pub bep_0010: bool,
-}
-
-impl PeerSupports {
-   fn new() -> Self {
-      PeerSupports {
-         bep_0009: 0,
-         bep_0010: false,
-      }
-   }
-}
-
-/// A helper struct for Peer that maintains a given peers state. This state
-/// includes both the state defined in [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html) and our own state which we
-/// wish to maintain (ex. total bytes downloaded).
-///
-/// The general intent of this struct is to make it easier for us to "throw"
-/// state across threads -- every field in here is an atomic Arc, which means
-/// that it's very easy to do something like this (in an impl of the Peer
-/// struct):
-///
-/// ```no_run
-/// tokio::spawn(async move {
-///    some_fn(self.state.clone());
-/// })
-/// ```
-///
-/// `clone()` operations on this struct should be relatively lightweight, seeing
-/// that everything is contained in an Arc.
-#[derive(Clone)]
-pub struct PeerState {
-   /// Download rate measured in kilobytes per second
-   pub download_rate: Arc<AtomicU64>,
-   /// Upload rate measured in kilobytes per second
-   pub upload_rate: Arc<AtomicU64>,
-   /// The remote peer's choke status
-   pub choked: Arc<AtomicBool>,
-   /// The remote peer's interest status
-   pub interested: Arc<AtomicBool>,
-   /// Our choke status
-   pub am_choked: Arc<AtomicBool>,
-   /// Our interest status
-   pub am_interested: Arc<AtomicBool>,
-   /// The timestamp of the last time that a peer unchoked us
-   pub last_optimistic_unchoke: Arc<AtomicOptionInstant>,
-   /// Defaults to None. Does not update on initial handshake, initial sending
-   /// of bitfield, or initial sending of Interested message.
-   pub last_message_sent: Arc<AtomicOptionInstant>,
-   /// Defaults to None. Does not update on initial handshake, initial sending
-   /// of bitfield, or initial sending of Interested message.
-   pub last_message_received: Arc<AtomicOptionInstant>,
-   /// Total bytes downloaded
-   pub bytes_downloaded: Arc<AtomicU64>,
-   /// Total bytes uploaded
-   pub bytes_uploaded: Arc<AtomicU64>,
-}
-
-impl PeerState {
-   fn new() -> Self {
-      PeerState {
-         choked: Arc::new(true.into()),
-         interested: Arc::new(false.into()),
-         am_choked: Arc::new(true.into()),
-         am_interested: Arc::new(false.into()),
-         download_rate: Arc::new(0u64.into()),
-         upload_rate: Arc::new(0u64.into()),
-         last_optimistic_unchoke: Arc::new(AtomicOptionInstant::none()),
-         last_message_received: Arc::new(AtomicOptionInstant::none()),
-         last_message_sent: Arc::new(AtomicOptionInstant::none()),
-         bytes_downloaded: Arc::new(0u64.into()),
-         bytes_uploaded: Arc::new(0u64.into()),
-      }
-   }
-}
-
-#[derive(Clone)]
-/// A helper struct for Peer. Manages and handles any metadata (informally
-/// called an Info dict, as is the case here) from a Peer.
-///
-/// If you're unfamiliar, you can get metadata from a peer using the protocol
-/// described in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html) and [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html)
-pub struct PeerInfo {
-   pub info_size: u64,
-   pub info_bytes: Vec<u8>,
-}
-
-impl PeerInfo {
-   pub fn new(info_size: u64, info_bytes: Vec<u8>) -> Self {
-      PeerInfo {
-         info_size,
-         info_bytes,
-      }
-   }
-
-   /// Generates an Info dict from the current bytes in info_bytes. If the hash
-   /// of the created Info dict is not the same as the inputted info hash, an
-   /// error will be returned. If the hash is the same, the newly created
-   /// Info will be returned.
-   pub async fn generate_info_from_bytes(&self, info_hash: InfoHash) -> Result<Info, Error> {
-      // We have to do this because sometimes info dicts have non-standard properties
-      // that get discared by serde automatically, causing the hash to be
-      // different.
-      //
-      // The solution? Hash the raw bytes of it instead of parsing it first.
-      let real_info_hash: InfoHash = {
-         use sha1::{Digest, Sha1};
-         let mut hasher = Sha1::new();
-
-         hasher.update(&self.info_bytes);
-         let hash = hasher.finalize();
-         hash.to_vec().try_into()?
-      };
-
-      // Put bytes into Info struct
-      // The metadata should be bencoded bytes.
-      trace!("Generating info dict from metadata bytes");
-      let info_dict: Info = serde_bencode::from_bytes(&self.info_bytes).unwrap();
-
-      // Validate hash of struct with given info hash
-      assert_eq!(
-         real_info_hash, info_hash,
-         "Inputted info_hash was not the same as generated info_hash"
-      );
-
-      trace!("Info hash validation successful");
-
-      Ok(info_dict)
-   }
-
-   /// A helper function for handling any issues with appending the new bytes to
-   /// the current info_bytes
-   pub fn append_to_bytes(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
-      let bytes_len = bytes.len();
-      let current_len = self.info_bytes.len();
-      let total_len = current_len + bytes_len;
-
-      if total_len > self.info_size as usize {
-         warn!(
-            bytes_len,
-            current_len,
-            info_size = self.info_size,
-            total_len,
-            "Metadata bytes exceed expected size"
-         );
-         bail!("The inputted bytes + pre-existing bytes were longer than the metadata size")
-      }
-      self.info_bytes.extend_from_slice(&bytes);
-      Ok(())
-   }
-
-   /// Helper for checking if we have all required bytes
-   ///
-   /// If [info_bytes](Self::info_bytes) is 0, this function automatically
-   /// returns false due to the redundancy (and incorrectness) of comparing
-   /// the length of [info_bytes](Self::info_bytes) to
-   /// [info_size](Self::info_size).
-   pub fn have_all_bytes(&self) -> bool {
-      let current_size = self.info_bytes.len();
-      trace!(
-         info_size = self.info_size,
-         current_size, "Checking metadata completeness"
-      );
-      if self.info_size == 0 {
-         return false;
-      }
-      current_size >= self.info_size as usize
-   }
-
-   /// Resets the PeerInfo struct.
-   pub fn reset(&mut self) {
-      trace!("Resetting peer info metadata");
-      self.info_bytes = vec![];
-      self.info_size = 0;
-   }
-}
+pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
 
 /// Represents a BitTorrent peer with connection state and statistics
 /// Download rate and upload rate are measured in kilobytes per second.
@@ -249,13 +57,10 @@ impl Debug for Peer {
    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
       f.debug_struct("Peer")
          .field("addr", &self.socket_addr())
-         .field("choked", &self.state.choked.load(Ordering::Relaxed))
-         .field("interested", &self.state.interested.load(Ordering::Relaxed))
-         .field("am_choked", &self.state.am_choked.load(Ordering::Relaxed))
-         .field(
-            "am_interested",
-            &self.state.am_interested.load(Ordering::Relaxed),
-         )
+         .field("choked", &self.choked())
+         .field("interested", &self.interested())
+         .field("am_choked", &self.am_choked())
+         .field("am_interested", &self.am_interested())
          .field("id", &self.id)
          .finish()
    }
@@ -267,6 +72,7 @@ impl InternalHash for Peer {
    }
 }
 
+impl Eq for Peer {}
 impl PartialEq for Peer {
    fn eq(&self, other: &Self) -> bool {
       self.socket_addr() == other.socket_addr()
@@ -278,8 +84,6 @@ impl Display for Peer {
       write!(f, "{}:{}", self.ip, self.port)
    }
 }
-
-impl Eq for Peer {}
 
 impl Peer {
    /// Create a new peer with the given IP address and port
@@ -316,311 +120,12 @@ impl Peer {
       Self::new(peer_addr.ip(), peer_addr.port())
    }
 
-   /// Extract piece request handling into a separate method for clarity
-   async fn handle_piece_request(&mut self, stream: &mut PeerWriter, piece_num: u32) {
-      let peer_addr = self.socket_addr();
-
-      // If the peer does not have the piece, don't request it.
-      if self.pieces.get(piece_num as usize).unwrap() == false {
-         trace!(%peer_addr, piece_num, "Peer does not have requested piece");
-         return;
-      }
-
-      // https://github.com/vimpunk/cratetorrent/blob/master/PEER_MESSAGES.md#6-request
-      //
-      // > All current implementations use 2^14 (16 kiB)
-      // - BEP 0003
-      //
-      // For now, we are assuming that the offset is 0. This may need to be changed in
-      // the future.
-      let request = PeerMessages::Request(piece_num, 0, 16384);
-      const REQUEST_TIMEOUT: u64 = 5;
-
-      let request_result =
-         timeout(Duration::from_secs(REQUEST_TIMEOUT), stream.send(request)).await;
-
-      match request_result {
-         Ok(Ok(())) => {
-            trace!(%peer_addr, piece_num, "Piece request sent successfully");
-         }
-         Ok(Err(send_err)) => {
-            error!(%peer_addr, piece_num, error = %send_err, "Failed to send piece request");
-         }
-         Err(_) => {
-            warn!(%peer_addr, piece_num, timeout_secs = REQUEST_TIMEOUT, "Piece request timed out");
-         }
-      }
-   }
-
-   // Small helper function for sending messages witih to_engine_tx.
-   fn send(
+   /// Small helper function for sending messages with to_engine_tx.
+   fn send_to_engine(
       to_engine_tx: broadcast::Sender<PeerResponse>, message: PeerResponse, peer_addr: SocketAddr,
    ) {
       if let Err(e) = to_engine_tx.send(message) {
          error!(%peer_addr, error = %e, "Failed to send message to engine");
-      }
-   }
-
-   /// A helper function for [handle_peer](Peer::handle_peer). This is a very
-   /// beefy function -- refactors that reduce its size are welcome.
-   async fn handle_recv(
-      &mut self, message: PeerMessages, to_engine_tx: broadcast::Sender<PeerResponse>,
-      from_engine_tx: mpsc::Sender<PeerCommand>, inner_send_tx: mpsc::Sender<PeerCommand>,
-      info_hash: InfoHash,
-   ) {
-      let peer_addr = self.socket_addr();
-      match &message {
-         PeerMessages::Piece(index, offset, data) => {
-            trace!(%peer_addr, piece_index = index, offset, data_len = data.len(), "Received piece data");
-            Self::send(
-               to_engine_tx,
-               PeerResponse::Receive {
-                  message,
-                  peer_key: peer_addr,
-               },
-               peer_addr,
-            );
-         }
-         PeerMessages::Choke => {
-            self.state.am_choked.store(true, Ordering::Release);
-            debug!(%peer_addr, "Peer choked us");
-         }
-         PeerMessages::Unchoke => {
-            Self::update_message(self.state.last_optimistic_unchoke.clone());
-            self.state.am_choked.store(false, Ordering::Release);
-            debug!(%peer_addr, "Peer unchoked us");
-            Self::send(
-               to_engine_tx,
-               PeerResponse::Unchoke {
-                  from_engine_tx,
-                  peer_key: peer_addr,
-               },
-               peer_addr,
-            );
-         }
-         PeerMessages::Interested => {
-            self.state.am_interested.store(true, Ordering::Release);
-            debug!(%peer_addr, "Peer is interested in our pieces");
-         }
-         PeerMessages::NotInterested => {
-            self.state.am_interested.store(false, Ordering::Release);
-            debug!(%peer_addr, "Peer is not interested in our pieces");
-         }
-         PeerMessages::KeepAlive => {
-            trace!(%peer_addr, "Received keep alive");
-         }
-         PeerMessages::Have(piece_index) => {
-            trace!(%peer_addr, piece_index, "Peer has piece");
-         }
-         PeerMessages::Request(index, offset, length) => {
-            trace!(%peer_addr, piece_index = index, offset, length, "Peer requested piece data");
-            Self::send(
-               to_engine_tx,
-               PeerResponse::Receive {
-                  message,
-                  peer_key: peer_addr,
-               },
-               peer_addr,
-            );
-         }
-         PeerMessages::Extended(extended_id, extended_message, metadata) => {
-            trace!(%peer_addr, extended_id, "Received extended message");
-
-            // If this is an Extended handshake, send a handshake in response.
-            if *extended_id == 0 {
-               let mut m = HashMap::new();
-               m.insert("ut_metadata".into(), 2);
-               let mut extended_message = ExtendedMessage::new();
-               extended_message.supported_extensions = Some(m);
-               let command = PeerCommand::Extended(0, Some(extended_message));
-
-               trace!(%peer_addr, "Sending extended handshake response");
-
-               if let Err(e) = inner_send_tx.send(command).await {
-                  error!(%peer_addr, error = %e, "Failed to send extended handshake response");
-               }
-            }
-
-            // Save to Peer.
-            if let Some(inner_metadata) = metadata {
-               if let Err(e) = self.info.append_to_bytes(inner_metadata.to_vec()) {
-                  warn!(%peer_addr, error = %e, "Failed to append metadata bytes");
-               }
-            }
-
-            if let Some(extended_message) = &**extended_message {
-               if let Some(size) = extended_message.metadata_size {
-                  debug!(%peer_addr, metadata_size = size, "Received metadata size from peer");
-               }
-
-               if let Ok(id) = extended_message.supports_bep_0009() {
-                  self.peer_supports.bep_0009 = id;
-
-                  // If peer has metadata and we don't already have it, request metadata from peer
-                  if let Some(metadata_size) = extended_message.metadata_size {
-                     self.info.info_size = metadata_size;
-                     if self.info.info_size > 0 && !self.info.have_all_bytes() {
-                        let piece_num = extended_message.piece.unwrap_or(0);
-                        let mut extended_message_command = ExtendedMessage::new();
-                        extended_message_command.piece = Some(piece_num);
-                        extended_message_command.msg_type = Some(ExtendedMessageType::Request);
-
-                        // The Extended ID as specified in BEP 0009 is the ID from the m dictionary
-                        // -- in this case the ID listed under ut_metadata
-                        let command = PeerCommand::Extended(
-                           self.peer_supports.bep_0009.into(),
-                           Some(extended_message_command),
-                        );
-
-                        if let Err(e) = inner_send_tx.send(command).await {
-                           error!(%peer_addr, error = %e, "Failed to send metadata request");
-                        } else {
-                           trace!(%peer_addr, piece_num, "Requested metadata piece");
-                        }
-                     }
-                  }
-               }
-            }
-
-            // If we have everything, validate it and send it back to the engine.
-            //
-            // If the info dicts hash is not correct, there is currently no error handling
-            // (only an error message is shown)
-            if self.info.have_all_bytes() {
-               debug!(%peer_addr, "Received complete metadata, validating");
-               let info = self.info.generate_info_from_bytes(info_hash).await;
-               if let Err(e) = info {
-                  error!(%peer_addr, error = %e, "Metadata validation failed");
-               } else {
-                  // We have to convert back to bytes due to issues with deriving Clone on the
-                  // Info struct.
-                  if let Err(e) = to_engine_tx.send(PeerResponse::Info {
-                     bytes: self.info.info_bytes.clone(),
-                     peer_key: peer_addr,
-                     from_engine_tx: from_engine_tx.clone(),
-                  }) {
-                     error!(%peer_addr, error = %e, "Failed to send validated metadata to engine");
-                  } else {
-                     info!(%peer_addr, "Successfully received and validated metadata from peer");
-                  }
-               }
-            }
-         }
-         PeerMessages::Cancel(index, offset, length) => {
-            trace!(%peer_addr, piece_index = index, offset, length, "Peer cancelled piece request");
-            // TODO
-         }
-         PeerMessages::Bitfield(bitfield) => {
-            let piece_count = bitfield.len();
-            debug!(%peer_addr, piece_count, "Received bitfield from peer");
-            self.pieces = bitfield.clone();
-
-            Self::send(
-               to_engine_tx,
-               PeerResponse::Receive {
-                  message,
-                  peer_key: peer_addr,
-               },
-               peer_addr,
-            );
-         }
-         PeerMessages::Handshake(handshake) => {
-            warn!(%peer_addr, "Received unexpected handshake from peer");
-         }
-      }
-   }
-
-   /// A helper function for [handle_peer](Peer::handle_peer). This is a very
-   /// beefy function -- refactors that reduce its size are welcome.
-   async fn handle_peer_command(
-      &mut self, message: PeerCommand, writer: Arc<Mutex<PeerWriter>>,
-      to_engine_tx: broadcast::Sender<PeerResponse>, from_engine_tx: mpsc::Sender<PeerCommand>,
-      inner_recv_tx: mpsc::Sender<PeerMessages>,
-   ) {
-      let peer_addr = self.socket_addr();
-      trace!(%peer_addr, "Processing command from engine");
-
-      if let PeerCommand::Piece(piece_num) = message {
-         // If we're choking or the peer isn't interested, we can't do anything.
-         if !self.state.am_choked.load(Ordering::Acquire)
-            && self.state.interested.load(Ordering::Acquire)
-         {
-            let mut writer_guard = writer.lock().await;
-
-            self
-               .handle_piece_request(&mut writer_guard, piece_num)
-               .await;
-         } else {
-            let am_choked = self.state.am_choked.load(Ordering::Acquire);
-            let interested = self.state.interested.load(Ordering::Acquire);
-
-            debug!(%peer_addr, piece_num, am_choked, interested, "Cannot request piece - peer state prevents it");
-
-            Self::send(
-               to_engine_tx,
-               PeerResponse::Choking {
-                  peer_key: peer_addr,
-                  from_engine_tx,
-               },
-               peer_addr,
-            );
-         }
-      }
-   }
-
-   async fn handle_send(
-      &mut self, message: PeerCommand, writer: Arc<Mutex<PeerWriter>>,
-      to_engine_tx: broadcast::Sender<PeerResponse>, from_engine_tx: mpsc::Sender<PeerCommand>,
-      inner_recv_tx: mpsc::Sender<PeerMessages>,
-   ) {
-      let peer_addr = self.socket_addr();
-
-      // Request metadata with an Extended message (if peer supports BEP 0010 and BEP
-      // 0009)
-      //
-      // Note that when we receive the info-dictionary from a peer, we absolutely must
-      // compare the hash of it to our info hash.
-      if let PeerCommand::Extended(id, extended_message) = message
-         && self.peer_supports.bep_0010
-         && self.peer_supports.bep_0009 > 0
-      {
-         let message = PeerMessages::Extended(id as u8, Box::new(extended_message), None);
-
-         {
-            let mut writer_guard = writer.lock().await;
-            if let Err(e) = writer_guard.send(message).await {
-               error!(%peer_addr, error = %e, "Failed to send extended message");
-               return;
-            }
-         }
-
-         trace!(%peer_addr, extended_id = id, "Sent extended message to peer");
-      }
-   }
-
-   /// A small helper function used to update the time on a message to
-   /// `Instant::now()`.
-   ///
-   /// # Examples
-   ///
-   /// ```no_run
-   /// // In an impl of Peer
-   ///
-   /// Self::update_message(self.last_message_sent.clone());
-   /// ```
-   fn update_message(message: Arc<AtomicOptionInstant>) {
-      message.store(Some(Instant::now().into()), Ordering::Release);
-   }
-
-   /// Determines and updates what BEPs a given peer supports based off of the
-   /// reserved bytes from the peers handshake.
-   ///
-   /// This function does not inherently have to be async due to the extremely
-   /// light workload it takes on, but there's no reason for it not to be.
-   async fn determine_supported(&mut self) {
-      if self.reserved[5] == 0x10 {
-         self.peer_supports.bep_0010 = true;
-         trace!("Peer supports BEP 0010 (extended messages)");
       }
    }
 
@@ -634,7 +139,7 @@ impl Peer {
    /// At the moment, handle_peer is a leecher. In that, it is not a seeder --
    /// it only takes from the torrent swarm. Seeding will be implemented in
    /// the future.
-   pub async fn handle_peer(
+   pub(crate) async fn handle_peer(
       mut self, to_engine_tx: broadcast::Sender<PeerResponse>, info_hash: InfoHash, our_id: PeerId,
       stream: Option<PeerStream>, utp_socket: Option<Arc<UtpSocketUdp>>,
       init_bitfield: Option<BitVec<u8>>,
@@ -683,8 +188,12 @@ impl Peer {
 
       // Wait for peer to be unchoked, then send these messages.
       let writer_clone = writer.clone();
+
+      // This is directly accessing self.state when we have helper methods. However,
+      // due to move(s), this is the best way to do this (AFAIK).
       let am_choked_clone = self.state.am_choked.clone();
       let interested_clone = self.state.interested.clone();
+
       tokio::spawn(async move {
          let bitfield_to_send = init_bitfield.unwrap_or(BitVec::EMPTY);
          let piece_count = bitfield_to_send.len();
@@ -727,10 +236,6 @@ impl Peer {
       });
 
       // Start of request/piece message loop
-
-      // Clone state to use (will be moved)
-      let state = self.state.clone();
-
       // Create two channels to allow for a chain of messages to be handled. For
       // instance:
       //
@@ -765,19 +270,18 @@ impl Peer {
          tokio::select! {
             message = inner_send_rx.recv() => {
                if let Some(inner) = message {
-                  self.handle_send(
+                  self.send_to_peer(
                      inner,
                      writer.clone(),
                      to_engine_tx.clone(),
                      from_engine_tx.clone(),
-                     inner_recv_tx.clone(),
                   )
                   .await;
                }
             }
             message = inner_recv_rx.recv() => {
                if let Some(inner) = message {
-                  self.handle_recv(
+                  self.recv_from_peer(
                      inner,
                      to_engine_tx.clone(),
                      from_engine_tx.clone(),
@@ -790,8 +294,8 @@ impl Peer {
             message = reader.recv() => {
                match message {
                   Ok(inner) => {
-                     Self::update_message(state.last_message_received.clone());
-                     self.handle_recv(
+                     self.update_last_message_received();
+                     self.recv_from_peer(
                         inner,
                         to_engine_tx.clone(),
                         from_engine_tx.clone(),
@@ -814,15 +318,14 @@ impl Peer {
                match message {
                   Some(inner) => {
                      // Are all these clones horribly inefficient? Hopefully not.
-                     self.handle_peer_command(
+                     self.send_to_peer(
                         inner,
                         writer.clone(),
                         to_engine_tx.clone(),
                         from_engine_tx.clone(),
-                        inner_recv_tx.clone(),
                      )
                      .await;
-                     Self::update_message(self.state.last_message_sent.clone());
+                     self.update_last_message_sent();
                   }
                   None => {
                      warn!(%peer_addr, "Engine channel closed, terminating peer handler");
@@ -847,8 +350,8 @@ mod tests {
    };
    use tracing_test::traced_test;
 
-   use super::{stream::validate_handshake, *};
-   use crate::{parser::MagnetUri, peers::messages::Handshake};
+   use super::{peer_comms::stream::validate_handshake, *};
+   use crate::{parser::MagnetUri, peers::peer_comms::messages::Handshake};
 
    #[tokio::test]
    #[traced_test]
