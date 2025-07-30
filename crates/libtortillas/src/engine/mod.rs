@@ -75,6 +75,7 @@ pub struct TorrentEngine {
 }
 
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 struct TorrentStats {
    total_peers_discovered: usize,
    unique_peers_discovered: usize,
@@ -89,6 +90,7 @@ impl TorrentEngine {
         info_hash = %metainfo.info_hash().unwrap(),
         announce_list_count = metainfo.announce_list().len()
     ))]
+   #[allow(dead_code)]
    async fn new(metainfo: MetaInfo) -> Self {
       let info_hash = metainfo.info_hash().unwrap();
       let peer_id = Arc::new(Hash::from_bytes(rand::random::<[u8; 20]>()));
@@ -328,10 +330,13 @@ impl TorrentEngine {
    ///
    /// TODO: This function will likely return a torrented file, or a path to a
    /// locally torrented file.
+   ///
+   /// TODO: Fix mutable_key_type
    #[instrument(skip(self), fields(
         info_hash = %self.metainfo.info_hash().unwrap(),
         peer_id = %self.id
     ))]
+   #[allow(clippy::mutable_key_type)]
    pub async fn torrent(self: Arc<Self>) -> anyhow::Result<(), Error> {
       let me = self.clone();
 

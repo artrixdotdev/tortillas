@@ -258,7 +258,7 @@ impl Peer {
       // Send some_response to Peer
       let (inner_send_tx, mut inner_send_rx): (Sender<PeerCommand>, Receiver<PeerCommand>) =
          mpsc::channel(32);
-      let (inner_recv_tx, mut inner_recv_rx) = mpsc::channel(32);
+      let (_, mut inner_recv_rx) = mpsc::channel(32);
 
       debug!(%peer_addr, "Starting peer message handling loop");
 

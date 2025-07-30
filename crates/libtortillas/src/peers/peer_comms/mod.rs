@@ -182,9 +182,9 @@ impl Peer {
          }
       }
    }
-
+   #[allow(clippy::too_many_arguments)] // Refactor later
    async fn handle_extended_message(
-      &mut self, extended_id: u8, extended_message: &Box<Option<ExtendedMessage>>,
+      &mut self, extended_id: u8, extended_message: &Option<ExtendedMessage>,
       metadata: &Option<Vec<u8>>, to_engine_tx: &broadcast::Sender<PeerResponse>,
       from_engine_tx: &mpsc::Sender<PeerCommand>, inner_send_tx: &mpsc::Sender<PeerCommand>,
       info_hash: InfoHash,
@@ -203,7 +203,7 @@ impl Peer {
          warn!(%peer_addr, error = %e, "Failed to append metadata bytes");
       }
 
-      if let Some(extended_message) = &**extended_message {
+      if let Some(extended_message) = extended_message {
          if let Some(size) = extended_message.metadata_size {
             debug!(%peer_addr, metadata_size = size, "Received metadata size from peer");
          }
