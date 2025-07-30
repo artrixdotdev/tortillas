@@ -44,9 +44,9 @@ pub enum Event {
 struct TrackerRequest {
    ip: Option<IpAddr>,
    port: u16,
-   uploaded: u8,
-   downloaded: u8,
-   left: Option<u8>,
+   uploaded: usize,
+   downloaded: usize,
+   left: Option<usize>,
    event: Event,
 }
 
