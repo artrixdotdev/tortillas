@@ -24,7 +24,7 @@ pub mod stream;
 
 impl Peer {
    /// Request piece from peer
-   pub async fn request_piece(&mut self, stream: &mut PeerWriter, piece_num: u32) {
+   pub(crate) async fn request_piece(&mut self, stream: &mut PeerWriter, piece_num: u32) {
       let peer_addr = self.socket_addr();
 
       // If the peer does not have the piece, don't request it.
@@ -61,7 +61,7 @@ impl Peer {
 
    /// A helper function for [handle_peer](Peer::handle_peer). This is a very
    /// beefy function -- refactors that reduce its size are welcome.
-   pub async fn recv_from_peer(
+   pub(crate) async fn recv_from_peer(
       &mut self, message: PeerMessages, to_engine_tx: broadcast::Sender<PeerResponse>,
       from_engine_tx: mpsc::Sender<PeerCommand>, inner_send_tx: mpsc::Sender<PeerCommand>,
       info_hash: InfoHash,
@@ -230,9 +230,9 @@ impl Peer {
       &mut self, metadata_size: u64, inner_send_tx: &mpsc::Sender<PeerCommand>, piece: u32,
    ) {
       let peer_addr = self.socket_addr();
-      self.info.info_size = metadata_size;
+      self.info.set_info_size(metadata_size);
 
-      if self.info.info_size > 0 && !self.info.have_all_bytes() {
+      if self.info.info_size() > 0 && !self.info.have_all_bytes() {
          let mut extended_message_command = ExtendedMessage::new();
          extended_message_command.piece = Some(piece);
          extended_message_command.msg_type = Some(ExtendedMessageType::Request);
@@ -270,7 +270,7 @@ impl Peer {
             // We have to convert back to bytes due to issues with deriving Clone on the
             // Info struct.
             if let Err(e) = to_engine_tx.send(PeerResponse::Info {
-               bytes: self.info.info_bytes.clone(),
+               bytes: self.info.info_bytes(),
                peer_key: peer_addr,
                from_engine_tx: from_engine_tx.clone(),
             }) {
@@ -284,7 +284,7 @@ impl Peer {
 
    /// A helper function for [handle_peer](Peer::handle_peer). This is a very
    /// beefy function -- refactors that reduce its size are welcome.
-   pub async fn send_to_peer(
+   pub(crate) async fn send_to_peer(
       &mut self, message: PeerCommand, writer: Arc<Mutex<PeerWriter>>,
       to_engine_tx: broadcast::Sender<PeerResponse>, from_engine_tx: mpsc::Sender<PeerCommand>,
    ) {

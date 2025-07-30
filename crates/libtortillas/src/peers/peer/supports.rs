@@ -1,6 +1,6 @@
 use std::sync::{
-   atomic::{AtomicBool, AtomicU8, Ordering},
    Arc,
+   atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
 use tracing::trace;
@@ -30,23 +30,23 @@ impl PeerSupports {
 }
 
 impl Peer {
-   pub fn supports_bep_0009(&self) -> bool {
+   pub(crate) fn supports_bep_0009(&self) -> bool {
       self.bep_0009_id() > 0
    }
 
-   pub fn bep_0009_id(&self) -> u8 {
+   pub(crate) fn bep_0009_id(&self) -> u8 {
       self.peer_supports.bep_0009.load(Ordering::Acquire)
    }
 
-   pub fn supports_bep_0010(&self) -> bool {
+   pub(crate) fn supports_bep_0010(&self) -> bool {
       self.peer_supports.bep_0010.load(Ordering::Acquire)
    }
 
-   pub fn set_bep_0009(&mut self, id: u8) {
+   pub(crate) fn set_bep_0009(&mut self, id: u8) {
       self.peer_supports.bep_0009.store(id, Ordering::Release);
    }
 
-   pub fn set_bep_0010(&mut self, status: bool) {
+   pub(crate) fn set_bep_0010(&mut self, status: bool) {
       self.peer_supports.bep_0010.store(status, Ordering::Release);
    }
 
@@ -55,7 +55,7 @@ impl Peer {
    ///
    /// This function does not inherently have to be async due to the extremely
    /// light workload it takes on, but there's no reason for it not to be.
-   pub async fn determine_supported(&mut self) {
+   pub(crate) async fn determine_supported(&mut self) {
       if self.reserved[5] == 0x10 {
          self.set_bep_0010(true);
          trace!("Peer supports BEP 0010 (extended messages)");

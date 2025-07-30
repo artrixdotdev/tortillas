@@ -30,29 +30,29 @@ use crate::peers::Peer;
 #[derive(Clone)]
 pub struct PeerState {
    /// Download rate measured in kilobytes per second
-   pub download_rate: Arc<AtomicU64>,
+   download_rate: Arc<AtomicU64>,
    /// Upload rate measured in kilobytes per second
-   pub upload_rate: Arc<AtomicU64>,
+   upload_rate: Arc<AtomicU64>,
    /// The remote peer's choke status
-   pub choked: Arc<AtomicBool>,
+   choked: Arc<AtomicBool>,
    /// The remote peer's interest status
-   pub interested: Arc<AtomicBool>,
+   pub(crate) interested: Arc<AtomicBool>,
    /// Our choke status
-   pub am_choked: Arc<AtomicBool>,
+   pub(crate) am_choked: Arc<AtomicBool>,
    /// Our interest status
-   pub am_interested: Arc<AtomicBool>,
+   am_interested: Arc<AtomicBool>,
    /// The timestamp of the last time that a peer unchoked us
-   pub last_optimistic_unchoke: Arc<AtomicOptionInstant>,
+   last_optimistic_unchoke: Arc<AtomicOptionInstant>,
    /// Defaults to None. Does not update on initial handshake, initial sending
    /// of bitfield, or initial sending of Interested message.
-   pub last_message_sent: Arc<AtomicOptionInstant>,
+   last_message_sent: Arc<AtomicOptionInstant>,
    /// Defaults to None. Does not update on initial handshake, initial sending
    /// of bitfield, or initial sending of Interested message.
-   pub last_message_received: Arc<AtomicOptionInstant>,
+   last_message_received: Arc<AtomicOptionInstant>,
    /// Total bytes downloaded
-   pub bytes_downloaded: Arc<AtomicU64>,
+   bytes_downloaded: Arc<AtomicU64>,
    /// Total bytes uploaded
-   pub bytes_uploaded: Arc<AtomicU64>,
+   bytes_uploaded: Arc<AtomicU64>,
 }
 
 impl Default for PeerState {
@@ -80,85 +80,86 @@ impl PeerState {
 }
 
 /// A bunch of helper methods (basically getter and setter wrappers)
+#[allow(dead_code)]
 impl Peer {
-   pub fn set_choked(&self, is_choked: bool) {
+   pub(crate) fn set_choked(&self, is_choked: bool) {
       self.state.choked.store(is_choked, Ordering::Release);
    }
 
-   pub fn set_interested(&self, is_interested: bool) {
+   pub(crate) fn set_interested(&self, is_interested: bool) {
       self
          .state
          .interested
          .store(is_interested, Ordering::Release);
    }
 
-   pub fn set_am_choked(&self, is_choked: bool) {
+   pub(crate) fn set_am_choked(&self, is_choked: bool) {
       self.state.am_choked.store(is_choked, Ordering::Release);
    }
 
-   pub fn set_am_interested(&self, is_interested: bool) {
+   pub(crate) fn set_am_interested(&self, is_interested: bool) {
       self
          .state
          .am_interested
          .store(is_interested, Ordering::Release);
    }
 
-   pub fn set_download_rate(&self, rate_kbps: u64) {
+   pub(crate) fn set_download_rate(&self, rate_kbps: u64) {
       self.state.download_rate.store(rate_kbps, Ordering::Release);
    }
 
-   pub fn set_upload_rate(&self, rate_kbps: u64) {
+   pub(crate) fn set_upload_rate(&self, rate_kbps: u64) {
       self.state.upload_rate.store(rate_kbps, Ordering::Release);
    }
 
-   pub fn update_last_optimistic_unchoke(&self) {
+   pub(crate) fn update_last_optimistic_unchoke(&self) {
       self
          .state
          .last_optimistic_unchoke
          .store(Some(Instant::now()), Ordering::Release);
    }
 
-   pub fn update_last_message_sent(&self) {
+   pub(crate) fn update_last_message_sent(&self) {
       self
          .state
          .last_message_sent
          .store(Some(Instant::now()), Ordering::Release);
    }
 
-   pub fn update_last_message_received(&self) {
+   pub(crate) fn update_last_message_received(&self) {
       self
          .state
          .last_message_received
          .store(Some(Instant::now()), Ordering::Release);
    }
 
-   pub fn increment_bytes_downloaded(&self, bytes: u64) {
+   pub(crate) fn increment_bytes_downloaded(&self, bytes: u64) {
       self
          .state
          .bytes_downloaded
          .fetch_add(bytes, Ordering::Relaxed);
    }
 
-   pub fn increment_bytes_uploaded(&self, bytes: u64) {
+   pub(crate) fn increment_bytes_uploaded(&self, bytes: u64) {
       self
          .state
          .bytes_uploaded
          .fetch_add(bytes, Ordering::Relaxed);
    }
 
-   pub fn choked(&self) -> bool {
+   pub(crate) fn choked(&self) -> bool {
       self.state.choked.load(Ordering::Acquire)
    }
 
-   pub fn interested(&self) -> bool {
+   pub(crate) fn interested(&self) -> bool {
       self.state.interested.load(Ordering::Acquire)
    }
 
-   pub fn am_choked(&self) -> bool {
+   pub(crate) fn am_choked(&self) -> bool {
       self.state.am_choked.load(Ordering::Acquire)
    }
 
-   pub fn am_interested(&self) -> bool {
+   pub(crate) fn am_interested(&self) -> bool {
       self.state.am_interested.load(Ordering::Acquire)
    }
 
@@ -170,7 +171,7 @@ impl Peer {
       self.state.upload_rate.load(Ordering::Acquire)
    }
 
-   pub fn last_optimistic_unchoke(&self) -> Option<Instant> {
+   pub(crate) fn last_optimistic_unchoke(&self) -> Option<Instant> {
       self.state.last_optimistic_unchoke.load(Ordering::Acquire)
    }
 
@@ -182,11 +183,11 @@ impl Peer {
       self.state.last_message_received.load(Ordering::Acquire)
    }
 
-   pub fn bytes_downloaded(&self) -> u64 {
+   pub(crate) fn bytes_downloaded(&self) -> u64 {
       self.state.bytes_downloaded.load(Ordering::Relaxed)
    }
 
-   pub fn bytes_uploaded(&self) -> u64 {
+   pub(crate) fn bytes_uploaded(&self) -> u64 {
       self.state.bytes_uploaded.load(Ordering::Relaxed)
    }
 }

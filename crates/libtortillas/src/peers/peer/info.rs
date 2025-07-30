@@ -10,10 +10,11 @@ use crate::{hashes::InfoHash, parser::Info};
 /// described in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html) and [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html)
 #[derive(Clone)]
 pub struct PeerInfo {
-   pub info_size: u64,
-   pub info_bytes: Vec<u8>,
+   info_size: u64,
+   info_bytes: Vec<u8>,
 }
 
+#[allow(dead_code)]
 impl PeerInfo {
    pub fn new(info_size: u64, info_bytes: Vec<u8>) -> Self {
       PeerInfo {
@@ -22,11 +23,19 @@ impl PeerInfo {
       }
    }
 
+   pub(crate) fn set_info_size(&mut self, info_size: u64) {
+      self.info_size = info_size;
+   }
+
+   pub(crate) fn set_info_bytes(&mut self, info_bytes: Vec<u8>) {
+      self.info_bytes = info_bytes;
+   }
+
    /// Generates an Info dict from the current bytes in info_bytes. If the hash
    /// of the created Info dict is not the same as the inputted info hash, an
    /// error will be returned. If the hash is the same, the newly created
    /// Info will be returned.
-   pub async fn generate_info_from_bytes(&self, info_hash: InfoHash) -> Result<Info, Error> {
+   pub(crate) async fn generate_info_from_bytes(&self, info_hash: InfoHash) -> Result<Info, Error> {
       // We have to do this because sometimes info dicts have non-standard properties
       // that get discared by serde automatically, causing the hash to be
       // different.
@@ -59,7 +68,7 @@ impl PeerInfo {
 
    /// A helper function for handling any issues with appending the new bytes to
    /// the current info_bytes
-   pub fn append_to_bytes(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
+   pub(crate) fn append_to_bytes(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
       let bytes_len = bytes.len();
       let current_len = self.info_bytes.len();
       let total_len = current_len + bytes_len;
@@ -84,7 +93,7 @@ impl PeerInfo {
    /// returns false due to the redundancy (and incorrectness) of comparing
    /// the length of [info_bytes](Self::info_bytes) to
    /// [info_size](Self::info_size).
-   pub fn have_all_bytes(&self) -> bool {
+   pub(crate) fn have_all_bytes(&self) -> bool {
       let current_size = self.info_bytes.len();
       trace!(
          info_size = self.info_size,
@@ -96,8 +105,16 @@ impl PeerInfo {
       current_size >= self.info_size as usize
    }
 
+   pub(crate) fn info_size(&self) -> u64 {
+      self.info_size
+   }
+
+   pub(crate) fn info_bytes(&self) -> Vec<u8> {
+      self.info_bytes.clone()
+   }
+
    /// Resets the PeerInfo struct.
-   pub fn reset(&mut self) {
+   pub(crate) fn reset(&mut self) {
       trace!("Resetting peer info metadata");
       self.info_bytes = vec![];
       self.info_size = 0;

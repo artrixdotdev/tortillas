@@ -139,7 +139,7 @@ impl Peer {
    /// At the moment, handle_peer is a leecher. In that, it is not a seeder --
    /// it only takes from the torrent swarm. Seeding will be implemented in
    /// the future.
-   pub async fn handle_peer(
+   pub(crate) async fn handle_peer(
       mut self, to_engine_tx: broadcast::Sender<PeerResponse>, info_hash: InfoHash, our_id: PeerId,
       stream: Option<PeerStream>, utp_socket: Option<Arc<UtpSocketUdp>>,
       init_bitfield: Option<BitVec<u8>>,
