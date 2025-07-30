@@ -505,7 +505,7 @@ pub struct ExtendedMessage {
    /// number of the other side. If sent, there is no need for the receiving
    /// side to send this extension message.
    #[serde(rename = "p")]
-   pub local_port: Option<u32>,
+   pub local_port: Option<u16>,
    /// Client name and version (UTF-8 string).
    #[serde(rename = "v")]
    pub version: Option<String>,
