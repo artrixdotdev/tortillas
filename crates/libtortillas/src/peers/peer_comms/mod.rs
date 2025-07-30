@@ -127,8 +127,8 @@ impl Peer {
             self
                .handle_extended_message(
                   *extended_id,
-                  &extended_message,
-                  &metadata,
+                  extended_message,
+                  metadata,
                   &to_engine_tx,
                   &from_engine_tx,
                   &inner_send_tx,
