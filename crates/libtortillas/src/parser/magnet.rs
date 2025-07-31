@@ -26,8 +26,8 @@ pub struct MagnetUri {
    #[serde(rename(deserialize = "tr"))]
    pub announce_list: Option<Vec<Tracker>>,
 
-   #[serde(rename(deserialize = "ws"))]
-   pub web_seed: Option<String>,
+   #[serde(rename(deserialize = "ws"), default)]
+   pub web_seed: Vec<String>,
 
    #[serde(rename(deserialize = "as"))]
    pub source: Option<String>,
