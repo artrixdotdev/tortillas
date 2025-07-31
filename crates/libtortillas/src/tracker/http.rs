@@ -510,7 +510,7 @@ mod tests {
    async fn test_get_peers_with_http_tracker() {
       let path = std::env::current_dir()
          .unwrap()
-         .join("tests/magneturis/wired-cd.txt");
+         .join("tests/magneturis/cachyos-desktop-linux-250713.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
       let metainfo = MagnetUri::parse(contents).unwrap();
       match metainfo {
