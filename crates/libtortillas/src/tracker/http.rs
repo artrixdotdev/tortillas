@@ -1,4 +1,5 @@
 use std::{
+   fmt::Debug,
    net::{IpAddr, Ipv4Addr, SocketAddr},
    str::FromStr,
 };
@@ -6,7 +7,7 @@ use std::{
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{
-   Deserialize, Serialize,
+   Deserialize,
    de::{self, Visitor},
 };
 use tokio::{
@@ -31,7 +32,7 @@ pub struct TrackerResponse {
 }
 
 /// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 pub enum Event {
    Started,
    Completed,
@@ -40,7 +41,7 @@ pub enum Event {
 }
 
 /// Tracker request. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 struct TrackerRequest {
    ip: Option<IpAddr>,
    port: u16,
@@ -48,6 +49,32 @@ struct TrackerRequest {
    downloaded: usize,
    left: Option<usize>,
    event: Event,
+}
+
+impl TrackerRequest {
+   // Clippy wants this method to be converted to Display, but I dont think it
+   // meets our use case so this should be fine.
+   #[allow(clippy::inherent_to_string)]
+   pub fn to_string(&self) -> String {
+      let mut params = Vec::new();
+
+      if let Some(ip) = &self.ip {
+         params.push(format!("ip={}", ip));
+      }
+
+      params.push(format!("port={}", self.port));
+      params.push(format!("uploaded={}", self.uploaded));
+      params.push(format!("downloaded={}", self.downloaded));
+
+      if let Some(left) = self.left {
+         params.push(format!("left={}", left));
+      }
+      let event_str = format!("{:?}", self.event).to_lowercase(); // Hack to get the string representation of the enum
+
+      params.push(format!("event={}", event_str));
+
+      params.join("&")
+   }
 }
 
 impl TrackerRequest {
@@ -109,14 +136,13 @@ impl Default for HttpTrackerStats {
 
 /// Struct for handling tracker over HTTP
 /// Interval is set to `[usize::MAX]` by default.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug)]
 pub struct HttpTracker {
    uri: String,
    pub peer_id: Hash<20>,
    info_hash: InfoHash,
    params: TrackerRequest,
    interval: usize,
-   #[serde(skip)]
    stats: std::sync::Arc<tokio::sync::Mutex<HttpTrackerStats>>,
 }
 
@@ -319,11 +345,7 @@ impl TrackerTrait for HttpTracker {
       }
 
       // URL encoding phase
-      let params_encoded = serde_qs::to_string(&self.params).map_err(|e| {
-         error!(error = %e, "Failed to serialize tracker request parameters");
-         HttpTrackerError::ParameterEncoding(e.to_string())
-      })?;
-
+      let params_encoded = &self.params.to_string();
       let info_hash_encoded = urlencode(self.info_hash.as_bytes());
       let peer_id_encoded = urlencode(self.peer_id.as_bytes());
 
@@ -480,7 +502,7 @@ mod tests {
    use super::HttpTracker;
    use crate::{
       parser::{MagnetUri, MetaInfo},
-      tracker::TrackerTrait,
+      tracker::{Tracker, TrackerTrait},
    };
 
    #[tokio::test]
@@ -488,16 +510,21 @@ mod tests {
    async fn test_get_peers_with_http_tracker() {
       let path = std::env::current_dir()
          .unwrap()
-         .join("tests/magneturis/cachyos-desktop-linux-250713.txt");
+         .join("tests/magneturis/wired-cd.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
       let metainfo = MagnetUri::parse(contents).unwrap();
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
             let info_hash = magnet.info_hash();
             let announce_list = magnet.announce_list.unwrap();
+            let announce_list = announce_list
+               .iter()
+               .filter(|t| matches!(t, Tracker::Http(..)))
+               .collect::<Vec<_>>();
+            println!("announce_list: {:?}", announce_list);
 
             // An HTTP tracker
-            let announce_uri = announce_list[1].uri();
+            let announce_uri = announce_list[0].uri();
             let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None, None);
 
             // Spawn a task to re-fetch the latest list of peers at a given interval
