@@ -488,14 +488,16 @@ mod tests {
    async fn test_get_peers_with_http_tracker() {
       let path = std::env::current_dir()
          .unwrap()
-         .join("tests/magneturis/zenshuu.txt");
+         .join("tests/magneturis/cachyos-desktop-linux-250713.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
       let metainfo = MagnetUri::parse(contents).unwrap();
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
             let info_hash = magnet.info_hash();
             let announce_list = magnet.announce_list.unwrap();
-            let announce_uri = announce_list[0].uri();
+
+            // An HTTP tracker
+            let announce_uri = announce_list[1].uri();
             let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None, None);
 
             // Spawn a task to re-fetch the latest list of peers at a given interval

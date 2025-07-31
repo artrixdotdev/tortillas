@@ -623,10 +623,6 @@ mod tests {
    //
    // This test uses its own subscriber in lieu of traced_test as it desperately
    // needs to show line numbers (which requires the use of tracing_subscriber).
-   //
-   // If debugging, a known good peer for the torrent in zenshuu.txt is
-   // 95.234.80.134:46519 (as of 06/17/2025). This was confirmed through use of
-   // the transmission BitTorrent client.
    #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
    async fn test_torrent_with_magnet_uri() {
       let subscriber = fmt()
@@ -636,12 +632,12 @@ mod tests {
          .finish();
       tracing::subscriber::set_global_default(subscriber).expect("subscriber already set");
 
-      // let path = std::env::current_dir()
-      //    .unwrap()
-      //    .join("tests/magneturis/zenshuu.txt");
-      // let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/wired-cd.txt");
+      let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
 
-      let metainfo = MetaInfo::new("magnet:?xt=urn:btih:8ce3333808beab9cb72db6101c5d9b339496ce1e&dn=%5BJudas%5D%20ZENSHUU%20-%20S01E11%20%5B1080p%5D%5BHEVC%20x265%2010bit%5D%5BMulti-Subs%5D%20%28Weekly%29&tr=http%3A%2F%2Fnyaa.tracker.wf%3A7777%2Fannounce&tr=udp%3A%2F%2Fopen.stealth.si%3A80%2Fannounce&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce".into()).await.unwrap();
+      let metainfo = MetaInfo::new(magnet_uri).await.unwrap();
 
       let engine = Arc::new(TorrentEngine::new(metainfo).await);
 

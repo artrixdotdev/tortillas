@@ -366,15 +366,14 @@ mod tests {
    /// As this test contacts a remote peer, it may not always work. However, it
    /// is still included in the general tests for sake of completeness.
    async fn test_peer_connection() {
-      // This is a known good peer (as of 06/17/2025) for the torrent located in
-      // zenshuu.txt
+      // This is NO LONGER a known good peer.
       let known_good_peer = "81.170.27.38:49999";
       let peer = Peer::from_socket_addr(SocketAddr::from_str(known_good_peer).unwrap());
       let (to_engine_tx, mut to_engine_rx) = broadcast::channel(100);
 
       let path = std::env::current_dir()
          .unwrap()
-         .join("tests/magneturis/zenshuu.txt");
+         .join("tests/magneturis/cachy-desktop-linux-250713.txt");
       let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
       let data = MagnetUri::parse(magnet_uri).unwrap();
 
