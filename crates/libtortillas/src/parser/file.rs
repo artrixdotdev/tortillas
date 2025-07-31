@@ -72,9 +72,12 @@ pub struct Info {
    /// means private and 0 means public (or missing field).
    ///
    /// From <https://wiki.theory.org/BitTorrentSpecification#Info_Dictionary>
-   #[serde(rename = "private", default)]
-   #[serde_as(as = "BoolFromInt")]
-   is_private: bool,
+   ///
+   /// Needs to be an option because it's optional in the spec, see #62 for more
+   /// info
+   #[serde(rename = "private")]
+   #[serde_as(as = "Option<BoolFromInt>")]
+   is_private: Option<bool>,
 
    /// This is undocumented, AFAIK
    publisher: Option<String>,
