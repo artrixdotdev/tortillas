@@ -1,87 +1,60 @@
-# tortillas
+# Tortillas
+A terminal-based TUI (Text User Interface) torrent client built in Rust 🫓.
 
-A terminal TUI torrent client.
+## 🚧 Project Status
 
-## Roadmap
+**Note:** This project is currently under active development and is not yet feature-complete. It is by no means ready for use.
 
-This serves as a very general and broad roadmap of what we intend to do with this library/CLI. If you see anything that you would like to contribute to, please see `CONTRIBUTING.md`! We're always happy to have a bit of help.
+## 🛠️ Roadmap
+See our roadmap [here](https://github.com/users/artrixdotdev/projects/6).
 
-We plan to support:
+### ✅ Currently Supported
+- Parsing and handling Magnet URIs
+- Parsing and handling `.torrent` files
+- uTP and TCP peer connections
+- Full implementation of the BitTorrent protocol
 
-- uTP peer connections
-- TCP peer connections
-- Webtorrent (WSS) peer connections
+### 🔄 In Development
+- Completion of [libtortillas](crates/libtortillas) library
 
-We currently support:
 
-- Handling Magnet URIs
-- Handling Torrent files
+### 📈 Future Plans
+- Frontend TUI (Text User Interface)
 
-We are currently working on (this may be a little bit out of date, feel free to ask/open an issue):
+### ❌ Not Planned
+- WebTorrent connections: Due to the lack of clear documentation and complex, undocumented protocols WebTorrent support is not currently planned.
 
-- uTP peer connections
-- TCP peer connections
+## 🧪 Testing
 
-## Testing
+We use [Nextest](https://nexte.st/) for running tests. To run tests locally, you may need to install Nextest:
 
-We use [Nextest](https://nexte.st/) for testing. You may have to install Nextest locally on your machine in order to run tests. You can see how to do so [here](https://nexte.st/docs/installation/pre-built-binaries/).
-
-![Alt](https://repobeats.axiom.co/api/embed/2937f666319e74a9467ef1d5442edf89beabd516.svg "Repobeats analytics image")
-
-## Usage
-
-Please keep in mind that as of April 6th, 2025, this library is not complete.
-
-### Handshaking with peers
-
-#### uTP
-
-Given a vector of peers `peers`:
-
-```rs
-
-         // Create a single uTP transport instance
-         let mut utp_transport_handler = UtpTransportHandler::new(//...);
-
-         // Get the tx from the created uTP transport
-         let tx = utp_transport_handler.tx.clone();
-
-         // Create a vector to hold all the join handles
-         let mut join_set = JoinSet::new();
-
-         for peer in peers {
-            // Clone tx (see Tokio docs on why we need to clone tx: <https://tokio.rs/tokio/tutorial/channels>)
-            let tx = tx.clone();
-            join_set.spawn(async move {
-               let cmd = TransportCommand::Connect { peer };
-
-               match tx.send(cmd).await {
-                  Ok(()) => Ok(peer_id),
-                  Err(_) => Err("Connection failed".to_string()),
-               }
-            });
-         }
-
-         // tx and rx used for communication between utp_transport_handler.handle_message and this thread
-         let (tx, mut rx) = mpsc::channel(100);
-
-         // Start handling mpsc messages from the join set
-         tokio::spawn(async move {
-            utp_transport_handler.handle_message(tx).await.unwrap();
-         });
-
-         // Await the join_set.spawn()
-         join_set.join_all().await;
-
-         // Collect responses from handle_message
-         tokio::spawn(async move {
-            let mut total_peers_seen = 0;
-            while let Some(_res) = rx.recv().await {
-               // Do something
-            }
-         })
-         .await
-         .unwrap();
+```bash
+# Install Nextest (example using pre-built binaries)
+# See: https://nexte.st/docs/installation/pre-built-binaries/
 ```
 
-Please keep in mind that this code is heavily redacted. See `test_utp_peer_handshake` for more.
+## 📦 Installation
+### Tortillas
+Tortillas is the frontend TUI (Text User Interface) application (what most people want)
+
+There are plans to publish tortillas to registries such as [crates.io](https://crates.io) and [the AUR](https://aur.archlinux.org). However, for now, you can install it from source using cargo:
+```bash
+cargo install --git https://github.com/artrixdotdev/tortillas
+```
+
+This will install `tortillas` to your local Rust toolchain.
+
+
+### Libtortillas
+Libtortillas is the library that powers the frontend TUI application. It is a library that can be used to build your own frontend application or integrate with existing frontend applications.
+
+```bash
+cargo add --package libtortillas --git https://github.com/artrixdotdev/tortillas libtortillas
+```
+## 🤝 Contributing
+
+We welcome contributions! If you'd like to help improve `tortillas`, please check out our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and tips.
+
+## 📊 Analytics
+
+![Repobeats Analytics](https://repobeats.axiom.co/api/embed/2937f666319e74a9467ef1d5442edf89beabd516.svg "Repobeats analytics image")

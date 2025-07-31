@@ -1,23 +1,26 @@
-/// See https://www.bittorrent.org/beps/bep_0003.html
-use super::{Peer, TrackerTrait};
-use crate::{
-   errors::{HttpTrackerError, TrackerError},
-   hashes::{Hash, InfoHash},
+use std::{
+   net::{IpAddr, Ipv4Addr, SocketAddr},
+   str::FromStr,
 };
+
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::{
    Deserialize, Serialize,
    de::{self, Visitor},
 };
-use std::{
-   net::{Ipv4Addr, SocketAddr},
-   str::FromStr,
-   time::Duration,
+use tokio::{
+   sync::mpsc,
+   time::{Duration, Instant, sleep},
 };
-use tokio::{sync::mpsc, time::sleep};
-
 use tracing::{debug, error, info, instrument, trace, warn};
+
+/// See https://www.bittorrent.org/beps/bep_0003.html
+use super::{Peer, TrackerTrait};
+use crate::{
+   errors::{HttpTrackerError, TrackerError},
+   hashes::{Hash, InfoHash},
+};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)] // REMOVE SOON
@@ -39,71 +42,163 @@ pub enum Event {
 /// Tracker request. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct TrackerRequest {
-   ip: Option<Ipv4Addr>,
+   ip: Option<IpAddr>,
    port: u16,
-   uploaded: u8,
-   downloaded: u8,
-   left: Option<u8>,
+   uploaded: usize,
+   downloaded: usize,
+   left: Option<usize>,
    event: Event,
-   peer_tracker_addr: SocketAddr,
 }
 
 impl TrackerRequest {
+   #[instrument(fields(peer_tracker_addr = ?peer_tracker_addr))]
    pub fn new(peer_tracker_addr: Option<SocketAddr>) -> TrackerRequest {
+      let addr = peer_tracker_addr.unwrap_or_else(|| {
+         let default_addr = SocketAddr::from_str("0.0.0.0:6881").unwrap();
+         debug!(default_addr = %default_addr, "Using default peer tracker address");
+         default_addr
+      });
+
+      // If the ip address is 127.0.0.1 or 0.0.0.0 just dont send it since its
+      // optional
+      let ip = if addr.ip().is_loopback() | addr.ip().is_unspecified() {
+         None
+      } else {
+         Some(addr.ip())
+      };
+
+      let port = addr.port();
+
       TrackerRequest {
-         ip: None,
-         port: 6881,
+         ip,
+         port,
          uploaded: 0,
          downloaded: 0,
          left: None,
          event: Event::Stopped,
-         peer_tracker_addr: peer_tracker_addr
-            .unwrap_or(SocketAddr::from_str("0.0.0.0:6881").unwrap()),
+      }
+   }
+}
+
+#[derive(Debug)]
+struct HttpTrackerStats {
+   request_attempts: usize,
+   request_successes: usize,
+   total_peers_received: usize,
+   bytes_sent: usize,
+   bytes_received: usize,
+   last_successful_request: Option<Instant>,
+   session_start: Instant,
+   consecutive_failures: usize,
+}
+
+impl Default for HttpTrackerStats {
+   fn default() -> Self {
+      Self {
+         request_attempts: 0,
+         request_successes: 0,
+         total_peers_received: 0,
+         bytes_sent: 0,
+         bytes_received: 0,
+         last_successful_request: None,
+         session_start: Instant::now(),
+         consecutive_failures: 0,
       }
    }
 }
 
 /// Struct for handling tracker over HTTP
-/// Interval is set to `u32::MAX` by default.
+/// Interval is set to `[usize::MAX]` by default.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct HttpTracker {
    uri: String,
    pub peer_id: Hash<20>,
    info_hash: InfoHash,
    params: TrackerRequest,
-   interval: u32,
+   interval: usize,
+   #[serde(skip)]
+   stats: std::sync::Arc<tokio::sync::Mutex<HttpTrackerStats>>,
 }
 
 impl HttpTracker {
-   #[instrument(skip(info_hash), fields(uri = %uri))]
+   #[instrument(skip(info_hash, peer_id), fields(
+        uri = %uri,
+        info_hash = %info_hash,
+        peer_tracker_addr = ?peer_tracker_addr
+    ))]
    pub fn new(
-      uri: String,
-      info_hash: InfoHash,
+      uri: String, info_hash: InfoHash, peer_id: Option<Hash<20>>,
       peer_tracker_addr: Option<SocketAddr>,
    ) -> HttpTracker {
-      let mut peer_id_bytes = [0u8; 20];
-      rand::fill(&mut peer_id_bytes);
-      let peer_id = Hash::new(peer_id_bytes);
-      debug!(peer_id = %peer_id, "Generated peer ID");
+      let peer_id = peer_id.unwrap_or_else(|| {
+         let id = Hash::new(rand::random());
+         trace!(generated_peer_id = %id, "Generated new peer ID");
+         id
+      });
+
+      let params = TrackerRequest::new(peer_tracker_addr);
+
+      debug!(
+          peer_id = %peer_id,
+          tracker_uri = %uri,
+          peer_listener_addr = format!("{}:{}", params.ip.unwrap_or(Ipv4Addr::UNSPECIFIED.into()), params.port),
+          "Created HTTP tracker instance"
+      );
 
       HttpTracker {
-         interval: u32::MAX,
+         interval: usize::MAX,
          uri,
          peer_id,
-         params: TrackerRequest::new(peer_tracker_addr),
+         params,
          info_hash,
+         stats: std::sync::Arc::new(tokio::sync::Mutex::new(HttpTrackerStats {
+            session_start: Instant::now(),
+            ..Default::default()
+         })),
       }
+   }
+
+   #[instrument(skip(self))]
+   async fn log_statistics(&self) {
+      let stats = self.stats.lock().await;
+      let session_duration = stats.session_start.elapsed();
+      let last_request_ago = stats
+         .last_successful_request
+         .map(|t| t.elapsed())
+         .unwrap_or(Duration::MAX);
+
+      info!(
+         session_duration_secs = session_duration.as_secs(),
+         request_attempts = stats.request_attempts,
+         request_successes = stats.request_successes,
+         request_success_rate = if stats.request_attempts > 0 {
+            (stats.request_successes as f64 / stats.request_attempts as f64) * 100.0
+         } else {
+            0.0
+         },
+         total_peers_received = stats.total_peers_received,
+         bytes_sent = stats.bytes_sent,
+         bytes_received = stats.bytes_received,
+         consecutive_failures = stats.consecutive_failures,
+         last_request_ago_secs = if last_request_ago != Duration::MAX {
+            last_request_ago.as_secs()
+         } else {
+            0
+         },
+         current_interval = self.interval,
+         "HTTP tracker session statistics"
+      );
    }
 }
 
+#[instrument(skip(t), fields(hash_length = t.len()))]
 fn urlencode(t: &[u8; 20]) -> String {
    let mut encoded = String::with_capacity(3 * t.len());
 
-   for &byte in t {
+   for &byte in t.iter() {
       encoded.push('%');
-
-      let byte = hex::encode([byte]);
-      encoded.push_str(&byte);
+      let byte_hex = hex::encode([byte]);
+      encoded.push_str(&byte_hex);
    }
 
    encoded
@@ -112,92 +207,201 @@ fn urlencode(t: &[u8; 20]) -> String {
 /// Fetches peers from tracker over HTTP and returns a stream of [Peers](Peer)
 #[async_trait]
 impl TrackerTrait for HttpTracker {
+   #[instrument(skip(self), fields(
+        tracker_uri = %self.uri,
+        info_hash = %self.info_hash
+    ))]
    async fn stream_peers(&mut self) -> Result<mpsc::Receiver<Vec<Peer>>> {
+      info!("Starting HTTP tracker peer streaming");
+
       let (tx, rx) = mpsc::channel(100);
       let mut tracker = self.clone();
       let tx = tx.clone();
-      // no pre‑captured interval – always read the latest value
-      tokio::spawn(async move {
-         loop {
-            let peers = tracker.get_peers().await.unwrap();
-            trace!(
-               "Successfully made request to get peers: {}",
-               peers.last().unwrap()
-            );
 
-            // stop gracefully if the receiver was dropped
-            if tx.send(peers).await.is_err() {
-               warn!("Receiver dropped – stopping peer stream");
-               break;
+      tokio::spawn(async move {
+         let mut iteration = 0usize;
+         let max_consecutive_failures = 5usize;
+         let mut last_stats_log = Instant::now();
+         let stats_interval = Duration::from_secs(300); // Log stats every 5 minutes
+
+         loop {
+            iteration += 1;
+
+            // Log statistics periodically
+            if last_stats_log.elapsed() > stats_interval {
+               tracker.log_statistics().await;
+               last_stats_log = Instant::now();
             }
 
-            // pick up possibly updated interval (never sleep 0s)
+            let start_time = Instant::now();
+            match tracker.get_peers().await {
+               Ok(peers) => {
+                  let fetch_duration = start_time.elapsed();
+
+                  // Reset consecutive failures on success
+                  {
+                     let mut stats = tracker.stats.lock().await;
+                     stats.consecutive_failures = 0;
+                  }
+
+                  debug!(
+                     iteration,
+                     peers_count = peers.len(),
+                     fetch_duration_ms = fetch_duration.as_millis(),
+                     "Fetched peers from HTTP tracker"
+                  );
+
+                  if tx.send(peers).await.is_err() {
+                     error!("Peer stream channel closed, terminating");
+                     break;
+                  }
+               }
+               Err(e) => {
+                  let fetch_duration = start_time.elapsed();
+
+                  // Update consecutive failures
+                  let consecutive_failures = {
+                     let mut stats = tracker.stats.lock().await;
+                     stats.consecutive_failures += 1;
+                     stats.consecutive_failures
+                  };
+
+                  warn!(
+                      iteration,
+                      consecutive_failures,
+                      fetch_duration_ms = fetch_duration.as_millis(),
+                      error = %e,
+                      "Failed to fetch peers from HTTP tracker"
+                  );
+
+                  if consecutive_failures >= max_consecutive_failures {
+                     error!(
+                        consecutive_failures,
+                        max_failures = max_consecutive_failures,
+                        "Too many consecutive failures, terminating peer stream"
+                     );
+                     break;
+                  }
+
+                  // Send empty peer list on error to keep the stream alive
+                  if tx.send(vec![]).await.is_err() {
+                     error!("Peer stream channel closed, terminating");
+                     break;
+                  }
+               }
+            }
+
             let delay = tracker.interval.max(1);
+            trace!(
+               next_request_delay_secs = delay,
+               "Waiting before next peer fetch"
+            );
+
             sleep(Duration::from_secs(delay as u64)).await;
          }
+
+         debug!("HTTP peer streaming task terminated");
       });
+
       Ok(rx)
    }
 
-   #[instrument(skip(self))]
+   #[instrument(skip(self), fields(
+        tracker_uri = %self.uri,
+        info_hash = %self.info_hash,
+        peer_id = %self.peer_id
+    ))]
    async fn get_peers(&mut self) -> Result<Vec<Peer>> {
-      // Decode info_hash
-      debug!("Decoding info hash");
+      // Update statistics
+      {
+         let mut stats = self.stats.lock().await;
+         stats.request_attempts += 1;
+      }
 
-      // Generate params + URL. Specifically using the compact format by adding "compact=1" to
-      // params.
-      debug!("Generating request parameters");
-      let params = serde_qs::to_string(&self.params)
-         .map_err(|e| HttpTrackerError::ParameterEncoding(e.to_string()))?;
+      // URL encoding phase
+      let params_encoded = serde_qs::to_string(&self.params).map_err(|e| {
+         error!(error = %e, "Failed to serialize tracker request parameters");
+         HttpTrackerError::ParameterEncoding(e.to_string())
+      })?;
 
       let info_hash_encoded = urlencode(self.info_hash.as_bytes());
-      trace!(encoded_hash = %info_hash_encoded, "URL-encoded info hash");
+      let peer_id_encoded = urlencode(self.peer_id.as_bytes());
 
-      let uri_params = format!(
-         "{}&info_hash={}&peer_id={}",
-         params,
-         info_hash_encoded,
-         urlencode(self.peer_id.as_bytes())
-      );
+      // URI construction
+      let uri_params =
+         format!("{params_encoded}&info_hash={info_hash_encoded}&peer_id={peer_id_encoded}");
 
       let uri = format!("{}?{}", self.uri, &uri_params);
-      debug!(request_uri = %uri, "Generated tracker request URI");
 
-      // Make request
-      info!("Sending HTTP request to tracker");
-      let response = reqwest::get(&uri)
-         .await
-         .map_err(|e| {
-            error!(error = %e, "HTTP request to tracker failed");
-            HttpTrackerError::Request(e)
-         })?
-         .bytes()
-         .await
-         .map_err(|e| {
-            error!(error = %e, "Failed to read tracker response body");
-            HttpTrackerError::Request(e)
-         })?;
+      trace!(request_uri = %uri, "Sending HTTP request to tracker");
 
-      debug!(response_size = response.len(), "Received tracker response");
+      // HTTP request phase
+      let request_start = Instant::now();
 
-      let response: TrackerResponse = serde_bencode::from_bytes(&response).map_err(|e| {
-         error!(error = %e, "Failed to decode bencode response");
+      let response = reqwest::get(&uri).await.map_err(|e| {
+         error!(
+             error = %e,
+             request_uri = %uri,
+             "HTTP request to tracker failed"
+         );
+         HttpTrackerError::Request(e)
+      })?;
+
+      let status = response.status();
+      trace!(
+         status_code = status.as_u16(),
+         "Received HTTP response from tracker"
+      );
+
+      let response_bytes = response.bytes().await.map_err(|e| {
+         error!(error = %e, "Failed to read tracker response body");
+         HttpTrackerError::Request(e)
+      })?;
+
+      let request_duration = request_start.elapsed();
+
+      // Update network statistics
+      {
+         let mut stats = self.stats.lock().await;
+         stats.bytes_sent += uri.len(); // Approximate bytes sent
+         stats.bytes_received += response_bytes.len();
+      }
+
+      // Response parsing phase
+      let response: TrackerResponse = serde_bencode::from_bytes(&response_bytes).map_err(|e| {
+         error!(
+             error = %e,
+             response_size = response_bytes.len(),
+             "Failed to decode bencode response"
+         );
          HttpTrackerError::Tracker(TrackerError::BencodeError(e))
       })?;
 
-      trace!("Successfully decoded bencode response");
-      info!(
-         peers_count = response.peers.len(),
-         "Found peers from tracker"
+      // Update success statistics
+      {
+         let mut stats = self.stats.lock().await;
+         stats.request_successes += 1;
+         stats.total_peers_received += response.peers.len();
+         stats.last_successful_request = Some(Instant::now());
+         stats.consecutive_failures = 0;
+      }
+
+      debug!(
+         peers_received = response.peers.len(),
+         interval_seconds = response.interval,
+         request_duration_ms = request_duration.as_millis(),
+         "Successfully fetched peers from HTTP tracker"
       );
 
-      self.interval = response.interval as u32;
+      // Update interval
+      self.interval = response.interval;
 
       Ok(response.peers)
    }
 }
 
-/// Serde related code. Used for deserializing response from HTTP request made in get_peers
+/// Serde related code. Used for deserializing response from HTTP request made
+/// in get_peers
 struct PeerVisitor;
 
 impl Visitor<'_> for PeerVisitor {
@@ -207,15 +411,23 @@ impl Visitor<'_> for PeerVisitor {
       formatter.write_str("a byte array containing peer information")
    }
 
+   #[instrument(skip(self, bytes), fields(bytes_length = bytes.len()))]
    fn visit_bytes<E>(self, bytes: &[u8]) -> Result<Self::Value, E>
    where
       E: de::Error,
    {
-      // Decodes response from get_peers' HTTP request according to BEP 23's compact form: <https://www.bittorrent.org/beps/bep_0023.html>
+      // Decodes response from get_peers' HTTP request according to BEP 23's compact
+      // form: <https://www.bittorrent.org/beps/bep_0023.html>
       let mut peers = Vec::new();
       const PEER_SIZE: usize = 6; // 4 bytes IP + 2 bytes port
 
-      if bytes.len() % PEER_SIZE != 0 {
+      if !bytes.len().is_multiple_of(PEER_SIZE) {
+         error!(
+            bytes_length = bytes.len(),
+            peer_size = PEER_SIZE,
+            remainder = bytes.len() % PEER_SIZE,
+            "Peer data length is not a multiple of peer size"
+         );
          return Err(de::Error::custom(format!(
             "Peer data length ({}) is not a multiple of peer size ({})",
             bytes.len(),
@@ -223,11 +435,14 @@ impl Visitor<'_> for PeerVisitor {
          )));
       }
 
+      let expected_peer_count = bytes.len() / PEER_SIZE;
+
       for (i, chunk) in bytes.chunks(PEER_SIZE).enumerate() {
          if chunk.len() != PEER_SIZE {
             warn!(
                chunk_index = i,
                chunk_size = chunk.len(),
+               expected_size = PEER_SIZE,
                "Invalid peer chunk length, skipping"
             );
             continue;
@@ -236,21 +451,21 @@ impl Visitor<'_> for PeerVisitor {
          let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
          let port = u16::from_be_bytes([chunk[4], chunk[5]]);
 
-         trace!(
-            peer_index = i,
-            ip = %ip,
-            port = port,
-            "Parsed peer address"
-         );
-
          peers.push(Peer::from_ipv4(ip, port));
       }
+
+      trace!(
+         peers_parsed = peers.len(),
+         expected_peers = expected_peer_count,
+         "Parsed peer bytes"
+      );
 
       Ok(peers)
    }
 }
 
 /// Serde related code. Reference their documentation: <https://serde.rs/impl-deserialize.html>
+#[instrument(skip(deserializer))]
 fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<Peer>, D::Error>
 where
    D: serde::Deserializer<'de>,
@@ -262,12 +477,11 @@ where
 mod tests {
    use tracing_test::traced_test;
 
+   use super::HttpTracker;
    use crate::{
       parser::{MagnetUri, MetaInfo},
       tracker::TrackerTrait,
    };
-
-   use super::HttpTracker;
 
    #[tokio::test]
    #[traced_test]
@@ -276,18 +490,13 @@ mod tests {
          .unwrap()
          .join("tests/magneturis/zenshuu.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
-      let metainfo = MagnetUri::parse(contents).await.unwrap();
+      let metainfo = MagnetUri::parse(contents).unwrap();
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
             let info_hash = magnet.info_hash();
             let announce_list = magnet.announce_list.unwrap();
             let announce_uri = announce_list[0].uri();
-            let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None);
-
-            // Make request
-            // let res = HttpTracker::get_peers(&mut http_tracker)
-            //    .await
-            //    .expect("Issue when unwrapping result of get_peers");
+            let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None, None);
 
             // Spawn a task to re-fetch the latest list of peers at a given interval
             let mut rx = http_tracker.stream_peers().await.unwrap();

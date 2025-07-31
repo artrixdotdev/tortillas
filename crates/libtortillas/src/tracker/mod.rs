@@ -1,3 +1,5 @@
+use std::{fmt, net::SocketAddr};
+
 use anyhow::Result;
 use async_trait::async_trait;
 use http::HttpTracker;
@@ -6,17 +8,20 @@ use serde::{
    Deserialize,
    de::{self, Visitor},
 };
-use std::{fmt, net::SocketAddr};
 use tokio::sync::mpsc;
 use udp::UdpTracker;
 
-use crate::{hashes::InfoHash, peers::Peer};
+use crate::{
+   hashes::{Hash, InfoHash},
+   peers::Peer,
+};
 pub mod http;
 pub mod udp;
 
 #[async_trait]
 pub trait TrackerTrait: Clone {
-   /// Acts as a wrapper function for get_peers. Should be spawned with tokio::spawn.
+   /// Acts as a wrapper function for get_peers. Should be spawned with
+   /// tokio::spawn.
    async fn stream_peers(&mut self) -> Result<mpsc::Receiver<Vec<Peer>>>;
 
    async fn get_peers(&mut self) -> Result<Vec<Peer>>;
@@ -25,7 +30,7 @@ pub trait TrackerTrait: Clone {
 /// An Announce URI from a torrent file or magnet URI.
 /// <https://www.bittorrent.org/beps/bep_0012.html>
 /// Example: <udp://tracker.opentrackr.org:1337/announce>
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Tracker {
    /// HTTP Spec
    /// <https://www.bittorrent.org/beps/bep_0003.html>
@@ -37,10 +42,13 @@ pub enum Tracker {
 }
 
 impl Tracker {
-   pub async fn get_peers(&self, info_hash: InfoHash) -> Result<Vec<Peer>> {
+   /// Gets peers based off of given tracker
+   pub async fn get_peers(
+      &self, info_hash: InfoHash, peer_id: Option<Hash<20>>,
+   ) -> Result<Vec<Peer>> {
       match self {
          Tracker::Http(uri) => {
-            let mut tracker = HttpTracker::new(uri.clone(), info_hash, None);
+            let mut tracker = HttpTracker::new(uri.clone(), info_hash, peer_id, None);
 
             Ok(tracker.get_peers().await.unwrap())
          }
@@ -51,11 +59,31 @@ impl Tracker {
                None,
                info_hash,
                Some(SocketAddr::from(([0, 0, 0, 0], port))),
+               peer_id,
             )
             .await
             .unwrap();
 
             Ok(tracker.get_peers().await.unwrap())
+         }
+         Tracker::Websocket(_) => todo!(),
+      }
+   }
+
+   /// Streams peers based off of given tracker
+   pub async fn stream_peers(
+      &self, info_hash: InfoHash, peer_addr: Option<SocketAddr>, peer_id: Option<Hash<20>>,
+   ) -> Result<mpsc::Receiver<Vec<Peer>>> {
+      match self {
+         Tracker::Http(uri) => {
+            let mut tracker = HttpTracker::new(uri.clone(), info_hash, peer_id, peer_addr);
+            Ok(tracker.stream_peers().await.unwrap())
+         }
+         Tracker::Udp(uri) => {
+            let mut tracker = UdpTracker::new(uri.clone(), None, info_hash, peer_addr, peer_id)
+               .await
+               .unwrap();
+            Ok(tracker.stream_peers().await.unwrap())
          }
          Tracker::Websocket(_) => todo!(),
       }

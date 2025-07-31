@@ -1,14 +1,17 @@
 use std::fmt::{self, Display};
 
+use anyhow::anyhow;
 use serde::{
    Deserialize, Deserializer, Serialize, Serializer,
    de::{self, Visitor},
 };
 
-/// A fixed-length byte array that can represent various hash values or identifiers.
+/// A fixed-length byte array that can represent various hash values or
+/// identifiers.
 ///
-/// `Hash<N>` is a generic wrapper around a byte array of length `N` that provides
-/// convenient methods for conversion between different representations.
+/// `Hash<N>` is a generic wrapper around a byte array of length `N` that
+/// provides convenient methods for conversion between different
+/// representations.
 ///
 /// # Examples
 ///
@@ -121,7 +124,20 @@ impl<const N: usize> Hash<N> {
    }
 }
 
-/// Implements the Display trait for Hash, converting it to a hexadecimal string.
+impl<const N: usize> TryFrom<Vec<u8>> for Hash<N> {
+   type Error = anyhow::Error;
+   fn try_from(value: Vec<u8>) -> Result<Self, Self::Error> {
+      if value.len() != N {
+         return Err(anyhow!("Expected length is {}, found {}", N, value.len()));
+      }
+      Ok(Self::from_bytes(
+         value.try_into().expect("guaranteed to be length N"),
+      ))
+   }
+}
+
+/// Implements the Display trait for Hash, converting it to a hexadecimal
+/// string.
 ///
 /// This allows a Hash to be directly used in string formatting contexts.
 ///
@@ -165,7 +181,7 @@ impl<const N: usize> Visitor<'_> for HashVisitor<N> {
    type Value = Hash<N>;
 
    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-      formatter.write_str(&format!("a byte string whose length is {}", N))
+      formatter.write_str(&format!("a byte string whose length is {N}"))
    }
 
    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
@@ -184,11 +200,12 @@ impl<const N: usize> Visitor<'_> for HashVisitor<N> {
    }
 }
 
-/// A collection of `Hash<N>` values that provides efficient storage and operations.
+/// A collection of `Hash<N>` values that provides efficient storage and
+/// operations.
 ///
 /// HashVec is optimized for working with multiple hashes of the same length,
-/// providing methods to manipulate them as a collection and serialize/deserialize
-/// them efficiently.
+/// providing methods to manipulate them as a collection and
+/// serialize/deserialize them efficiently.
 ///
 /// # Examples
 ///
@@ -208,10 +225,10 @@ impl<const N: usize> Visitor<'_> for HashVisitor<N> {
 ///
 /// // Iterate over hashes
 /// for hash in hashes {
-///     println!("Hash: {}", hash);
+///    println!("Hash: {}", hash);
 /// }
 /// ```
-#[derive(Debug)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct HashVec<const N: usize>(Vec<Hash<N>>);
 
 impl<const N: usize> Default for HashVec<N> {
@@ -311,7 +328,8 @@ impl<const N: usize> HashVec<N> {
    }
 }
 
-/// Implements IntoIterator for HashVec to allow iteration over contained hashes.
+/// Implements IntoIterator for HashVec to allow iteration over contained
+/// hashes.
 ///
 /// # Examples
 ///
@@ -324,8 +342,8 @@ impl<const N: usize> HashVec<N> {
 ///
 /// let mut sum = 0;
 /// for hash in hashes {
-///     // Do something with each hash
-///     sum += hash.as_bytes().iter().sum::<u8>() as u32;
+///    // Do something with each hash
+///    sum += hash.as_bytes().iter().sum::<u8>() as u32;
 /// }
 /// assert_eq!(sum, 21); // 1+2+3 + 4+5+6 = 21
 /// ```
@@ -351,17 +369,14 @@ impl<const N: usize> Visitor<'_> for HashVecVisitor<N> {
    type Value = HashVec<N>;
 
    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-      formatter.write_str(&format!(
-         "a byte string whose length is a multiple of {}",
-         N
-      ))
+      formatter.write_str(&format!("a byte string whose length is a multiple of {N}"))
    }
 
    fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
    where
       E: de::Error,
    {
-      if v.len() % N != 0 {
+      if !v.len().is_multiple_of(N) {
          return Err(E::custom(format!(
             "Expected length to be a multiple of {}, found {}",
             N,
@@ -378,6 +393,26 @@ impl<const N: usize> Visitor<'_> for HashVecVisitor<N> {
          ));
       }
       Ok(HashVec(vec))
+   }
+}
+
+impl<const N: usize> From<Vec<Hash<N>>> for HashVec<N> {
+   fn from(vec: Vec<Hash<N>>) -> Self {
+      HashVec(vec)
+   }
+}
+
+impl<const N: usize> Display for HashVec<N> {
+   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      write!(f, "HashVec({})", self.flatten().len())
+   }
+}
+
+impl<const N: usize> std::fmt::Debug for HashVec<N> {
+   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      f.debug_list()
+         .entries(self.clone().into_iter().map(|x| x.to_hex()))
+         .finish()
    }
 }
 

@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 
+use anyhow::Result;
+use serde::Deserialize;
+use serde_qs;
+
 use crate::{
    hashes::{Hash, InfoHash},
    parser::MetaInfo,
    tracker::Tracker,
 };
-
-use anyhow::Result;
-use serde::Deserialize;
-use serde_qs;
 
 /// Magnet URI Spec: <https://en.wikipedia.org/wiki/Magnet_URI_scheme> or <https://www.bittorrent.org/beps/bep_0053.html>
 #[derive(Debug, Deserialize)]
@@ -49,7 +49,7 @@ pub struct MagnetUri {
 }
 
 impl MagnetUri {
-   pub async fn parse(uri: String) -> Result<MetaInfo> {
+   pub fn parse(uri: String) -> Result<MetaInfo> {
       let qs = uri.split('?').next_back().unwrap(); // Turns magnet:?xt=... into xt=...
 
       // First pass: collect all key-value pairs, grouping repeating keys
@@ -67,7 +67,8 @@ impl MagnetUri {
          grouped_params.entry(key).or_default().push(value);
       }
 
-      // Second pass: construct the new query string with array notation for repeating keys
+      // Second pass: construct the new query string with array notation for repeating
+      // keys
       let mut final_params = Vec::new();
 
       for (key, values) in grouped_params {
@@ -77,7 +78,7 @@ impl MagnetUri {
          } else {
             // Multiple values become key[0]=value1&key[1]=value2...
             for (idx, value) in values.iter().enumerate() {
-               final_params.push(format!("{}[{}]={}", key, idx, value));
+               final_params.push(format!("{key}[{idx}]={value}"));
             }
          }
       }
@@ -87,6 +88,11 @@ impl MagnetUri {
       // Parse the modified query string
       Ok(MetaInfo::MagnetUri(serde_qs::from_str(&final_qs)?))
    }
+
+   pub fn announce_list(&self) -> Vec<Tracker> {
+      self.announce_list.clone().unwrap_or_default()
+   }
+
    pub fn info_hash(&self) -> Result<InfoHash, anyhow::Error> {
       let hex_part = self
          .info_hash
@@ -102,8 +108,9 @@ impl MagnetUri {
 #[cfg(test)]
 mod tests {
 
-   use super::*;
    use tracing_test::traced_test;
+
+   use super::*;
 
    #[tokio::test]
    #[traced_test]
@@ -113,7 +120,7 @@ mod tests {
          .join("tests/magneturis/big-buck-bunny.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
 
-      let metainfo = MagnetUri::parse(contents).await.unwrap();
+      let metainfo = MagnetUri::parse(contents).unwrap();
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {

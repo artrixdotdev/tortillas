@@ -1,5 +1,18 @@
 use std::net::AddrParseError;
+
 use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum TorrentEngineError {
+   #[error("No peers were provided by trackers.")]
+   InsufficientPeers,
+
+   #[error("Initial handshake with peers failed.")]
+   InitialHandshakeFailed,
+
+   #[error(transparent)]
+   Other(#[from] anyhow::Error),
+}
 
 #[derive(Error, Debug)]
 pub enum TrackerError {
