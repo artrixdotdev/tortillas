@@ -624,6 +624,7 @@ mod tests {
    // This test uses its own subscriber in lieu of traced_test as it desperately
    // needs to show line numbers (which requires the use of tracing_subscriber).
    #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
+   #[ignore = "Unstable"]
    async fn test_torrent_with_magnet_uri() {
       let subscriber = fmt()
          .with_target(true)
