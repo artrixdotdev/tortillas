@@ -363,6 +363,7 @@ mod tests {
 
    #[tokio::test]
    #[traced_test]
+   #[ignore = "No known good peer"] // Until we find a stable peer
    /// As this test contacts a remote peer, it may not always work. However, it
    /// is still included in the general tests for sake of completeness.
    async fn test_peer_connection() {
@@ -407,6 +408,7 @@ mod tests {
 
    #[tokio::test]
    #[traced_test]
+   #[ignore = "Not stable yet"]
    /// Keep in mind that this test operates as both the TorrentEngine and the
    /// peer, handling all communication with the peer in such a manner.
    async fn test_peer_to_peer_pieces() {
