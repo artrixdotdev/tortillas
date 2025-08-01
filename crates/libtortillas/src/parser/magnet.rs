@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-
 use anyhow::Result;
 use serde::Deserialize;
-use serde_qs;
+use serde_querystring;
 
 use crate::{
    hashes::{Hash, InfoHash},
@@ -51,42 +49,11 @@ pub struct MagnetUri {
 impl MagnetUri {
    pub fn parse(uri: String) -> Result<MetaInfo> {
       let qs = uri.split('?').next_back().unwrap(); // Turns magnet:?xt=... into xt=...
-
-      // First pass: collect all key-value pairs, grouping repeating keys
-      let mut grouped_params: HashMap<String, Vec<String>> = HashMap::new();
-
-      for param in qs.split('&') {
-         if param.is_empty() {
-            continue;
-         }
-
-         let mut parts = param.split('=');
-         let key = parts.next().unwrap().to_string();
-         let value = parts.next().map(|v| v.to_string()).unwrap_or_default();
-
-         grouped_params.entry(key).or_default().push(value);
-      }
-
-      // Second pass: construct the new query string with array notation for repeating
-      // keys
-      let mut final_params = Vec::new();
-
-      for (key, values) in grouped_params {
-         if values.len() == 1 {
-            // Single values remain as normal key=value
-            final_params.push(format!("{}={}", key, values[0]));
-         } else {
-            // Multiple values become key[0]=value1&key[1]=value2...
-            for (idx, value) in values.iter().enumerate() {
-               final_params.push(format!("{key}[{idx}]={value}"));
-            }
-         }
-      }
-
-      let final_qs = final_params.join("&");
-
       // Parse the modified query string
-      Ok(MetaInfo::MagnetUri(serde_qs::from_str(&final_qs)?))
+      Ok(MetaInfo::MagnetUri(serde_querystring::from_str(
+         qs,
+         serde_querystring::ParseMode::Duplicate,
+      )?))
    }
 
    pub fn announce_list(&self) -> Vec<Tracker> {

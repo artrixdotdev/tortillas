@@ -11,7 +11,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 atomic-time = "0.1"
 serde_bencode = "^0.2.4"
-serde_qs = "0.14.0"
+serde-querystring = "0.3.0"
 sha1 = "0.10.6"
 hex = "0.4.3"
 reqwest = "0.12.13"
