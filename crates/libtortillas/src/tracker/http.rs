@@ -49,6 +49,7 @@ struct TrackerRequest {
    downloaded: usize,
    left: Option<usize>,
    event: Event,
+   compact: bool,
 }
 
 impl TrackerRequest {
@@ -72,6 +73,7 @@ impl TrackerRequest {
       let event_str = format!("{:?}", self.event).to_lowercase(); // Hack to get the string representation of the enum
 
       params.push(format!("event={}", event_str));
+      params.push(format!("compact={}", self.compact as u8));
 
       params.join("&")
    }
@@ -103,6 +105,8 @@ impl TrackerRequest {
          downloaded: 0,
          left: Some(0),
          event: Event::Stopped,
+         // We currently don't support the non-compact form
+         compact: true,
       }
    }
 }
@@ -521,7 +525,7 @@ mod tests {
             println!("announce_list: {:?}", announce_list);
 
             // An HTTP tracker
-            let announce_uri = announce_list[1].uri();
+            let announce_uri = announce_list[0].uri();
             let mut http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None, None);
 
             // Spawn a task to re-fetch the latest list of peers at a given interval
