@@ -506,7 +506,7 @@ mod tests {
    use super::HttpTracker;
    use crate::{
       parser::{MetaInfo, TorrentFile},
-      tracker::{Tracker, TrackerTrait},
+      tracker::TrackerTrait,
    };
 
    #[tokio::test]

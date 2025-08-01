@@ -1,0 +1,8 @@
+[profile.ci]
+retries = 3
+fail-fast = false
+
+[profile.default]
+retries = 4
+fail-fast = false
+slow-timeout = { period = "10s", terminate-after = 4 }
