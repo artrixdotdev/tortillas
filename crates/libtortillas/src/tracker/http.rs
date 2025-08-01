@@ -26,7 +26,7 @@ use crate::{
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)] // REMOVE SOON
 pub struct TrackerResponse {
-   pub interval: usize,
+   pub interval: Option<usize>,
    #[serde(deserialize_with = "deserialize_peers")]
    pub peers: Vec<Peer>,
 }
@@ -49,6 +49,7 @@ struct TrackerRequest {
    downloaded: usize,
    left: Option<usize>,
    event: Event,
+   compact: bool,
 }
 
 impl TrackerRequest {
@@ -72,6 +73,7 @@ impl TrackerRequest {
       let event_str = format!("{:?}", self.event).to_lowercase(); // Hack to get the string representation of the enum
 
       params.push(format!("event={}", event_str));
+      params.push(format!("compact={}", self.compact as u8));
 
       params.join("&")
    }
@@ -101,8 +103,10 @@ impl TrackerRequest {
          port,
          uploaded: 0,
          downloaded: 0,
-         left: None,
+         left: Some(0),
          event: Event::Stopped,
+         // We currently don't support the non-compact form
+         compact: true,
       }
    }
 }
@@ -416,7 +420,7 @@ impl TrackerTrait for HttpTracker {
       );
 
       // Update interval
-      self.interval = response.interval;
+      self.interval = response.interval.unwrap_or(usize::MAX);
 
       Ok(response.peers)
    }
@@ -501,7 +505,7 @@ mod tests {
 
    use super::HttpTracker;
    use crate::{
-      parser::{MagnetUri, MetaInfo},
+      parser::{MetaInfo, TorrentFile},
       tracker::{Tracker, TrackerTrait},
    };
 
@@ -510,17 +514,14 @@ mod tests {
    async fn test_get_peers_with_http_tracker() {
       let path = std::env::current_dir()
          .unwrap()
-         .join("tests/magneturis/cachyos-desktop-linux-250713.txt");
-      let contents = tokio::fs::read_to_string(path).await.unwrap();
-      let metainfo = MagnetUri::parse(contents).unwrap();
+         .join("tests/torrents/KNOPPIX_V9.1DVD-2021-01-25-EN.torrent");
+
+      let metainfo = TorrentFile::read(path).await.unwrap();
+
       match metainfo {
-         MetaInfo::MagnetUri(magnet) => {
-            let info_hash = magnet.info_hash();
-            let announce_list = magnet.announce_list.unwrap();
-            let announce_list = announce_list
-               .iter()
-               .filter(|t| matches!(t, Tracker::Http(..)))
-               .collect::<Vec<_>>();
+         MetaInfo::Torrent(file) => {
+            let info_hash = file.info.hash();
+            let announce_list = file.announce_list();
             println!("announce_list: {:?}", announce_list);
 
             // An HTTP tracker
