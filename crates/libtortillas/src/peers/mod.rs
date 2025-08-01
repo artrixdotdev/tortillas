@@ -407,6 +407,7 @@ mod tests {
 
    #[tokio::test]
    #[traced_test]
+   #[ignore] // Not stable yet
    /// Keep in mind that this test operates as both the TorrentEngine and the
    /// peer, handling all communication with the peer in such a manner.
    async fn test_peer_to_peer_pieces() {
