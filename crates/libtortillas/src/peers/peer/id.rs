@@ -1,5 +1,7 @@
 use std::{fmt, str::FromStr};
 
+use crate::hashes::Hash;
+
 pub type Id = [u8; 20];
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -350,10 +352,10 @@ define_clients! {
    AllPeers => { prefix: b"AP", name: "AllPeers", format: PeerIdFormat::AllPeers },
 }
 
-impl PeerId {
+impl Default for PeerId {
    /// Creates a new [PeerId] for the tortillas client using the
    /// [Azureus](PeerIdFormat::Azureus) format
-   pub fn new() -> Self {
+   fn default() -> Self {
       // Fill entire array with random bytes
       let mut id: [u8; 20] = rand::random();
 
@@ -375,6 +377,23 @@ impl PeerId {
       id[version_end] = b'-';
 
       Self::Tortillas(id)
+   }
+}
+
+impl PeerId {
+   /// See [PeerId::default]
+   pub fn new() -> Self {
+      Self::default()
+   }
+
+   pub fn as_bytes(&self) -> &Id {
+      self.id()
+   }
+}
+
+impl From<Hash<20>> for PeerId {
+   fn from(hash: Hash<20>) -> Self {
+      Self::from(*hash.clone().as_bytes())
    }
 }
 
