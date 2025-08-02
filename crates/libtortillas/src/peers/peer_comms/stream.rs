@@ -458,6 +458,7 @@ mod tests {
    use tracing_test::traced_test;
 
    use super::*;
+   use crate::hashes::Hash;
 
    #[tokio::test]
    #[traced_test]

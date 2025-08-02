@@ -343,7 +343,6 @@ mod tests {
    use std::str::FromStr;
 
    use bitvec::{bitvec, order::Lsb0};
-   use rand::RngCore;
    use tokio::{
       io::{AsyncReadExt, AsyncWriteExt},
       net::TcpListener,
