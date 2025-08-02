@@ -25,7 +25,7 @@ use super::{Peer, TrackerTrait};
 use crate::{
    errors::{TrackerError, UdpTrackerError},
    hashes::InfoHash,
-   peers::PeerId,
+   peer::PeerId,
 };
 
 /// Types and constants

@@ -1,7 +1,6 @@
 use tokio::sync::mpsc;
 
-use super::messages::{ExtendedMessage, PeerMessages};
-use crate::peers::PeerKey;
+use super::{ExtendedMessage, PeerKey, PeerMessages};
 
 #[derive(Debug)]
 pub enum PeerCommand {

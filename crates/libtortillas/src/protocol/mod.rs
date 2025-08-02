@@ -1,28 +1,253 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+   collections::HashMap,
+   net::SocketAddr,
+   sync::{Arc, atomic::Ordering},
+   time::Duration,
+};
 
+use bitvec::vec::BitVec;
+use commands::{PeerCommand, PeerResponse};
+use librqbit_utp::UtpSocketUdp;
+use messages::{ExtendedMessage, ExtendedMessageType, PeerMessages};
+use stream::{PeerSend, PeerStream, PeerWriter};
 use tokio::{
-   sync::{Mutex, broadcast, mpsc},
-   time::timeout,
+   sync::{
+      Mutex, broadcast,
+      mpsc::{self, Receiver, Sender},
+   },
+   time::{sleep, timeout},
 };
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
    hashes::InfoHash,
-   peers::{
-      Peer,
-      peer_comms::{
-         commands::{PeerCommand, PeerResponse},
-         messages::{ExtendedMessage, ExtendedMessageType, PeerMessages},
-         stream::{PeerSend, PeerWriter},
-      },
-   },
+   peer::{Peer, PeerId},
+   protocol::stream::PeerRecv,
 };
 
 pub mod commands;
 pub mod messages;
 pub mod stream;
 
+pub type PeerKey = SocketAddr;
+
 impl Peer {
+   /// Small helper function for sending messages with to_engine_tx.
+   fn send_to_engine(
+      to_engine_tx: broadcast::Sender<PeerResponse>, message: PeerResponse, peer_addr: SocketAddr,
+   ) {
+      if let Err(e) = to_engine_tx.send(message) {
+         error!(%peer_addr, error = %e, "Failed to send message to engine");
+      }
+   }
+
+   /// Autonomously handles the connection & messages between a peer. The
+   /// from_engine_tx/from_engine_rx is provided to facilitate communication
+   /// to this function from the caller (likely TorrentEngine -- if so, this
+   /// channel will be used to communicate what pieces TorrentEngine still
+   /// needs). to_engine_tx is provided to allow communication from
+   /// handle_peer to the caller.
+   ///
+   /// At the moment, handle_peer is a leecher. In that, it is not a seeder --
+   /// it only takes from the torrent swarm. Seeding will be implemented in
+   /// the future.
+   pub(crate) async fn handle_peer(
+      mut self, to_engine_tx: broadcast::Sender<PeerResponse>, info_hash: InfoHash, our_id: PeerId,
+      stream: Option<PeerStream>, utp_socket: Option<Arc<UtpSocketUdp>>,
+      init_bitfield: Option<BitVec<u8>>,
+   ) {
+      let peer_addr = self.socket_addr();
+      let (from_engine_tx, mut from_engine_rx) = mpsc::channel(100);
+
+      if let Err(e) = to_engine_tx.send(PeerResponse::Init {
+         from_engine_tx: from_engine_tx.clone(),
+         peer_key: peer_addr,
+      }) {
+         error!(%peer_addr, error = %e, "Failed to send init message to engine");
+         return;
+      }
+
+      debug!(%peer_addr, "Attempting to connect to peer");
+      let stream = if let Some(stream) = stream {
+         // For incoming peers (they're connecting to them), since they have already sent
+         // their handshake and been verified, we can skip that part.
+         debug!(%peer_addr, "Using existing connection from incoming peer");
+         stream
+      } else {
+         // For outgoing peers (we are connecting to them), we should create the stream
+         // ourselves and send the handshake & bitfield
+         let mut stream = PeerStream::connect(peer_addr, utp_socket).await;
+         // Send handshake to peer
+         let (peer_id, reserved) = match stream.send_handshake(our_id, Arc::new(info_hash)).await {
+            Ok(result) => result,
+            Err(e) => {
+               error!(%peer_addr, error = %e, "Failed to complete handshake with peer");
+               return;
+            }
+         };
+
+         self.id = Some(peer_id);
+         self.reserved = reserved;
+         self.determine_supported().await;
+         debug!(%peer_addr, "Completed handshake with outgoing peer");
+         stream
+      };
+
+      let (mut reader, writer) = stream.split();
+      let writer = Arc::new(Mutex::new(writer));
+
+      info!(%peer_addr, "Successfully connected to peer");
+
+      // Wait for peer to be unchoked, then send these messages.
+      let writer_clone = writer.clone();
+
+      // This is directly accessing self.state when we have helper methods. However,
+      // due to move(s), this is the best way to do this (AFAIK).
+      let am_choked_clone = self.state.am_choked.clone();
+      let interested_clone = self.state.interested.clone();
+
+      tokio::spawn(async move {
+         let bitfield_to_send = init_bitfield.unwrap_or(BitVec::EMPTY);
+         let piece_count = bitfield_to_send.len();
+
+         trace!(%peer_addr, piece_count, "Waiting to send initial messages");
+
+         loop {
+            if !am_choked_clone.load(Ordering::Acquire) {
+               // Send an "interested" message (NOTE: I'm 99% sure we can send this before
+               // being unchoked)
+               {
+                  let mut writer_guard = writer_clone.lock().await;
+                  if let Err(e) = writer_guard.send(PeerMessages::Interested).await {
+                     error!(%peer_addr, error = %e, "Failed to send interested message");
+                     return;
+                  }
+                  interested_clone.store(true, Ordering::Release);
+               }
+
+               debug!(%peer_addr, "Sent interested message to peer");
+
+               // Send empty bitfield. This may need to be refactored in the future to account
+               // for seeding.
+               {
+                  let mut writer_guard = writer_clone.lock().await;
+                  if let Err(e) = writer_guard
+                     .send(PeerMessages::Bitfield(bitfield_to_send.clone()))
+                     .await
+                  {
+                     error!(%peer_addr, error = %e, "Failed to send bitfield");
+                     return;
+                  }
+               }
+
+               debug!(%peer_addr, piece_count, "Sent bitfield to peer");
+               break;
+            }
+            sleep(Duration::from_millis(250)).await;
+         }
+      });
+
+      // Start of request/piece message loop
+      // Create two channels to allow for a chain of messages to be handled. For
+      // instance:
+      //
+      // Peer sends Extended Handshake
+      // We send request for piece 0 of metadata (BEP 0009)
+      // Peer sends piece 0 of metadata
+      // We send request for piece 1 of metadata
+      // Peer sends piece 1 of metadata
+      //
+      // Naturally, we cannot handle this in a single call to handle_recv or
+      // handle_peer_command. Additionally, due to the nature of stream.split(),
+      // we cannot easily include both the writer and the reader in a single
+      // call to either handle_recv or handle_peer_command.
+      //
+      // Thus, the best option is to have "inner" channels so something like this is
+      // possible:
+      //
+      // Read from Peer
+      // `inner_send_tx.send(some_response)`
+      // Send some_response to Peer
+      let (inner_send_tx, mut inner_send_rx): (Sender<PeerCommand>, Receiver<PeerCommand>) =
+         mpsc::channel(32);
+      let (_, mut inner_recv_rx) = mpsc::channel(32);
+
+      debug!(%peer_addr, "Starting peer message handling loop");
+
+      // Continuously loop and handle messages from reader and from_engine_rx. The
+      // only downside with this setup is that messages can only be handled one
+      // at a time. But realistically, there are few chokepoints that we would
+      // reach with this setup.
+      loop {
+         tokio::select! {
+            message = inner_send_rx.recv() => {
+               if let Some(inner) = message {
+                  self.send_to_peer(
+                     inner,
+                     writer.clone(),
+                     to_engine_tx.clone(),
+                     from_engine_tx.clone(),
+                  )
+                  .await;
+               }
+            }
+            message = inner_recv_rx.recv() => {
+               if let Some(inner) = message {
+                  self.recv_from_peer(
+                     inner,
+                     to_engine_tx.clone(),
+                     from_engine_tx.clone(),
+                     inner_send_tx.clone(),
+                     info_hash,
+                  )
+                  .await;
+               }
+            }
+            message = reader.recv() => {
+               match message {
+                  Ok(inner) => {
+                     self.update_last_message_received();
+                     self.recv_from_peer(
+                        inner,
+                        to_engine_tx.clone(),
+                        from_engine_tx.clone(),
+                        inner_send_tx.clone(),
+                        info_hash,
+                     )
+                     .await;
+                  }
+                  Err(e) => {
+                     error!(%peer_addr, error = %e, "Failed to receive message from peer");
+
+                     // Is this the best practice? Eh. But realistically, if a peer sends us
+                     // something that is simply invalid, we probably don't want to work with them
+                     // anymore.
+                     panic!("Error occured when receiving a message from the peer");
+                  }
+               }
+            }
+            message = from_engine_rx.recv() => {
+               match message {
+                  Some(inner) => {
+                     // Are all these clones horribly inefficient? Hopefully not.
+                     self.send_to_peer(
+                        inner,
+                        writer.clone(),
+                        to_engine_tx.clone(),
+                        from_engine_tx.clone(),
+                     )
+                     .await;
+                     self.update_last_message_sent();
+                  }
+                  None => {
+                     warn!(%peer_addr, "Engine channel closed, terminating peer handler");
+                     break;
+                  }
+               }
+            }
+         }
+      }
+   }
    /// Request piece from peer
    pub(crate) async fn request_piece(&mut self, stream: &mut PeerWriter, piece_num: u32) {
       let peer_addr = self.socket_addr();

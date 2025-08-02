@@ -2,5 +2,6 @@ pub mod engine;
 pub mod errors;
 pub mod hashes;
 pub mod metainfo;
-pub mod peers;
+pub mod peer;
+pub mod protocol;
 pub mod tracker;

@@ -8,7 +8,7 @@ use std::{
 
 use atomic_time::AtomicOptionInstant;
 
-use crate::peers::Peer;
+use super::Peer;
 
 /// A helper struct for Peer that maintains a given peers state. This state
 /// includes both the state defined in [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html) and our own state which we

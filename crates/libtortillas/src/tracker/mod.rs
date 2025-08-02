@@ -13,7 +13,7 @@ use udp::UdpTracker;
 
 use crate::{
    hashes::InfoHash,
-   peers::{Peer, PeerId},
+   peer::{Peer, PeerId},
 };
 pub mod http;
 pub mod udp;

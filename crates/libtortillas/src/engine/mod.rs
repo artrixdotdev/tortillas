@@ -18,13 +18,11 @@ use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
    metainfo::MetaInfo,
-   peers::{
-      Peer, PeerId, PeerKey,
-      peer_comms::{
-         commands::{PeerCommand, PeerResponse},
-         messages::PeerMessages,
-         stream::PeerStream,
-      },
+   peer::{Peer, PeerId, PeerKey},
+   protocol::{
+      commands::{PeerCommand, PeerResponse},
+      messages::PeerMessages,
+      stream::PeerStream,
    },
 };
 

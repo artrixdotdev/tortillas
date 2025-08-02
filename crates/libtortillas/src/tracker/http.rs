@@ -21,7 +21,7 @@ use super::{Peer, TrackerTrait};
 use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::InfoHash,
-   peers::PeerId,
+   peer::PeerId,
 };
 
 #[derive(Debug, Deserialize)]
