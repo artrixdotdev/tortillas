@@ -350,7 +350,7 @@ mod tests {
    use tracing_test::traced_test;
 
    use super::{peer_comms::stream::validate_handshake, *};
-   use crate::{hashes::Hash, parser::MagnetUri, peers::peer_comms::messages::Handshake};
+   use crate::{hashes::Hash, metainfo::MagnetUri, peers::peer_comms::messages::Handshake};
 
    #[tokio::test]
    #[traced_test]

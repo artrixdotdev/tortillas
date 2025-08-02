@@ -982,7 +982,7 @@ mod tests {
    use tracing_test::traced_test;
 
    use super::*;
-   use crate::parser::{MagnetUri, MetaInfo};
+   use crate::metainfo::{MagnetUri, MetaInfo};
 
    #[tokio::test]
    #[traced_test]

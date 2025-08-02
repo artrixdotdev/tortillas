@@ -17,7 +17,7 @@ use tokio::{
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
-   parser::MetaInfo,
+   metainfo::MetaInfo,
    peers::{
       Peer, PeerId, PeerKey,
       peer_comms::{
@@ -613,7 +613,7 @@ mod tests {
 
    use tracing_subscriber::fmt;
 
-   use crate::{engine::TorrentEngine, parser::MetaInfo};
+   use crate::{engine::TorrentEngine, metainfo::MetaInfo};
 
    // THIS TEST IS NOT COMPLETE!!! (DELETEME when torrent() is completed)
    // Until torrent() is fully implemented, this test is not complete.

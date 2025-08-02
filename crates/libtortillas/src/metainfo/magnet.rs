@@ -4,7 +4,7 @@ use serde_querystring;
 
 use crate::{
    hashes::{Hash, InfoHash},
-   parser::MetaInfo,
+   metainfo::MetaInfo,
    tracker::Tracker,
 };
 

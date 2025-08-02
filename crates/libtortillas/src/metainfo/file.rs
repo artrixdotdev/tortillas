@@ -9,7 +9,7 @@ use tokio::fs;
 
 use crate::{
    hashes::{Hash, HashVec, InfoHash},
-   parser::MetaInfo,
+   metainfo::MetaInfo,
    tracker::Tracker,
 };
 
