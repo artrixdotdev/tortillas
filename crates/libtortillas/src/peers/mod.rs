@@ -9,6 +9,7 @@ use std::{
 
 use bitvec::vec::BitVec;
 use librqbit_utp::UtpSocketUdp;
+pub use peer::id::PeerId;
 use peer::{info::PeerInfo, state::PeerState, supports::PeerSupports};
 use peer_comms::{
    commands::{PeerCommand, PeerResponse},
@@ -24,7 +25,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, trace, warn};
 
-use crate::hashes::{Hash, InfoHash};
+use crate::hashes::InfoHash;
 
 mod peer;
 pub mod peer_comms;
@@ -33,7 +34,6 @@ pub mod peer_comms;
 /// previous renditions of libtortillas. The idea of having a type for the "key"
 /// of a peer is still completely relevant though.
 pub type PeerKey = SocketAddr;
-pub type PeerId = Arc<Hash<20>>;
 
 pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
 
@@ -49,7 +49,7 @@ pub struct Peer {
    /// indicates what extensions the peer supports.
    pub reserved: [u8; 8],
    pub peer_supports: PeerSupports,
-   pub id: Option<Hash<20>>,
+   pub id: Option<PeerId>,
    pub info: PeerInfo,
 }
 
@@ -174,7 +174,7 @@ impl Peer {
             }
          };
 
-         self.id = Some(*peer_id);
+         self.id = Some(peer_id);
          self.reserved = reserved;
          self.determine_supported().await;
          debug!(%peer_addr, "Completed handshake with outgoing peer");
@@ -343,7 +343,6 @@ mod tests {
    use std::str::FromStr;
 
    use bitvec::{bitvec, order::Lsb0};
-   use rand::RngCore;
    use tokio::{
       io::{AsyncReadExt, AsyncWriteExt},
       net::TcpListener,
@@ -351,7 +350,7 @@ mod tests {
    use tracing_test::traced_test;
 
    use super::{peer_comms::stream::validate_handshake, *};
-   use crate::{parser::MagnetUri, peers::peer_comms::messages::Handshake};
+   use crate::{hashes::Hash, parser::MagnetUri, peers::peer_comms::messages::Handshake};
 
    #[tokio::test]
    #[traced_test]
@@ -379,15 +378,13 @@ mod tests {
       let data = MagnetUri::parse(magnet_uri).unwrap();
 
       // Stuff for generating our_id (yes, literally our ID as a peer in the network)
-      let mut our_id = [0u8; 20];
-      rand::rng().fill_bytes(&mut our_id);
-      let our_id = Hash::from_bytes(our_id);
+      let our_id = PeerId::new();
 
       peer
          .handle_peer(
             to_engine_tx,
             data.info_hash().unwrap(),
-            Arc::new(our_id),
+            our_id,
             None,
             None,
             None,
@@ -420,12 +417,12 @@ mod tests {
 
       // Start peer
       let peer = Peer::from_socket_addr(SocketAddr::from_str(peer_addr).unwrap());
-      let peer_id = Hash::new(rand::random::<[u8; 20]>());
+      let peer_id = PeerId::new();
       let (to_engine_tx, mut to_engine_rx) = broadcast::channel(100);
 
       tokio::spawn(async move {
          peer
-            .handle_peer(to_engine_tx, info_hash, Arc::new(peer_id), None, None, None)
+            .handle_peer(to_engine_tx, info_hash, peer_id, None, None, None)
             .await;
       });
 
@@ -458,10 +455,11 @@ mod tests {
       trace!("Received valid handshake");
 
       // Send a handshake back
-      let our_id = Hash::new(rand::random::<[u8; 20]>());
+      let our_id = PeerId::new();
+
       // peer_stream.send_handshake() does not work?
       peer_stream
-         .write_all(&Handshake::new(Arc::new(info_hash), Arc::new(our_id)).to_bytes())
+         .write_all(&Handshake::new(Arc::new(info_hash), our_id).to_bytes())
          .await
          .unwrap();
 
