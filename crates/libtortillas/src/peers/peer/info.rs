@@ -1,7 +1,7 @@
 use anyhow::{Error, bail};
 use tracing::{trace, warn};
 
-use crate::{hashes::InfoHash, parser::Info};
+use crate::{hashes::InfoHash, metainfo::Info};
 
 /// A helper struct for Peer. Manages and handles any metadata (informally
 /// called an Info dict, as is the case here) from a Peer.
