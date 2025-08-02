@@ -17,7 +17,6 @@ use tokio::{
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
-   hashes::Hash,
    parser::MetaInfo,
    peers::{
       Peer, PeerId, PeerKey,

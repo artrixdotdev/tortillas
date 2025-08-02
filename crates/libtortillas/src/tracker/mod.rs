@@ -12,7 +12,7 @@ use tokio::sync::mpsc;
 use udp::UdpTracker;
 
 use crate::{
-   hashes::{Hash, InfoHash},
+   hashes::InfoHash,
    peers::{Peer, PeerId},
 };
 pub mod http;

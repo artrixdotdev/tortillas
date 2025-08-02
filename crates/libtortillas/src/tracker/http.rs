@@ -20,7 +20,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use super::{Peer, TrackerTrait};
 use crate::{
    errors::{HttpTrackerError, TrackerError},
-   hashes::{Hash, InfoHash},
+   hashes::InfoHash,
    peers::PeerId,
 };
 

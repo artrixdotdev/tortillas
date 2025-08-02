@@ -19,7 +19,6 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use super::messages::{Handshake, PeerMessages};
 use crate::{
    errors::PeerTransportError,
-   hashes::Hash,
    peers::{InfoHash, MAGIC_STRING, PeerId},
 };
 
@@ -150,7 +149,7 @@ impl PeerStream {
    pub async fn send_handshake(
       &mut self, our_id: PeerId, info_hash: Arc<InfoHash>,
    ) -> Result<(PeerId, [u8; 8]), PeerTransportError> {
-      let handshake = Handshake::new(info_hash.clone(), our_id.clone());
+      let handshake = Handshake::new(info_hash.clone(), our_id);
       let remote_addr = self.remote_addr().unwrap();
 
       self.write_all(&handshake.to_bytes()).await.unwrap();
@@ -269,7 +268,7 @@ impl PeerStream {
              "Successfully completed incoming handshake with peer"
          );
 
-         Ok(handshake.peer_id.clone())
+         Ok(handshake.peer_id)
       } else {
          warn!(
              remote_addr = %addr,

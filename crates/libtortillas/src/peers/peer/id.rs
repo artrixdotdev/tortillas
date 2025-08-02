@@ -351,6 +351,12 @@ define_clients! {
     AllPeers => { prefix: b"AP", name: "AllPeers", format: PeerIdFormat::AllPeers },
 }
 
+impl Default for PeerId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PeerId {
    /// Creates a new [PeerId] for the tortillas client using the
    /// [Azureus](PeerIdFormat::Azureus) format
