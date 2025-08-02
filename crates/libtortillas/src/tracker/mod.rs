@@ -13,7 +13,7 @@ use udp::UdpTracker;
 
 use crate::{
    hashes::{Hash, InfoHash},
-   peers::Peer,
+   peers::{Peer, PeerId},
 };
 pub mod http;
 pub mod udp;
@@ -44,7 +44,7 @@ pub enum Tracker {
 impl Tracker {
    /// Gets peers based off of given tracker
    pub async fn get_peers(
-      &self, info_hash: InfoHash, peer_id: Option<Hash<20>>,
+      &self, info_hash: InfoHash, peer_id: Option<PeerId>,
    ) -> Result<Vec<Peer>> {
       match self {
          Tracker::Http(uri) => {
@@ -72,17 +72,18 @@ impl Tracker {
 
    /// Streams peers based off of given tracker
    pub async fn stream_peers(
-      &self, info_hash: InfoHash, peer_addr: Option<SocketAddr>, peer_id: Option<Hash<20>>,
+      &self, info_hash: InfoHash, peer_addr: Option<SocketAddr>, peer_id: PeerId,
    ) -> Result<mpsc::Receiver<Vec<Peer>>> {
       match self {
          Tracker::Http(uri) => {
-            let mut tracker = HttpTracker::new(uri.clone(), info_hash, peer_id, peer_addr);
+            let mut tracker = HttpTracker::new(uri.clone(), info_hash, Some(peer_id), peer_addr);
             Ok(tracker.stream_peers().await.unwrap())
          }
          Tracker::Udp(uri) => {
-            let mut tracker = UdpTracker::new(uri.clone(), None, info_hash, peer_addr, peer_id)
-               .await
-               .unwrap();
+            let mut tracker =
+               UdpTracker::new(uri.clone(), None, info_hash, peer_addr, Some(peer_id))
+                  .await
+                  .unwrap();
             Ok(tracker.stream_peers().await.unwrap())
          }
          Tracker::Websocket(_) => todo!(),

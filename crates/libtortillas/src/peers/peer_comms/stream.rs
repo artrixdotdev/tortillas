@@ -196,7 +196,7 @@ impl PeerStream {
         )
     )]
    pub async fn receive_handshake(
-      &mut self, info_hash: Arc<InfoHash>, id: Arc<Hash<20>>,
+      &mut self, info_hash: Arc<InfoHash>, id: PeerId,
    ) -> Result<PeerId, PeerTransportError> {
       // First 4 bytes is the big endian encoded length field and the 5th byte is a
       // PeerMessage tag
@@ -467,22 +467,20 @@ mod tests {
       let addr = listener.local_addr().unwrap();
 
       let info_hash = Arc::new(Hash::new([1u8; 20]));
-      let server_id = Arc::new(Hash::new([2u8; 20]));
-      let client_id = Arc::new(Hash::new([3u8; 20]));
+      let server_id = PeerId::new();
+      let client_id = PeerId::new();
 
       // Spawn client that sends handshake
       let client_info_hash = info_hash.clone();
-      let client_server_id = server_id.clone();
-      let client_peer_id = client_id.clone();
       tokio::spawn(async move {
          let mut stream = PeerStream::Tcp(TcpStream::connect(addr).await.unwrap());
 
          let response = stream
-            .send_handshake(client_peer_id, client_info_hash)
+            .send_handshake(client_id, client_info_hash)
             .await
             .unwrap();
 
-         assert_eq!(response.0, client_server_id);
+         assert_eq!(response.0, server_id);
       });
 
       // Server side
@@ -490,10 +488,10 @@ mod tests {
       let mut peer_stream = PeerStream::Tcp(stream);
 
       let response = peer_stream
-         .receive_handshake(info_hash, server_id.clone())
+         .receive_handshake(info_hash, server_id)
          .await
          .unwrap();
 
-      assert_eq!(response, client_id.clone());
+      assert_eq!(response, client_id);
    }
 }

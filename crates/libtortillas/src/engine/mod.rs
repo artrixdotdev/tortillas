@@ -93,7 +93,7 @@ impl TorrentEngine {
    #[allow(dead_code)]
    async fn new(metainfo: MetaInfo) -> Self {
       let info_hash = metainfo.info_hash().unwrap();
-      let peer_id = Arc::new(Hash::from_bytes(rand::random::<[u8; 20]>()));
+      let peer_id = PeerId::new();
       let to_engine_tx_rx = broadcast::channel(100);
 
       info!(
@@ -212,7 +212,7 @@ impl TorrentEngine {
          .handle_peer(
             self.to_engine_tx_rx.0.clone(),
             self.metainfo.info_hash().unwrap(),
-            Arc::clone(&self.id),
+            self.id,
             stream,
             listener,
             Some(bitfield),
@@ -371,7 +371,7 @@ impl TorrentEngine {
          let info_hash = me.metainfo.info_hash().unwrap();
          for (index, tracker) in me.metainfo.announce_list().iter().enumerate() {
             match tracker
-               .stream_peers(info_hash, Some(primary_addr), Some(*me.id))
+               .stream_peers(info_hash, Some(primary_addr), me.id)
                .await
             {
                Ok(rx) => {

@@ -1,6 +1,5 @@
 use std::{fmt, str::FromStr};
 
-use rand::random;
 
 pub type Id = [u8; 20];
 const VERSION: &str = env!("CARGO_PKG_VERSION");

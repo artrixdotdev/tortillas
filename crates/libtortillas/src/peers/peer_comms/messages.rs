@@ -11,7 +11,11 @@ use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tracing::{debug, error, trace};
 
-use crate::{errors::PeerTransportError, hashes::Hash, peers::MAGIC_STRING};
+use crate::{
+   errors::PeerTransportError,
+   hashes::Hash,
+   peers::{MAGIC_STRING, peer::id::PeerId},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[repr(u8)]
@@ -469,12 +473,12 @@ pub struct Handshake {
    /// 20-byte SHA1 hash of the info dictionary
    pub info_hash: Arc<Hash<20>>,
    /// 20-byte peer identifier
-   pub peer_id: Arc<Hash<20>>,
+   pub peer_id: PeerId,
 }
 
 impl Handshake {
    /// Create a new handshake with the given info hash and peer ID
-   pub fn new(info_hash: Arc<Hash<20>>, peer_id: Arc<Hash<20>>) -> Self {
+   pub fn new(info_hash: Arc<Hash<20>>, peer_id: PeerId) -> Self {
       let mut reserved = [0u8; 8];
 
       // We support BEP 0010
@@ -499,7 +503,7 @@ impl Handshake {
          self.protocol.as_slice(),
          &self.reserved,
          self.info_hash.as_bytes(),
-         self.peer_id.as_bytes(),
+         self.peer_id.id(),
       ]
       .concat();
       trace!(handshake_len = bytes.len(), "Serialized handshake to bytes");
@@ -536,10 +540,11 @@ impl Handshake {
       let info_hash = Arc::new(Hash::new(info_hash_bytes));
 
       // Extract peer ID
-      let peer_id_bytes = bytes[1 + protocol_len + 8 + 20..1 + protocol_len + 8 + 40]
+      let peer_id_bytes: [u8; 20] = bytes[1 + protocol_len + 8 + 20..1 + protocol_len + 8 + 40]
          .try_into()
          .map_err(|_| "failed to extract peer ID")?;
-      let peer_id = Arc::new(Hash::new(peer_id_bytes));
+
+      let peer_id = PeerId::from(peer_id_bytes);
 
       trace!(
           protocol = ?String::from_utf8_lossy(&protocol),

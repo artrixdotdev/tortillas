@@ -25,6 +25,7 @@ use super::{Peer, TrackerTrait};
 use crate::{
    errors::{TrackerError, UdpTrackerError},
    hashes::{Hash, InfoHash},
+   peers::PeerId,
 };
 
 /// Types and constants
@@ -111,7 +112,7 @@ enum TrackerRequest {
       connection_id: ConnectionId,
       transaction_id: TransactionId,
       info_hash: InfoHash,
-      peer_id: Hash<20>,
+      peer_id: PeerId,
       downloaded: u64,
       left: u64,
       uploaded: u64,
@@ -237,7 +238,7 @@ impl TrackerRequest {
             buf.extend_from_slice(&(Action::Announce as u32).to_be_bytes()); // Action
             buf.extend_from_slice(&transaction_id.to_be_bytes()); // Transaction ID
             buf.extend_from_slice(info_hash.as_bytes()); // Info Hash
-            buf.extend_from_slice(peer_id.as_bytes()); // Peer ID
+            buf.extend_from_slice(peer_id.id()); // Peer ID
             buf.extend_from_slice(&downloaded.to_be_bytes()); // Downloaded
             buf.extend_from_slice(&left.to_be_bytes()); // Left
             buf.extend_from_slice(&uploaded.to_be_bytes()); // Uploaded
@@ -453,7 +454,7 @@ pub struct UdpTracker {
    connection_id: Option<ConnectionId>,
    pub socket: Arc<UdpSocket>,
    ready_state: ReadyState,
-   pub peer_id: Hash<20>,
+   pub peer_id: PeerId,
    info_hash: InfoHash,
    ///  The address that our TCP or uTP socket is bound to
    peer_socket_addr: SocketAddr,
@@ -469,7 +470,7 @@ impl UdpTracker {
     ))]
    pub async fn new(
       uri: String, socket: Option<UdpSocket>, info_hash: InfoHash,
-      peer_socket_addr: Option<SocketAddr>, peer_id: Option<Hash<20>>,
+      peer_socket_addr: Option<SocketAddr>, peer_id: Option<PeerId>,
    ) -> Result<UdpTracker> {
       let sock = match socket {
          Some(sock) => {
@@ -496,7 +497,7 @@ impl UdpTracker {
       };
 
       let peer_id = peer_id.unwrap_or_else(|| {
-         let id = Hash::new(rand::random());
+         let id = PeerId::new();
          trace!(generated_peer_id = %id, "Generated new peer ID");
          id
       });

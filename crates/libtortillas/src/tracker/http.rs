@@ -21,6 +21,7 @@ use super::{Peer, TrackerTrait};
 use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::{Hash, InfoHash},
+   peers::PeerId,
 };
 
 #[derive(Debug, Deserialize)]
@@ -143,7 +144,7 @@ impl Default for HttpTrackerStats {
 #[derive(Clone, Debug)]
 pub struct HttpTracker {
    uri: String,
-   pub peer_id: Hash<20>,
+   pub peer_id: PeerId,
    info_hash: InfoHash,
    params: TrackerRequest,
    interval: usize,
@@ -157,11 +158,11 @@ impl HttpTracker {
         peer_tracker_addr = ?peer_tracker_addr
     ))]
    pub fn new(
-      uri: String, info_hash: InfoHash, peer_id: Option<Hash<20>>,
+      uri: String, info_hash: InfoHash, peer_id: Option<PeerId>,
       peer_tracker_addr: Option<SocketAddr>,
    ) -> HttpTracker {
       let peer_id = peer_id.unwrap_or_else(|| {
-         let id = Hash::new(rand::random());
+         let id = PeerId::new();
          trace!(generated_peer_id = %id, "Generated new peer ID");
          id
       });
@@ -351,7 +352,7 @@ impl TrackerTrait for HttpTracker {
       // URL encoding phase
       let params_encoded = &self.params.to_string();
       let info_hash_encoded = urlencode(self.info_hash.as_bytes());
-      let peer_id_encoded = urlencode(self.peer_id.as_bytes());
+      let peer_id_encoded = urlencode(self.peer_id.id());
 
       // URI construction
       let uri_params =
