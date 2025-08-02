@@ -5,7 +5,7 @@ use std::sync::{
 
 use tracing::trace;
 
-use crate::peers::Peer;
+use super::Peer;
 
 /// A helper struct to determine what BEPs a given peer supports.
 ///

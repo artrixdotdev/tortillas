@@ -400,7 +400,7 @@ impl PeerId {
 
 impl From<Hash<20>> for PeerId {
    fn from(hash: Hash<20>) -> Self {
-      Self::from(*hash.clone().as_bytes())
+      Self::from(*hash.as_bytes())
    }
 }
 

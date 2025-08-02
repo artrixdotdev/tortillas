@@ -14,7 +14,7 @@ use tracing::{debug, error, trace};
 use crate::{
    errors::PeerTransportError,
    hashes::Hash,
-   peers::{MAGIC_STRING, peer::id::PeerId},
+   peer::{MAGIC_STRING, PeerId},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

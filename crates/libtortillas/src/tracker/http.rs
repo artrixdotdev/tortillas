@@ -21,7 +21,7 @@ use super::{Peer, TrackerTrait};
 use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::InfoHash,
-   peers::PeerId,
+   peer::PeerId,
 };
 
 #[derive(Debug, Deserialize)]
@@ -506,7 +506,7 @@ mod tests {
 
    use super::HttpTracker;
    use crate::{
-      parser::{MetaInfo, TorrentFile},
+      metainfo::{MetaInfo, TorrentFile},
       tracker::TrackerTrait,
    };
 

@@ -19,7 +19,8 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use super::messages::{Handshake, PeerMessages};
 use crate::{
    errors::PeerTransportError,
-   peers::{InfoHash, MAGIC_STRING, PeerId},
+   hashes::InfoHash,
+   peer::{MAGIC_STRING, PeerId},
 };
 
 /// A very simple enum to help differentiate between streams. TcpStream and
