@@ -1,5 +1,7 @@
 use std::{fmt, str::FromStr};
 
+use rand::{Rng, distr::Alphanumeric};
+
 use crate::hashes::Hash;
 
 pub type Id = [u8; 20];
@@ -356,8 +358,13 @@ impl Default for PeerId {
    /// Creates a new [PeerId] for the tortillas client using the
    /// [Azureus](PeerIdFormat::Azureus) format
    fn default() -> Self {
-      // Fill entire array with random bytes
-      let mut id: [u8; 20] = rand::random();
+      // Fill entire array with random alphanumeric bytes
+      let mut id: [u8; 20] = rand::rng()
+         .sample_iter(&Alphanumeric)
+         .take(20)
+         .collect::<Vec<u8>>()
+         .try_into()
+         .unwrap();
 
       // Overwrite the beginning with our identifier
       id[0] = b'-';
@@ -437,9 +444,6 @@ mod tests {
    #[test]
    fn test_parse_tortillas_peer_id() {
       let peer = PeerId::new();
-
-      println!("Peer ID: {:?}", String::from_utf8_lossy(peer.id()));
-
       assert_eq!(peer.client_name(), "Tortillas");
       assert_eq!(peer.version(), Some("0.0.00".to_string()));
    }
