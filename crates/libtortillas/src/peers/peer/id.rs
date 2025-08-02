@@ -444,8 +444,14 @@ mod tests {
    #[test]
    fn test_parse_tortillas_peer_id() {
       let peer = PeerId::new();
+      let correct_version = if VERSION.len() <= 5 {
+         VERSION.to_owned() + "0"
+      } else {
+         VERSION.to_owned()
+      };
+
       assert_eq!(peer.client_name(), "Tortillas");
-      assert_eq!(peer.version(), Some("0.0.00".to_string()));
+      assert_eq!(peer.version(), Some(correct_version));
    }
    #[test]
    fn test_parse_webtorrent_peer_id() {
