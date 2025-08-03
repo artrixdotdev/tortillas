@@ -26,6 +26,7 @@ bitvec = "1.0.1"
 futures = "0.3"
 bencode = "0.1.16"
 serde_with = "3.14.0"
+tokio-retry2 = "0.5.7"
 
 [dev-dependencies]
 tracing-test = "0.2.5"
