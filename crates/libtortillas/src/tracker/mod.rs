@@ -139,7 +139,7 @@ pub trait TrackerInstance {
 
    /// Returns a stream that appends every new group of peers that we receive
    /// from a tracker.
-   async fn announce_stream() -> impl Stream;
+   async fn announce_stream() -> impl Stream<Item = Peer>;
 
    /// Attaches an existing udp socket for reuse.
    fn attach_udp_socket(udp_socket: Arc<UdpSocket>);
