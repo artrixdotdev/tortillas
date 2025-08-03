@@ -1,4 +1,5 @@
 use std::{
+   collections::HashMap,
    fmt::{Debug, Display},
    net::{Ipv4Addr, SocketAddr},
    str::FromStr,
@@ -39,6 +40,11 @@ const MIN_CONNECT_RESPONSE_SIZE: usize = 16;
 const MIN_ANNOUNCE_RESPONSE_SIZE: usize = 20;
 const MIN_ERROR_RESPONSE_SIZE: usize = 8;
 const PEER_SIZE: usize = 6;
+
+pub struct UdpManager {
+   socket: Arc<UdpSocket>,
+   trackers: HashMap<String, String>,
+}
 
 /// Enum for UDP Tracker Protocol Action parameter. See this resource for more information: <https://xbtt.sourceforge.net/udp_tracker_protocol.html>
 #[derive(

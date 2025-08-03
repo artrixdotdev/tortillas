@@ -4,17 +4,20 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures::Stream;
 use http::HttpTracker;
+use num_enum::TryFromPrimitive;
 use rand::random_range;
 use serde::{
    Deserialize,
    de::{self, Visitor},
 };
+use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::{net::UdpSocket, sync::mpsc, time::Instant};
 use udp::UdpTracker;
 
 use crate::{
    hashes::InfoHash,
    peer::{Peer, PeerId},
+   tracker::udp::UdpManager,
 };
 pub mod http;
 pub mod udp;
@@ -85,7 +88,17 @@ impl Default for TrackerStats {
 }
 
 /// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
-#[derive(Clone, Copy, Debug)]
+/// Enum for UDP Tracker Protocol Events parameter. See this resource for more information: <https://xbtt.sourceforge.net/udp_tracker_protocol.html>
+#[derive(
+   Debug,
+   Serialize_repr,
+   Deserialize_repr,
+   Clone,
+   Copy,
+   PartialEq,
+   Eq,
+   TryFromPrimitive
+)]
 #[repr(u32)]
 pub enum Event {
    Empty = 0,
@@ -134,7 +147,7 @@ pub trait TrackerInstance {
    /// connection is made. If this tracker is a UDP tracker, a connection is
    /// established with the peer.
    async fn connect(
-      info_hash: InfoHash, peer_id: PeerId,
+      info_hash: InfoHash, peer_id: PeerId, port: u16,
    ) -> (mpsc::Sender<TrackerUpdate>, mpsc::Receiver<TrackerStats>);
 
    /// Returns a stream that appends every new group of peers that we receive
@@ -142,7 +155,7 @@ pub trait TrackerInstance {
    async fn announce_stream() -> impl Stream<Item = Peer>;
 
    /// Attaches an existing udp socket for reuse.
-   fn attach_udp_socket(udp_socket: Arc<UdpSocket>);
+   fn attach_udp_manager(udp_socket: Arc<UdpManager>);
 }
 
 impl Tracker {
