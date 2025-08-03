@@ -1,14 +1,15 @@
-use std::{fmt, net::SocketAddr};
+use std::{fmt, net::SocketAddr, sync::Arc};
 
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::Stream;
 use http::HttpTracker;
 use rand::random_range;
 use serde::{
    Deserialize,
    de::{self, Visitor},
 };
-use tokio::sync::mpsc;
+use tokio::{net::UdpSocket, sync::mpsc, time::Instant};
 use udp::UdpTracker;
 
 use crate::{
@@ -28,8 +29,19 @@ pub trait TrackerTrait: Clone {
 }
 
 /// An Announce URI from a torrent file or magnet URI.
-/// <https://www.bittorrent.org/beps/bep_0012.html>
-/// Example: <udp://tracker.opentrackr.org:1337/announce>
+/// HTTP trackers: <https://www.bittorrent.org/beps/bep_0003.html>
+/// UDP trackers: <https://www.bittorrent.org/beps/bep_0015.html>
+///
+/// Example tracker: <udp://tracker.opentrackr.org:1337/announce>
+///
+/// # Example usage:
+///
+/// ```
+/// let tracker = Tracker::Http("udp://tracker.opentrackr.org:1337/announce");
+/// let (tx, rx) = tracker.connect(info_hash, peer_id).await; // irrelevant for HTTP trackers
+/// let peers: Stream<Peer> = tracker.announce_stream();
+/// tx.send({ uploaded: 20 });
+/// ```
 #[derive(Debug, Clone)]
 pub enum Tracker {
    /// HTTP Spec
@@ -39,6 +51,98 @@ pub enum Tracker {
    /// <https://www.bittorrent.org/beps/bep_0015.html>
    Udp(String),
    Websocket(String),
+}
+
+/// Tracker statistics to be returned from
+/// [announce_stream](TrackerInstance::announce_stream).
+#[derive(Clone, Debug)]
+pub struct TrackerStats {
+   connect_attempts: usize,
+   connect_successes: usize,
+   announce_attempts: usize,
+   announce_successes: usize,
+   total_peers_received: usize,
+   bytes_sent: usize,
+   bytes_received: usize,
+   last_successful_announce: Option<Instant>,
+   session_start: Instant,
+}
+
+impl Default for TrackerStats {
+   fn default() -> Self {
+      Self {
+         connect_attempts: 0,
+         connect_successes: 0,
+         announce_attempts: 0,
+         announce_successes: 0,
+         total_peers_received: 0,
+         bytes_sent: 0,
+         bytes_received: 0,
+         last_successful_announce: None,
+         session_start: Instant::now(),
+      }
+   }
+}
+
+/// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
+#[derive(Clone, Copy, Debug)]
+#[repr(u32)]
+pub enum Event {
+   Empty = 0,
+   Started = 1,
+   Completed = 2,
+   Stopped = 3,
+}
+
+/// The format/data for a request made to either a UDP or HTTP tracker.
+#[derive(Clone, Copy, Debug)]
+#[allow(unused)]
+pub struct TrackerRequest {
+   /// The port that our TCP or uTP peer handler is listening on
+   ///
+   /// The port for other peers to connect to us
+   port: u16,
+   /// Bytes uploaded. Due to BitTorrent's godawful documentation, I am not
+   /// aware if this is *actually* bytes. However, according to [BitTorrent's wiki.theory.org](https://wiki.theory.org/BitTorrentSpecification#Tracker_HTTP.2FHTTPS_Protocol), the general consensus is that the unit of this metric is bytes.
+   uploaded: usize,
+   /// Bytes uploaded. Due to BitTorrent's godawful documentation, I am not
+   /// aware if this is *actually* bytes. However, according to [BitTorrent's wiki.theory.org](https://wiki.theory.org/BitTorrentSpecification#Tracker_HTTP.2FHTTPS_Protocol), the general consensus is that the unit of this metric is bytes.
+   downloaded: usize,
+   /// The number of bytes this client still has to download.
+   left: Option<usize>,
+   /// See documentation for [Event].
+   event: Event,
+   /// If we want peers in a compact format or not. Only applicable to HTTP
+   /// trackers.
+   compact: Option<bool>,
+}
+
+/// An enum for updating data inside a tracker with the [mpsc
+/// Sender](tokio::sync::mpsc::Sender) returned from
+/// [announce_stream](TrackerInstance::announce_stream).
+pub enum TrackerUpdate {
+   Uploaded(usize),
+   Downloaded(usize),
+   Left(usize),
+   Event(Event),
+}
+
+/// Trait for HTTP and UDP trackers.
+#[async_trait]
+pub trait TrackerInstance {
+   /// Connects to the tracker. If this tracker is an HTTP tracker, no actual
+   /// connection is made. If this tracker is a UDP tracker, a connection is
+   /// established with the peer.
+   async fn connect(
+      info_hash: InfoHash, peer_id: PeerId,
+   ) -> (mpsc::Sender<TrackerUpdate>, mpsc::Receiver<TrackerStats>);
+
+   /// Returns a stream that appends every new group of peers that we receive
+   /// from a tracker.
+   async fn announce_stream() -> impl Stream;
+
+   /// Attaches an existing udp socket for reuse.
+   fn attach_udp_socket(udp_socket: Arc<UdpSocket>);
 }
 
 impl Tracker {

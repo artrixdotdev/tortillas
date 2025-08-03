@@ -82,6 +82,8 @@ impl TrackerRequest {
 
 impl TrackerRequest {
    #[instrument(fields(peer_tracker_addr = ?peer_tracker_addr))]
+   /// peer_tracker_addr refers to the port that we are listening on (which
+   /// could be TCP, uTP, etc.).
    pub fn new(peer_tracker_addr: Option<SocketAddr>) -> TrackerRequest {
       let addr = peer_tracker_addr.unwrap_or_else(|| {
          let default_addr = SocketAddr::from_str("0.0.0.0:6881").unwrap();

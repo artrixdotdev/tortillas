@@ -26,6 +26,7 @@ use crate::{
    errors::{TrackerError, UdpTrackerError},
    hashes::InfoHash,
    peer::PeerId,
+   tracker::TrackerStats,
 };
 
 /// Types and constants
@@ -191,6 +192,7 @@ impl TrackerRequest {
    #[instrument(skip(self), fields(request_type = %self))]
    pub fn to_bytes(&self) -> Vec<u8> {
       let mut buf = Vec::new();
+
       match self {
          TrackerRequest::Connect(id, action, transaction_id) => {
             trace!(
@@ -418,36 +420,6 @@ enum ReadyState {
    Ready,
    Disconnected,
 }
-
-#[derive(Clone, Debug)]
-struct TrackerStats {
-   connect_attempts: usize,
-   connect_successes: usize,
-   announce_attempts: usize,
-   announce_successes: usize,
-   total_peers_received: usize,
-   bytes_sent: usize,
-   bytes_received: usize,
-   last_successful_announce: Option<Instant>,
-   session_start: Instant,
-}
-
-impl Default for TrackerStats {
-   fn default() -> Self {
-      Self {
-         connect_attempts: 0,
-         connect_successes: 0,
-         announce_attempts: 0,
-         announce_successes: 0,
-         total_peers_received: 0,
-         bytes_sent: 0,
-         bytes_received: 0,
-         last_successful_announce: None,
-         session_start: Instant::now(),
-      }
-   }
-}
-
 #[derive(Clone)]
 pub struct UdpTracker {
    uri: String,
@@ -478,6 +450,7 @@ impl UdpTracker {
                error!(error = %e, "Failed to get local address from provided socket");
                UdpTrackerError::ConnectionFailed(format!("Failed to get socket address: {e}"))
             })?;
+
             debug!(local_addr = %local_addr, "Using provided socket");
             sock
          }
