@@ -520,6 +520,10 @@ impl UdpTracker {
       }
    }
 
+   #[instrument(skip(self), fields(
+        tracker_uri = %self.addr,
+        connection_id = ?self.connection_id
+   ))]
    async fn recv_retry(
       &self, transaction_id: &TransactionId,
    ) -> anyhow::Result<TrackerResponse, RetryError<UdpTrackerError>> {
@@ -549,6 +553,11 @@ impl UdpTracker {
 
       let response = TrackerResponse::from_bytes(&buf).map_err(RetryError::Permanent)?;
 
+      trace!(
+         response = ?response,
+         "Successfully received response from tracker"
+      );
+
       // Verify the response is for us
       if self.addr != addr {
          warn!(
@@ -576,6 +585,10 @@ impl UdpTracker {
       Ok(response)
    }
 
+   #[instrument(skip(self), fields(
+        tracker_uri = %self.addr,
+        connection_id = ?self.connection_id
+   ))]
    async fn send_and_recv_retry(
       &self, message: &TrackerRequest, transaction_id: &TransactionId,
    ) -> anyhow::Result<TrackerResponse, RetryError<UdpTrackerError>> {
@@ -602,12 +615,20 @@ impl UdpTracker {
       self.recv_retry(transaction_id).await
    }
 
-   #[instrument(skip(self, message), fields(self.addr))]
+   #[instrument(skip(self), fields(
+        tracker_uri = %self.addr,
+        connection_id = ?self.connection_id
+    ))]
    async fn send_and_wait(&self, message: TrackerRequest) -> Result<TrackerResponse> {
       let transaction_id = match &message {
          TrackerRequest::Connect(_, _, tid) => *tid,
          TrackerRequest::Announce { transaction_id, .. } => *transaction_id,
       };
+
+      trace!(
+         transaction_id = transaction_id,
+         "Transaction ID for tracker"
+      );
 
       // UDP is an 'unreliable' protocol. This means it doesn't retransmit lost
       // packets itself. The application is responsible for this. If a response is not
