@@ -450,7 +450,10 @@ impl UdpTracker {
    ) -> Result<UdpTracker> {
       let addrs = lookup_host(&uri.replace("udp://", ""))
          .await
-         .unwrap()
+         .map_err(|e| {
+            error!(error = %e, "Error looking up host for tracker");
+            anyhow!(e)
+         })?
          .filter(|addr| addr.is_ipv4()) // We dont support ipv6 yet
          .collect::<Vec<_>>();
 
@@ -1086,11 +1089,16 @@ mod tests {
                   Some(socket_addr),
                   Some(PeerId::new()), // Different peer ID for each tracker
                )
-               .await
-               .expect(&format!("Failed to create UDP tracker {}", i));
+               .await;
 
-               trackers.push(tracker);
-               tracker_urls.push(announce_url.uri().clone());
+               if tracker.is_err() {
+                  // AFAIK, if new() fails, something most likely went wrong with the DNS lookup.
+                  // We don't want to completely panic! if one tracker fails though.
+                  let _ = tracker.map_err(|e| error!(error = %e, "Failed to create UDP tracker"));
+               } else {
+                  trackers.push(tracker.unwrap());
+                  tracker_urls.push(announce_url.uri().clone());
+               }
             }
 
             // If we don't have enough unique trackers, duplicate the first one
