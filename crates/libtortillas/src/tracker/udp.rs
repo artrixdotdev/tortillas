@@ -967,7 +967,10 @@ mod tests {
    use tracing_test::traced_test;
 
    use super::*;
-   use crate::metainfo::{MagnetUri, MetaInfo};
+   use crate::{
+      metainfo::{MagnetUri, MetaInfo},
+      tracker::Tracker,
+   };
 
    #[tokio::test]
    #[traced_test]
@@ -1010,6 +1013,148 @@ mod tests {
 
             let peer = &peers[0];
             assert!(peer.ip.is_ipv4(), "Expected IPv4 peer address");
+         }
+         _ => {
+            panic!("Expected MagnetUri variant");
+         }
+      }
+   }
+   use std::collections::HashMap;
+   #[tokio::test]
+   #[traced_test]
+   async fn test_multiple_trackers_single_udp_server() {
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/big-buck-bunny.txt");
+
+      let contents = tokio::fs::read_to_string(&path).await.unwrap();
+      let metainfo = MagnetUri::parse(contents).unwrap();
+
+      match metainfo {
+         MetaInfo::MagnetUri(magnet) => {
+            let info_hash = magnet.info_hash().expect("Missing info hash");
+            let announce_list = magnet.announce_list.expect("Missing announce list");
+
+            // Create a shared UDP socket
+            let shared_socket = Arc::new(
+               UdpSocket::bind("0.0.0.0:0")
+                  .await
+                  .expect("Failed to bind shared UDP socket"),
+            );
+
+            let local_addr = shared_socket.local_addr().unwrap();
+            println!("Shared socket bound to: {}", local_addr);
+
+            // Create multiple tracker instances using the same socket
+            let mut trackers = Vec::new();
+            let mut tracker_urls = Vec::new();
+
+            // Use multiple tracker URLs from the announce list (or duplicate the same one)
+            for (i, announce_url) in announce_list
+               .iter()
+               .filter(|t| t.uri().starts_with("udp://"))
+               .enumerate()
+            {
+               let port: u16 = random_range(1024..65535);
+               let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
+
+               let tracker = UdpTracker::new(
+                  announce_url.uri().clone(),
+                  Some(shared_socket.clone()), // Share the same socket
+                  info_hash,
+                  Some(socket_addr),
+                  Some(PeerId::new()), // Different peer ID for each tracker
+               )
+               .await
+               .expect(&format!("Failed to create UDP tracker {}", i));
+
+               trackers.push(tracker);
+               tracker_urls.push(announce_url.uri().clone());
+            }
+
+            // If we don't have enough unique trackers, duplicate the first one
+            while trackers.len() < 3 {
+               let port: u16 = random_range(1024..65535);
+               let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
+
+               let tracker = UdpTracker::new(
+                  tracker_urls[0].clone(),
+                  Some(shared_socket.clone()),
+                  info_hash,
+                  Some(socket_addr),
+                  Some(PeerId::new()),
+               )
+               .await
+               .expect("Failed to create duplicate UDP tracker");
+
+               trackers.push(tracker);
+            }
+
+            // Test that all trackers can fetch peers concurrently using the shared socket
+            let mut handles = Vec::new();
+
+            for (i, mut tracker) in trackers.into_iter().enumerate() {
+               let handle = tokio::spawn(async move {
+                  println!("Tracker {} starting peer fetch", i);
+
+                  match tracker.get_peers().await {
+                     Ok(peers) => {
+                        println!("Tracker {} received {} peers", i, peers.len());
+                        (i, Ok(peers))
+                     }
+                     Err(e) => {
+                        println!("Tracker {} failed: {}", i, e);
+                        (i, Err(e))
+                     }
+                  }
+               });
+               handles.push(handle);
+            }
+
+            // Wait for all trackers to complete
+            let mut results = HashMap::new();
+            for handle in handles {
+               let (tracker_id, result) = handle.await.expect("Task panicked");
+               results.insert(tracker_id, result);
+            }
+
+            // Verify results
+            let mut successful_trackers = 0;
+            let mut total_peers = 0;
+
+            for (tracker_id, result) in results {
+               match result {
+                  Ok(peers) => {
+                     successful_trackers += 1;
+                     total_peers += peers.len();
+                     println!(
+                        "Tracker {} succeeded with {} peers",
+                        tracker_id,
+                        peers.len()
+                     );
+
+                     // Verify peer format
+                     for peer in &peers {
+                        assert!(peer.ip.is_ipv4(), "Expected IPv4 peer address");
+                        assert!(peer.port > 0, "Expected valid port number");
+                     }
+                  }
+                  Err(e) => {
+                     println!("Tracker {} failed: {}", tracker_id, e);
+                  }
+               }
+            }
+
+            // At least one tracker should succeed
+            assert!(
+               successful_trackers > 0,
+               "Expected at least one tracker to succeed, but all failed"
+            );
+
+            println!(
+               "Test completed: {}/{} trackers succeeded, {} total peers received",
+               successful_trackers, 3, total_peers
+            );
          }
          _ => {
             panic!("Expected MagnetUri variant");
