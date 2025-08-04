@@ -174,6 +174,7 @@ impl Tracker {
             let mut tracker = UdpTracker::new(
                uri.clone(),
                None,
+               None,
                info_hash,
                Some(SocketAddr::from(([0, 0, 0, 0], port))),
                peer_id,
@@ -198,7 +199,7 @@ impl Tracker {
          }
          Tracker::Udp(uri) => {
             let mut tracker =
-               UdpTracker::new(uri.clone(), None, info_hash, peer_addr, Some(peer_id))
+               UdpTracker::new(uri.clone(), None, None, info_hash, peer_addr, Some(peer_id))
                   .await
                   .unwrap();
             Ok(tracker.stream_peers().await.unwrap())
