@@ -17,7 +17,6 @@ use udp::UdpTracker;
 use crate::{
    hashes::InfoHash,
    peer::{Peer, PeerId},
-   tracker::udp::UdpManager,
 };
 pub mod http;
 pub mod udp;
@@ -150,12 +149,13 @@ pub trait TrackerInstance {
       info_hash: InfoHash, peer_id: PeerId, port: u16,
    ) -> (mpsc::Sender<TrackerUpdate>, mpsc::Receiver<TrackerStats>);
 
+   async fn connect_with_udp_socket(
+      info_hash: InfoHash, peer_id: PeerId, port: u16, udp_socket: Arc<UdpSocket>,
+   ) -> (mpsc::Sender<TrackerUpdate>, mpsc::Receiver<TrackerStats>);
+
    /// Returns a stream that appends every new group of peers that we receive
    /// from a tracker.
    async fn announce_stream() -> impl Stream<Item = Peer>;
-
-   /// Attaches an existing udp socket for reuse.
-   fn attach_udp_manager(udp_socket: Arc<UdpManager>);
 }
 
 impl Tracker {

@@ -72,6 +72,9 @@ pub enum UdpTrackerError {
 
    #[error(transparent)]
    Other(#[from] anyhow::Error),
+
+   #[error("Tracker timed out")]
+   MessageTimeout,
 }
 
 #[derive(Error, Debug)]
