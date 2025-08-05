@@ -420,7 +420,7 @@ enum ReadyState {
 }
 /// Centralized message receiver that broadcasts messages to all trackers
 #[derive(Clone, Debug)]
-pub struct UdpMessageReceiver {
+pub struct UdpServer {
    /// Map of transaction IDs to sender channels for routing responses
    response_channels: Arc<Mutex<HashMap<TransactionId, mpsc::UnboundedSender<TrackerResponse>>>>,
    /// Shared socket for all trackers
@@ -429,9 +429,9 @@ pub struct UdpMessageReceiver {
    stats: Arc<Mutex<TrackerStats>>,
 }
 
-impl UdpMessageReceiver {
+impl UdpServer {
    pub async fn new(socket: Arc<UdpSocket>) -> Self {
-      let receiver = UdpMessageReceiver {
+      let receiver = UdpServer {
          response_channels: Arc::new(Mutex::new(HashMap::new())),
          socket,
          stats: Arc::new(tokio::sync::Mutex::new(TrackerStats::default())),
@@ -550,7 +550,7 @@ pub struct UdpTracker {
    addr: SocketAddr,
    connection_id: Option<ConnectionId>,
    pub socket: Arc<UdpSocket>,
-   message_receiver: UdpMessageReceiver,
+   message_receiver: UdpServer,
    ready_state: ReadyState,
    pub peer_id: PeerId,
    info_hash: InfoHash,
@@ -567,7 +567,7 @@ impl UdpTracker {
         peer_socket_addr = ?peer_socket_addr
     ))]
    pub async fn new(
-      uri: String, socket: Option<Arc<UdpSocket>>, message_receiver: Option<UdpMessageReceiver>,
+      uri: String, socket: Option<Arc<UdpSocket>>, message_receiver: Option<UdpServer>,
       info_hash: InfoHash, peer_socket_addr: Option<SocketAddr>, peer_id: Option<PeerId>,
    ) -> Result<UdpTracker> {
       let addrs = lookup_host(&uri.replace("udp://", ""))
@@ -610,7 +610,7 @@ impl UdpTracker {
       // Create or use existing message receiver
       let message_receiver = match message_receiver {
          Some(receiver) => receiver,
-         None => UdpMessageReceiver::new(sock.clone()).await,
+         None => UdpServer::new(sock.clone()).await,
       };
 
       let peer_id = peer_id.unwrap_or_else(|| {
@@ -1177,7 +1177,7 @@ mod tests {
                   .await
                   .expect("Failed to bind shared UDP socket"),
             );
-            let shared_receiver = UdpMessageReceiver::new(shared_socket.clone()).await;
+            let shared_receiver = UdpServer::new(shared_socket.clone()).await;
 
             let local_addr = shared_socket.local_addr().unwrap();
             println!("Shared socket bound to: {}", local_addr);

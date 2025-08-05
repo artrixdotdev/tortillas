@@ -17,6 +17,7 @@ use udp::UdpTracker;
 use crate::{
    hashes::InfoHash,
    peer::{Peer, PeerId},
+   tracker::udp::UdpServer,
 };
 pub mod http;
 pub mod udp;
@@ -40,7 +41,9 @@ pub trait TrackerTrait: Clone {
 ///
 /// ```
 /// let tracker = Tracker::Http("udp://tracker.opentrackr.org:1337/announce");
-/// let (tx, rx) = tracker.connect(info_hash, peer_id).await; // irrelevant for HTTP trackers
+/// let udp_manager = UdpManager::new();
+/// let udp_socket = UdpSocket::bind("")
+/// let (tx, rx) = tracker.connect_udp(info_hash, peer_id, udp_manager, udp_socket).await; // irrelevant for HTTP trackers
 /// let peers: Stream<Peer> = tracker.announce_stream();
 /// tx.send({ uploaded: 20 });
 /// ```
@@ -149,8 +152,9 @@ pub trait TrackerInstance {
       info_hash: InfoHash, peer_id: PeerId, port: u16,
    ) -> (mpsc::Sender<TrackerUpdate>, mpsc::Receiver<TrackerStats>);
 
-   async fn connect_with_udp_socket(
-      info_hash: InfoHash, peer_id: PeerId, port: u16, udp_socket: Arc<UdpSocket>,
+   async fn connect_udp(
+      info_hash: InfoHash, peer_id: PeerId, port: u16, udp_socket: Option<Arc<UdpSocket>>,
+      manager: Arc<UdpServer>,
    ) -> (mpsc::Sender<TrackerUpdate>, mpsc::Receiver<TrackerStats>);
 
    /// Returns a stream that appends every new group of peers that we receive
