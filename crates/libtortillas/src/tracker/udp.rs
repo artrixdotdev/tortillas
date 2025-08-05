@@ -1110,7 +1110,7 @@ impl TrackerTrait for UdpTracker {
 
 #[cfg(test)]
 mod tests {
-   use futures::pin_mut;
+   use futures::{StreamExt, pin_mut};
    use rand::random_range;
 
    use super::*;
