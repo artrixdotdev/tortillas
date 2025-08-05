@@ -430,7 +430,10 @@ pub struct UdpServer {
 }
 
 impl UdpServer {
-   pub async fn new(socket: Arc<UdpSocket>) -> Self {
+   pub async fn new(addr: Option<SocketAddr>) -> Self {
+      let addr = addr.unwrap_or(SocketAddr::from_str("0.0.0.0:0").unwrap());
+      let socket = Arc::new(UdpSocket::bind(addr).await.unwrap());
+
       let receiver = UdpServer {
          response_channels: Arc::new(Mutex::new(HashMap::new())),
          socket,
@@ -440,6 +443,10 @@ impl UdpServer {
       // Start the message receiving task
       receiver.start_receiver_task().await;
       receiver
+   }
+
+   pub fn local_addr(&self) -> SocketAddr {
+      self.socket.local_addr().unwrap()
    }
 
    /// Register a transaction ID with a response channel
@@ -548,28 +555,27 @@ impl UdpServer {
 pub struct UdpTracker {
    /// Raw SocketAddr for the tracker
    addr: SocketAddr,
+   uri: String,
+   server: UdpServer,
    connection_id: Option<ConnectionId>,
-   pub socket: Arc<UdpSocket>,
-   message_receiver: UdpServer,
    ready_state: ReadyState,
    pub peer_id: PeerId,
    info_hash: InfoHash,
    ///  The address that our TCP or uTP socket is bound to
-   peer_socket_addr: SocketAddr,
+   peer_addr: SocketAddr,
    interval: u32,
    stats: Arc<tokio::sync::Mutex<TrackerStats>>,
 }
 
 impl UdpTracker {
-   #[instrument(skip(socket, info_hash, peer_id), fields(
+   #[instrument(skip(info_hash), fields(
         uri = %uri,
         info_hash = %info_hash,
-        peer_socket_addr = ?peer_socket_addr
     ))]
    pub async fn new(
-      uri: String, socket: Option<Arc<UdpSocket>>, message_receiver: Option<UdpServer>,
-      info_hash: InfoHash, peer_socket_addr: Option<SocketAddr>, peer_id: Option<PeerId>,
+      uri: String, server: Option<UdpServer>, info_hash: InfoHash, peer_info: (PeerId, SocketAddr),
    ) -> Result<UdpTracker> {
+      let (peer_id, peer_addr) = peer_info;
       let addrs = lookup_host(&uri.replace("udp://", ""))
          .await
          .map_err(|e| {
@@ -582,67 +588,34 @@ impl UdpTracker {
       trace!("Resolved addresses: {:?}", addrs);
       let addr = *addrs.first().unwrap();
 
-      let sock = match socket {
-         Some(sock) => {
-            let local_addr = sock.local_addr().map_err(|e| {
-               error!(error = %e, "Failed to get local address from provided socket");
-               UdpTrackerError::ConnectionFailed(format!("Failed to get socket address: {e}"))
-            })?;
-
-            debug!(local_addr = %local_addr, "Using provided socket");
-            sock
-         }
-         None => {
-            let sock = UdpSocket::bind("0.0.0.0:0").await.map_err(|e| {
-               error!(error = %e, "Failed to bind new UDP socket");
-               UdpTrackerError::ConnectionFailed(format!("Failed to bind socket: {e}"))
-            })?;
-
-            let local_addr = sock.local_addr().map_err(|e| {
-               error!(error = %e, "Failed to get local address from new socket");
-               UdpTrackerError::ConnectionFailed(format!("Failed to get socket address: {e}"))
-            })?;
-            debug!(local_addr = %local_addr, "Created new UDP socket");
-            Arc::new(sock)
-         }
-      };
-
       // Create or use existing message receiver
-      let message_receiver = match message_receiver {
+      let server = match server {
          Some(receiver) => receiver,
-         None => UdpServer::new(sock.clone()).await,
+         None => UdpServer::new(None).await,
       };
-
-      let peer_id = peer_id.unwrap_or_else(|| {
-         let id = PeerId::new();
-         trace!(generated_peer_id = %id, "Generated new peer ID");
-         id
-      });
-
-      let peer_socket_addr = peer_socket_addr.unwrap_or_else(|| {
-         let default_addr = SocketAddr::from_str("0.0.0.0:6881").unwrap();
-         trace!(default_addr = %default_addr, "Using default peer socket address");
-         default_addr
-      });
 
       debug!("UDP tracker instance created");
 
       Ok(UdpTracker {
          addr,
+         uri,
          interval: u32::MAX,
          connection_id: None,
-         socket: sock,
-         message_receiver,
+         server,
          ready_state: ReadyState::Disconnected,
          peer_id,
          info_hash,
-         peer_socket_addr,
+         peer_addr,
          stats: Arc::new(tokio::sync::Mutex::new(TrackerStats::default())),
       })
    }
 
+   pub fn local_addr(&self) -> SocketAddr {
+      self.server.local_addr()
+   }
+
    #[instrument(skip(self), fields(
-        tracker_uri = %self.addr,
+        tracker_uri = %self.uri,
         connection_id = ?self.connection_id
    ))]
    async fn recv_retry(
@@ -653,7 +626,7 @@ impl UdpTracker {
 
       // Register this transaction ID with the message receiver
       self
-         .message_receiver
+         .server
          .register_transaction(*transaction_id, response_tx)
          .await;
 
@@ -663,10 +636,7 @@ impl UdpTracker {
       let timeout_result = timeout(MESSAGE_TIMEOUT, response_rx.recv()).await;
 
       // Unregister the transaction ID
-      self
-         .message_receiver
-         .unregister_transaction(transaction_id)
-         .await;
+      self.server.unregister_transaction(transaction_id).await;
 
       match timeout_result {
          Ok(Some(response)) => {
@@ -702,7 +672,7 @@ impl UdpTracker {
    }
 
    #[instrument(skip(self), fields(
-        tracker_uri = %self.addr,
+        tracker_uri = %self.uri,
         connection_id = ?self.connection_id
    ))]
    async fn send_and_recv_retry(
@@ -712,7 +682,7 @@ impl UdpTracker {
 
       // Send the message through the shared message receiver
       self
-         .message_receiver
+         .server
          .send_message(&message_bytes, self.addr)
          .await
          .map_err(RetryError::Permanent)?;
@@ -728,7 +698,7 @@ impl UdpTracker {
    }
 
    #[instrument(skip(self), fields(
-        tracker_uri = %self.addr,
+        tracker_uri = %self.uri,
         connection_id = ?self.connection_id
     ))]
    async fn send_and_wait(&self, message: TrackerRequest) -> Result<TrackerResponse> {
@@ -766,7 +736,7 @@ impl UdpTracker {
    }
 
    #[instrument(skip(self), fields(
-        tracker_uri = %self.addr,
+        tracker_uri = %self.uri,
         connection_id = ?self.connection_id
     ))]
    async fn connect(&mut self) -> Result<ConnectionId> {
@@ -829,7 +799,7 @@ impl UdpTracker {
    }
 
    #[instrument(skip(self), fields(
-        tracker_uri = %self.addr,
+        tracker_uri = %self.uri,
         ready_state = ?self.ready_state,
         connection_id = ?self.connection_id
     ))]
@@ -868,7 +838,7 @@ impl UdpTracker {
          ip_address: 0,
          key: 0,
          num_want: -1,
-         port: self.peer_socket_addr.port(),
+         port: self.peer_addr.port(),
       };
 
       let response = self.send_and_wait(request).await?;
@@ -976,7 +946,7 @@ impl UdpTracker {
 #[async_trait]
 impl TrackerTrait for UdpTracker {
    #[instrument(skip(self), fields(
-        tracker_uri = %self.addr,
+        tracker_uri = %self.uri,
         info_hash = %self.info_hash
     ))]
    async fn stream_peers(&mut self) -> anyhow::Result<mpsc::Receiver<Vec<Peer>>> {
@@ -1067,7 +1037,7 @@ impl TrackerTrait for UdpTracker {
    }
 
    #[instrument(skip(self), fields(
-        tracker_uri = %self.addr,
+        tracker_uri = %self.uri,
         ready_state = ?self.ready_state
     ))]
    async fn get_peers(&mut self) -> anyhow::Result<Vec<Peer>, anyhow::Error> {
@@ -1121,17 +1091,14 @@ mod tests {
             let info_hash = magnet.info_hash().expect("Missing info hash");
             let announce_list = magnet.announce_list.expect("Missing announce list");
             let announce_url = &announce_list[0].uri();
-
             let port: u16 = random_range(1024..65535);
             let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
 
             let mut udp_tracker = UdpTracker::new(
                announce_url.clone(),
                None,
-               None, // No shared message receiver
                info_hash,
-               Some(socket_addr),
-               None,
+               (PeerId::new(), socket_addr),
             )
             .await
             .expect("Failed to create UDP tracker");
@@ -1171,20 +1138,11 @@ mod tests {
             let info_hash = magnet.info_hash().expect("Missing info hash");
             let announce_list = magnet.announce_list.expect("Missing announce list");
 
-            // Create a shared UDP socket
-            let shared_socket = Arc::new(
-               UdpSocket::bind("0.0.0.0:0")
-                  .await
-                  .expect("Failed to bind shared UDP socket"),
-            );
-            let shared_receiver = UdpServer::new(shared_socket.clone()).await;
-
-            let local_addr = shared_socket.local_addr().unwrap();
-            println!("Shared socket bound to: {}", local_addr);
-
             // Create multiple tracker instances using the same socket
             let mut trackers = Vec::new();
             let mut tracker_urls = Vec::new();
+
+            let udp_server = UdpServer::new(None).await;
 
             // Use multiple tracker URLs from the announce list (or duplicate the same one)
             for announce_url in announce_list
@@ -1196,11 +1154,9 @@ mod tests {
 
                let tracker = UdpTracker::new(
                   announce_url.uri().clone(),
-                  Some(shared_socket.clone()), // Share the same socket
-                  Some(shared_receiver.clone()),
+                  Some(udp_server.clone()),
                   info_hash,
-                  Some(socket_addr),
-                  Some(PeerId::new()), // Different peer ID for each tracker
+                  (PeerId::new(), socket_addr),
                )
                .await;
 
@@ -1221,11 +1177,9 @@ mod tests {
 
                let tracker = UdpTracker::new(
                   tracker_urls[0].clone(),
-                  Some(shared_socket.clone()),
-                  Some(shared_receiver.clone()),
+                  Some(udp_server.clone()),
                   info_hash,
-                  Some(socket_addr),
-                  Some(PeerId::new()),
+                  (PeerId::new(), socket_addr),
                )
                .await
                .expect("Failed to create duplicate UDP tracker");
