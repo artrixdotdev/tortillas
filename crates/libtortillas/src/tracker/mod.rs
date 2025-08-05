@@ -10,7 +10,7 @@ use std::{
 use anyhow::Result;
 use async_trait::async_trait;
 use atomic_time::{AtomicInstant, AtomicOptionInstant};
-use futures::Stream;
+use futures::{Stream, StreamExt, pin_mut};
 use http::HttpTracker;
 use num_enum::TryFromPrimitive;
 use rand::random_range;
@@ -252,7 +252,7 @@ impl Tracker {
          }
          Tracker::Udp(uri) => {
             let port: u16 = random_range(1024..65535);
-            let mut tracker = UdpTracker::new(
+            let tracker = UdpTracker::new(
                uri.clone(),
                None,
                info_hash,
@@ -261,7 +261,16 @@ impl Tracker {
             .await
             .unwrap();
 
-            Ok(tracker.get_peers().await.unwrap())
+            // This may be temporary.
+            let mut peers = vec![];
+            let stream = tracker.announce_stream().await;
+            pin_mut!(stream);
+
+            while let Some(peer) = stream.next().await {
+               peers.push(peer);
+            }
+
+            Ok(peers)
          }
          Tracker::Websocket(_) => todo!(),
       }
@@ -277,11 +286,12 @@ impl Tracker {
             Ok(tracker.stream_peers().await.unwrap())
          }
          Tracker::Udp(uri) => {
-            let mut tracker =
-               UdpTracker::new(uri.clone(), None, info_hash, (peer_id, peer_addr.unwrap()))
-                  .await
-                  .unwrap();
-            Ok(tracker.stream_peers().await.unwrap())
+            // let mut tracker =
+            //    UdpTracker::new(uri.clone(), None, info_hash, (peer_id,
+            // peer_addr.unwrap()))       .await
+            //       .unwrap();
+            // Ok(tracker.stream_peers().await.unwrap())
+            todo!()
          }
          Tracker::Websocket(_) => todo!(),
       }

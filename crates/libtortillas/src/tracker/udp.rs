@@ -991,123 +991,6 @@ impl TrackerInstance for UdpTracker {
    }
 }
 
-#[async_trait]
-impl TrackerTrait for UdpTracker {
-   #[instrument(skip(self), fields(
-        tracker_uri = %self.uri,
-        info_hash = %self.info_hash
-    ))]
-   async fn stream_peers(&mut self) -> anyhow::Result<mpsc::Receiver<Vec<Peer>>> {
-      info!("Starting UDP tracker peer streaming");
-
-      let (tx, rx) = mpsc::channel(100);
-
-      // Clone any data needed by the spawned task
-      let tx = tx.clone();
-      let mut tracker = self.clone();
-
-      tokio::spawn(async move {
-         let mut iteration = 0usize;
-         let mut consecutive_failures = 0usize;
-         let max_consecutive_failures = 5;
-
-         loop {
-            iteration += 1;
-
-            let start_time = Instant::now();
-            match tracker.get_peers().await {
-               Ok(peers) => {
-                  let fetch_duration = start_time.elapsed();
-                  consecutive_failures = 0;
-
-                  debug!(
-                     iteration = iteration,
-                     peers_count = peers.len(),
-                     fetch_duration_ms = fetch_duration.as_millis(),
-                     "Successfully fetched peers from tracker"
-                  );
-
-                  if tx.send(peers).await.is_err() {
-                     warn!("Peer stream receiver closed, terminating");
-                     break;
-                  }
-               }
-               Err(e) => {
-                  consecutive_failures += 1;
-                  let fetch_duration = start_time.elapsed();
-
-                  warn!(
-                      iteration = iteration,
-                      consecutive_failures = consecutive_failures,
-                      fetch_duration_ms = fetch_duration.as_millis(),
-                      error = %e,
-                      "Failed to fetch peers from tracker"
-                  );
-
-                  if consecutive_failures >= max_consecutive_failures {
-                     error!(
-                        consecutive_failures = consecutive_failures,
-                        max_failures = max_consecutive_failures,
-                        "Too many consecutive failures, terminating peer stream"
-                     );
-                     break;
-                  }
-
-                  // Send empty peer list on error to keep the stream alive
-                  if tx.send(vec![]).await.is_err() {
-                     warn!("Peer stream receiver closed, terminating");
-                     break;
-                  }
-               }
-            }
-
-            let delay = tracker.interval().max(1);
-            trace!(
-               next_request_delay_secs = delay,
-               "Waiting before next peer fetch"
-            );
-
-            sleep(Duration::from_secs(delay as u64)).await;
-         }
-
-         debug!("UDP peer streaming task terminated");
-      });
-
-      Ok(rx)
-   }
-
-   #[instrument(skip(self), fields(
-        tracker_uri = %self.uri,
-        ready_state = ?self.ready_state
-    ))]
-   async fn get_peers(&mut self) -> anyhow::Result<Vec<Peer>, anyhow::Error> {
-      // Connect if not already connected
-      if self.ready_state != ReadyState::Ready {
-         self.connect().await?;
-      }
-
-      // Attempt announce with connection ID retry logic
-      match self.announce().await {
-         Ok(peers) => Ok(peers),
-         Err(UdpTrackerError::TrackerMessage(msg)) if msg.contains("connection") => {
-            // Connection ID might have expired, try reconnecting once
-            warn!(
-                error_message = %msg,
-                "Connection ID may have expired, attempting reconnect"
-            );
-
-            self.ready_state = ReadyState::Disconnected;
-            self.connection_id = None;
-
-            // Reconnect and try announce again
-            self.connect().await?;
-            self.announce().await.map_err(Into::into)
-         }
-         Err(e) => Err(e.into()),
-      }
-   }
-}
-
 #[cfg(test)]
 mod tests {
    use futures::{StreamExt, pin_mut};
@@ -1136,37 +1019,30 @@ mod tests {
          MetaInfo::MagnetUri(magnet) => {
             let info_hash = magnet.info_hash().expect("Missing info hash");
             let announce_list = magnet.announce_list.expect("Missing announce list");
-            let announce_url = &announce_list[0].uri();
+            let uri = announce_list[0].uri();
             let port: u16 = random_range(1024..65535);
-            let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-            let mut udp_tracker = UdpTracker::new(
-               announce_url.clone(),
-               None,
-               info_hash,
-               (PeerId::new(), socket_addr),
-            )
-            .await
-            .expect("Failed to create UDP tracker");
+            let (_, _, tracker) = UdpTracker::configure(uri, info_hash, PeerId::new(), port, None)
+               .await
+               .expect("Failed to connect to UDP tracker");
 
             // Spawn a task to re-fetch the latest list of peers at a given interval
-            let mut rx = udp_tracker
-               .stream_peers()
-               .await
-               .expect("Failed to start peer streaming");
+            let announce_stream = tracker.announce_stream().await;
+            pin_mut!(announce_stream); // https://docs.rs/async-stream/latest/async_stream/#usage
 
-            let peers = rx.recv().await.expect("Failed to receive peers");
-
-            assert!(!peers.is_empty(), "Expected to receive at least one peer");
-
-            let peer = &peers[0];
-            assert!(peer.ip.is_ipv4(), "Expected IPv4 peer address");
+            let potential_peer = announce_stream.next().await;
+            if let Some(peer) = potential_peer {
+               assert!(peer.ip.is_ipv4());
+            } else {
+               panic!("Did not get a peer!");
+            }
          }
          _ => {
             panic!("Expected MagnetUri variant");
          }
       }
    }
+
    #[tokio::test]
    //#[traced_test]
    async fn test_multiple_trackers_single_udp_server() {
@@ -1200,22 +1076,25 @@ mod tests {
                .filter(|t| t.uri().starts_with("udp://"))
             {
                let port: u16 = random_range(1024..65535);
-               let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-               let tracker = UdpTracker::new(
-                  announce_url.uri().clone(),
-                  Some(udp_server.clone()),
+               let tobe_tracker = UdpTracker::configure(
+                  announce_url.uri(),
                   info_hash,
-                  (PeerId::new(), socket_addr),
+                  PeerId::new(),
+                  port,
+                  Some(udp_server.clone()),
                )
                .await;
 
-               if tracker.is_err() {
-                  // AFAIK, if new() fails, something most likely went wrong with the DNS lookup.
-                  // We don't want to completely panic! if one tracker fails though.
-                  let _ = tracker.map_err(|e| error!(error = %e, "Failed to create UDP tracker"));
+               if tobe_tracker.is_err() {
+                  error!("There was an error creating the tracker");
                } else {
-                  trackers.push(tracker.unwrap());
+                  let (_, _, tracker) = tobe_tracker.unwrap();
+                  // Spawn a task to re-fetch the latest list of peers at a given interval
+                  let announce_stream = tracker.announce_stream().await;
+                  pin_mut!(announce_stream); // https://docs.rs/async-stream/latest/async_stream/#usage
+
+                  trackers.push(tracker.clone());
                   tracker_urls.push(announce_url.uri().clone());
                }
             }
@@ -1223,13 +1102,13 @@ mod tests {
             // If we don't have enough unique trackers, duplicate the first one
             while trackers.len() < 2 {
                let port: u16 = random_range(1024..65535);
-               let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-               let tracker = UdpTracker::new(
+               let (_, _, tracker) = UdpTracker::configure(
                   tracker_urls[0].clone(),
-                  Some(udp_server.clone()),
                   info_hash,
-                  (PeerId::new(), socket_addr),
+                  PeerId::new(),
+                  port,
+                  Some(udp_server.clone()),
                )
                .await
                .expect("Failed to create duplicate UDP tracker");
@@ -1241,19 +1120,30 @@ mod tests {
             let mut handles = Vec::new();
             let tracker_len = trackers.len();
 
-            for (i, mut tracker) in trackers.into_iter().enumerate() {
+            for (i, tracker) in trackers.into_iter().enumerate() {
                let handle = tokio::spawn(async move {
                   println!("Tracker {} starting peer fetch", i);
+                  let stream = tracker.announce_stream().await;
+                  pin_mut!(stream); // https://docs.rs/async-stream/latest/async_stream/#usage
 
-                  match tracker.get_peers().await {
-                     Ok(peers) => {
-                        println!("Tracker {} received {} peers", i, peers.len());
-                        (i, Ok(peers))
+                  let mut peers = vec![];
+
+                  while let Ok(wrapped_peer) = timeout(Duration::from_secs(1), stream.next()).await
+                  {
+                     if let Some(peer) = wrapped_peer {
+                        peers.push(peer);
                      }
-                     Err(e) => {
-                        println!("Tracker {} failed: {}", i, e);
-                        (i, Err(e))
-                     }
+                  }
+
+                  if !peers.is_empty() {
+                     println!("Tracker {} received {} peers", i, peers.len());
+                     (i, Ok(peers))
+                  } else {
+                     println!("Tracker {} failed", i);
+                     (
+                        i,
+                        Err("Tracker failed (no peers, or something else failed)"),
+                     )
                   }
                });
                handles.push(handle);
