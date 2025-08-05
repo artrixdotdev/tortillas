@@ -26,7 +26,8 @@ bitvec = "1.0.1"
 futures = "0.3"
 bencode = "0.1.16"
 serde_with = "3.14.0"
-tokio-retry2 = { version = "0.5.7", features = ["tracing"]}
+tokio-retry2 = { version = "0.5.7", features = ["tracing"] }
+async-stream = "0.3.6"
 
 [dev-dependencies]
 tracing-test = "0.2.5"

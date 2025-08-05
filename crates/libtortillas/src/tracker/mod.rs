@@ -19,7 +19,10 @@ use serde::{
    de::{self, Visitor},
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tokio::{sync::mpsc, time::Instant};
+use tokio::{
+   sync::{broadcast, mpsc},
+   time::Instant,
+};
 use udp::UdpTracker;
 
 use crate::{
@@ -70,6 +73,7 @@ pub enum Tracker {
 /// Enum for UDP Tracker Protocol Events parameter. See this resource for more information: <https://xbtt.sourceforge.net/udp_tracker_protocol.html>
 #[derive(
    Debug,
+   Default,
    Serialize_repr,
    Deserialize_repr,
    Clone,
@@ -81,6 +85,7 @@ pub enum Tracker {
 #[repr(u32)]
 pub enum Event {
    Empty = 0,
+   #[default]
    Started = 1,
    Completed = 2,
    Stopped = 3,
@@ -102,12 +107,16 @@ pub trait TrackerInstance {
    /// Connects to the tracker. If this tracker is an HTTP tracker, no actual
    /// connection is made. If this tracker is a UDP tracker, a connection is
    /// established with the peer.
-   async fn connect(
-      info_hash: InfoHash, peer_id: PeerId, port: u16, server: Option<UdpServer>,
-   ) -> (mpsc::Sender<TrackerUpdate>, mpsc::Receiver<TrackerStats>);
+   async fn configure(
+      uri: String, info_hash: InfoHash, peer_id: PeerId, port: u16, server: Option<UdpServer>,
+   ) -> Result<(
+      mpsc::Sender<TrackerUpdate>,
+      broadcast::Receiver<TrackerStats>,
+      Box<Self>,
+   )>;
    /// Returns a stream that appends every new group of peers that we receive
    /// from a tracker.
-   async fn announce_stream() -> impl Stream<Item = Peer>;
+   async fn announce_stream(&self) -> impl Stream<Item = Peer>;
 }
 
 /// Tracker statistics to be returned from
