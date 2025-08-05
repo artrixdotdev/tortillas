@@ -126,11 +126,7 @@ pub trait TrackerInstance {
    /// connection is made. If this tracker is a UDP tracker, a connection is
    /// established with the peer.
    async fn connect(
-      info_hash: InfoHash, peer_id: PeerId, port: u16,
-   ) -> (mpsc::Sender<TrackerUpdate>, mpsc::Receiver<TrackerStats>);
-   async fn connect_udp(
-      info_hash: InfoHash, peer_id: PeerId, port: u16, udp_socket: Option<Arc<UdpSocket>>,
-      manager: Arc<UdpServer>,
+      info_hash: InfoHash, peer_id: PeerId, port: u16, server: Option<UdpServer>,
    ) -> (mpsc::Sender<TrackerUpdate>, mpsc::Receiver<TrackerStats>);
    /// Returns a stream that appends every new group of peers that we receive
    /// from a tracker.
