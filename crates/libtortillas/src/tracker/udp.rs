@@ -422,11 +422,10 @@ enum ReadyState {
 #[derive(Clone, Debug)]
 pub struct UdpServer {
    /// Map of transaction IDs to sender channels for routing responses
-   response_channels: Arc<Mutex<HashMap<TransactionId, mpsc::UnboundedSender<TrackerResponse>>>>,
+   response_channels:
+      Arc<Mutex<HashMap<TransactionId, mpsc::UnboundedSender<(usize, TrackerResponse)>>>>,
    /// Shared socket for all trackers
    socket: Arc<UdpSocket>,
-   /// Statistics tracking
-   stats: Arc<Mutex<TrackerStats>>,
 }
 
 impl UdpServer {
@@ -437,7 +436,6 @@ impl UdpServer {
       let receiver = UdpServer {
          response_channels: Arc::new(Mutex::new(HashMap::new())),
          socket,
-         stats: Arc::new(tokio::sync::Mutex::new(TrackerStats::default())),
       };
 
       // Start the message receiving task
@@ -451,7 +449,7 @@ impl UdpServer {
 
    /// Register a transaction ID with a response channel
    async fn register_transaction(
-      &self, transaction_id: TransactionId, sender: mpsc::UnboundedSender<TrackerResponse>,
+      &self, transaction_id: TransactionId, sender: mpsc::UnboundedSender<(usize, TrackerResponse)>,
    ) {
       let mut response_channels = self.response_channels.lock().await;
       response_channels.insert(transaction_id, sender);
@@ -470,15 +468,13 @@ impl UdpServer {
    async fn start_receiver_task(&self) {
       let receiver = self.clone();
       tokio::spawn(async move {
+         // I HATE THIS LINE OF CODE!!!
+         //
+         // We are literally forced to waste memory here (???).
          let mut buf = vec![0u8; 65536]; // Buffer for incoming messages
          loop {
             match receiver.socket.recv_from(&mut buf).await {
                Ok((size, addr)) => {
-                  {
-                     let mut stats = receiver.stats.lock().await;
-                     stats.bytes_received += size;
-                  }
-
                   trace!(size = size, addr = %addr, "Received UDP message");
 
                   // Parse the response
@@ -501,7 +497,7 @@ impl UdpServer {
                         {
                            let response_channels = receiver.response_channels.lock().await;
                            if let Some(sender) = response_channels.get(&transaction_id) {
-                              if let Err(e) = sender.send(response) {
+                              if let Err(e) = sender.send((size, response)) {
                                  warn!(
                                      transaction_id = transaction_id,
                                      error = %e,
@@ -542,11 +538,6 @@ impl UdpServer {
          UdpTrackerError::MessageTimeout
       })?;
 
-      {
-         let mut stats = self.stats.lock().await;
-         stats.bytes_sent += message.len();
-      }
-
       trace!(size = message.len(), addr = %addr, "Sent UDP message");
       Ok(())
    }
@@ -564,7 +555,7 @@ pub struct UdpTracker {
    ///  The address that our TCP or uTP socket is bound to
    peer_addr: SocketAddr,
    interval: u32,
-   stats: Arc<tokio::sync::Mutex<TrackerStats>>,
+   stats: TrackerStats,
 }
 
 impl UdpTracker {
@@ -606,7 +597,7 @@ impl UdpTracker {
          peer_id,
          info_hash,
          peer_addr,
-         stats: Arc::new(tokio::sync::Mutex::new(TrackerStats::default())),
+         stats: TrackerStats::default(),
       })
    }
 
@@ -635,16 +626,18 @@ impl UdpTracker {
       // Create a timeout for the response
       let timeout_result = timeout(MESSAGE_TIMEOUT, response_rx.recv()).await;
 
-      // Unregister the transaction ID
-      self.server.unregister_transaction(transaction_id).await;
-
       match timeout_result {
-         Ok(Some(response)) => {
+         Ok(Some((size, response))) => {
             trace!(
                 transaction_id = transaction_id,
                 response_type = ?response,
                 "Successfully received response"
             );
+            self.stats.set_last_interaction();
+            self.stats.increment_bytes_received(size);
+
+            // Unregister the transaction ID
+            self.server.unregister_transaction(transaction_id).await;
             Ok(response)
          }
          Ok(None) => {
@@ -686,6 +679,7 @@ impl UdpTracker {
          .send_message(&message_bytes, self.addr)
          .await
          .map_err(RetryError::Permanent)?;
+      self.stats.increment_bytes_sent(message_bytes.len());
 
       trace!(
           message = %message,
@@ -740,12 +734,6 @@ impl UdpTracker {
         connection_id = ?self.connection_id
     ))]
    async fn connect(&mut self) -> Result<ConnectionId> {
-      // Update statistics
-      {
-         let mut stats = self.stats.lock().await;
-         stats.connect_attempts += 1;
-      }
-
       let transaction_id: TransactionId = rand::random();
       trace!(transaction_id = transaction_id, "Preparing connect request");
 
@@ -764,11 +752,6 @@ impl UdpTracker {
                connection_id = connection_id,
                "Received connection ID from tracker"
             );
-
-            {
-               let mut stats = self.stats.lock().await;
-               stats.connect_successes += 1;
-            }
 
             self.connection_id = Some(connection_id);
             self.ready_state = ReadyState::Ready;
@@ -814,11 +797,7 @@ impl UdpTracker {
          )));
       };
 
-      // Update statistics
-      {
-         let mut stats = self.stats.lock().await;
-         stats.announce_attempts += 1;
-      }
+      self.stats.increment_announce_attempts();
 
       let transaction_id: TransactionId = rand::random();
       trace!(
@@ -862,12 +841,8 @@ impl UdpTracker {
             }
 
             // Update statistics
-            {
-               let mut stats = self.stats.lock().await;
-               stats.announce_successes += 1;
-               stats.total_peers_received += peers.len();
-               stats.last_successful_announce = Some(Instant::now());
-            }
+            self.stats.increment_announce_successes();
+            self.stats.increment_total_peers_received(peers.len());
 
             debug!(
                peers_count = peers.len(),
@@ -903,44 +878,6 @@ impl UdpTracker {
          }
       }
    }
-
-   #[instrument(skip(self))]
-   async fn log_statistics(&self) {
-      let stats = self.stats.lock().await;
-      let session_duration = stats.session_start.elapsed();
-      let last_announce_ago = stats
-         .last_successful_announce
-         .map(|t| t.elapsed())
-         .unwrap_or(Duration::MAX);
-
-      info!(
-         session_duration_secs = session_duration.as_secs(),
-         connect_attempts = stats.connect_attempts,
-         connect_successes = stats.connect_successes,
-         connect_success_rate = if stats.connect_attempts > 0 {
-            (stats.connect_successes as f64 / stats.connect_attempts as f64) * 100.0
-         } else {
-            0.0
-         },
-         announce_attempts = stats.announce_attempts,
-         announce_successes = stats.announce_successes,
-         announce_success_rate = if stats.announce_attempts > 0 {
-            (stats.announce_successes as f64 / stats.announce_attempts as f64) * 100.0
-         } else {
-            0.0
-         },
-         total_peers_received = stats.total_peers_received,
-         bytes_sent = stats.bytes_sent,
-         bytes_received = stats.bytes_received,
-         last_announce_ago_secs = if last_announce_ago != Duration::MAX {
-            last_announce_ago.as_secs()
-         } else {
-            0
-         },
-         current_interval = self.interval,
-         "UDP tracker session statistics"
-      );
-   }
 }
 
 #[async_trait]
@@ -962,17 +899,9 @@ impl TrackerTrait for UdpTracker {
          let mut iteration = 0usize;
          let mut consecutive_failures = 0usize;
          let max_consecutive_failures = 5;
-         let mut last_stats_log = Instant::now();
-         let stats_interval = Duration::from_secs(300); // Log stats every 5 minutes
 
          loop {
             iteration += 1;
-
-            // Log statistics periodically
-            if last_stats_log.elapsed() > stats_interval {
-               tracker.log_statistics().await;
-               last_stats_log = Instant::now();
-            }
 
             let start_time = Instant::now();
             match tracker.get_peers().await {
@@ -1071,14 +1000,19 @@ impl TrackerTrait for UdpTracker {
 #[cfg(test)]
 mod tests {
    use rand::random_range;
-   use tracing_test::traced_test;
 
    use super::*;
    use crate::metainfo::{MagnetUri, MetaInfo};
 
    #[tokio::test]
-   #[traced_test]
+   // #[traced_test]
    async fn test_stream_with_udp_peers() {
+      tracing_subscriber::fmt()
+         .with_target(true)
+         .with_env_filter("libtortillas=trace,off")
+         .pretty()
+         .init();
+
       let path = std::env::current_dir()
          .unwrap()
          .join("tests/magneturis/big-buck-bunny.txt");
@@ -1128,7 +1062,11 @@ mod tests {
          .unwrap()
          .join("tests/magneturis/big-buck-bunny.txt");
 
-      tracing_subscriber::fmt().init();
+      tracing_subscriber::fmt()
+         .with_target(true)
+         .with_env_filter("libtortillas=trace,off")
+         .pretty()
+         .init();
 
       let contents = tokio::fs::read_to_string(&path).await.unwrap();
       let metainfo = MagnetUri::parse(contents).unwrap();

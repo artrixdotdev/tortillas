@@ -22,6 +22,7 @@ use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::InfoHash,
    peer::PeerId,
+   tracker::TrackerStats,
 };
 
 #[derive(Debug, Deserialize)]
@@ -126,33 +127,6 @@ impl TrackerRequest {
    }
 }
 
-#[derive(Debug)]
-struct HttpTrackerStats {
-   request_attempts: usize,
-   request_successes: usize,
-   total_peers_received: usize,
-   bytes_sent: usize,
-   bytes_received: usize,
-   last_successful_request: Option<Instant>,
-   session_start: Instant,
-   consecutive_failures: usize,
-}
-
-impl Default for HttpTrackerStats {
-   fn default() -> Self {
-      Self {
-         request_attempts: 0,
-         request_successes: 0,
-         total_peers_received: 0,
-         bytes_sent: 0,
-         bytes_received: 0,
-         last_successful_request: None,
-         session_start: Instant::now(),
-         consecutive_failures: 0,
-      }
-   }
-}
-
 /// Struct for handling tracker over HTTP
 /// Interval is set to `[usize::MAX]` by default.
 #[derive(Clone, Debug)]
@@ -162,7 +136,7 @@ pub struct HttpTracker {
    info_hash: InfoHash,
    params: TrackerRequest,
    interval: usize,
-   stats: std::sync::Arc<tokio::sync::Mutex<HttpTrackerStats>>,
+   stats: TrackerStats,
 }
 
 impl HttpTracker {
@@ -186,7 +160,7 @@ impl HttpTracker {
       debug!(
           peer_id = %peer_id,
           tracker_uri = %uri,
-          peer_listener_addr = format!("{}:{}", params.ip.unwrap_or(Ipv4Addr::UNSPECIFIED.into()), params.port),
+          peer_addr = format!("{}:{}", params.ip.unwrap_or(Ipv4Addr::UNSPECIFIED.into()), params.port),
           "Created HTTP tracker instance"
       );
 
@@ -196,43 +170,8 @@ impl HttpTracker {
          peer_id,
          params,
          info_hash,
-         stats: std::sync::Arc::new(tokio::sync::Mutex::new(HttpTrackerStats {
-            session_start: Instant::now(),
-            ..Default::default()
-         })),
+         stats: TrackerStats::default(),
       }
-   }
-
-   #[instrument(skip(self))]
-   async fn log_statistics(&self) {
-      let stats = self.stats.lock().await;
-      let session_duration = stats.session_start.elapsed();
-      let last_request_ago = stats
-         .last_successful_request
-         .map(|t| t.elapsed())
-         .unwrap_or(Duration::MAX);
-
-      info!(
-         session_duration_secs = session_duration.as_secs(),
-         request_attempts = stats.request_attempts,
-         request_successes = stats.request_successes,
-         request_success_rate = if stats.request_attempts > 0 {
-            (stats.request_successes as f64 / stats.request_attempts as f64) * 100.0
-         } else {
-            0.0
-         },
-         total_peers_received = stats.total_peers_received,
-         bytes_sent = stats.bytes_sent,
-         bytes_received = stats.bytes_received,
-         consecutive_failures = stats.consecutive_failures,
-         last_request_ago_secs = if last_request_ago != Duration::MAX {
-            last_request_ago.as_secs()
-         } else {
-            0
-         },
-         current_interval = self.interval,
-         "HTTP tracker session statistics"
-      );
    }
 }
 
@@ -265,29 +204,14 @@ impl TrackerTrait for HttpTracker {
 
       tokio::spawn(async move {
          let mut iteration = 0usize;
-         let max_consecutive_failures = 5usize;
-         let mut last_stats_log = Instant::now();
-         let stats_interval = Duration::from_secs(300); // Log stats every 5 minutes
 
          loop {
             iteration += 1;
-
-            // Log statistics periodically
-            if last_stats_log.elapsed() > stats_interval {
-               tracker.log_statistics().await;
-               last_stats_log = Instant::now();
-            }
 
             let start_time = Instant::now();
             match tracker.get_peers().await {
                Ok(peers) => {
                   let fetch_duration = start_time.elapsed();
-
-                  // Reset consecutive failures on success
-                  {
-                     let mut stats = tracker.stats.lock().await;
-                     stats.consecutive_failures = 0;
-                  }
 
                   debug!(
                      iteration,
@@ -304,29 +228,12 @@ impl TrackerTrait for HttpTracker {
                Err(e) => {
                   let fetch_duration = start_time.elapsed();
 
-                  // Update consecutive failures
-                  let consecutive_failures = {
-                     let mut stats = tracker.stats.lock().await;
-                     stats.consecutive_failures += 1;
-                     stats.consecutive_failures
-                  };
-
                   warn!(
                       iteration,
-                      consecutive_failures,
                       fetch_duration_ms = fetch_duration.as_millis(),
                       error = %e,
                       "Failed to fetch peers from HTTP tracker"
                   );
-
-                  if consecutive_failures >= max_consecutive_failures {
-                     error!(
-                        consecutive_failures,
-                        max_failures = max_consecutive_failures,
-                        "Too many consecutive failures, terminating peer stream"
-                     );
-                     break;
-                  }
 
                   // Send empty peer list on error to keep the stream alive
                   if tx.send(vec![]).await.is_err() {
@@ -358,10 +265,7 @@ impl TrackerTrait for HttpTracker {
     ))]
    async fn get_peers(&mut self) -> Result<Vec<Peer>> {
       // Update statistics
-      {
-         let mut stats = self.stats.lock().await;
-         stats.request_attempts += 1;
-      }
+      self.stats.increment_announce_attempts();
 
       // URL encoding phase
       let params_encoded = &self.params.to_string();
@@ -401,12 +305,8 @@ impl TrackerTrait for HttpTracker {
 
       let request_duration = request_start.elapsed();
 
-      // Update network statistics
-      {
-         let mut stats = self.stats.lock().await;
-         stats.bytes_sent += uri.len(); // Approximate bytes sent
-         stats.bytes_received += response_bytes.len();
-      }
+      self.stats.increment_bytes_sent(uri.len()); // Approximate bytes sent
+      self.stats.increment_bytes_received(response_bytes.len());
 
       // Response parsing phase
       let response: TrackerResponse = serde_bencode::from_bytes(&response_bytes).map_err(|e| {
@@ -418,15 +318,11 @@ impl TrackerTrait for HttpTracker {
          HttpTrackerError::Tracker(TrackerError::BencodeError(e))
       })?;
 
-      // Update success statistics
-      {
-         let mut stats = self.stats.lock().await;
-         stats.request_successes += 1;
-         stats.total_peers_received += response.peers.len();
-         stats.last_successful_request = Some(Instant::now());
-         stats.consecutive_failures = 0;
-      }
-
+      self.stats.increment_announce_successes();
+      self
+         .stats
+         .increment_total_peers_received(response.peers.len());
+      self.stats.set_last_interaction();
       debug!(
          peers_received = response.peers.len(),
          interval_seconds = response.interval,

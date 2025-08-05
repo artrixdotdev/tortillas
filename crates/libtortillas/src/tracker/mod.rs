@@ -1,7 +1,15 @@
-use std::{fmt, net::SocketAddr};
+use std::{
+   fmt,
+   net::SocketAddr,
+   sync::{
+      Arc,
+      atomic::{AtomicUsize, Ordering},
+   },
+};
 
 use anyhow::Result;
 use async_trait::async_trait;
+use atomic_time::{AtomicInstant, AtomicOptionInstant};
 use futures::Stream;
 use http::HttpTracker;
 use num_enum::TryFromPrimitive;
@@ -58,37 +66,6 @@ pub enum Tracker {
    Websocket(String),
 }
 
-/// Tracker statistics to be returned from
-/// [announce_stream](TrackerInstance::announce_stream).
-#[derive(Clone, Debug)]
-pub struct TrackerStats {
-   connect_attempts: usize,
-   connect_successes: usize,
-   announce_attempts: usize,
-   announce_successes: usize,
-   total_peers_received: usize,
-   bytes_sent: usize,
-   bytes_received: usize,
-   last_successful_announce: Option<Instant>,
-   session_start: Instant,
-}
-
-impl Default for TrackerStats {
-   fn default() -> Self {
-      Self {
-         connect_attempts: 0,
-         connect_successes: 0,
-         announce_attempts: 0,
-         announce_successes: 0,
-         total_peers_received: 0,
-         bytes_sent: 0,
-         bytes_received: 0,
-         last_successful_announce: None,
-         session_start: Instant::now(),
-      }
-   }
-}
-
 /// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
 /// Enum for UDP Tracker Protocol Events parameter. See this resource for more information: <https://xbtt.sourceforge.net/udp_tracker_protocol.html>
 #[derive(
@@ -131,6 +108,126 @@ pub trait TrackerInstance {
    /// Returns a stream that appends every new group of peers that we receive
    /// from a tracker.
    async fn announce_stream() -> impl Stream<Item = Peer>;
+}
+
+/// Tracker statistics to be returned from
+/// [announce_stream](TrackerInstance::announce_stream).
+///
+/// All usages of AtomicOptionInstant or AtomicInstant are a bit hacky, due to
+/// the fact that they only support Instant from std, not tokio. See any of the
+/// getter/setter methods as an example.
+#[derive(Clone)]
+pub struct TrackerStats {
+   announce_attempts: Arc<AtomicUsize>,
+   announce_successes: Arc<AtomicUsize>,
+   total_peers_received: Arc<AtomicUsize>,
+   bytes_sent: Arc<AtomicUsize>,
+   bytes_received: Arc<AtomicUsize>,
+   last_interaction: Arc<AtomicOptionInstant>,
+   session_start: Arc<AtomicInstant>,
+}
+
+impl fmt::Debug for TrackerStats {
+   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      f.debug_struct("TrackerStats")
+         .field("announce_attempts", &self.get_announce_attempts())
+         .field("announce_successes", &self.get_announce_successes())
+         .field("total_peers_received", &self.get_total_peers_received())
+         .field("bytes_sent", &self.get_bytes_sent())
+         .field("bytes_received", &self.get_bytes_received())
+         .field("last_interaction", &self.get_last_interaction())
+         .field("session_start", &self.get_session_start())
+         .finish()
+   }
+}
+
+impl Default for TrackerStats {
+   fn default() -> Self {
+      Self {
+         announce_attempts: Arc::new(AtomicUsize::new(0)),
+         announce_successes: Arc::new(AtomicUsize::new(0)),
+         total_peers_received: Arc::new(AtomicUsize::new(0)),
+         bytes_sent: Arc::new(AtomicUsize::new(0)),
+         bytes_received: Arc::new(AtomicUsize::new(0)),
+         last_interaction: Arc::new(AtomicOptionInstant::new(Some(Instant::now().into_std()))),
+         session_start: Arc::new(AtomicInstant::new(Instant::now().into_std())),
+      }
+   }
+}
+
+impl TrackerStats {
+   pub fn get_announce_attempts(&self) -> usize {
+      self.announce_attempts.load(Ordering::Acquire)
+   }
+
+   pub fn increment_announce_attempts(&self) {
+      let cur = self.get_announce_attempts();
+      self.announce_attempts.store(cur + 1, Ordering::Release)
+   }
+
+   pub fn get_announce_successes(&self) -> usize {
+      self.announce_successes.load(Ordering::Acquire)
+   }
+
+   pub fn increment_announce_successes(&self) {
+      let cur = self.get_announce_successes();
+      self.announce_successes.store(cur + 1, Ordering::Release)
+   }
+
+   pub fn get_total_peers_received(&self) -> usize {
+      self.total_peers_received.load(Ordering::Acquire)
+   }
+
+   pub fn increment_total_peers_received(&self, value: usize) {
+      let cur = self.get_total_peers_received();
+      self
+         .total_peers_received
+         .store(cur + value, Ordering::Release)
+   }
+
+   pub fn get_bytes_sent(&self) -> usize {
+      self.bytes_sent.load(Ordering::Acquire)
+   }
+
+   pub fn increment_bytes_sent(&self, value: usize) {
+      let cur = self.get_bytes_sent();
+      self.bytes_sent.store(cur + value, Ordering::Release)
+   }
+
+   pub fn get_bytes_received(&self) -> usize {
+      self.bytes_received.load(Ordering::Acquire)
+   }
+
+   pub fn increment_bytes_received(&self, value: usize) {
+      let cur = self.get_bytes_received();
+      self.bytes_received.store(cur + value, Ordering::Release)
+   }
+
+   pub fn get_last_interaction(&self) -> Option<Instant> {
+      Some(
+         self
+            .last_interaction
+            .load(Ordering::Acquire)
+            .unwrap()
+            .into(),
+      )
+   }
+
+   pub fn set_last_interaction(&self) {
+      self
+         .last_interaction
+         .store(Some(Instant::now().into_std()), Ordering::Release)
+   }
+
+   pub fn get_session_start(&self) -> Instant {
+      self.session_start.load(Ordering::Acquire).into()
+   }
+
+   pub fn set_session_start(&self) {
+      self
+         .session_start
+         .store(Instant::now().into_std(), Ordering::Release)
+   }
 }
 
 impl Tracker {
