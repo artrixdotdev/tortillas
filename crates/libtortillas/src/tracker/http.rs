@@ -44,13 +44,25 @@ pub enum Event {
 /// Tracker request. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
 #[derive(Clone, Debug)]
 struct TrackerRequest {
-   ip: Option<IpAddr>,
+   /// the port that our tcp or utp peer handler is listening on
+   ///
+   /// The port for other peers to connect to us
    port: u16,
+   /// The IP the that our tcp or utp peer handler is listening on
+   ip: Option<IpAddr>,
+   /// Bytes uploaded. Due to BitTorrent's godawful documentation, I am not
+   /// aware if this is *actually* bytes. However, according to [BitTorrent's wiki.theory.org](https://wiki.theory.org/BitTorrentSpecification#Tracker_HTTP.2FHTTPS_Protocol), the general consensus is that the unit of this metric is bytes.
    uploaded: usize,
+   /// Bytes uploaded. Due to BitTorrent's godawful documentation, I am not
+   /// aware if this is *actually* bytes. However, according to [BitTorrent's wiki.theory.org](https://wiki.theory.org/BitTorrentSpecification#Tracker_HTTP.2FHTTPS_Protocol), the general consensus is that the unit of this metric is bytes.
    downloaded: usize,
+   /// The number of bytes this client still has to download.
    left: Option<usize>,
+   /// See documentation for [Event].
    event: Event,
-   compact: bool,
+   /// If we want peers in a compact format or not. Only applicable to HTTP
+   /// trackers.
+   compact: Option<bool>,
 }
 
 impl TrackerRequest {
@@ -74,7 +86,7 @@ impl TrackerRequest {
       let event_str = format!("{:?}", self.event).to_lowercase(); // Hack to get the string representation of the enum
 
       params.push(format!("event={}", event_str));
-      params.push(format!("compact={}", self.compact as u8));
+      params.push(format!("compact={}", self.compact.unwrap_or(true) as u8));
 
       params.join("&")
    }
@@ -109,7 +121,7 @@ impl TrackerRequest {
          left: Some(0),
          event: Event::Stopped,
          // We currently don't support the non-compact form
-         compact: true,
+         compact: Some(true),
       }
    }
 }

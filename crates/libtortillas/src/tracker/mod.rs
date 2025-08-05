@@ -1,4 +1,4 @@
-use std::{fmt, net::SocketAddr, sync::Arc};
+use std::{fmt, net::SocketAddr};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -11,7 +11,7 @@ use serde::{
    de::{self, Visitor},
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tokio::{net::UdpSocket, sync::mpsc, time::Instant};
+use tokio::{sync::mpsc, time::Instant};
 use udp::UdpTracker;
 
 use crate::{
@@ -109,29 +109,6 @@ pub enum Event {
    Stopped = 3,
 }
 
-/// The format/data for a request made to either a UDP or HTTP tracker.
-#[derive(Clone, Copy, Debug)]
-#[allow(unused)]
-pub struct TrackerRequest {
-   /// The port that our TCP or uTP peer handler is listening on
-   ///
-   /// The port for other peers to connect to us
-   port: u16,
-   /// Bytes uploaded. Due to BitTorrent's godawful documentation, I am not
-   /// aware if this is *actually* bytes. However, according to [BitTorrent's wiki.theory.org](https://wiki.theory.org/BitTorrentSpecification#Tracker_HTTP.2FHTTPS_Protocol), the general consensus is that the unit of this metric is bytes.
-   uploaded: usize,
-   /// Bytes uploaded. Due to BitTorrent's godawful documentation, I am not
-   /// aware if this is *actually* bytes. However, according to [BitTorrent's wiki.theory.org](https://wiki.theory.org/BitTorrentSpecification#Tracker_HTTP.2FHTTPS_Protocol), the general consensus is that the unit of this metric is bytes.
-   downloaded: usize,
-   /// The number of bytes this client still has to download.
-   left: Option<usize>,
-   /// See documentation for [Event].
-   event: Event,
-   /// If we want peers in a compact format or not. Only applicable to HTTP
-   /// trackers.
-   compact: Option<bool>,
-}
-
 /// An enum for updating data inside a tracker with the [mpsc
 /// Sender](tokio::sync::mpsc::Sender) returned from
 /// [announce_stream](TrackerInstance::announce_stream).
@@ -151,12 +128,10 @@ pub trait TrackerInstance {
    async fn connect(
       info_hash: InfoHash, peer_id: PeerId, port: u16,
    ) -> (mpsc::Sender<TrackerUpdate>, mpsc::Receiver<TrackerStats>);
-
    async fn connect_udp(
       info_hash: InfoHash, peer_id: PeerId, port: u16, udp_socket: Option<Arc<UdpSocket>>,
       manager: Arc<UdpServer>,
    ) -> (mpsc::Sender<TrackerUpdate>, mpsc::Receiver<TrackerStats>);
-
    /// Returns a stream that appends every new group of peers that we receive
    /// from a tracker.
    async fn announce_stream() -> impl Stream<Item = Peer>;
