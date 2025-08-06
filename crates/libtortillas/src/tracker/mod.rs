@@ -150,6 +150,18 @@ impl fmt::Debug for TrackerStats {
    }
 }
 
+impl fmt::Display for TrackerStats {
+   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      let succes_rate = self.get_announce_successes() as f64 / self.get_announce_attempts() as f64;
+      write!(
+         f,
+         "Stats (success rate: {:.2}%, peers received: {:?})",
+         succes_rate * 100.0,
+         self.get_total_peers_received()
+      )
+   }
+}
+
 impl Default for TrackerStats {
    fn default() -> Self {
       Self {

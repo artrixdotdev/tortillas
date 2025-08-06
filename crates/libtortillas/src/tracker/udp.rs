@@ -163,6 +163,28 @@ enum TrackerResponse {
    },
 }
 
+impl Display for TrackerResponse {
+   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      match self {
+         TrackerResponse::Connect { connection_id, .. } => write!(f, "Connect ({connection_id})"),
+         TrackerResponse::Announce {
+            peers,
+            seeders,
+            leechers,
+            interval,
+            ..
+         } => f
+            .debug_struct("Announce")
+            .field("peers", &peers.len())
+            .field("seeders", &seeders)
+            .field("leechers", &leechers)
+            .field("interval", &interval)
+            .finish(),
+         TrackerResponse::Error { message, .. } => write!(f, "Error ({message})"),
+      }
+   }
+}
+
 impl Display for TrackerRequest {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
       match self {
@@ -475,7 +497,7 @@ impl UdpServer {
 
                         trace!(
                             transaction_id = transaction_id,
-                            response_type = ?response,
+                            response_type = %response,
                             "Routing response to transaction channel"
                         );
 
@@ -524,7 +546,6 @@ impl UdpServer {
          UdpTrackerError::MessageTimeout
       })?;
 
-      trace!(size = message.len(), addr = %addr, "Sent UDP message");
       Ok(())
    }
 }
@@ -577,9 +598,11 @@ struct AnnounceParams {
 }
 
 impl UdpTracker {
-   #[instrument(skip(info_hash), fields(
+   #[instrument(skip(info_hash, peer_info), fields(
         uri = %uri,
         info_hash = %info_hash,
+        peer_id = %peer_info.0,
+        port = %peer_info.1.port(),
     ))]
    pub async fn new(
       uri: String, server: Option<UdpServer>, info_hash: InfoHash, peer_info: (PeerId, SocketAddr),
@@ -594,7 +617,7 @@ impl UdpTracker {
          .filter(|addr| addr.is_ipv4()) // We dont support ipv6 yet
          .collect::<Vec<_>>();
 
-      trace!("Resolved addresses: {:?}", addrs);
+      trace!(addrs = ?addrs, "DNS lookup successful");
       let addr = *addrs.first().unwrap();
 
       // Create or use existing message receiver
@@ -635,7 +658,7 @@ impl UdpTracker {
       self.interval.store(interval, Ordering::Release)
    }
 
-   #[instrument(skip(self), fields(tracker_uri = %self.uri))]
+   #[instrument(skip(self), fields(tracker_uri = %self.uri, stats = %self.stats))]
    async fn send_stats(&self) {
       let tx = &self.stats_hook.tx();
       if let Err(e) = tx.send(self.stats.clone()) {
@@ -669,7 +692,7 @@ impl UdpTracker {
          Ok(Some((size, response))) => {
             trace!(
                 transaction_id = transaction_id,
-                response_type = ?response,
+                response_type = %response,
                 "Successfully received response"
             );
             self.stats.set_last_interaction();
@@ -703,7 +726,7 @@ impl UdpTracker {
       }
    }
 
-   #[instrument(skip(self), fields(
+   #[instrument(skip(self, message), fields(
         tracker_uri = %self.uri,
         connection_id = ?self.connection_id
    ))]
@@ -730,7 +753,7 @@ impl UdpTracker {
       self.recv_retry(transaction_id).await
    }
 
-   #[instrument(skip(self), fields(
+   #[instrument(skip(self, message), fields(
         tracker_uri = %self.uri,
         connection_id = ?self.connection_id
     ))]
