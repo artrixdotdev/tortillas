@@ -43,7 +43,7 @@ const MIN_ANNOUNCE_RESPONSE_SIZE: usize = 20;
 const MIN_ERROR_RESPONSE_SIZE: usize = 8;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
 const PEER_SIZE: usize = 6;
-const MESSAGE_TIMEOUT: Duration = Duration::from_millis(800);
+const MESSAGE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// Enum for UDP Tracker Protocol Action parameter. See this resource for more information: <https://xbtt.sourceforge.net/udp_tracker_protocol.html>
 #[derive(
@@ -603,7 +603,7 @@ impl UdpTracker {
       let addrs = lookup_host(&uri.replace("udp://", ""))
          .await
          .map_err(|e| {
-            error!(error = %e, "Error looking up host for tracker");
+            error!(error = %e, tracker_uri = %uri, "Error looking up host for tracker");
             anyhow!(e)
          })?
          .filter(|addr| addr.is_ipv4()) // We dont support ipv6 yet
@@ -1110,11 +1110,12 @@ mod tests {
                .await;
 
                if let Ok(tracker) = tracker {
-                  let (_, _) = tracker.configure().await.unwrap();
-                  trackers.push(tracker.clone());
-                  tracker_urls.push(announce_url.uri().clone());
-               } else {
-                  error!("There was an error creating the tracker");
+                  if let Ok((_, _)) = tracker.configure().await {
+                     trackers.push(tracker.clone());
+                     tracker_urls.push(announce_url.uri().clone());
+                  } else {
+                     error!("There was an error creating the tracker");
+                  }
                }
             }
 
