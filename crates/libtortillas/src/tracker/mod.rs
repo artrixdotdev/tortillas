@@ -28,7 +28,6 @@ use udp::UdpTracker;
 use crate::{
    hashes::InfoHash,
    peer::{Peer, PeerId},
-   tracker::udp::UdpServer,
 };
 pub mod http;
 pub mod udp;
@@ -52,9 +51,12 @@ pub trait TrackerTrait: Clone {
 ///
 /// ```
 /// let tracker = Tracker::Http("udp://tracker.opentrackr.org:1337/announce");
-/// let udp_manager = UdpManager::new();
-/// let udp_socket = UdpSocket::bind("")
-/// let (tx, rx) = tracker.connect_udp(info_hash, peer_id, udp_manager, udp_socket).await; // irrelevant for HTTP trackers
+///
+/// let server = UdpServer::new();
+/// let tracker: Box<dyn TrackerInstance> = tracker.to_instance(info_hash, peer_id, Some(server));
+///
+/// let (rx, tx) = tracker.configure();
+///
 /// let peers: Stream<Peer> = tracker.announce_stream();
 /// tx.send({ uploaded: 20 });
 /// ```
@@ -108,11 +110,10 @@ pub trait TrackerInstance {
    /// connection is made. If this tracker is a UDP tracker, a connection is
    /// established with the peer.
    async fn configure(
-      uri: String, info_hash: InfoHash, peer_id: PeerId, port: u16, server: Option<UdpServer>,
+      &self,
    ) -> Result<(
       mpsc::Sender<TrackerUpdate>,
       broadcast::Receiver<TrackerStats>,
-      Box<Self>,
    )>;
    /// Returns a stream that appends every new group of peers that we receive
    /// from a tracker.
@@ -297,7 +298,7 @@ impl Tracker {
             let mut tracker = HttpTracker::new(uri.clone(), info_hash, Some(peer_id), peer_addr);
             Ok(tracker.stream_peers().await.unwrap())
          }
-         Tracker::Udp(uri) => {
+         Tracker::Udp(_) => {
             // let mut tracker =
             //    UdpTracker::new(uri.clone(), None, info_hash, (peer_id,
             // peer_addr.unwrap()))       .await

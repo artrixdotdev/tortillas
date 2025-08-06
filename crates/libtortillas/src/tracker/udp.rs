@@ -5,7 +5,7 @@ use std::{
    str::FromStr,
    sync::{
       Arc,
-      atomic::{AtomicU32, Ordering},
+      atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering},
    },
 };
 
@@ -18,12 +18,12 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::{
    net::{UdpSocket, lookup_host},
    sync::{Mutex, RwLock, broadcast, mpsc},
-   time::{Duration, Instant, sleep, timeout},
+   time::{Duration, sleep, timeout},
 };
 use tokio_retry2::{Retry, RetryError, strategy::ExponentialBackoff};
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace, warn};
 
-use super::{Peer, TrackerTrait};
+use super::Peer;
 use crate::{
    errors::{TrackerError, UdpTrackerError},
    hashes::InfoHash,
@@ -33,6 +33,7 @@ use crate::{
 
 /// Types and constants
 type ConnectionId = u64;
+type AtomicConnectionId = AtomicU64;
 type TransactionId = u32;
 type Result<T> = anyhow::Result<T, UdpTrackerError>;
 
@@ -421,7 +422,8 @@ impl TrackerResponse {
    }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, TryFromPrimitive)]
+#[repr(u8)]
 enum ReadyState {
    Ready,
    Disconnected,
@@ -555,8 +557,9 @@ pub struct UdpTracker {
    addr: SocketAddr,
    uri: String,
    server: UdpServer,
-   connection_id: Option<ConnectionId>,
-   ready_state: ReadyState,
+   /// Set to 0 by default
+   connection_id: Arc<AtomicConnectionId>,
+   ready_state: Arc<AtomicU8>,
    pub peer_id: PeerId,
    info_hash: InfoHash,
    ///  The address that our TCP or uTP socket is bound to
@@ -634,9 +637,9 @@ impl UdpTracker {
          addr,
          uri,
          interval: Arc::new(u32::MAX.into()),
-         connection_id: None,
+         connection_id: Arc::new(0.into()),
          server,
-         ready_state: ReadyState::Disconnected,
+         ready_state: Arc::new((ReadyState::Disconnected as u8).into()),
          peer_id,
          info_hash,
          peer_addr,
@@ -644,6 +647,14 @@ impl UdpTracker {
          announce_params: Arc::new(RwLock::new(AnnounceParams::default())),
          stats_hook: StatsHook(tx, rx),
       })
+   }
+
+   pub fn set_connection_id(&self, id: u64) {
+      self.connection_id.store(id, Ordering::Release);
+   }
+
+   pub fn get_connection_id(&self) -> u64 {
+      self.connection_id.load(Ordering::Acquire)
    }
 
    pub fn local_addr(&self) -> SocketAddr {
@@ -795,7 +806,7 @@ impl UdpTracker {
         tracker_uri = %self.uri,
         connection_id = ?self.connection_id
     ))]
-   async fn connect(&mut self) -> Result<ConnectionId> {
+   async fn connect(&self) -> Result<ConnectionId> {
       let transaction_id: TransactionId = rand::random();
       trace!(transaction_id = transaction_id, "Preparing connect request");
 
@@ -815,8 +826,8 @@ impl UdpTracker {
                "Received connection ID from tracker"
             );
 
-            self.connection_id = Some(connection_id);
-            self.ready_state = ReadyState::Ready;
+            self.set_connection_id(connection_id);
+            self.set_ready_state(ReadyState::Ready);
             Ok(connection_id)
          }
          TrackerResponse::Error {
@@ -849,7 +860,7 @@ impl UdpTracker {
         connection_id = ?self.connection_id
     ))]
    async fn announce(&self) -> Result<Vec<Peer>> {
-      if self.ready_state != ReadyState::Ready {
+      if self.get_ready_state() != ReadyState::Ready {
          error!(
              current_state = ?self.ready_state,
              "Tracker not ready for announce request"
@@ -869,7 +880,7 @@ impl UdpTracker {
       let params = self.announce_params.read().await;
 
       let request = TrackerRequest::Announce {
-         connection_id: self.connection_id.unwrap(),
+         connection_id: self.get_connection_id(),
          transaction_id,
          info_hash: self.info_hash,
          peer_id: self.peer_id,
@@ -941,53 +952,50 @@ impl UdpTracker {
          }
       }
    }
+   fn get_ready_state(&self) -> ReadyState {
+      self.ready_state.load(Ordering::Acquire).try_into().unwrap()
+   }
+
+   fn set_ready_state(&self, state: ReadyState) {
+      self.ready_state.store(state as u8, Ordering::Release);
+   }
 }
 
 #[async_trait]
 impl TrackerInstance for UdpTracker {
    async fn configure(
-      uri: String, info_hash: InfoHash, peer_id: PeerId, port: u16, server: Option<UdpServer>,
+      &self,
    ) -> anyhow::Result<(
       mpsc::Sender<TrackerUpdate>,
       broadcast::Receiver<TrackerStats>,
-      Box<Self>,
    )> {
-      let mut tracker = Self::new(
-         uri,
-         server,
-         info_hash,
-         (peer_id, SocketAddr::from(([0, 0, 0, 0], port))),
-      )
-      .await?;
-      tracker.connect().await?;
-
       let (tx, mut rx) = mpsc::channel(100);
-      let tracker = Box::new(tracker.clone());
-      let tracker_2 = tracker.clone();
+      let tracker = self.clone();
+      tracker.connect().await?;
       tokio::spawn(async move {
          while let Some(update) = rx.recv().await {
             match update {
                TrackerUpdate::Uploaded(uploaded) => {
-                  let mut params = tracker_2.announce_params.write().await;
+                  let mut params = tracker.announce_params.write().await;
                   params.uploaded = uploaded as u64;
                }
                TrackerUpdate::Downloaded(downloaded) => {
-                  let mut params = tracker_2.announce_params.write().await;
+                  let mut params = tracker.announce_params.write().await;
                   params.downloaded = downloaded as u64;
                }
                TrackerUpdate::Left(left) => {
-                  let mut params = tracker_2.announce_params.write().await;
+                  let mut params = tracker.announce_params.write().await;
                   params.left = left as u32;
                }
                TrackerUpdate::Event(event) => {
-                  let mut params = tracker_2.announce_params.write().await;
+                  let mut params = tracker.announce_params.write().await;
                   params.event = event;
                }
             }
          }
       });
-      let stats_receiver = tracker.stats_hook.rx().resubscribe();
-      Ok((tx, stats_receiver, tracker.clone()))
+      let stats_receiver = self.stats_hook.rx().resubscribe();
+      Ok((tx, stats_receiver))
    }
 
    async fn announce_stream(&self) -> impl Stream<Item = Peer> {
@@ -1018,6 +1026,7 @@ impl TrackerInstance for UdpTracker {
 mod tests {
    use futures::{StreamExt, pin_mut};
    use rand::random_range;
+   use tokio::time::Instant;
 
    use super::*;
    use crate::metainfo::{MagnetUri, MetaInfo};
@@ -1044,8 +1053,14 @@ mod tests {
             let announce_list = magnet.announce_list.expect("Missing announce list");
             let uri = announce_list[0].uri();
             let port: u16 = random_range(1024..65535);
+            let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
 
-            let (_, _, tracker) = UdpTracker::configure(uri, info_hash, PeerId::new(), port, None)
+            let tracker = UdpTracker::new(uri, None, info_hash, (PeerId::new(), socket_addr))
+               .await
+               .unwrap();
+
+            let (_, _) = tracker
+               .configure()
                .await
                .expect("Failed to connect to UDP tracker");
 
@@ -1099,42 +1114,40 @@ mod tests {
                .filter(|t| t.uri().starts_with("udp://"))
             {
                let port: u16 = random_range(1024..65535);
+               let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
 
-               let tobe_tracker = UdpTracker::configure(
+               let tracker = UdpTracker::new(
                   announce_url.uri(),
-                  info_hash,
-                  PeerId::new(),
-                  port,
                   Some(udp_server.clone()),
+                  info_hash,
+                  (PeerId::new(), socket_addr),
                )
                .await;
 
-               if tobe_tracker.is_err() {
-                  error!("There was an error creating the tracker");
-               } else {
-                  let (_, _, tracker) = tobe_tracker.unwrap();
-                  // Spawn a task to re-fetch the latest list of peers at a given interval
-                  let announce_stream = tracker.announce_stream().await;
-                  pin_mut!(announce_stream); // https://docs.rs/async-stream/latest/async_stream/#usage
-
+               if let Ok(tracker) = tracker {
+                  let (_, _) = tracker.configure().await.unwrap();
                   trackers.push(tracker.clone());
                   tracker_urls.push(announce_url.uri().clone());
+               } else {
+                  error!("There was an error creating the tracker");
                }
             }
 
             // If we don't have enough unique trackers, duplicate the first one
             while trackers.len() < 2 {
                let port: u16 = random_range(1024..65535);
+               let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
 
-               let (_, _, tracker) = UdpTracker::configure(
+               let tracker = UdpTracker::new(
                   tracker_urls[0].clone(),
-                  info_hash,
-                  PeerId::new(),
-                  port,
                   Some(udp_server.clone()),
+                  info_hash,
+                  (PeerId::new(), socket_addr),
                )
                .await
-               .expect("Failed to create duplicate UDP tracker");
+               .unwrap();
+
+               let (_, _) = tracker.configure().await.unwrap();
 
                trackers.push(tracker);
             }
@@ -1248,14 +1261,19 @@ mod tests {
                .expect("No UDP tracker found in announce list");
 
             let port: u16 = random_range(1024..65535);
-            let peer_id = PeerId::new();
+            let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
 
-            // Use the TrackerInstance trait method to connect
+            let tracker = UdpTracker::new(
+               announce_url.uri().clone(),
+               None,
+               info_hash,
+               (PeerId::new(), socket_addr),
+            )
+            .await
+            .unwrap();
 
-            let (update_sender, mut stats_receiver, tracker) =
-               UdpTracker::configure(announce_url.uri().clone(), info_hash, peer_id, port, None)
-                  .await
-                  .expect("Failed to connect using TrackerInstance trait");
+            let (update_sender, mut stats_receiver) =
+               tracker.configure().await.expect("Failed to configure");
 
             // Test sending tracker updates through the channel
             update_sender
