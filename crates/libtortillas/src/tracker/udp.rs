@@ -43,7 +43,7 @@ const MIN_ANNOUNCE_RESPONSE_SIZE: usize = 20;
 const MIN_ERROR_RESPONSE_SIZE: usize = 8;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
 const PEER_SIZE: usize = 6;
-const MESSAGE_TIMEOUT: Duration = Duration::from_millis(300);
+const MESSAGE_TIMEOUT: Duration = Duration::from_millis(800);
 
 /// Enum for UDP Tracker Protocol Action parameter. See this resource for more information: <https://xbtt.sourceforge.net/udp_tracker_protocol.html>
 #[derive(
@@ -64,102 +64,78 @@ pub enum Action {
    Error = 3u32,
 }
 
-/// Headers for tracker request
+/// Tracker request variants with binary layouts.
 #[derive(Debug)]
 enum TrackerRequest {
-   /// Binary layout for the Connect variant:
-   /// - [Magic constant](MAGIC_CONSTANT) (8 bytes)
-   /// - [Action](Action::Connect) (4 bytes)
-   /// - [Transaction ID](TransactionId) (4 bytes)
-   ///
-   /// Total: 16 bytes
-   ///
-   /// | Magic constant | Action | Transaction ID |
-   /// |----------------|--------|----------------|
-   /// |    00000000    |  0000  |     0000       |
+   /// Connect request (16 bytes total)
    Connect(ConnectionId, Action, TransactionId),
 
-   /// Binary layout for the Announce variant:
-   /// - [Connection ID](ConnectionId) (8 bytes)
-   /// - [Action](Action::Announce) (4 bytes)
-   /// - [Transaction ID](TransactionId) (4 bytes)
-   /// - [Info Hash](crate::hashes::Hash) (20 bytes)
-   /// - [Peer ID] (20 bytes)
-   /// - [Downloaded] (8 bytes)
-   /// - [Left] (8 bytes)
-   /// - [Uploaded] (8 bytes)
-   /// - [Event] (4 bytes)
-   /// - [IP Address] (4 bytes)
-   /// - [Key] (4 bytes)
-   /// - [Num Want] (4 bytes, -1 for default)
-   /// - [Port] (2 bytes)
-   ///
-   /// Total: 98 bytes
+   /// Announce request (98 bytes total)
    Announce {
+      /// Connection ID (8 bytes)
       connection_id: ConnectionId,
+      /// Transaction ID (4 bytes)
       transaction_id: TransactionId,
+      /// Info Hash (20 bytes)
       info_hash: InfoHash,
+      /// Peer ID (20 bytes)
       peer_id: PeerId,
+      /// Downloaded bytes (8 bytes)
       downloaded: u64,
+      /// Bytes left to download (8 bytes)
       left: u64,
+      /// Uploaded bytes (8 bytes)
       uploaded: u64,
+      /// Event type (4 bytes)
       event: Event,
+      /// IP address (4 bytes)
       ip_address: u32,
+      /// Random key (4 bytes)
       key: u32,
+      /// Number of peers wanted (-1 for default, 4 bytes)
       num_want: i32,
+      /// Port number (2 bytes)
       port: u16,
    },
 }
 
+/// Tracker response variants with binary layouts.
 #[derive(Debug)]
 #[allow(dead_code)]
 enum TrackerResponse {
-   /// Note that the response headers for TrackerResponse are somewhat different
-   /// in comparison to TrackerRequest:
-   ///
-   /// Binary Layout for the Connect variant:
-   /// - [Action](Action::Connect) (4 bytes)
-   /// - [Transaction ID](TransactionId) (4 bytes)
-   /// - [Connection ID](ConnectionId) (8 bytes)
-   ///
-   /// Total: 16 bytes
-   /// | Action | Transaction ID | Connection ID |
-   /// |--------|----------------|---------------|
-   /// |  0000  |      0000      |   00000000    |
+   /// Connect response (16 bytes total)
    Connect {
+      /// Action type (4 bytes)
       action: Action,
+      /// Connection ID (8 bytes)
       connection_id: ConnectionId,
+      /// Transaction ID (4 bytes)
       transaction_id: TransactionId,
    },
 
-   /// Binary Layout for the Announce variant:
-   /// - [Action](Action::Announce) (4 bytes)
-   /// - [Transaction ID](TransactionId) (4 bytes)
-   /// - [Interval] (4 bytes)
-   /// - [Leechers] (4 bytes)
-   /// - [Seeders] (4 bytes)
-   /// - [IP (4 bytes) action + Port (2 bytes)] (6 bytes) * n
-   ///
-   /// Total: 20 + 6n bytes
+   /// Announce response (20 + 6n bytes total)
    Announce {
+      /// Action type (4 bytes)
       action: Action,
+      /// Transaction ID (4 bytes)
       transaction_id: TransactionId,
-      /// The interval inwhich we should send another announce request
+      /// Interval in seconds until next announce (4 bytes)
       interval: u32,
+      /// Number of leechers (4 bytes)
       leechers: u32,
+      /// Number of seeders (4 bytes)
       seeders: u32,
+      /// List of [peers](super::Peer) (6 bytes per peer) unless ipv6
       peers: Vec<super::Peer>,
    },
 
-   /// Binary Layout for the Error variant:
-   /// - [Action](Action::Error) (4 bytes)
-   /// - [Transaction ID](TransactionId) (4 bytes)
-   /// - [Error Message] (variable)
-   ///
-   /// Total: 8 + message length bytes
+   /// Error response (8 + message length bytes total)
    Error {
+      /// Action type (4 bytes)
       action: Action,
+      /// Transaction ID (4 bytes)
       transaction_id: TransactionId,
+      /// Error message (variable length)
       message: String,
    },
 }
@@ -197,6 +173,13 @@ impl Display for TrackerRequest {
 
 /// Formats the headers for a request in the UDP Tracker Protocol
 impl TrackerRequest {
+   pub fn transaction_id(&self) -> TransactionId {
+      match self {
+         Self::Connect(_, _, tid) => *tid,
+         Self::Announce { transaction_id, .. } => *transaction_id,
+      }
+   }
+
    #[instrument(skip(self), fields(request_type = %self))]
    pub fn to_bytes(&self) -> Vec<u8> {
       let mut buf = Vec::new();
@@ -267,6 +250,14 @@ impl TrackerRequest {
 
 /// Accepts a response (in bytes) from a UDP [tracker request](TrackerRequest).
 impl TrackerResponse {
+   pub fn transaction_id(&self) -> TransactionId {
+      match self {
+         Self::Connect { transaction_id, .. } => *transaction_id,
+         Self::Announce { transaction_id, .. } => *transaction_id,
+         Self::Error { transaction_id, .. } => *transaction_id,
+      }
+   }
+
    #[instrument(skip(bytes), fields(response_size = bytes.len()))]
    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
       if bytes.len() < 4 {
@@ -428,12 +419,14 @@ enum ReadyState {
    Ready,
    Disconnected,
 }
+
+type ServerMessage = (usize, TrackerResponse);
+
 /// Centralized message receiver that broadcasts messages to all trackers
 #[derive(Clone, Debug)]
 pub struct UdpServer {
    /// Map of transaction IDs to sender channels for routing responses
-   response_channels:
-      Arc<Mutex<HashMap<TransactionId, mpsc::UnboundedSender<(usize, TrackerResponse)>>>>,
+   response_channels: Arc<Mutex<HashMap<TransactionId, mpsc::UnboundedSender<ServerMessage>>>>,
    /// Shared socket for all trackers
    socket: Arc<UdpSocket>,
 }
@@ -491,11 +484,7 @@ impl UdpServer {
                   match TrackerResponse::from_bytes(&buf[..size]) {
                      Ok(response) => {
                         // Extract transaction ID and route to correct channel
-                        let transaction_id = match &response {
-                           TrackerResponse::Connect { transaction_id, .. } => *transaction_id,
-                           TrackerResponse::Announce { transaction_id, .. } => *transaction_id,
-                           TrackerResponse::Error { transaction_id, .. } => *transaction_id,
-                        };
+                        let transaction_id = response.transaction_id();
 
                         trace!(
                             transaction_id = transaction_id,
@@ -764,29 +753,25 @@ impl UdpTracker {
       self.recv_retry(transaction_id).await
    }
 
+   /// UDP is an 'unreliable' protocol. This means it doesn't retransmit lost
+   /// packets itself. The application is responsible for this. If a response is
+   /// not received after 15 * 2 ^ n seconds, the client should retransmit
+   /// the request, where n starts at 0 and is increased up to 8 (3840
+   /// seconds) after every retransmission. Note that it is necessary to
+   /// rerequest a connection ID when it has expired.
+   ///
+   /// From BEP 0015
    #[instrument(skip(self, message), fields(
         tracker_uri = %self.uri,
         connection_id = ?self.connection_id
     ))]
    async fn send_and_wait(&self, message: TrackerRequest) -> Result<TrackerResponse> {
-      let transaction_id = match &message {
-         TrackerRequest::Connect(_, _, tid) => *tid,
-         TrackerRequest::Announce { transaction_id, .. } => *transaction_id,
-      };
+      let transaction_id = message.transaction_id();
 
       trace!(
          transaction_id = transaction_id,
          "Transaction ID for tracker"
       );
-
-      // UDP is an 'unreliable' protocol. This means it doesn't retransmit lost
-      // packets itself. The application is responsible for this. If a response is not
-      // received after 15 * 2 ^ n seconds, the client should retransmit the request,
-      // where n starts at 0 and is increased up to 8 (3840 seconds) after every
-      // retransmission. Note that it is necessary to rerequest a connection ID when
-      // it has expired.
-      //
-      // From BEP 0015
       let retry_strategy = ExponentialBackoff::from_millis(15 * 1000)
          .factor(2)
          .max_delay_millis(3840 * 1000)
