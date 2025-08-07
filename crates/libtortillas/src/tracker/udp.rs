@@ -94,69 +94,6 @@ enum TrackerRequest {
    },
 }
 
-/// Tracker response variants with binary layouts.
-#[derive(Debug)]
-#[allow(dead_code)]
-enum TrackerResponse {
-   /// Connect response (16 bytes total)
-   Connect {
-      /// Action type (4 bytes)
-      action: Action,
-      /// Connection ID (8 bytes)
-      connection_id: ConnectionId,
-      /// Transaction ID (4 bytes)
-      transaction_id: TransactionId,
-   },
-
-   /// Announce response (20 + 6n bytes total)
-   Announce {
-      /// Action type (4 bytes)
-      action: Action,
-      /// Transaction ID (4 bytes)
-      transaction_id: TransactionId,
-      /// Interval in seconds until next announce (4 bytes)
-      interval: u32,
-      /// Number of leechers (4 bytes)
-      leechers: u32,
-      /// Number of seeders (4 bytes)
-      seeders: u32,
-      /// List of [peers](super::Peer) (6 bytes per peer) unless ipv6
-      peers: Vec<super::Peer>,
-   },
-
-   /// Error response (8 + message length bytes total)
-   Error {
-      /// Action type (4 bytes)
-      action: Action,
-      /// Transaction ID (4 bytes)
-      transaction_id: TransactionId,
-      /// Error message (variable length)
-      message: String,
-   },
-}
-
-impl Display for TrackerResponse {
-   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      match self {
-         TrackerResponse::Connect { connection_id, .. } => write!(f, "Connect ({connection_id})"),
-         TrackerResponse::Announce {
-            peers,
-            seeders,
-            leechers,
-            interval,
-            ..
-         } => f
-            .debug_struct("Announce")
-            .field("peers", &peers.len())
-            .field("seeders", &seeders)
-            .field("leechers", &leechers)
-            .field("interval", &interval)
-            .finish(),
-         TrackerResponse::Error { message, .. } => write!(f, "Error ({message})"),
-      }
-   }
-}
-
 /// Formats the headers for a request in the UDP Tracker Protocol
 impl TrackerRequest {
    pub fn transaction_id(&self) -> TransactionId {
@@ -166,7 +103,7 @@ impl TrackerRequest {
       }
    }
 
-   #[instrument]
+   #[instrument(skip(self), fields(%self))]
    pub fn to_bytes(&self) -> Vec<u8> {
       let mut buf = Vec::new();
 
@@ -209,6 +146,56 @@ impl TrackerRequest {
       trace!(size = buf.len(), "Request serialized");
       buf
    }
+}
+
+impl Display for TrackerRequest {
+   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      match self {
+         TrackerRequest::Connect(_, _, _) => write!(f, "Connect"),
+         TrackerRequest::Announce { .. } => write!(f, "Announce"),
+      }
+   }
+}
+
+/// Tracker response variants with binary layouts.
+#[derive(Debug)]
+#[allow(dead_code)]
+enum TrackerResponse {
+   /// Connect response (16 bytes total)
+   Connect {
+      /// Action type (4 bytes)
+      action: Action,
+      /// Connection ID (8 bytes)
+      connection_id: ConnectionId,
+      /// Transaction ID (4 bytes)
+      transaction_id: TransactionId,
+   },
+
+   /// Announce response (20 + 6n bytes total)
+   Announce {
+      /// Action type (4 bytes)
+      action: Action,
+      /// Transaction ID (4 bytes)
+      transaction_id: TransactionId,
+      /// Interval in seconds until next announce (4 bytes)
+      interval: u32,
+      /// Number of leechers (4 bytes)
+      leechers: u32,
+      /// Number of seeders (4 bytes)
+      seeders: u32,
+      /// List of [peers](super::Peer) (6 bytes per peer) unless ipv6
+      peers: Vec<super::Peer>,
+   },
+
+   /// Error response (8 + message length bytes total)
+   Error {
+      /// Action type (4 bytes)
+      action: Action,
+      /// Transaction ID (4 bytes)
+      transaction_id: TransactionId,
+      /// Error message (variable length)
+      message: String,
+   },
 }
 
 /// Accepts a response (in bytes) from a UDP [tracker request](TrackerRequest).
@@ -361,11 +348,24 @@ impl TrackerResponse {
    }
 }
 
-impl Display for TrackerRequest {
+impl Display for TrackerResponse {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
       match self {
-         TrackerRequest::Connect(_, _, _) => write!(f, "Connect"),
-         TrackerRequest::Announce { .. } => write!(f, "Announce"),
+         TrackerResponse::Connect { connection_id, .. } => write!(f, "Connect ({connection_id})"),
+         TrackerResponse::Announce {
+            peers,
+            seeders,
+            leechers,
+            interval,
+            ..
+         } => f
+            .debug_struct("Announce")
+            .field("peers", &peers.len())
+            .field("seeders", &seeders)
+            .field("leechers", &leechers)
+            .field("interval", &interval)
+            .finish(),
+         TrackerResponse::Error { message, .. } => write!(f, "Error ({message})"),
       }
    }
 }
