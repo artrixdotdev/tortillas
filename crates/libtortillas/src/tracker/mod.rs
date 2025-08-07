@@ -290,9 +290,18 @@ impl Tracker {
    ) -> Result<Vec<Peer>> {
       match self {
          Tracker::Http(uri) => {
-            let mut tracker = HttpTracker::new(uri.clone(), info_hash, peer_id, None);
+            let tracker = HttpTracker::new(uri.clone(), info_hash, peer_id, None);
 
-            Ok(tracker.get_peers().await.unwrap())
+            // This may be temporary.
+            let mut peers = vec![];
+            let stream = tracker.announce_stream().await;
+            pin_mut!(stream);
+
+            while let Some(peer) = stream.next().await {
+               peers.push(peer);
+            }
+
+            Ok(peers)
          }
          Tracker::Udp(uri) => {
             let port: u16 = random_range(1024..65535);
@@ -322,12 +331,13 @@ impl Tracker {
 
    /// Streams peers based off of given tracker
    pub async fn stream_peers(
-      &self, info_hash: InfoHash, peer_addr: Option<SocketAddr>, peer_id: PeerId,
+      &self, _info_hash: InfoHash, _peer_addr: Option<SocketAddr>, _peer_id: PeerId,
    ) -> Result<mpsc::Receiver<Vec<Peer>>> {
       match self {
-         Tracker::Http(uri) => {
-            let mut tracker = HttpTracker::new(uri.clone(), info_hash, Some(peer_id), peer_addr);
-            Ok(tracker.stream_peers().await.unwrap())
+         Tracker::Http(_) => {
+            // let mut tracker = HttpTracker::new(uri.clone(), info_hash, Some(peer_id),
+            // peer_addr); Ok(tracker.stream_peers().await.unwrap())
+            todo!()
          }
          Tracker::Udp(_) => {
             // let mut tracker =
