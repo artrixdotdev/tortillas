@@ -109,6 +109,13 @@ struct StatsHook(
    broadcast::Receiver<TrackerStats>,
 );
 
+impl Default for StatsHook {
+   fn default() -> Self {
+      let (tx, rx) = broadcast::channel(10);
+      Self(tx, rx)
+   }
+}
+
 /// We have to manually implement Clone because we can't clone the receiver
 impl Clone for StatsHook {
    fn clone(&self) -> Self {

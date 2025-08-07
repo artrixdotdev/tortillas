@@ -613,8 +613,6 @@ impl UdpTracker {
 
       debug!("UDP tracker instance created");
 
-      let (tx, rx) = broadcast::channel(100);
-
       Ok(UdpTracker {
          addr,
          uri,
@@ -627,7 +625,7 @@ impl UdpTracker {
          peer_addr,
          stats: TrackerStats::default(),
          announce_params: Arc::new(RwLock::new(AnnounceParams::default())),
-         stats_hook: StatsHook(tx, rx),
+         stats_hook: StatsHook::default(),
       })
    }
 
