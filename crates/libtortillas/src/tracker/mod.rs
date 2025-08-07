@@ -29,6 +29,7 @@ use udp::UdpTracker;
 use crate::{
    hashes::InfoHash,
    peer::{Peer, PeerId},
+   tracker::udp::UdpServer,
 };
 pub mod http;
 pub mod udp;
@@ -54,7 +55,7 @@ pub trait TrackerTrait: Clone {
 /// let tracker = Tracker::Http("udp://tracker.opentrackr.org:1337/announce");
 ///
 /// let server = UdpServer::new();
-/// let tracker: Box<dyn TrackerInstance> = tracker.to_instance(info_hash, peer_id, Some(server));
+/// let tracker: Box<dyn TrackerInstance> = tracker.to_instance(info_hash, peer_id, port, Some(server));
 ///
 /// let (rx, tx) = tracker.configure();
 ///
@@ -285,6 +286,29 @@ impl TrackerStats {
 }
 
 impl Tracker {
+   /// Creates a new tracker instance based on the tracker type.
+   ///
+   /// Forced to use some really hacky code to coerce the tracker into a
+   /// [TrackerInstance].
+   pub async fn to_instance(
+      &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
+   ) -> Box<dyn TrackerInstance> {
+      // We can't use a traditional "match" statement here because match statements
+      // don't allow arms with varying types
+      let mut instance: Option<Box<dyn TrackerInstance>> = None;
+      let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
+      if let Self::Http(uri) = &self {
+         let tracker = HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
+         instance = Some(Box::new(tracker));
+      } else if let Self::Udp(uri) = &self {
+         let tracker =
+            UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
+               .await
+               .unwrap();
+         instance = Some(Box::new(tracker));
+      };
+      instance.unwrap()
+   }
    /// Gets peers based off of given tracker
    pub async fn get_peers(
       &self, info_hash: InfoHash, peer_id: Option<PeerId>,
