@@ -2,6 +2,7 @@ use std::{
    collections::HashMap,
    fmt::{Debug, Display},
    net::{Ipv4Addr, SocketAddr},
+   pin::Pin,
    str::FromStr,
    sync::{
       Arc,
@@ -1007,11 +1008,11 @@ impl TrackerInstance for UdpTracker {
    /// Returns a stream that contains each peer that a tracker yields. Stream
    /// sleeps for [self.interval](UdpTracker::interval) seconds after every
    /// call to [announce](UdpTracker::announce).
-   async fn announce_stream(&self) -> impl Stream<Item = Peer> {
+   async fn announce_stream(&self) -> Pin<Box<dyn Stream<Item = Peer> + Send>> {
       let tracker = self.clone();
       let interval = self.interval();
 
-      stream! {
+      Box::pin(stream! {
           loop {
               match tracker.announce().await {
                   Ok(peers) => {
@@ -1027,7 +1028,7 @@ impl TrackerInstance for UdpTracker {
               }
               sleep(Duration::from_secs(interval as u64)).await;
           }
-      }
+      })
    }
 }
 

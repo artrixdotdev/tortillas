@@ -1,6 +1,7 @@
 use std::{
    fmt,
    net::SocketAddr,
+   pin::Pin,
    sync::{
       Arc,
       atomic::{AtomicUsize, Ordering},
@@ -148,7 +149,7 @@ pub trait TrackerInstance {
    )>;
    /// Returns a stream that appends every new group of peers that we receive
    /// from a tracker.
-   async fn announce_stream(&self) -> impl Stream<Item = Peer>;
+   async fn announce_stream(&self) -> Pin<Box<dyn Stream<Item = Peer> + Send>>;
 }
 
 /// Tracker statistics to be returned from

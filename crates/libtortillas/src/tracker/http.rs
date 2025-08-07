@@ -1,6 +1,7 @@
 use std::{
    fmt::Debug,
    net::{IpAddr, Ipv4Addr, SocketAddr},
+   pin::Pin,
    str::FromStr,
    sync::{
       Arc,
@@ -305,11 +306,11 @@ impl TrackerInstance for HttpTracker {
       Ok((tx, stats_receiver))
    }
 
-   async fn announce_stream(&self) -> impl Stream<Item = Peer> {
+   async fn announce_stream(&self) -> Pin<Box<dyn Stream<Item = Peer> + Send>> {
       let tracker = self.clone();
       let interval = self.interval();
 
-      stream! {
+      Box::pin(stream! {
           loop {
               match tracker.announce().await {
                   Ok(peers) => {
@@ -325,7 +326,7 @@ impl TrackerInstance for HttpTracker {
               }
               sleep(Duration::from_secs(interval as u64)).await;
           }
-      }
+      })
    }
 }
 
