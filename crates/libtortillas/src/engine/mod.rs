@@ -14,6 +14,7 @@ use tokio::{
    sync::{Mutex, RwLock, broadcast, mpsc},
    time::{Duration, Instant},
 };
+use tokio_stream::StreamExt;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
@@ -24,6 +25,7 @@ use crate::{
       messages::PeerMessages,
       stream::PeerStream,
    },
+   tracker::udp::UdpServer,
 };
 
 type PeerMessenger = mpsc::Sender<PeerCommand>;
@@ -366,23 +368,21 @@ impl TorrentEngine {
          );
 
          let info_hash = me.metainfo.info_hash().unwrap();
+         let udp_server = UdpServer::new(None).await;
          for (index, tracker) in me.metainfo.announce_list().iter().enumerate() {
-            match tracker
-               .stream_peers(info_hash, Some(primary_addr), me.id)
-               .await
-            {
-               Ok(rx) => {
-                  debug!(tracker_index = index, "Successfully connected to tracker");
-                  rx_list.push(rx);
+            let instance = tracker
+               .to_instance(info_hash, me.id, primary_addr.port(), udp_server.clone())
+               .await;
+            instance.configure().await.unwrap();
+            debug!(tracker_index = index, "Successfully connected to tracker");
+            let mut stream = instance.announce_stream().await;
+            let (tx, rx) = mpsc::channel(100);
+            tokio::spawn(async move {
+               while let Some(message) = stream.next().await {
+                  tx.send(message).await.unwrap();
                }
-               Err(e) => {
-                  warn!(
-                      tracker_index = index,
-                      error = %e,
-                      "Failed to connect to tracker"
-                  );
-               }
-            }
+            });
+            rx_list.push(rx);
          }
 
          if rx_list.is_empty() {
@@ -492,44 +492,38 @@ impl TorrentEngine {
 
             for (tracker_index, rx) in rx_list.iter_mut().enumerate() {
                match rx.recv().await {
-                  Some(peers) => {
-                     let peer_count = peers.len();
-
+                  Some(peer) => {
                      // Update statistics
                      {
                         let mut stats = stats_ref.lock().await;
-                        stats.total_peers_discovered += peer_count;
+                        stats.total_peers_discovered += 1;
                      }
 
-                     debug!(tracker_index, peer_count, "Received peers from tracker");
-
-                     for peer in peers {
-                        if peers_in_action.insert(peer.clone()) {
-                           // Update unique peer count
-                           {
-                              let mut stats = stats_ref.lock().await;
-                              stats.unique_peers_discovered += 1;
-                           }
-
-                           let peer_addr = peer.socket_addr();
-
-                           trace!(
-                               peer_addr = %peer_addr,
-                               tracker_index,
-                               "Discovered new unique peer"
-                           );
-
-                           let listener = utp_listener.clone();
-                           let me_inner = me_discovery.clone();
-                           tokio::spawn(async move {
-                              me_inner.spawn_handle_peer(peer, Some(listener), None).await;
-                           });
-                        } else {
-                           trace!(
-                               peer_addr = %peer.socket_addr(),
-                               "Skipping duplicate peer"
-                           );
+                     if peers_in_action.insert(peer.clone()) {
+                        // Update unique peer count
+                        {
+                           let mut stats = stats_ref.lock().await;
+                           stats.unique_peers_discovered += 1;
                         }
+
+                        let peer_addr = peer.socket_addr();
+
+                        trace!(
+                            peer_addr = %peer_addr,
+                            tracker_index,
+                            "Discovered new unique peer"
+                        );
+
+                        let listener = utp_listener.clone();
+                        let me_inner = me_discovery.clone();
+                        tokio::spawn(async move {
+                           me_inner.spawn_handle_peer(peer, Some(listener), None).await;
+                        });
+                     } else {
+                        trace!(
+                            peer_addr = %peer.socket_addr(),
+                            "Skipping duplicate peer"
+                        );
                      }
                   }
                   None => {

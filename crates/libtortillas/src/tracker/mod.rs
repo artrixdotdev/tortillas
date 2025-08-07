@@ -11,10 +11,9 @@ use std::{
 use anyhow::Result;
 use async_trait::async_trait;
 use atomic_time::{AtomicInstant, AtomicOptionInstant};
-use futures::{Stream, StreamExt, pin_mut};
+use futures::Stream;
 use http::HttpTracker;
 use num_enum::TryFromPrimitive;
-use rand::random_range;
 use serde::{
    Deserialize,
    de::{self, Visitor},
@@ -308,72 +307,6 @@ impl Tracker {
          instance = Some(Box::new(tracker));
       };
       instance.unwrap()
-   }
-   /// Gets peers based off of given tracker
-   pub async fn get_peers(
-      &self, info_hash: InfoHash, peer_id: Option<PeerId>,
-   ) -> Result<Vec<Peer>> {
-      match self {
-         Tracker::Http(uri) => {
-            let tracker = HttpTracker::new(uri.clone(), info_hash, peer_id, None);
-
-            // This may be temporary.
-            let mut peers = vec![];
-            let stream = tracker.announce_stream().await;
-            pin_mut!(stream);
-
-            while let Some(peer) = stream.next().await {
-               peers.push(peer);
-            }
-
-            Ok(peers)
-         }
-         Tracker::Udp(uri) => {
-            let port: u16 = random_range(1024..65535);
-            let tracker = UdpTracker::new(
-               uri.clone(),
-               None,
-               info_hash,
-               (peer_id.unwrap(), SocketAddr::from(([0, 0, 0, 0], port))),
-            )
-            .await
-            .unwrap();
-
-            // This may be temporary.
-            let mut peers = vec![];
-            let stream = tracker.announce_stream().await;
-            pin_mut!(stream);
-
-            while let Some(peer) = stream.next().await {
-               peers.push(peer);
-            }
-
-            Ok(peers)
-         }
-         Tracker::Websocket(_) => todo!(),
-      }
-   }
-
-   /// Streams peers based off of given tracker
-   pub async fn stream_peers(
-      &self, _info_hash: InfoHash, _peer_addr: Option<SocketAddr>, _peer_id: PeerId,
-   ) -> Result<mpsc::Receiver<Vec<Peer>>> {
-      match self {
-         Tracker::Http(_) => {
-            // let mut tracker = HttpTracker::new(uri.clone(), info_hash, Some(peer_id),
-            // peer_addr); Ok(tracker.stream_peers().await.unwrap())
-            todo!()
-         }
-         Tracker::Udp(_) => {
-            // let mut tracker =
-            //    UdpTracker::new(uri.clone(), None, info_hash, (peer_id,
-            // peer_addr.unwrap()))       .await
-            //       .unwrap();
-            // Ok(tracker.stream_peers().await.unwrap())
-            todo!()
-         }
-         Tracker::Websocket(_) => todo!(),
-      }
    }
 
    pub fn uri(&self) -> String {
