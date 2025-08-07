@@ -17,6 +17,7 @@ use serde::{
    Deserialize,
    de::{self, Visitor},
 };
+use serde_with::{Bytes, serde_as};
 use tokio::{
    sync::{RwLock, broadcast, mpsc},
    time::{Duration, Instant, sleep},
@@ -120,7 +121,7 @@ impl TrackerRequest {
          left: Some(0),
          event: Event::Stopped,
          // We currently don't support the non-compact form
-         compact: Some(true),
+         compact: Some(false),
       }
    }
 }
@@ -347,7 +348,7 @@ fn urlencode(t: &[u8; 20]) -> String {
 /// in get_peers
 struct PeerVisitor;
 
-impl Visitor<'_> for PeerVisitor {
+impl<'de> Visitor<'de> for PeerVisitor {
    type Value = Vec<Peer>;
 
    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -405,6 +406,50 @@ impl Visitor<'_> for PeerVisitor {
 
       Ok(peers)
    }
+
+   fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+   where
+      A: de::SeqAccess<'de>,
+   {
+      #[serde_as]
+      #[derive(Deserialize)]
+      struct DictionaryPeer {
+         ip: String,
+         #[serde(rename = "peer id")]
+         #[serde_as(as = "Option<Bytes>")]
+         id: Option<Vec<u8>>,
+         port: u16,
+      }
+
+      // Handle non-compact peer format (list of dictionaries)
+      let mut peers = Vec::new();
+
+      while let Some(dictionary_peer) = seq.next_element::<DictionaryPeer>()? {
+         match dictionary_peer.ip.parse::<IpAddr>() {
+            Ok(ip) => {
+               let port = dictionary_peer.port;
+               let id_bytes: Option<[u8; 20]> = dictionary_peer.id.and_then(|b| b.try_into().ok());
+               let mut peer = Peer::from_socket_addr(SocketAddr::from((ip, port)));
+
+               peer.id = id_bytes.map(PeerId::from);
+               peers.push(peer);
+            }
+            Err(_) => {
+               warn!(
+                  ip_address = %dictionary_peer.ip,
+                  "Failed to parse IP address from dictionary peer, skipping"
+               );
+            }
+         }
+      }
+
+      trace!(
+         peers_parsed = peers.len(),
+         "Parsed peers in dictionary format"
+      );
+
+      Ok(peers)
+   }
 }
 
 /// Serde related code. Reference their documentation: <https://serde.rs/impl-deserialize.html>
@@ -413,7 +458,7 @@ fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<Peer>, D::Error>
 where
    D: serde::Deserializer<'de>,
 {
-   deserializer.deserialize_bytes(PeerVisitor)
+   deserializer.deserialize_any(PeerVisitor)
 }
 
 #[cfg(test)]
@@ -448,7 +493,7 @@ mod tests {
             println!("announce_list: {:?}", announce_list);
 
             // An HTTP tracker
-            let announce_uri = announce_list[0].uri();
+            let announce_uri = announce_list[1].uri();
             let http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None, None);
 
             // Spawn a task to re-fetch the latest list of peers at a given interval
