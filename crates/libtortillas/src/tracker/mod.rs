@@ -104,6 +104,7 @@ pub enum TrackerUpdate {
 }
 
 /// Broadcast sender and receiver for statistical information about trackers.
+#[derive(Debug)]
 struct StatsHook(
    broadcast::Sender<TrackerStats>,
    broadcast::Receiver<TrackerStats>,
