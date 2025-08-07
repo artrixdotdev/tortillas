@@ -2,6 +2,7 @@ use std::{
    fmt::Debug,
    net::{IpAddr, Ipv4Addr, SocketAddr},
    str::FromStr,
+   sync::Arc,
 };
 
 use anyhow::Result;
@@ -11,7 +12,7 @@ use serde::{
    de::{self, Visitor},
 };
 use tokio::{
-   sync::mpsc,
+   sync::{RwLock, mpsc},
    time::{Duration, Instant, sleep},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -134,7 +135,7 @@ pub struct HttpTracker {
    uri: String,
    pub peer_id: PeerId,
    info_hash: InfoHash,
-   params: TrackerRequest,
+   params: Arc<RwLock<TrackerRequest>>,
    interval: usize,
    stats: TrackerStats,
 }
@@ -154,7 +155,6 @@ impl HttpTracker {
          trace!(generated_peer_id = %id, "Generated new peer ID");
          id
       });
-
       let params = TrackerRequest::new(peer_tracker_addr);
 
       debug!(
@@ -163,6 +163,7 @@ impl HttpTracker {
           peer_addr = format!("{}:{}", params.ip.unwrap_or(Ipv4Addr::UNSPECIFIED.into()), params.port),
           "Created HTTP tracker instance"
       );
+      let params = Arc::new(RwLock::new(params));
 
       HttpTracker {
          interval: usize::MAX,
@@ -268,7 +269,7 @@ impl TrackerTrait for HttpTracker {
       self.stats.increment_announce_attempts();
 
       // URL encoding phase
-      let params_encoded = &self.params.to_string();
+      let params_encoded = &self.params.read().await.to_string();
       let info_hash_encoded = urlencode(self.info_hash.as_bytes());
       let peer_id_encoded = urlencode(self.peer_id.id());
 
