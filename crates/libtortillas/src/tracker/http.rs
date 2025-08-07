@@ -2,17 +2,22 @@ use std::{
    fmt::Debug,
    net::{IpAddr, Ipv4Addr, SocketAddr},
    str::FromStr,
-   sync::Arc,
+   sync::{
+      Arc,
+      atomic::{AtomicUsize, Ordering},
+   },
 };
 
 use anyhow::Result;
+use async_stream::stream;
 use async_trait::async_trait;
+use futures::Stream;
 use serde::{
    Deserialize,
    de::{self, Visitor},
 };
 use tokio::{
-   sync::{RwLock, mpsc},
+   sync::{RwLock, broadcast, mpsc},
    time::{Duration, Instant, sleep},
 };
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -23,7 +28,7 @@ use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::InfoHash,
    peer::PeerId,
-   tracker::TrackerStats,
+   tracker::{Event, StatsHook, TrackerInstance, TrackerStats, TrackerUpdate},
 };
 
 #[derive(Debug, Deserialize)]
@@ -32,15 +37,6 @@ pub struct TrackerResponse {
    pub interval: Option<usize>,
    #[serde(deserialize_with = "deserialize_peers")]
    pub peers: Vec<Peer>,
-}
-
-/// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
-#[derive(Clone, Debug)]
-pub enum Event {
-   Started,
-   Completed,
-   Stopped,
-   Empty,
 }
 
 /// Tracker request. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
@@ -136,8 +132,9 @@ pub struct HttpTracker {
    pub peer_id: PeerId,
    info_hash: InfoHash,
    params: Arc<RwLock<TrackerRequest>>,
-   interval: usize,
+   interval: Arc<AtomicUsize>,
    stats: TrackerStats,
+   stats_hook: StatsHook,
 }
 
 impl HttpTracker {
@@ -166,12 +163,168 @@ impl HttpTracker {
       let params = Arc::new(RwLock::new(params));
 
       HttpTracker {
-         interval: usize::MAX,
+         interval: Arc::new(usize::MAX.into()),
          uri,
          peer_id,
          params,
          info_hash,
          stats: TrackerStats::default(),
+         stats_hook: StatsHook::default(),
+      }
+   }
+   /// Sends tracker statistics to the receiver created from the
+   /// [configure](UdpTracker::configure) function.
+   #[instrument(skip(self), fields(tracker_uri = %self.uri, stats = %self.stats))]
+   async fn send_stats(&self) {
+      let tx = &self.stats_hook.tx();
+      if let Err(e) = tx.send(self.stats.clone()) {
+         error!(error = %e, "Failed to send tracker stats");
+      }
+      trace!("Sent tracker stats");
+   }
+
+   #[instrument(skip(self), fields(
+           tracker_uri = %self.uri,
+           info_hash = %self.info_hash,
+           peer_id = %self.peer_id
+       ))]
+   async fn announce(&self) -> Result<Vec<Peer>> {
+      // Update statistics
+      self.stats.increment_announce_attempts();
+
+      // URL encoding phase
+      let params_encoded = &self.params.read().await.to_string();
+      let info_hash_encoded = urlencode(self.info_hash.as_bytes());
+      let peer_id_encoded = urlencode(self.peer_id.id());
+
+      // URI construction
+      let uri_params =
+         format!("{params_encoded}&info_hash={info_hash_encoded}&peer_id={peer_id_encoded}");
+
+      let uri = format!("{}?{}", self.uri, &uri_params);
+
+      trace!(request_uri = %uri, "Sending HTTP request to tracker");
+
+      // HTTP request phase
+      let request_start = Instant::now();
+
+      let response = reqwest::get(&uri).await.map_err(|e| {
+         error!(
+             error = %e,
+             request_uri = %uri,
+             "HTTP request to tracker failed"
+         );
+         HttpTrackerError::Request(e)
+      })?;
+
+      let status = response.status();
+      trace!(
+         status_code = status.as_u16(),
+         "Received HTTP response from tracker"
+      );
+
+      let response_bytes = response.bytes().await.map_err(|e| {
+         error!(error = %e, "Failed to read tracker response body");
+         HttpTrackerError::Request(e)
+      })?;
+
+      let request_duration = request_start.elapsed();
+
+      self.stats.increment_bytes_sent(uri.len()); // Approximate bytes sent
+      self.stats.increment_bytes_received(response_bytes.len());
+
+      // Response parsing phase
+      let response: TrackerResponse = serde_bencode::from_bytes(&response_bytes).map_err(|e| {
+         error!(
+             error = %e,
+             response_size = response_bytes.len(),
+             "Failed to decode bencode response"
+         );
+         HttpTrackerError::Tracker(TrackerError::BencodeError(e))
+      })?;
+
+      self.stats.increment_announce_successes();
+      self
+         .stats
+         .increment_total_peers_received(response.peers.len());
+      self.stats.set_last_interaction();
+      debug!(
+         peers_received = response.peers.len(),
+         interval_seconds = response.interval,
+         request_duration_ms = request_duration.as_millis(),
+         "Successfully fetched peers from HTTP tracker"
+      );
+
+      // Update interval
+      self.set_interval(response.interval.unwrap_or(usize::MAX));
+
+      Ok(response.peers)
+   }
+   pub fn interval(&self) -> usize {
+      self.interval.load(Ordering::Acquire)
+   }
+
+   pub fn set_interval(&self, interval: usize) {
+      self.interval.store(interval, Ordering::Release)
+   }
+}
+#[async_trait]
+impl TrackerInstance for HttpTracker {
+   async fn configure(
+      &self,
+   ) -> anyhow::Result<(
+      mpsc::Sender<TrackerUpdate>,
+      broadcast::Receiver<TrackerStats>,
+   )> {
+      let (tx, mut rx) = mpsc::channel(100);
+      let tracker = self.clone();
+      // tracker.connect().await?;
+      tokio::spawn(async move {
+         while let Some(update) = rx.recv().await {
+            match update {
+               TrackerUpdate::Uploaded(uploaded) => {
+                  let mut params = tracker.params.write().await;
+                  params.uploaded = uploaded;
+               }
+               TrackerUpdate::Downloaded(downloaded) => {
+                  let mut params = tracker.params.write().await;
+                  params.downloaded = downloaded;
+               }
+               TrackerUpdate::Left(left) => {
+                  let mut params = tracker.params.write().await;
+                  params.left = Some(left);
+               }
+               TrackerUpdate::Event(event) => {
+                  let mut params = tracker.params.write().await;
+                  params.event = event;
+               }
+            }
+         }
+      });
+      let stats_receiver = self.stats_hook.rx().resubscribe();
+      Ok((tx, stats_receiver))
+   }
+
+   async fn announce_stream(&self) -> impl Stream<Item = Peer> {
+      let tracker = self.clone();
+      let interval = self.interval();
+
+      stream! {
+          loop {
+              match tracker.announce().await {
+                  Ok(peers) => {
+                      tracker.send_stats().await;
+                      for peer in peers {
+                          yield peer;
+                      }
+                  }
+                  Err(e) => {
+                      error!(error = %e, "Failed to announce to tracker");
+                      // Continue the loop to retry after interval
+                  }
+              }
+              sleep(Duration::from_secs(interval as u64)).await;
+          }
       }
    }
 }
@@ -244,7 +397,7 @@ impl TrackerTrait for HttpTracker {
                }
             }
 
-            let delay = tracker.interval.max(1);
+            let delay = tracker.interval().max(1);
             trace!(
                next_request_delay_secs = delay,
                "Waiting before next peer fetch"
@@ -332,7 +485,7 @@ impl TrackerTrait for HttpTracker {
       );
 
       // Update interval
-      self.interval = response.interval.unwrap_or(usize::MAX);
+      self.set_interval(response.interval.unwrap_or(usize::MAX));
 
       Ok(response.peers)
    }
