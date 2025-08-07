@@ -28,7 +28,7 @@ use crate::{
    errors::{TrackerError, UdpTrackerError},
    hashes::InfoHash,
    peer::PeerId,
-   tracker::{Event, TrackerInstance, TrackerStats, TrackerUpdate},
+   tracker::{Event, StatsHook, TrackerInstance, TrackerStats, TrackerUpdate},
 };
 
 /// The connection ID for a UDP connection. This is not the same as a
@@ -522,29 +522,6 @@ pub enum Action {
    Announce = 1u32,
    Scrape = 2u32,
    Error = 3u32,
-}
-
-/// Broadcast sender and receiver for statistical information about trackers.
-struct StatsHook(
-   broadcast::Sender<TrackerStats>,
-   broadcast::Receiver<TrackerStats>,
-);
-
-/// We have to manually implement Clone because we can't clone the receiver
-impl Clone for StatsHook {
-   fn clone(&self) -> Self {
-      Self(self.0.clone(), self.1.resubscribe())
-   }
-}
-
-impl StatsHook {
-   pub fn tx(&self) -> &broadcast::Sender<TrackerStats> {
-      &self.0
-   }
-
-   pub fn rx(&self) -> &broadcast::Receiver<TrackerStats> {
-      &self.1
-   }
 }
 
 /// Parameters for announce requests.

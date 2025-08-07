@@ -103,6 +103,29 @@ pub enum TrackerUpdate {
    Event(Event),
 }
 
+/// Broadcast sender and receiver for statistical information about trackers.
+struct StatsHook(
+   broadcast::Sender<TrackerStats>,
+   broadcast::Receiver<TrackerStats>,
+);
+
+/// We have to manually implement Clone because we can't clone the receiver
+impl Clone for StatsHook {
+   fn clone(&self) -> Self {
+      Self(self.0.clone(), self.1.resubscribe())
+   }
+}
+
+impl StatsHook {
+   pub fn tx(&self) -> &broadcast::Sender<TrackerStats> {
+      &self.0
+   }
+
+   pub fn rx(&self) -> &broadcast::Receiver<TrackerStats> {
+      &self.1
+   }
+}
+
 /// Trait for HTTP and UDP trackers.
 #[async_trait]
 pub trait TrackerInstance {
