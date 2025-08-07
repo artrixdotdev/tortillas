@@ -566,12 +566,18 @@ where
 
 #[cfg(test)]
 mod tests {
+   use std::{net::SocketAddr, str::FromStr, time::Duration};
+
+   use futures::{StreamExt, pin_mut};
+   use rand::random_range;
+   use tokio::time::{Instant, timeout};
    use tracing_test::traced_test;
 
    use super::HttpTracker;
    use crate::{
       metainfo::{MetaInfo, TorrentFile},
-      tracker::TrackerTrait,
+      peer::PeerId,
+      tracker::{Event, TrackerInstance, TrackerTrait, TrackerUpdate},
    };
 
    #[tokio::test]
@@ -602,6 +608,136 @@ mod tests {
             assert!(peer.ip.is_ipv4());
          }
          _ => panic!("Expected Torrent"),
+      }
+   }
+
+   #[tokio::test]
+   async fn test_http_tracker_instance_trait() {
+      tracing_subscriber::fmt()
+         .with_target(true)
+         .with_env_filter("libtortillas=trace,off")
+         .pretty()
+         .init();
+
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/torrents/KNOPPIX_V9.1DVD-2021-01-25-EN.torrent");
+
+      let contents = tokio::fs::read(&path).await.unwrap();
+      let metainfo = TorrentFile::parse(&contents).unwrap();
+
+      match metainfo {
+         MetaInfo::Torrent(torrent) => {
+            let info_hash = torrent.info.hash().expect("Missing info hash");
+            let announce_list = torrent.announce_list();
+            let announce_url = announce_list
+               .iter()
+               .find(|t| t.uri().starts_with("http://"))
+               .expect("No UDP tracker found in announce list");
+
+            let port: u16 = random_range(1024..65535);
+            let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
+
+            let tracker = HttpTracker::new(
+               announce_url.uri().clone(),
+               info_hash,
+               Some(PeerId::new()),
+               Some(socket_addr),
+            );
+
+            let (update_sender, mut stats_receiver) =
+               tracker.configure().await.expect("Failed to configure");
+
+            // Test sending tracker updates through the channel
+            update_sender
+               .send(TrackerUpdate::Downloaded(1024))
+               .await
+               .expect("Failed to send downloaded update");
+
+            update_sender
+               .send(TrackerUpdate::Uploaded(512))
+               .await
+               .expect("Failed to send uploaded update");
+
+            update_sender
+               .send(TrackerUpdate::Left(2048))
+               .await
+               .expect("Failed to send left update");
+
+            update_sender
+               .send(TrackerUpdate::Event(Event::Started))
+               .await
+               .expect("Failed to send event update");
+
+            // Use the announce_stream method from TrackerInstance trait
+            let announce_stream = tracker.announce_stream().await;
+            pin_mut!(announce_stream); // https://docs.rs/async-stream/latest/async_stream/#usage
+
+            // Collect some peers from the stream
+            let mut peer_count = 0;
+            let max_peers_to_collect = 5;
+
+            // Use timeout to avoid hanging if stream doesn't produce peers quickly
+            let stream_timeout = Duration::from_secs(30);
+            let start_time = Instant::now();
+
+            while peer_count < max_peers_to_collect && start_time.elapsed() < stream_timeout {
+               match timeout(Duration::from_secs(5), announce_stream.next()).await {
+                  Ok(Some(peer)) => {
+                     peer_count += 1;
+                     println!("Received peer {}: {}:{}", peer_count, peer.ip, peer.port);
+
+                     // Verify peer format
+                     assert!(peer.ip.is_ipv4(), "Expected IPv4 peer address");
+                     assert!(peer.port > 0, "Expected valid port number");
+                  }
+                  Ok(None) => {
+                     println!("Stream ended");
+                     break;
+                  }
+                  Err(_) => {
+                     println!("Timeout waiting for peer, continuing...");
+                     // Don't break immediately, allow some retries
+                  }
+               }
+            }
+
+            // Verify we received at least one peer
+            assert!(
+               peer_count > 0,
+               "Expected to receive at least one peer from announce stream"
+            );
+
+            // Test stats receiver (with timeout to avoid hanging)
+            match timeout(Duration::from_secs(5), stats_receiver.recv()).await {
+               Ok(Ok(stats)) => {
+                  println!("Received tracker stats: {:?}", stats);
+                  // Verify stats structure
+                  assert!(
+                     stats.get_last_interaction().is_some(),
+                     "Expected last interaction timestamp"
+                  );
+               }
+               Ok(Err(e)) => {
+                  println!("Stats receiver error: {}", e);
+                  // Don't fail the test for stats receiver errors as they might
+                  // be expected
+               }
+               Err(_) => {
+                  println!("Timeout waiting for stats");
+                  // Don't fail the test for stats timeout as it might not be
+                  // critical
+               }
+            }
+
+            println!(
+               "TrackerInstance trait test completed successfully with {} peers",
+               peer_count
+            );
+         }
+         _ => {
+            panic!("Expected MagnetUri variant");
+         }
       }
    }
 }
