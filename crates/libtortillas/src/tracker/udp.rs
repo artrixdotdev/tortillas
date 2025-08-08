@@ -425,11 +425,10 @@ impl UdpServer {
    /// correct channels
    async fn start_receiver_task(&self) {
       let receiver = self.clone();
+      // UDP tracker messages are typically small (< 1500 bytes for MTU)
+      // Largest expected response is announce with many peers
+      let mut buf = vec![0u8; 8192]; // 8KB should be sufficient for tracker responses
       tokio::spawn(async move {
-         // I HATE THIS LINE OF CODE!!!
-         //
-         // We are literally forced to waste memory here (???).
-         let mut buf = vec![0u8; u16::MAX as usize]; // Buffer for incoming messages
          loop {
             match receiver.socket.recv_from(&mut buf).await {
                Ok((size, addr)) => {
@@ -604,7 +603,10 @@ impl UdpTracker {
          .collect::<Vec<_>>();
 
       trace!(addrs = ?addrs, "DNS lookup successful");
-      let addr = *addrs.first().unwrap();
+      let addr = addrs.first().copied().ok_or_else(|| {
+         error!(tracker_uri = %uri, "No IPv4 addresses found for tracker");
+         anyhow!("No IPv4 addresses found for tracker: {}", uri)
+      })?;
 
       // Create or use existing message receiver
       let server = match server {
@@ -1042,7 +1044,6 @@ mod tests {
    use crate::metainfo::{MagnetUri, MetaInfo};
 
    #[tokio::test]
-   // #[traced_test]
    async fn test_stream_with_udp_peers() {
       tracing_subscriber::fmt()
          .with_target(true)

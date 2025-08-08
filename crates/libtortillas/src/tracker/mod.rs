@@ -185,11 +185,15 @@ impl fmt::Debug for TrackerStats {
 
 impl fmt::Display for TrackerStats {
    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-      let succes_rate = self.get_announce_successes() as f64 / self.get_announce_attempts() as f64;
+      let success_rate = if self.get_announce_attempts() > 0 {
+         self.get_announce_successes() as f64 / self.get_announce_attempts() as f64
+      } else {
+         0.0
+      };
       write!(
          f,
          "Stats (success rate: {:.2}%, peers received: {:?})",
-         succes_rate * 100.0,
+         success_rate * 100.0,
          self.get_total_peers_received()
       )
    }
@@ -286,27 +290,27 @@ impl TrackerStats {
 
 impl Tracker {
    /// Creates a new tracker instance based on the tracker type.
-   ///
-   /// Forced to use some really hacky code to coerce the tracker into a
-   /// [TrackerInstance].
    pub async fn to_instance(
       &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
    ) -> Box<dyn TrackerInstance> {
-      // We can't use a traditional "match" statement here because match statements
-      // don't allow arms with varying types
-      let mut instance: Option<Box<dyn TrackerInstance>> = None;
       let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
-      if let Self::Http(uri) = &self {
-         let tracker = HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
-         instance = Some(Box::new(tracker));
-      } else if let Self::Udp(uri) = &self {
-         let tracker =
-            UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
-               .await
-               .unwrap();
-         instance = Some(Box::new(tracker));
-      };
-      instance.unwrap()
+      match self {
+         Self::Http(uri) => {
+            let tracker =
+               HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
+            Box::new(tracker)
+         }
+         Self::Udp(uri) => {
+            let tracker =
+               UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
+                  .await
+                  .unwrap();
+            Box::new(tracker)
+         }
+         Self::Websocket(_) => {
+            unimplemented!("Websocket trackers not yet supported")
+         }
+      }
    }
 
    pub fn uri(&self) -> String {

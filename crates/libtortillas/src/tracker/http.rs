@@ -53,7 +53,7 @@ struct TrackerRequest {
    /// Bytes uploaded. Due to BitTorrent's godawful documentation, I am not
    /// aware if this is *actually* bytes. However, according to [BitTorrent's wiki.theory.org](https://wiki.theory.org/BitTorrentSpecification#Tracker_HTTP.2FHTTPS_Protocol), the general consensus is that the unit of this metric is bytes.
    uploaded: usize,
-   /// Bytes uploaded. Due to BitTorrent's godawful documentation, I am not
+   /// Bytes downloaded. Due to BitTorrent's godawful documentation, I am not
    /// aware if this is *actually* bytes. However, according to [BitTorrent's wiki.theory.org](https://wiki.theory.org/BitTorrentSpecification#Tracker_HTTP.2FHTTPS_Protocol), the general consensus is that the unit of this metric is bytes.
    downloaded: usize,
    /// The number of bytes this client still has to download.
@@ -120,7 +120,6 @@ impl TrackerRequest {
          downloaded: 0,
          left: Some(0),
          event: Event::Stopped,
-         // We currently don't support the non-compact form
          compact: Some(false),
       }
    }
@@ -175,7 +174,7 @@ impl HttpTracker {
       }
    }
    /// Sends tracker statistics to the receiver created from the
-   /// [configure](UdpTracker::configure) function.
+   /// [configure](HttpTracker::configure) function.
    #[instrument(skip(self), fields(tracker_uri = %self.uri, stats = %self.stats))]
    async fn send_stats(&self) {
       let tx = &self.stats_hook.tx();
@@ -309,7 +308,6 @@ impl TrackerInstance for HttpTracker {
 
    async fn announce_stream(&self) -> Pin<Box<dyn Stream<Item = Peer> + Send>> {
       let tracker = self.clone();
-      let interval = self.interval();
 
       Box::pin(stream! {
           loop {
@@ -325,7 +323,7 @@ impl TrackerInstance for HttpTracker {
                       // Continue the loop to retry after interval
                   }
               }
-              sleep(Duration::from_secs(interval as u64)).await;
+              sleep(Duration::from_secs(tracker.interval() as u64)).await;
           }
       })
    }
