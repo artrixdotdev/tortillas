@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use bytes::BytesMut;
 use librqbit_utp::{UtpSocketUdp, UtpStream, UtpStreamReadHalf, UtpStreamWriteHalf};
 use tokio::{
    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
@@ -36,13 +37,11 @@ pub enum PeerStream {
 pub trait PeerSend: AsyncWrite + Unpin {
    /// Sends a PeerMessage to a peer.
    async fn send(&mut self, data: PeerMessages) -> Result<(), PeerTransportError> {
-      self
-         .write_all(&data.to_bytes().unwrap())
-         .await
-         .map_err(|e| {
-            error!(error = %e, "Failed to send message to peer");
-            PeerTransportError::MessageFailed
-         })
+      let bytes = data.to_bytes().unwrap();
+      self.write_all(&bytes).await.map_err(|e| {
+         error!(error = %e, "Failed to send message to peer");
+         PeerTransportError::MessageFailed
+      })
    }
 }
 
@@ -53,14 +52,14 @@ pub trait PeerRecv: AsyncRead + Unpin {
    async fn recv(&mut self) -> Result<PeerMessages, PeerTransportError> {
       // First 4 bytes is the big endian encoded length field and the 5th byte is a
       // PeerMessage tag
-      let mut buf = vec![0; 4];
+      let mut length_buf = [0u8; 4];
 
-      self.read_exact(&mut buf).await.map_err(|e| {
+      self.read_exact(&mut length_buf).await.map_err(|e| {
          error!(error = %e, "Failed to read message length from peer");
          PeerTransportError::InvalidPeerResponse("Failed to read message length".into())
       })?;
 
-      let length = u32::from_be_bytes(buf[..4].try_into().unwrap());
+      let length = u32::from_be_bytes(length_buf);
 
       trace!(message_length = length, "Received message length header");
 
@@ -71,7 +70,10 @@ pub trait PeerRecv: AsyncRead + Unpin {
          return Ok(PeerMessages::KeepAlive);
       }
 
-      let mut message_type = vec![0; 1];
+      let mut message_buf = BytesMut::with_capacity(4 + length as usize);
+      message_buf.extend_from_slice(&length_buf);
+
+      let mut message_type = [0u8; 1];
       self.read_exact(&mut message_type).await.map_err(|e| {
          error!(error = %e, "Failed to read message type from peer");
          PeerTransportError::InvalidPeerResponse("Failed to read message type".into())
@@ -83,26 +85,26 @@ pub trait PeerRecv: AsyncRead + Unpin {
          "Received message headers, reading payload"
       );
 
-      buf.extend_from_slice(&message_type);
+      message_buf.extend_from_slice(&message_type);
 
-      // Why do we have to do length - 1? Only a higher power knows.
-      let mut rest = vec![0; (length - 1) as usize];
-
+      // Read the rest of the message payload
+      let mut rest = vec![0u8; (length - 1) as usize];
       self.read_exact(&mut rest).await.map_err(|e| {
          error!(error = %e, message_length = length, "Failed to read message payload from peer");
          PeerTransportError::InvalidPeerResponse("Failed to read message payload".into())
       })?;
 
-      let full_length = length + buf.len() as u32;
+      message_buf.extend_from_slice(&rest);
+
+      let full_length = message_buf.len();
 
       trace!(
-         message_type = buf[4],
+         message_type = message_buf[4],
          total_bytes = full_length,
          "Successfully read complete message from peer"
       );
-      buf.extend_from_slice(&rest);
 
-      PeerMessages::from_bytes(buf)
+      PeerMessages::from_bytes(message_buf.freeze())
    }
 }
 
@@ -200,9 +202,9 @@ impl PeerStream {
    ) -> Result<PeerId, PeerTransportError> {
       // First 4 bytes is the big endian encoded length field and the 5th byte is a
       // PeerMessage tag
-      let mut buf = vec![0; 5];
+      let mut initial_buf = [0u8; 5];
 
-      self.read_exact(&mut buf).await.map_err(|e| {
+      self.read_exact(&mut initial_buf).await.map_err(|e| {
          error!(error = %e, "Failed to read handshake headers from peer");
          PeerTransportError::InvalidPeerResponse("Failed to read handshake headers".into())
       })?;
@@ -210,24 +212,24 @@ impl PeerStream {
       let addr = self.remote_addr().unwrap();
 
       trace!(
-          message_type = buf[4],
+          message_type = initial_buf[4],
           remote_addr = %addr,
           "Received message headers, validating handshake"
       );
 
-      let is_handshake = is_handshake(&buf);
+      let is_handshake = is_handshake(&initial_buf);
 
       let length = if is_handshake {
          // This is a handshake.
          // The length of a handshake is always 68 and we already have the
          // first 5 bytes of it, so we need 68 - 5 bytes (the current buffer length)
-         68 - buf.len() as u32
+         68 - initial_buf.len() as u32
       } else {
          // This is not a handshake
          // Non handshake messages have a length field from bytes 0-4
          warn!(
              remote_addr = %addr,
-             message_type = buf[4],
+             message_type = initial_buf[4],
              "Received non-handshake message when expecting handshake"
          );
          return Err(PeerTransportError::InvalidPeerResponse(
@@ -235,8 +237,10 @@ impl PeerStream {
          ));
       };
 
-      let mut rest = vec![0; length as usize];
+      let mut buf = BytesMut::with_capacity(68);
+      buf.extend_from_slice(&initial_buf);
 
+      let mut rest = vec![0u8; length as usize];
       self.read_exact(&mut rest).await.map_err(|e| {
          error!(
              error = %e,
@@ -246,7 +250,9 @@ impl PeerStream {
          PeerTransportError::InvalidPeerResponse("Failed to read handshake payload".into())
       })?;
 
-      let full_length = length + buf.len() as u32;
+      buf.extend_from_slice(&rest);
+
+      let full_length = buf.len();
 
       trace!(
           message_type = buf[4],
@@ -254,10 +260,9 @@ impl PeerStream {
           remote_addr = %addr,
           "Successfully read complete handshake from peer"
       );
-      buf.extend_from_slice(&rest);
 
       // Creates a new handshake and sends it
-      let message = PeerMessages::from_bytes(buf)?;
+      let message = PeerMessages::from_bytes(buf.freeze())?;
       if let PeerMessages::Handshake(handshake) = message {
          validate_handshake(&handshake, addr, info_hash.clone())?;
          let response = PeerMessages::Handshake(Handshake::new(info_hash, id));
@@ -412,7 +417,7 @@ pub fn validate_handshake(
    received_handshake: &Handshake, peer_addr: SocketAddr, info_hash: Arc<InfoHash>,
 ) -> Result<(), PeerTransportError> {
    // Validate protocol string
-   if MAGIC_STRING != received_handshake.protocol {
+   if MAGIC_STRING != received_handshake.protocol.as_ref() {
       error!(
           peer_addr = %peer_addr,
           received_protocol = %String::from_utf8_lossy(&received_handshake.protocol),
@@ -473,6 +478,7 @@ mod tests {
 
       // Spawn client that sends handshake
       let client_info_hash = info_hash.clone();
+      let server_id_clone = server_id;
       tokio::spawn(async move {
          let mut stream = PeerStream::Tcp(TcpStream::connect(addr).await.unwrap());
 
@@ -481,7 +487,7 @@ mod tests {
             .await
             .unwrap();
 
-         assert_eq!(response.0, server_id);
+         assert_eq!(response.0, server_id_clone);
       });
 
       // Server side

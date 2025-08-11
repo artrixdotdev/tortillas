@@ -13,6 +13,7 @@ use std::{
 use anyhow::anyhow;
 use async_stream::stream;
 use async_trait::async_trait;
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures::Stream;
 use num_enum::TryFromPrimitive;
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -104,14 +105,14 @@ impl TrackerRequest {
    }
 
    #[instrument(skip(self), fields(%self))]
-   pub fn to_bytes(&self) -> Vec<u8> {
-      let mut buf = Vec::new();
+   pub fn to_bytes(&self) -> Bytes {
+      let mut buf = BytesMut::new();
 
       match self {
          TrackerRequest::Connect(id, action, transaction_id) => {
-            buf.extend_from_slice(&id.to_be_bytes()); // Magic constant
-            buf.extend_from_slice(&(*action as u32).to_be_bytes()); // Action
-            buf.extend_from_slice(&transaction_id.to_be_bytes()); // Transaction ID
+            buf.put_u64(*id); // Magic constant
+            buf.put_u32(*action as u32); // Action
+            buf.put_u32(*transaction_id); // Transaction ID
          }
 
          TrackerRequest::Announce {
@@ -128,23 +129,24 @@ impl TrackerRequest {
             num_want,
             port,
          } => {
-            buf.extend_from_slice(&connection_id.to_be_bytes()); // Connection ID
-            buf.extend_from_slice(&(Action::Announce as u32).to_be_bytes()); // Action
-            buf.extend_from_slice(&transaction_id.to_be_bytes()); // Transaction ID
-            buf.extend_from_slice(info_hash.as_bytes()); // Info Hash
-            buf.extend_from_slice(peer_id.id()); // Peer ID
-            buf.extend_from_slice(&downloaded.to_be_bytes()); // Downloaded
-            buf.extend_from_slice(&left.to_be_bytes()); // Left
-            buf.extend_from_slice(&uploaded.to_be_bytes()); // Uploaded
-            buf.extend_from_slice(&(*event as u32).to_be_bytes()); // Event
-            buf.extend_from_slice(&ip_address.to_be_bytes()); // IP Address
-            buf.extend_from_slice(&key.to_be_bytes()); // Key
-            buf.extend_from_slice(&num_want.to_be_bytes()); // Num Want
-            buf.extend_from_slice(&port.to_be_bytes()); // Port
+            buf.put_u64(*connection_id); // Connection ID
+            buf.put_u32(Action::Announce as u32); // Action
+            buf.put_u32(*transaction_id); // Transaction ID
+            buf.put_slice(info_hash.as_bytes()); // Info Hash
+            buf.put_slice(peer_id.id()); // Peer ID
+            buf.put_u64(*downloaded); // Downloaded
+            buf.put_u64(*left); // Left
+            buf.put_u64(*uploaded); // Uploaded
+            buf.put_u32(*event as u32); // Event
+            buf.put_u32(*ip_address); // IP Address
+            buf.put_u32(*key); // Key
+            buf.put_i32(*num_want); // Num Want
+            buf.put_u16(*port); // Port
          }
       }
-      trace!(size = buf.len(), "Request serialized");
-      buf
+      let result = buf.freeze();
+      trace!(size = result.len(), "Request serialized");
+      result
    }
 }
 
@@ -222,7 +224,8 @@ impl TrackerResponse {
          });
       }
 
-      let action = u32::from_be_bytes(bytes[0..4].try_into().unwrap());
+      let mut buf = Bytes::copy_from_slice(bytes);
+      let action = buf.get_u32();
       let action: Action = Action::try_from(action).map_err(|e| {
          error!(
             invalid_action = e.number,
@@ -247,8 +250,8 @@ impl TrackerResponse {
                });
             }
 
-            let transaction_id = TransactionId::from_be_bytes(bytes[4..8].try_into().unwrap());
-            let connection_id = ConnectionId::from_be_bytes(bytes[8..16].try_into().unwrap());
+            let transaction_id = buf.get_u32();
+            let connection_id = buf.get_u64();
 
             Ok(TrackerResponse::Connect {
                action,
@@ -269,33 +272,28 @@ impl TrackerResponse {
                });
             }
 
-            let transaction_id = TransactionId::from_be_bytes(bytes[4..8].try_into().unwrap());
-            let interval = u32::from_be_bytes(bytes[8..12].try_into().unwrap());
-            let leechers = u32::from_be_bytes(bytes[12..16].try_into().unwrap());
-            let seeders = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+            let transaction_id = buf.get_u32();
+            let interval = buf.get_u32();
+            let leechers = buf.get_u32();
+            let seeders = buf.get_u32();
 
             // Parse peers (each peer is 6 bytes: 4 for IP, 2 for port)
             // see [PEER_SIZE]
             let mut peers = Vec::new();
-            let num_peers = (bytes.len() - 20) / PEER_SIZE;
+            let num_peers = buf.remaining() / PEER_SIZE;
 
             for i in 0..num_peers {
-               let offset = 20 + i * PEER_SIZE;
-               if offset + PEER_SIZE > bytes.len() {
+               if buf.remaining() < PEER_SIZE {
                   warn!(
                      peer_index = i,
-                     offset = offset,
-                     bytes_len = bytes.len(),
+                     remaining = buf.remaining(),
                      "Incomplete peer data, stopping peer parsing"
                   );
                   break;
                }
 
-               let ip_bytes: [u8; 4] = bytes[offset..offset + 4].try_into().unwrap();
-               let ip = Ipv4Addr::from(ip_bytes);
-
-               let port_bytes: [u8; 2] = bytes[offset + 4..offset + PEER_SIZE].try_into().unwrap();
-               let port = u16::from_be_bytes(port_bytes);
+               let ip = Ipv4Addr::from(buf.get_u32());
+               let port = buf.get_u16();
 
                peers.push(Peer::from_ipv4(ip, port));
             }
@@ -322,8 +320,8 @@ impl TrackerResponse {
                });
             }
 
-            let transaction_id = TransactionId::from_be_bytes(bytes[4..8].try_into().unwrap());
-            let message = String::from_utf8_lossy(&bytes[8..]).to_string();
+            let transaction_id = buf.get_u32();
+            let message = String::from_utf8_lossy(&buf).to_string();
 
             error!(
                 transaction_id = transaction_id,
@@ -485,7 +483,7 @@ impl UdpServer {
    }
 
    /// Send a message through the shared socket
-   pub async fn send_message(&self, message: &[u8], addr: SocketAddr) -> Result<()> {
+   pub async fn send_message(&self, message: &Bytes, addr: SocketAddr) -> Result<()> {
       self.socket.send_to(message, addr).await.map_err(|e| {
          error!(error = ?e, "Failed to send message to tracker");
          UdpTrackerError::MessageTimeout

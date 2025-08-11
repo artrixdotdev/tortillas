@@ -10,6 +10,7 @@ use std::{
 };
 
 use bitvec::vec::BitVec;
+use bytes::BytesMut;
 pub use id::*;
 pub use info::*;
 pub use state::*;
@@ -80,7 +81,7 @@ impl Peer {
          reserved: [0u8; 8],
          peer_supports: PeerSupports::new(),
          id: None,
-         info: PeerInfo::new(0, vec![]),
+         info: PeerInfo::new(0, BytesMut::new()),
       }
    }
 

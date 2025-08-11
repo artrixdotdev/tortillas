@@ -1772,6 +1772,7 @@ dependencies = [
  "atomic-time",
  "bencode",
  "bitvec",
+ "bytes",
  "cargo-nextest",
  "futures",
  "hex",

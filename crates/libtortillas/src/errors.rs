@@ -130,6 +130,9 @@ pub enum PeerTransportError {
    #[error("Message was too short")]
    MessageTooShort,
 
+   #[error("Buffer underflow error")]
+   BufferUnderflow,
+
    #[error(transparent)]
    Other(#[from] anyhow::Error),
 }

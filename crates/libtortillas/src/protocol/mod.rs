@@ -6,6 +6,7 @@ use std::{
 };
 
 use bitvec::vec::BitVec;
+use bytes::Bytes;
 use commands::{PeerCommand, PeerResponse};
 use librqbit_utp::UtpSocketUdp;
 use messages::{ExtendedMessage, ExtendedMessageType, PeerMessages};
@@ -410,7 +411,7 @@ impl Peer {
    #[allow(clippy::too_many_arguments)] // Refactor later
    async fn handle_extended_message(
       &mut self, extended_id: u8, extended_message: &Option<ExtendedMessage>,
-      metadata: &Option<Vec<u8>>, to_engine_tx: &broadcast::Sender<PeerResponse>,
+      metadata: &Option<Bytes>, to_engine_tx: &broadcast::Sender<PeerResponse>,
       from_engine_tx: &mpsc::Sender<PeerCommand>, inner_send_tx: &mpsc::Sender<PeerCommand>,
       info_hash: InfoHash,
    ) {
@@ -423,7 +424,7 @@ impl Peer {
 
       // Save to Peer.
       if let Some(inner_metadata) = metadata
-         && let Err(e) = self.info.append_to_bytes(inner_metadata.to_vec())
+         && let Err(e) = self.info.append_to_bytes(inner_metadata)
       {
          warn!(%peer_addr, error = %e, "Failed to append metadata bytes");
       }

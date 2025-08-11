@@ -17,7 +17,7 @@ use serde::{
    Deserialize,
    de::{self, Visitor},
 };
-use serde_with::{Bytes, serde_as};
+use serde_with::serde_as;
 use tokio::{
    sync::{RwLock, broadcast, mpsc},
    time::{Duration, Instant, sleep},
@@ -414,7 +414,7 @@ impl<'de> Visitor<'de> for PeerVisitor {
       struct DictionaryPeer {
          ip: String,
          #[serde(rename = "peer id")]
-         #[serde_as(as = "Option<Bytes>")]
+         #[serde_as(as = "Option<serde_with::Bytes>")]
          id: Option<Vec<u8>>,
          port: u16,
       }
