@@ -29,6 +29,7 @@ serde_with = "3.14.0"
 tokio-retry2 = { version = "0.5.7", features = ["tracing"] }
 async-stream = "0.3.6"
 bytes = "1"
+kameo = "0.17.2"
 
 [dev-dependencies]
 tracing-test = "0.2.5"
