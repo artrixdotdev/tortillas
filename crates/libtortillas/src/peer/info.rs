@@ -1,4 +1,5 @@
 use anyhow::{Error, bail};
+use bytes::{Bytes, BytesMut};
 use tracing::{trace, warn};
 
 use crate::{hashes::InfoHash, metainfo::Info};
@@ -11,12 +12,12 @@ use crate::{hashes::InfoHash, metainfo::Info};
 #[derive(Clone)]
 pub struct PeerInfo {
    info_size: usize,
-   info_bytes: Vec<u8>,
+   info_bytes: BytesMut,
 }
 
 #[allow(dead_code)]
 impl PeerInfo {
-   pub fn new(info_size: usize, info_bytes: Vec<u8>) -> Self {
+   pub fn new(info_size: usize, info_bytes: BytesMut) -> Self {
       PeerInfo {
          info_size,
          info_bytes,
@@ -27,7 +28,7 @@ impl PeerInfo {
       self.info_size = info_size;
    }
 
-   pub(crate) fn set_info_bytes(&mut self, info_bytes: Vec<u8>) {
+   pub(crate) fn set_info_bytes(&mut self, info_bytes: BytesMut) {
       self.info_bytes = info_bytes;
    }
 
@@ -53,7 +54,7 @@ impl PeerInfo {
       // Put bytes into Info struct
       // The metadata should be bencoded bytes.
       trace!("Generating info dict from metadata bytes");
-      let info_dict: Info = serde_bencode::from_bytes(&self.info_bytes).unwrap();
+      let info_dict: Info = serde_bencode::from_bytes(self.info_bytes.as_ref()).unwrap();
 
       // Validate hash of struct with given info hash
       assert_eq!(
@@ -68,7 +69,7 @@ impl PeerInfo {
 
    /// A helper function for handling any issues with appending the new bytes to
    /// the current info_bytes
-   pub(crate) fn append_to_bytes(&mut self, bytes: Vec<u8>) -> Result<(), Error> {
+   pub(crate) fn append_to_bytes(&mut self, bytes: &[u8]) -> Result<(), Error> {
       let bytes_len = bytes.len();
       let current_len = self.info_bytes.len();
       let total_len = current_len + bytes_len;
@@ -83,7 +84,7 @@ impl PeerInfo {
          );
          bail!("The inputted bytes + pre-existing bytes were longer than the metadata size")
       }
-      self.info_bytes.extend_from_slice(&bytes);
+      self.info_bytes.extend_from_slice(bytes);
       Ok(())
    }
 
@@ -109,14 +110,14 @@ impl PeerInfo {
       self.info_size
    }
 
-   pub(crate) fn info_bytes(&self) -> Vec<u8> {
-      self.info_bytes.clone()
+   pub(crate) fn info_bytes(&self) -> Bytes {
+      self.info_bytes.clone().freeze()
    }
 
    /// Resets the PeerInfo struct.
    pub(crate) fn reset(&mut self) {
       trace!("Resetting peer info metadata");
-      self.info_bytes = vec![];
+      self.info_bytes = BytesMut::new();
       self.info_size = 0;
    }
 }

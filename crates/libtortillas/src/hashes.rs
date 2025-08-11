@@ -1,6 +1,7 @@
 use std::fmt::{self, Display};
 
 use anyhow::anyhow;
+use bytes::{Bytes, BytesMut};
 use serde::{
    Deserialize, Deserializer, Serialize, Serializer,
    de::{self, Visitor},
@@ -133,6 +134,24 @@ impl<const N: usize> TryFrom<Vec<u8>> for Hash<N> {
       Ok(Self::from_bytes(
          value.try_into().expect("guaranteed to be length N"),
       ))
+   }
+}
+
+impl<const N: usize> TryFrom<Bytes> for Hash<N> {
+   type Error = anyhow::Error;
+   fn try_from(value: Bytes) -> Result<Self, Self::Error> {
+      if value.len() != N {
+         return Err(anyhow!("Expected length is {}, found {}", N, value.len()));
+      }
+      let mut array = [0u8; N];
+      array.copy_from_slice(&value[..N]);
+      Ok(Self::from_bytes(array))
+   }
+}
+
+impl<const N: usize> From<Hash<N>> for Bytes {
+   fn from(hash: Hash<N>) -> Self {
+      Bytes::copy_from_slice(hash.as_bytes())
    }
 }
 
@@ -326,6 +345,31 @@ impl<const N: usize> HashVec<N> {
       }
       result
    }
+
+   /// Flattens the vector of hashes into a Bytes object.
+   ///
+   /// This is useful for serialization or when you need to work with
+   /// the raw bytes of all hashes concatenated together.
+   ///
+   /// # Examples
+   ///
+   /// ```
+   /// use libtortillas::hashes::{Hash, HashVec};
+   ///
+   /// let mut hashes = HashVec::new();
+   /// hashes.push(Hash::new([0, 1, 2]));
+   /// hashes.push(Hash::new([3, 4, 5]));
+   ///
+   /// let flattened = hashes.flatten_bytes();
+   /// assert_eq!(flattened.as_ref(), &[0, 1, 2, 3, 4, 5]);
+   /// ```
+   pub fn flatten_bytes(&self) -> Bytes {
+      let mut result = BytesMut::with_capacity(N * self.len());
+      for hash in &self.0 {
+         result.extend_from_slice(&hash.0);
+      }
+      result.freeze()
+   }
 }
 
 /// Implements IntoIterator for HashVec to allow iteration over contained
@@ -404,7 +448,7 @@ impl<const N: usize> From<Vec<Hash<N>>> for HashVec<N> {
 
 impl<const N: usize> Display for HashVec<N> {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      write!(f, "HashVec({})", self.flatten().len())
+      write!(f, "HashVec({})", self.len() * N)
    }
 }
 

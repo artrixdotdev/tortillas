@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use tokio::sync::mpsc;
 
 use super::{ExtendedMessage, PeerKey, PeerMessages};
@@ -36,7 +37,7 @@ pub enum PeerResponse {
    /// // Send PeerResponse::Info(info_bytes) here
    /// ```
    Info {
-      bytes: Vec<u8>,
+      bytes: Bytes,
       from_engine_tx: mpsc::Sender<PeerCommand>,
       peer_key: PeerKey,
    },

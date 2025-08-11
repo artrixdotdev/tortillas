@@ -359,12 +359,12 @@ impl Default for PeerId {
    /// [Azureus](PeerIdFormat::Azureus) format
    fn default() -> Self {
       // Fill entire array with random alphanumeric bytes
-      let mut id: [u8; 20] = rand::rng()
+      let mut id = [0u8; 20];
+      rand::rng()
          .sample_iter(&Alphanumeric)
          .take(20)
-         .collect::<Vec<u8>>()
-         .try_into()
-         .unwrap();
+         .enumerate()
+         .for_each(|(i, byte)| id[i] = byte);
 
       // Overwrite the beginning with our identifier
       id[0] = b'-';
