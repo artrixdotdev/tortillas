@@ -25,7 +25,7 @@ pub(crate) struct Torrent {
    trackers: HashMap<Tracker, ActorRef<TrackerActor>>,
 
    bitfield: BitVec<u8>,
-   peer_id: PeerId,
+   id: PeerId,
    info: Option<Info>,
    metainfo: MetaInfo,
    tracker_server: UdpServer,
@@ -82,7 +82,7 @@ impl Torrent {
       let id = id.unwrap();
 
       // Dont add ourselves as peers
-      if id == self.peer_id {
+      if id == self.id {
          return;
       }
 
@@ -94,7 +94,7 @@ impl Torrent {
       let mut stream = PeerStream::connect(peer.socket_addr(), Some(self.utp_server.clone())).await;
 
       let (id, reserved) = stream
-         .send_handshake(self.peer_id, Arc::new(self.info_hash()))
+         .send_handshake(self.id, Arc::new(self.info_hash()))
          .await?;
 
       Ok((id, stream, reserved))
@@ -143,7 +143,7 @@ impl Actor for Torrent {
          tracker_server,
          utp_server,
          trackers,
-         peer_id,
+         id: peer_id,
          metainfo,
          info,
       })
