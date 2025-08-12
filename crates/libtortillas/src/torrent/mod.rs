@@ -4,7 +4,7 @@ use std::{collections::HashMap, fmt, sync::Arc};
 // REMOVE SOON
 use bitvec::vec::BitVec;
 use kameo::{
-   Actor,
+   Actor, Reply,
    actor::ActorRef,
    prelude::{Context, Message},
 };
@@ -125,6 +125,20 @@ pub(crate) enum TorrentMessage {
    IncomingPeer(Peer, PeerStream),
 }
 
+pub(crate) enum TorrentRequest {
+   Bitfield,
+   CurrentPeers,
+   CurrentTrackers,
+   InfoHash,
+}
+#[derive(Reply)]
+pub(crate) enum TorrentResponse {
+   Bitfield(BitVec<u8>),
+   CurrentPeers(Vec<&'static Peer>),
+   CurrentTrackers(Vec<&'static Tracker>),
+   InfoHash(InfoHash),
+}
+
 impl Actor for Torrent {
    type Args = (PeerId, MetaInfo, Arc<UtpSocketUdp>);
 
@@ -160,6 +174,7 @@ impl Actor for Torrent {
       })
    }
 }
+
 impl Message<TorrentMessage> for Torrent {
    type Reply = Option<()>;
 
@@ -177,5 +192,28 @@ impl Message<TorrentMessage> for Torrent {
          }
       }
       None
+   }
+}
+
+impl Message<TorrentRequest> for Torrent {
+   type Reply = TorrentResponse;
+
+   // TODO: Figure out a way to send the peers back to the engine (if needed)
+   async fn handle(
+      &mut self, message: TorrentRequest, ctx: &mut Context<Self, Self::Reply>,
+   ) -> Self::Reply {
+      match message {
+         TorrentRequest::Bitfield => TorrentResponse::Bitfield(self.bitfield.clone()),
+         TorrentRequest::CurrentPeers => {
+            unimplemented!()
+            // TorrentResponse::CurrentPeers(self.peers.values().map(|peer|
+            // peer).collect());
+         }
+         TorrentRequest::CurrentTrackers => {
+            unimplemented!()
+            // TorrentResponse::CurrentTrackers(self.trackers.keys().collect())
+         }
+         TorrentRequest::InfoHash => TorrentResponse::InfoHash(self.info_hash()),
+      }
    }
 }
