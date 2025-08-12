@@ -9,7 +9,7 @@ use kameo::{
    prelude::{Context, Message},
 };
 use librqbit_utp::UtpSocketUdp;
-use tracing::{instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::{
    actor_request_response,
@@ -41,7 +41,8 @@ impl fmt::Display for Torrent {
       write!(
          f,
          "Torrent #{} w/ {working_trackers} Trackers & {} Peers",
-         self.id, working_peers
+         self.info_hash(),
+         working_peers
       )
    }
 }
@@ -74,6 +75,9 @@ impl Torrent {
    ///
    /// This function calls [Self::handshake_peer] if no stream is provided to
    /// retrieve the peer id
+   ///
+   /// Currently, this function does NOT reply to the handshake given by the
+   /// peer, this probably needs to be implemented at some point
    #[instrument(skip(self, peer, stream), fields(%self, peer = ?peer.socket_addr()))]
    async fn append_peer(&mut self, peer: &mut Peer, stream: Option<PeerStream>) {
       // Should pass the stream to PeerActor at some point
@@ -81,7 +85,7 @@ impl Torrent {
       let stream = match stream {
          Some(stream) => stream,
          None => {
-            if let Ok((peer_id, stream, reserved)) = self.handshake_peer(&peer).await {
+            if let Ok((peer_id, stream, reserved)) = self.handshake_peer(peer).await {
                id = Some(peer_id);
                peer.reserved = reserved;
                stream
@@ -111,9 +115,11 @@ impl Torrent {
          .await?;
 
       Ok((id, stream, reserved))
+      // No logging in this function as its calling functions with very verbose
+      // logging
    }
 }
-
+/// For incoming from outside sources (e.g Peers, Trackers and Engine)
 pub(crate) enum TorrentMessage {
    /// A message from an announce actor containing new Peers
    Announce(Vec<Peer>),
@@ -143,12 +149,17 @@ impl Actor for Torrent {
 
    async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
       let (peer_id, metainfo, utp_server) = args;
+      info!(
+         info_hash = %metainfo.info_hash().unwrap(),
+         "Starting new torrent instance",
+      );
 
       // Create tracker actors
       let tracker_list = metainfo.announce_list();
       let mut trackers = HashMap::new();
       // Should be used later on for spawning the tracker actor
       let tracker_server = UdpServer::new(None).await;
+      debug!("Tracker server started");
 
       for tracker in tracker_list {
          trackers.insert(tracker, TrackerActor::spawn(TrackerActor));
@@ -157,6 +168,9 @@ impl Actor for Torrent {
          MetaInfo::Torrent(t) => Some(t.info.clone()),
          _ => None,
       };
+      if info.is_none() {
+         debug!("No info dict found in metainfo, you're probably using a magnet uri");
+      }
 
       Ok(Self {
          peers: HashMap::new(),
