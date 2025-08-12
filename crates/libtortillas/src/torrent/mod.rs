@@ -9,7 +9,7 @@ use kameo::{
    prelude::{Context, Message},
 };
 use librqbit_utp::UtpSocketUdp;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
    actor_request_response,
@@ -17,7 +17,11 @@ use crate::{
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
    peer::{Peer, PeerId},
-   protocol::{PeerActor, stream::PeerStream},
+   protocol::{
+      PeerActor,
+      messages::{Handshake, PeerMessages},
+      stream::{PeerSend, PeerStream},
+   },
    tracker::{Tracker, TrackerActor, udp::UdpServer},
 };
 
@@ -75,15 +79,23 @@ impl Torrent {
    ///
    /// This function calls [Self::handshake_peer] if no stream is provided to
    /// retrieve the peer id
-   ///
-   /// Currently, this function does NOT reply to the handshake given by the
-   /// peer, this probably needs to be implemented at some point
    #[instrument(skip(self, peer, stream), fields(%self, peer = ?peer.socket_addr()))]
    async fn append_peer(&mut self, peer: &mut Peer, stream: Option<PeerStream>) {
       // Should pass the stream to PeerActor at some point
       let mut id = peer.id;
       let stream = match stream {
-         Some(stream) => stream,
+         Some(mut stream) => {
+            // POSSIBLE REFACTOR: make send_handshake... only send the handshake and not
+            // expect a response back, currently it will send a handshake and forcibly
+            // request, and verify one from the peer immediately after, which isn't what we
+            // want in this situation because the peer has already handshaked us.
+            let handshake = Handshake::new(Arc::new(self.info_hash()), self.id);
+            if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
+               error!("Failed to send handshake to peer: {}", err);
+               return;
+            }
+            stream
+         }
          None => {
             if let Ok((peer_id, stream, reserved)) = self.handshake_peer(peer).await {
                id = Some(peer_id);
