@@ -38,6 +38,7 @@ pub(crate) struct Torrent {
    tracker_server: UdpServer,
    /// Should only be used to create new connections
    utp_server: Arc<UtpSocketUdp>,
+   actor_ref: Arc<ActorRef<Self>>,
 }
 
 impl fmt::Display for Torrent {
@@ -118,6 +119,7 @@ impl Torrent {
       }
 
       let actor = PeerActor::spawn(PeerActor);
+      self.actor_ref.link(&actor).await;
       self.peers.insert(id, actor);
    }
 
@@ -174,7 +176,7 @@ impl Actor for Torrent {
    // FIXME: This should not be a TrackerError
    type Error = TrackerError;
 
-   async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+   async fn on_start(args: Self::Args, us: ActorRef<Self>) -> Result<Self, Self::Error> {
       let (peer_id, metainfo, utp_server) = args;
       info!(
          info_hash = %metainfo.info_hash().unwrap(),
@@ -189,7 +191,9 @@ impl Actor for Torrent {
       debug!("Tracker server started");
 
       for tracker in tracker_list {
-         trackers.insert(tracker, TrackerActor::spawn(TrackerActor));
+         let actor = TrackerActor::spawn(TrackerActor);
+         us.link(&actor).await;
+         trackers.insert(tracker, actor);
       }
       let info = match &metainfo {
          MetaInfo::Torrent(t) => Some(t.info.clone()),
@@ -208,6 +212,7 @@ impl Actor for Torrent {
          id: peer_id,
          metainfo,
          info,
+         actor_ref: Arc::new(us),
       })
    }
 }
