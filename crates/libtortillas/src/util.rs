@@ -26,21 +26,28 @@
 #[macro_export]
 macro_rules! actor_request_response {
     (
-        $req_vis:vis $req_name:ident,
+        $(#[$doc:meta])* $req_vis:vis $req_name:ident,
         $res_vis:vis $res_name:ident $(#[$res_meta:meta])?,
-        $( $variant:ident $( ( $ty:ty ) )? ),* $(,)?
+        $(
+            $(#[$variant_meta:meta])*
+            $variant:ident $( ( $ty:ty ) )?
+        ),* $(,)?
     ) => {
         // Request enum
+        $(#[$doc])*
         $req_vis enum $req_name {
             $(
+                $(#[$variant_meta])*
                 $variant,
             )*
         }
 
         // Response enum
         $(#[$res_meta])?
+        $(#[$doc])*
         $res_vis enum $res_name {
             $(
+                $(#[$variant_meta])*
                 $variant $( ( $ty ) )?,
             )*
         }
