@@ -545,12 +545,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "07e28edb80900c19c28f1072f2e8aeca7fa06b23cd4169cefe1af5aa3260783f"
 
 [[package]]
-name = "glob"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
-
-[[package]]
 name = "gloo-timers"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -942,19 +936,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kameo_actors"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "101b2cc295c31295ba77baeed637131e1ebcf7953c4be5747317595bc96ffa62"
-dependencies = [
- "futures",
- "glob",
- "kameo",
- "thiserror",
- "tokio",
-]
-
-[[package]]
 name = "kameo_macros"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1104,7 +1085,6 @@ dependencies = [
  "futures",
  "hex",
  "kameo",
- "kameo_actors",
  "librqbit-utp",
  "num_enum",
  "rand",
