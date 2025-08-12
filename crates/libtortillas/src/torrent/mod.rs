@@ -1,27 +1,30 @@
-#![allow(dead_code, unused_variables, unreachable_code)] // REMOVE SOON
+#![allow(dead_code, unused_variables, unreachable_code)]
+use std::{collections::HashMap, sync::Arc};
+
+// REMOVE SOON
 use bitvec::vec::BitVec;
 use kameo::{Actor, actor::ActorRef};
-use kameo_actors::pool::ActorPool;
+use librqbit_utp::UtpSocketUdp;
 
 use crate::{
    errors::TrackerError,
    metainfo::{Info, MetaInfo},
-   peer::PeerId,
+   peer::{Peer, PeerId},
    protocol::PeerActor,
-   tracker::TrackerActor,
+   tracker::{Tracker, TrackerActor, udp::UdpServer},
 };
 
 pub(crate) struct Torrent {
-   peers: ActorPool<PeerActor>,
-   trackers: ActorPool<TrackerActor>,
+   peers: HashMap<PeerId, ActorRef<PeerActor>>,
+   trackers: HashMap<Tracker, ActorRef<TrackerActor>>,
+
    bitfield: BitVec<u8>,
    peer_id: PeerId,
    info: Option<Info>,
    metainfo: MetaInfo,
-}
-
-pub(crate) struct TorrentState {
-   metainfo: MetaInfo,
+   tracker_server: UdpServer,
+   /// Should only be used to create new connections
+   utp_server: Arc<UtpSocketUdp>,
 }
 
 impl Torrent {
@@ -37,31 +40,51 @@ impl Torrent {
    }
 }
 
+pub(crate) enum TorrentMessage {
+   /// A message from an announce containing new Peers
+   Announce(Vec<Peer>),
+
+   /// Sent after an incoming peer initializes a handshake
+   /// The handshake will be preverified and routed to this torrent instance.
+   ///
+   /// We as the instance are expected to reply, this is not the responsibility
+   /// of the engine.
+   IncomingPeer(Peer),
+}
+
 impl Actor for Torrent {
-   type Args = TorrentState;
+   type Args = (MetaInfo, Arc<UtpSocketUdp>);
 
    // FIXME: This should not be a TrackerError
    type Error = TrackerError;
 
    async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let TorrentState { metainfo } = args;
+      let (metainfo, utp_server) = args;
 
-      // TODO
-      // Initialize our peer id
       let peer_id = PeerId::new();
       // Create tracker actors
-      // Place tracker actors into ActorPool
-      // Request initial peers
-      // Create peer actors
-      // Place peer actors into PeerPool
+      let tracker_list = metainfo.announce_list();
+      let mut trackers = HashMap::new();
+      // Should be used later on for spawning the tracker actor
+      let tracker_server = UdpServer::new(None).await;
+
+      for tracker in tracker_list {
+         trackers.insert(tracker, TrackerActor::spawn(TrackerActor));
+      }
+      let info = match &metainfo {
+         MetaInfo::Torrent(t) => Some(t.info.clone()),
+         _ => None,
+      };
 
       Ok(Self {
-         peers: unimplemented!(),
-         trackers: unimplemented!(),
+         peers: HashMap::new(),
          bitfield: BitVec::EMPTY,
+         tracker_server,
+         utp_server,
+         trackers,
          peer_id,
          metainfo,
-         info: None,
+         info,
       })
    }
 }

@@ -62,7 +62,7 @@ pub trait TrackerTrait: Clone {
 /// let peers: Stream<Peer> = tracker.announce_stream();
 /// tx.send({ uploaded: 20 });
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Tracker {
    /// HTTP Spec
    /// <https://www.bittorrent.org/beps/bep_0003.html>
