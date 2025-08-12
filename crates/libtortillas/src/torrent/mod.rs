@@ -1,5 +1,5 @@
 #![allow(dead_code, unused_variables, unreachable_code)]
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 // REMOVE SOON
 use bitvec::vec::BitVec;
@@ -33,6 +33,18 @@ pub(crate) struct Torrent {
    utp_server: Arc<UtpSocketUdp>,
 }
 
+impl fmt::Display for Torrent {
+   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      let working_trackers = self.trackers.values().filter(|t| t.is_alive()).count();
+      let working_peers = self.peers.values().filter(|p| p.is_alive()).count();
+      write!(
+         f,
+         "Torrent #{} w/ {working_trackers} Trackers & {} Peers",
+         self.id, working_peers
+      )
+   }
+}
+
 impl Torrent {
    fn info_dict(&self) -> Option<Info> {
       if let Some(info) = &self.info {
@@ -61,7 +73,7 @@ impl Torrent {
    ///
    /// This function calls [Self::handshake_peer] if no stream is provided to
    /// retrieve the peer id
-   #[instrument(skip(self, peer, stream), fields(peer = ?peer.socket_addr()))]
+   #[instrument(skip(self, peer, stream), fields(%self, peer = ?peer.socket_addr()))]
    async fn append_peer(&mut self, peer: &mut Peer, stream: Option<PeerStream>) {
       // Should pass the stream to PeerActor at some point
       let mut id = peer.id;
@@ -73,7 +85,7 @@ impl Torrent {
                peer.reserved = reserved;
                stream
             } else {
-               warn!("Failed to handshake with peer... silently existing");
+               warn!("Failed to handshake with peer... silently exiting");
                return;
             }
          }
@@ -114,15 +126,14 @@ pub(crate) enum TorrentMessage {
 }
 
 impl Actor for Torrent {
-   type Args = (MetaInfo, Arc<UtpSocketUdp>);
+   type Args = (PeerId, MetaInfo, Arc<UtpSocketUdp>);
 
    // FIXME: This should not be a TrackerError
    type Error = TrackerError;
 
    async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (metainfo, utp_server) = args;
+      let (peer_id, metainfo, utp_server) = args;
 
-      let peer_id = PeerId::new();
       // Create tracker actors
       let tracker_list = metainfo.announce_list();
       let mut trackers = HashMap::new();
