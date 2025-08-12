@@ -152,10 +152,16 @@ pub(crate) enum TorrentMessage {
 actor_request_response!(
    pub(crate) TorrentRequest,
    pub(crate) TorrentResponse #[derive(Reply)],
+
+   /// Bitfield of the torrent
    Bitfield(BitVec<u8>),
+   /// Current peers of the torrent
    CurrentPeers(Vec<&'static Peer>),
+   /// Current trackers of the torrent
    CurrentTrackers(Vec<&'static Tracker>),
+   /// Info hash of the torrent
    InfoHash(InfoHash),
+   /// Sends the current info dict if we have it
    HasInfoDict(Option<Info>),
 );
 
