@@ -3,12 +3,14 @@ use std::{collections::HashMap, fmt, sync::Arc};
 
 // REMOVE SOON
 use bitvec::vec::BitVec;
+use bytes::Bytes;
 use kameo::{
    Actor, Reply,
    actor::ActorRef,
    prelude::{Context, Message},
 };
 use librqbit_utp::UtpSocketUdp;
+use sha1::{Digest, Sha1};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
@@ -142,6 +144,9 @@ pub(crate) enum TorrentMessage {
    /// We as the instance are expected to reply to said handshake, this is not
    /// the responsibility of the engine.
    IncomingPeer(Peer, PeerStream),
+   /// Bytes for the [Info] dict from an peer, these info bytes are expected to
+   /// be verified by the torrent us before being used.
+   InfoBytes(Bytes),
 }
 
 actor_request_response!(
@@ -151,6 +156,7 @@ actor_request_response!(
    CurrentPeers(Vec<&'static Peer>),
    CurrentTrackers(Vec<&'static Tracker>),
    InfoHash(InfoHash),
+   HasInfoDict(Option<Info>),
 );
 
 impl Actor for Torrent {
@@ -212,6 +218,28 @@ impl Message<TorrentMessage> for Torrent {
          TorrentMessage::IncomingPeer(mut peer, stream) => {
             self.append_peer(&mut peer, Some(stream)).await
          }
+         TorrentMessage::InfoBytes(bytes) => {
+            if self.info.is_some() {
+               debug!(
+                  dict = %String::from_utf8_lossy(&bytes),
+                  "Received info dict when we already have one"
+               );
+               return None;
+            }
+            let mut hasher = Sha1::new();
+
+            hasher.update(&bytes);
+            let hash = hex::encode(hasher.finalize());
+            if hash == self.info_hash().to_hex() {
+               let info = serde_bencode::from_bytes(&bytes).expect("Failed to parse info dict");
+               self.info = info;
+            } else {
+               warn!(
+                  dict = %String::from_utf8_lossy(&bytes),
+                  "Received invalid info hash"
+               );
+            }
+         }
       }
       None
    }
@@ -236,6 +264,8 @@ impl Message<TorrentRequest> for Torrent {
             // TorrentResponse::CurrentTrackers(self.trackers.keys().collect())
          }
          TorrentRequest::InfoHash => TorrentResponse::InfoHash(self.info_hash()),
+
+         TorrentRequest::HasInfoDict => TorrentResponse::HasInfoDict(self.info.clone()),
       }
    }
 }
