@@ -210,7 +210,7 @@ impl Actor for Torrent {
 }
 
 impl Message<TorrentMessage> for Torrent {
-   type Reply = Option<()>;
+   type Reply = ();
 
    async fn handle(
       &mut self, message: TorrentMessage, ctx: &mut Context<Self, Self::Reply>,
@@ -230,7 +230,7 @@ impl Message<TorrentMessage> for Torrent {
                   dict = %String::from_utf8_lossy(&bytes),
                   "Received info dict when we already have one"
                );
-               return None;
+               return;
             }
             let mut hasher = Sha1::new();
 
@@ -247,7 +247,6 @@ impl Message<TorrentMessage> for Torrent {
             }
          }
       }
-      None
    }
 }
 
