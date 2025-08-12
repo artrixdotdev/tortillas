@@ -12,6 +12,7 @@ use librqbit_utp::UtpSocketUdp;
 use tracing::{instrument, warn};
 
 use crate::{
+   actor_request_response,
    errors::TrackerError,
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
@@ -125,19 +126,14 @@ pub(crate) enum TorrentMessage {
    IncomingPeer(Peer, PeerStream),
 }
 
-pub(crate) enum TorrentRequest {
-   Bitfield,
-   CurrentPeers,
-   CurrentTrackers,
-   InfoHash,
-}
-#[derive(Reply)]
-pub(crate) enum TorrentResponse {
+actor_request_response!(
+   pub(crate) TorrentRequest,
+   pub(crate) TorrentResponse #[derive(Reply)],
    Bitfield(BitVec<u8>),
    CurrentPeers(Vec<&'static Peer>),
    CurrentTrackers(Vec<&'static Tracker>),
    InfoHash(InfoHash),
-}
+);
 
 impl Actor for Torrent {
    type Args = (PeerId, MetaInfo, Arc<UtpSocketUdp>);
