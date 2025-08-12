@@ -143,7 +143,7 @@ pub(crate) enum TorrentMessage {
    ///
    /// We as the instance are expected to reply to said handshake, this is not
    /// the responsibility of the engine.
-   IncomingPeer(Peer, PeerStream),
+   IncomingPeer(Peer, Box<PeerStream>),
    /// Bytes for the [Info] dict from an peer, these info bytes are expected to
    /// be verified by the torrent us before being used.
    InfoBytes(Bytes),
@@ -222,7 +222,7 @@ impl Message<TorrentMessage> for Torrent {
             }
          }
          TorrentMessage::IncomingPeer(mut peer, stream) => {
-            self.append_peer(&mut peer, Some(stream)).await
+            self.append_peer(&mut peer, Some(*stream)).await
          }
          TorrentMessage::InfoBytes(bytes) => {
             if self.info.is_some() {
