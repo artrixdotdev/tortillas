@@ -134,7 +134,7 @@ impl Torrent {
    }
 }
 /// For incoming from outside sources (e.g Peers, Trackers and Engine)
-pub(crate) enum TorrentMessage {
+pub(crate) enum TorrentMessage<'a> {
    /// A message from an announce actor containing new Peers
    Announce(Vec<Peer>),
 
@@ -147,6 +147,9 @@ pub(crate) enum TorrentMessage {
    /// Bytes for the [Info] dict from an peer, these info bytes are expected to
    /// be verified by the torrent us before being used.
    InfoBytes(Bytes),
+
+   KillPeer(&'a PeerId),
+   KillTracker(&'a Tracker),
 }
 
 actor_request_response!(
@@ -209,11 +212,11 @@ impl Actor for Torrent {
    }
 }
 
-impl Message<TorrentMessage> for Torrent {
+impl Message<TorrentMessage<'static>> for Torrent {
    type Reply = ();
 
    async fn handle(
-      &mut self, message: TorrentMessage, ctx: &mut Context<Self, Self::Reply>,
+      &mut self, message: TorrentMessage<'_>, ctx: &mut Context<Self, Self::Reply>,
    ) -> Self::Reply {
       match message {
          TorrentMessage::Announce(peers) => {
@@ -244,6 +247,24 @@ impl Message<TorrentMessage> for Torrent {
                   dict = %String::from_utf8_lossy(&bytes),
                   "Received invalid info hash"
                );
+            }
+         }
+         TorrentMessage::KillPeer(id) => {
+            // Kill the actor quietly
+            if let Some(actor) = self.peers.get(id) {
+               actor.kill();
+               self.peers.remove(id);
+            } else {
+               warn!("Received kill peer message for unknown peer");
+            }
+         }
+         TorrentMessage::KillTracker(tracker) => {
+            // Kill the actor quietly
+            if let Some(actor) = self.trackers.get(tracker) {
+               actor.kill();
+               self.trackers.remove(tracker);
+            } else {
+               warn!("Received kill tracker message for unknown tracker");
             }
          }
       }
