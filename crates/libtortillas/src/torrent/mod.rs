@@ -159,15 +159,23 @@ actor_request_response!(
    pub(crate) TorrentResponse #[derive(Reply)],
 
    /// Bitfield of the torrent
+   Bitfield
    Bitfield(BitVec<u8>),
    /// Current peers of the torrent
+   CurrentPeers
    CurrentPeers(Vec<&'static Peer>),
    /// Current trackers of the torrent
+   CurrentTrackers
    CurrentTrackers(Vec<&'static Tracker>),
    /// Info hash of the torrent
+   InfoHash
    InfoHash(InfoHash),
    /// Sends the current info dict if we have it
+   HasInfoDict
    HasInfoDict(Option<Info>),
+   /// Requests a piece from the torrent
+   Request(usize, usize, usize)
+   Request(usize, usize, Bytes),
 );
 
 impl Actor for Torrent {
@@ -207,7 +215,6 @@ impl Actor for Torrent {
          id: peer_id,
          metainfo,
          info,
-         actor_ref: Arc::new(us),
          actor_ref: us,
       })
    }
@@ -268,6 +275,7 @@ impl Message<TorrentMessage<'static>> for Torrent {
                warn!("Received kill tracker message for unknown tracker");
             }
          }
+         TorrentMessage::IncomingPiece(i, offset, bytes) => unimplemented!(),
       }
    }
 }
@@ -293,6 +301,9 @@ impl Message<TorrentRequest> for Torrent {
          TorrentRequest::InfoHash => TorrentResponse::InfoHash(self.info_hash()),
 
          TorrentRequest::HasInfoDict => TorrentResponse::HasInfoDict(self.info.clone()),
+         TorrentRequest::Request(index, offset, length) => {
+            unimplemented!()
+         }
       }
    }
 }

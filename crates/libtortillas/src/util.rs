@@ -30,7 +30,8 @@ macro_rules! actor_request_response {
         $res_vis:vis $res_name:ident $(#[$res_meta:meta])?,
         $(
             $(#[$variant_meta:meta])*
-            $variant:ident $( ( $ty:ty ) )?
+            $request:ident $( ( $( $request_args:ty ),* $(,)? ) )?
+            $response:ident $( ( $( $response_args:ty ),* $(,)? ) )?
         ),* $(,)?
     ) => {
         // Request enum
@@ -38,7 +39,7 @@ macro_rules! actor_request_response {
         $req_vis enum $req_name {
             $(
                 $(#[$variant_meta])*
-                $variant,
+                $request $( ( $( $request_args ),* ) )?,
             )*
         }
 
@@ -48,7 +49,7 @@ macro_rules! actor_request_response {
         $res_vis enum $res_name {
             $(
                 $(#[$variant_meta])*
-                $variant $( ( $ty ) )?,
+                $response $( ( $( $response_args ),* ) )?,
             )*
         }
     };
