@@ -56,12 +56,12 @@ impl fmt::Display for Torrent {
 }
 
 impl Torrent {
-   fn info_dict(&self) -> Option<Info> {
+   fn info_dict(&self) -> Option<&Info> {
       if let Some(info) = &self.info {
-         Some(info.clone())
+         Some(info)
       } else {
          match &self.metainfo {
-            MetaInfo::Torrent(t) => Some(t.info.clone()),
+            MetaInfo::Torrent(t) => Some(&t.info),
             _ => None,
          }
       }
@@ -69,11 +69,13 @@ impl Torrent {
 
    fn info_hash(&self) -> InfoHash {
       if let Some(info) = &self.info_dict() {
-         info.hash().unwrap()
+         info.hash().expect("Failed to compute info hash")
       } else {
          match &self.metainfo {
-            MetaInfo::Torrent(t) => t.info.hash().unwrap(),
-            MetaInfo::MagnetUri(m) => m.info_hash().unwrap(),
+            MetaInfo::Torrent(t) => t.info.hash().expect("Failed to compute info hash"),
+            MetaInfo::MagnetUri(m) => m
+               .info_hash()
+               .expect("Magnet URIs should always have info hashes"),
          }
       }
    }
