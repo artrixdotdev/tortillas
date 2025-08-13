@@ -36,7 +36,7 @@ pub(crate) struct Torrent {
    tracker_server: UdpServer,
    /// Should only be used to create new connections
    utp_server: Arc<UtpSocketUdp>,
-   actor_ref: Arc<ActorRef<Self>>,
+   actor_ref: ActorRef<Self>,
 }
 
 impl fmt::Display for Torrent {
@@ -208,6 +208,7 @@ impl Actor for Torrent {
          metainfo,
          info,
          actor_ref: Arc::new(us),
+         actor_ref: us,
       })
    }
 }
