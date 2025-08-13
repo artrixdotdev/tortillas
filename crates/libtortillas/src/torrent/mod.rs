@@ -1,6 +1,3 @@
-// REMOVE SOON
-#![allow(dead_code, unused_variables, unreachable_code)]
-
 use std::{collections::HashMap, fmt, sync::Arc};
 
 use bitvec::vec::BitVec;
