@@ -1,13 +1,14 @@
 // REMOVE SOON
 #![allow(dead_code, unused_variables, unreachable_code)]
 
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{collections::HashMap, fmt, ops::ControlFlow, sync::Arc};
 
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{
    Actor, Reply,
-   actor::ActorRef,
+   actor::{ActorID, ActorRef, WeakActorRef},
+   error::ActorStopReason,
    prelude::{Context, Message},
 };
 use librqbit_utp::UtpSocketUdp;
@@ -121,7 +122,6 @@ impl Torrent {
       }
 
       let actor = PeerActor::spawn(PeerActor);
-      self.actor_ref.link(&actor).await;
       self.peers.insert(id, actor);
    }
 
@@ -190,7 +190,6 @@ impl Actor for Torrent {
       let mut trackers = HashMap::new();
       for tracker in tracker_list {
          let actor = TrackerActor::spawn(TrackerActor);
-         us.link(&actor).await;
          trackers.insert(tracker, actor);
       }
       let info = match &metainfo {
