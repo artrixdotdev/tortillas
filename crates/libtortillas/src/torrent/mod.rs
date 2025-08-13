@@ -216,7 +216,7 @@ impl Message<TorrentMessage<'static>> for Torrent {
    type Reply = ();
 
    async fn handle(
-      &mut self, message: TorrentMessage<'_>, ctx: &mut Context<Self, Self::Reply>,
+      &mut self, message: TorrentMessage<'_>, _: &mut Context<Self, Self::Reply>,
    ) -> Self::Reply {
       match message {
          TorrentMessage::Announce(peers) => {
@@ -276,7 +276,7 @@ impl Message<TorrentRequest> for Torrent {
 
    // TODO: Figure out a way to send the peers back to the engine (if needed)
    async fn handle(
-      &mut self, message: TorrentRequest, ctx: &mut Context<Self, Self::Reply>,
+      &mut self, message: TorrentRequest, _: &mut Context<Self, Self::Reply>,
    ) -> Self::Reply {
       match message {
          TorrentRequest::Bitfield => TorrentResponse::Bitfield(self.bitfield.clone()),
