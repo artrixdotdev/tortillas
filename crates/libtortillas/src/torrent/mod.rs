@@ -1,14 +1,13 @@
 // REMOVE SOON
 #![allow(dead_code, unused_variables, unreachable_code)]
 
-use std::{collections::HashMap, fmt, ops::ControlFlow, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{
    Actor, Reply,
-   actor::{ActorID, ActorRef, WeakActorRef},
-   error::ActorStopReason,
+   actor::ActorRef,
    prelude::{Context, Message},
 };
 use librqbit_utp::UtpSocketUdp;
@@ -17,7 +16,7 @@ use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
    actor_request_response,
-   errors::TrackerError,
+   errors::TorrentError,
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
    peer::{Peer, PeerId},
@@ -176,7 +175,7 @@ impl Actor for Torrent {
    type Args = (PeerId, MetaInfo, Arc<UtpSocketUdp>, UdpServer);
 
    // FIXME: This should not be a TrackerError
-   type Error = TrackerError;
+   type Error = TorrentError;
 
    async fn on_start(args: Self::Args, us: ActorRef<Self>) -> Result<Self, Self::Error> {
       let (peer_id, metainfo, utp_server, tracker_server) = args;
