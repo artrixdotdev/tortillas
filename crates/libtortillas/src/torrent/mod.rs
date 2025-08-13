@@ -1,7 +1,8 @@
+// REMOVE SOON
 #![allow(dead_code, unused_variables, unreachable_code)]
+
 use std::{collections::HashMap, fmt, sync::Arc};
 
-// REMOVE SOON
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{
@@ -171,13 +172,13 @@ actor_request_response!(
 );
 
 impl Actor for Torrent {
-   type Args = (PeerId, MetaInfo, Arc<UtpSocketUdp>);
+   type Args = (PeerId, MetaInfo, Arc<UtpSocketUdp>, UdpServer);
 
    // FIXME: This should not be a TrackerError
    type Error = TrackerError;
 
    async fn on_start(args: Self::Args, us: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (peer_id, metainfo, utp_server) = args;
+      let (peer_id, metainfo, utp_server, tracker_server) = args;
       info!(
          info_hash = %metainfo.info_hash().unwrap(),
          "Starting new torrent instance",
@@ -186,10 +187,6 @@ impl Actor for Torrent {
       // Create tracker actors
       let tracker_list = metainfo.announce_list();
       let mut trackers = HashMap::new();
-      // Should be used later on for spawning the tracker actor
-      let tracker_server = UdpServer::new(None).await;
-      debug!("Tracker server started");
-
       for tracker in tracker_list {
          let actor = TrackerActor::spawn(TrackerActor);
          us.link(&actor).await;
