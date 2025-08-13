@@ -118,8 +118,9 @@ impl Torrent {
       if id == self.id {
          return;
       }
+      peer.id = Some(id);
 
-      let actor = PeerActor::spawn(PeerActor);
+      let actor = PeerActor::spawn((peer.clone(), stream, self.actor_ref.clone()));
       self.peers.insert(id, actor);
    }
 
@@ -146,6 +147,9 @@ pub(crate) enum TorrentMessage<'a> {
    /// We as the instance are expected to reply to said handshake, this is not
    /// the responsibility of the engine.
    IncomingPeer(Peer, Box<PeerStream>),
+   /// Index, Offset, Data
+   /// See the corresponding [peer message](PeerMessages::Piece)
+   IncomingPiece(usize, usize, Bytes),
    /// Bytes for the [Info] dict from an peer, these info bytes are expected to
    /// be verified by the torrent us before being used.
    InfoBytes(Bytes),
@@ -161,6 +165,7 @@ actor_request_response!(
    /// Bitfield of the torrent
    Bitfield
    Bitfield(BitVec<u8>),
+
    /// Current peers of the torrent
    CurrentPeers
    CurrentPeers(Vec<&'static Peer>),

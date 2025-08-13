@@ -8,7 +8,12 @@ use std::{
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use commands::{PeerCommand, PeerResponse};
-use kameo::Actor;
+use kameo::{
+   Actor,
+   actor::{ActorRef, WeakActorRef},
+   mailbox::Signal,
+   prelude::{Context, MailboxReceiver, Message},
+};
 use librqbit_utp::UtpSocketUdp;
 use messages::{ExtendedMessage, ExtendedMessageType, PeerMessages};
 use stream::{PeerSend, PeerStream, PeerWriter};
@@ -22,9 +27,11 @@ use tokio::{
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
+   errors::PeerTransportError,
    hashes::InfoHash,
    peer::{Peer, PeerId},
    protocol::stream::PeerRecv,
+   torrent::{Torrent, TorrentMessage, TorrentRequest, TorrentResponse},
 };
 
 pub mod commands;
@@ -33,8 +40,135 @@ pub mod stream;
 
 pub type PeerKey = SocketAddr;
 
-#[derive(Actor)]
-pub(crate) struct PeerActor;
+pub(crate) struct PeerActor {
+   peer: Peer,
+   stream: PeerStream,
+   supervisor: ActorRef<Torrent>,
+}
+
+impl Actor for PeerActor {
+   type Args = (Peer, PeerStream, ActorRef<Torrent>);
+   type Error = PeerTransportError;
+   /// At this point, the peer has already been handshaked with. No other
+   /// messages have been sent or received from the peer.
+   async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+      let (peer, mut stream, supervisor) = args;
+      let msg = TorrentRequest::Bitfield;
+      let bitfield = match supervisor.ask(msg).await.unwrap() {
+         TorrentResponse::Bitfield(bitfield) => bitfield,
+         _ => unreachable!("Unexpected response from supervisor"),
+      };
+
+      stream.send(PeerMessages::Bitfield(bitfield)).await?;
+
+      Ok(Self {
+         peer,
+         stream,
+         supervisor,
+      })
+   }
+
+   async fn next(
+      &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
+   ) -> Option<Signal<Self>> {
+      tokio::select! {
+         signal = mailbox_rx.recv() => signal,
+         msg = self.stream.recv() => {
+            Some(Signal::Message {
+               message: Box::new(msg.expect("PeerStream closed")),
+               actor_ref: actor_ref.upgrade().unwrap(),
+               reply: None,
+               sent_within_actor: true,
+            })
+         }
+      }
+   }
+}
+
+impl Message<PeerMessages> for PeerActor {
+   type Reply = ();
+
+   async fn handle(
+      &mut self, msg: PeerMessages, ctx: &mut Context<Self, Self::Reply>,
+   ) -> Self::Reply {
+      let peer_addr = self.peer.socket_addr();
+      self.peer.update_last_message_received();
+      match msg {
+         PeerMessages::Piece(index, offset, data) => {
+            trace!(%peer_addr, piece_index = index, offset, data_len = data.len(), "Received piece data");
+            self.peer.increment_bytes_downloaded(data.len());
+            let supervisor_msg =
+               TorrentMessage::IncomingPiece(index as usize, offset as usize, data);
+            self.supervisor.tell(supervisor_msg).await;
+         }
+         PeerMessages::Choke => {
+            self.peer.set_am_choked(true);
+            debug!(%peer_addr, "Peer choked us");
+         }
+         PeerMessages::Unchoke => {
+            self.peer.update_last_optimistic_unchoke();
+            self.peer.set_am_choked(false);
+            debug!(%peer_addr, "Peer unchoked us");
+         }
+         PeerMessages::Interested => {
+            self.peer.set_interested(true);
+            debug!(%peer_addr, "Peer is interested in our pieces");
+         }
+         PeerMessages::NotInterested => {
+            self.peer.set_interested(false);
+            debug!(%peer_addr, "Peer is not interested in our pieces");
+         }
+         PeerMessages::KeepAlive => {
+            trace!(%peer_addr, "Received keep alive");
+         }
+         PeerMessages::Have(piece_index) => {
+            trace!(%peer_addr, piece_index, "Peer has piece");
+         }
+         PeerMessages::Request(index, offset, length) => {
+            trace!(%peer_addr, piece_index = index, offset, length, "Peer requested piece data");
+            let supervisor_message =
+               TorrentRequest::Request(index as usize, offset as usize, length as usize);
+         }
+         PeerMessages::Extended(extended_id, extended_message, metadata) => {
+            unimplemented!()
+            // self
+            //    .peer
+            //    .handle_extended_message(
+            //       *extended_id,
+            //       extended_message,
+            //       metadata,
+            //       &to_engine_tx,
+            //       &from_engine_tx,
+            //       &inner_send_tx,
+            //       info_hash,
+            //    )
+            //    .await;
+         }
+         PeerMessages::Cancel(index, offset, length) => {
+            trace!(%peer_addr, piece_index = index, offset, length, "Peer cancelled piece request");
+            todo!()
+         }
+         PeerMessages::Bitfield(bitfield) => {
+            let piece_count = bitfield.len();
+            debug!(%peer_addr, piece_count, "Received bitfield from peer");
+            self.peer.pieces = bitfield.clone();
+            unimplemented!()
+
+            // Self::send_to_engine(
+            //    to_engine_tx,
+            //    PeerResponse::Receive {
+            //       message,
+            //       peer_key: peer_addr,
+            //    },
+            //    peer_addr,
+            // );
+         }
+         PeerMessages::Handshake(_) => {
+            warn!(%peer_addr, "Received unexpected handshake from peer");
+         }
+      }
+   }
+}
 
 impl Peer {
    /// Small helper function for sending messages with to_engine_tx.
