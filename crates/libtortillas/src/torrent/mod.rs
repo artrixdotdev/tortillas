@@ -104,6 +104,7 @@ impl Torrent {
             if let Ok((peer_id, stream, reserved)) = self.handshake_peer(peer).await {
                id = Some(peer_id);
                peer.reserved = reserved;
+               peer.determine_supported().await;
                stream
             } else {
                warn!("Failed to handshake with peer... silently exiting");
