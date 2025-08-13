@@ -8,6 +8,7 @@ use std::{
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use commands::{PeerCommand, PeerResponse};
+use kameo::Actor;
 use librqbit_utp::UtpSocketUdp;
 use messages::{ExtendedMessage, ExtendedMessageType, PeerMessages};
 use stream::{PeerSend, PeerStream, PeerWriter};
@@ -31,6 +32,9 @@ pub mod messages;
 pub mod stream;
 
 pub type PeerKey = SocketAddr;
+
+#[derive(Actor)]
+pub(crate) struct PeerActor;
 
 impl Peer {
    /// Small helper function for sending messages with to_engine_tx.

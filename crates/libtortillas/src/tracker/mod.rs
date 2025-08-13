@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use atomic_time::{AtomicInstant, AtomicOptionInstant};
 use futures::Stream;
 use http::HttpTracker;
+use kameo::Actor;
 use num_enum::TryFromPrimitive;
 use serde::{
    Deserialize,
@@ -61,7 +62,7 @@ pub trait TrackerTrait: Clone {
 /// let peers: Stream<Peer> = tracker.announce_stream();
 /// tx.send({ uploaded: 20 });
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Tracker {
    /// HTTP Spec
    /// <https://www.bittorrent.org/beps/bep_0003.html>
@@ -93,6 +94,9 @@ pub enum Event {
    Completed = 2,
    Stopped = 3,
 }
+
+#[derive(Actor)]
+pub struct TrackerActor;
 
 /// An enum for updating data inside a tracker with the [mpsc
 /// Sender](tokio::sync::mpsc::Sender) returned from
