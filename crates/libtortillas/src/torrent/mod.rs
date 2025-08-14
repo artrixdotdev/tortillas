@@ -9,7 +9,7 @@ use kameo::{
 };
 use librqbit_utp::UtpSocketUdp;
 use sha1::{Digest, Sha1};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
    actor_request_response,
@@ -147,6 +147,11 @@ pub(crate) enum TorrentMessage {
    /// We as the instance are expected to reply to said handshake, this is not
    /// the responsibility of the engine.
    IncomingPeer(Peer, Box<PeerStream>),
+
+   /// Used to manually add a peer. This is primarily used for testing but can
+   /// be used to initiate a peer connection without it having to come from an
+   /// announce.
+   AddPeer(Peer),
    /// Index, Offset, Data
    /// See the corresponding [peer message](PeerMessages::Piece)
    IncomingPiece(usize, usize, Bytes),
@@ -156,6 +161,22 @@ pub(crate) enum TorrentMessage {
 
    KillPeer(PeerId),
    KillTracker(Tracker),
+}
+
+impl fmt::Debug for TorrentMessage {
+   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      match self {
+         TorrentMessage::InfoBytes(bytes) => write!(f, "InfoBytes({:?})", bytes),
+         TorrentMessage::KillPeer(peer_id) => write!(f, "KillPeer({:?})", peer_id),
+         TorrentMessage::KillTracker(tracker) => write!(f, "KillTracker({:?})", tracker),
+         TorrentMessage::AddPeer(peer) => write!(f, "AddPeer({:?})", peer),
+         TorrentMessage::IncomingPiece(index, offset, data) => {
+            write!(f, "IncomingPiece({}, {}, {:?})", index, offset, data)
+         }
+         TorrentMessage::Announce(peers) => write!(f, "Announce({:?})", peers),
+         _ => write!(f, "TorrentMessage"), // Add more later,
+      }
+   }
 }
 
 actor_request_response!(
@@ -231,6 +252,7 @@ impl Message<TorrentMessage> for Torrent {
    async fn handle(
       &mut self, message: TorrentMessage, _: &mut Context<Self, Self::Reply>,
    ) -> Self::Reply {
+      trace!(message = ?message, "Received message");
       match message {
          TorrentMessage::Announce(peers) => {
             for mut peer in peers {
@@ -240,6 +262,10 @@ impl Message<TorrentMessage> for Torrent {
          TorrentMessage::IncomingPeer(mut peer, stream) => {
             self.append_peer(&mut peer, Some(*stream)).await
          }
+         TorrentMessage::AddPeer(mut peer) => {
+            self.append_peer(&mut peer, None).await;
+         }
+
          TorrentMessage::InfoBytes(bytes) => {
             if self.info.is_some() {
                debug!(
@@ -310,5 +336,75 @@ impl Message<TorrentRequest> for Torrent {
             unimplemented!()
          }
       }
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use std::{net::SocketAddr, str::FromStr, time::Duration};
+
+   use futures::StreamExt;
+   use librqbit_utp::UtpSocket;
+   use rand::random_range;
+   use tokio::time::timeout;
+
+   use super::*;
+
+   #[tokio::test]
+   async fn test_torrent_actor() {
+      tracing_subscriber::fmt()
+         .with_target(true)
+         .with_env_filter("libtortillas=trace,off")
+         .pretty()
+         .init();
+      let metainfo =
+         MetaInfo::new(include_str!("../../tests/magneturis/big-buck-bunny.txt").into())
+            .await
+            .unwrap();
+
+      let port: u16 = random_range(1024..65535);
+
+      let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
+      let peer_id = PeerId::default();
+
+      let udp_server = UdpServer::new(None).await;
+      let utp_server = UtpSocket::new_udp(socket_addr).await.unwrap();
+      let announce_list = metainfo.announce_list();
+      let mut peers = Vec::new();
+
+      let info_hash = metainfo.info_hash().unwrap();
+      let actor = Torrent::spawn((peer_id, metainfo, utp_server, udp_server.clone()));
+
+      for tracker in announce_list {
+         let instance = tracker
+            .to_instance(info_hash, peer_id, port, udp_server.clone())
+            .await;
+         let comms = timeout(Duration::from_secs(3), instance.configure()).await;
+         match comms {
+            Ok(_) => {}
+            Err(_) => continue,
+         }
+
+         let stream = timeout(Duration::from_secs(3), instance.announce_stream()).await;
+
+         match stream {
+            Ok(mut stream) => {
+               let _ = timeout(Duration::from_secs(2), async {
+                  while let Some(peer) = stream.next().await {
+                     if peers.len() > 100 {
+                        break;
+                     }
+                     peers.push(peer);
+                  }
+               })
+               .await;
+            }
+            Err(_) => continue,
+         }
+      }
+
+      trace!("Got peers!");
+
+      actor.tell(TorrentMessage::Announce(peers)).await.unwrap();
    }
 }
