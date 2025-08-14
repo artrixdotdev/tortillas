@@ -117,7 +117,7 @@ impl Message<PeerMessages> for PeerActor {
    type Reply = ();
 
    async fn handle(
-      &mut self, msg: PeerMessages, ctx: &mut Context<Self, Self::Reply>,
+      &mut self, msg: PeerMessages, ctx: &mut KameoContext<Self, Self::Reply>,
    ) -> Self::Reply {
       let peer_addr = self.peer.socket_addr();
       self.peer.update_last_message_received();
