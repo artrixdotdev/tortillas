@@ -296,20 +296,19 @@ impl Tracker {
    /// Creates a new tracker instance based on the tracker type.
    pub async fn to_instance(
       &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
-   ) -> Box<dyn TrackerInstance> {
+   ) -> Result<Box<dyn TrackerInstance>> {
       let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
       match self {
          Self::Http(uri) => {
             let tracker =
                HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
-            Box::new(tracker)
+            Ok(Box::new(tracker))
          }
          Self::Udp(uri) => {
             let tracker =
                UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
-                  .await
-                  .unwrap();
-            Box::new(tracker)
+                  .await?;
+            Ok(Box::new(tracker))
          }
          Self::Websocket(_) => {
             unimplemented!("Websocket trackers not yet supported")

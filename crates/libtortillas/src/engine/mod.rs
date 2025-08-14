@@ -372,7 +372,7 @@ impl TorrentEngine {
          for (index, tracker) in me.metainfo.announce_list().iter().enumerate() {
             let instance = tracker
                .to_instance(info_hash, me.id, primary_addr.port(), udp_server.clone())
-               .await;
+               .await?;
             instance.configure().await.unwrap();
             debug!(tracker_index = index, "Successfully connected to tracker");
             let mut stream = instance.announce_stream().await;
