@@ -1,7 +1,8 @@
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{fmt, sync::Arc};
 
 use bitvec::vec::BitVec;
 use bytes::Bytes;
+use dashmap::DashMap;
 use kameo::{
    Actor, Reply,
    actor::ActorRef,
@@ -26,8 +27,8 @@ use crate::{
 };
 
 pub(crate) struct Torrent {
-   peers: HashMap<PeerId, ActorRef<PeerActor>>,
-   trackers: HashMap<Tracker, ActorRef<TrackerActor>>,
+   peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
+   trackers: Arc<DashMap<Tracker, ActorRef<TrackerActor>>>,
 
    bitfield: BitVec<u8>,
    id: PeerId,
@@ -41,8 +42,8 @@ pub(crate) struct Torrent {
 
 impl fmt::Display for Torrent {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      let working_trackers = self.trackers.values().filter(|t| t.is_alive()).count();
-      let working_peers = self.peers.values().filter(|p| p.is_alive()).count();
+      let working_trackers = self.trackers.len();
+      let working_peers = self.peers.len();
       write!(
          f,
          "Torrent #{} w/ {working_trackers} Trackers & {} Peers",
@@ -218,7 +219,7 @@ impl Actor for Torrent {
 
       // Create tracker actors
       let tracker_list = metainfo.announce_list();
-      let mut trackers = HashMap::new();
+      let trackers = DashMap::new();
       for tracker in tracker_list {
          let actor = TrackerActor::spawn(TrackerActor);
          trackers.insert(tracker, actor);
@@ -232,11 +233,11 @@ impl Actor for Torrent {
       }
 
       Ok(Self {
-         peers: HashMap::new(),
+         peers: Arc::new(DashMap::new()),
          bitfield: BitVec::EMPTY,
          tracker_server,
          utp_server,
-         trackers,
+         trackers: Arc::new(trackers),
          id: peer_id,
          metainfo,
          info,
