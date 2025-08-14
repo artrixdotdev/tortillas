@@ -232,10 +232,16 @@ impl Actor for Torrent {
       if info.is_none() {
          debug!("No info dict found in metainfo, you're probably using a magnet uri");
       }
+      let bitfield: BitVec<u8> = if let Some(info) = &info {
+         debug!("Using bitfield length {}", info.piece_count());
+         BitVec::with_capacity(info.piece_count())
+      } else {
+         BitVec::EMPTY
+      };
 
       Ok(Self {
          peers: Arc::new(DashMap::new()),
-         bitfield: BitVec::EMPTY,
+         bitfield,
          tracker_server,
          utp_server,
          trackers: Arc::new(trackers),
@@ -280,8 +286,11 @@ impl Message<TorrentMessage> for Torrent {
             hasher.update(&bytes);
             let hash = hex::encode(hasher.finalize());
             if hash == self.info_hash().to_hex() {
-               let info = serde_bencode::from_bytes(&bytes).expect("Failed to parse info dict");
-               self.info = info;
+               info!("Received valid info dict, starting torrent process...");
+               let info: Info =
+                  serde_bencode::from_bytes(&bytes).expect("Failed to parse info dict");
+               self.bitfield.resize(info.piece_count(), false);
+               self.info = Some(info);
             } else {
                warn!(
                   dict = %String::from_utf8_lossy(&bytes),
