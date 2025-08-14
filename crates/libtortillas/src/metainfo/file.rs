@@ -136,6 +136,10 @@ impl Info {
       let result = hasher.finalize();
       Ok(Hash::from_hex(hex::encode(result))?)
    }
+
+   pub fn piece_count(&self) -> usize {
+      self.pieces.len()
+   }
 }
 
 #[cfg(test)]
