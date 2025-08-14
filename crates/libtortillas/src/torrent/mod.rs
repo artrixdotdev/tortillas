@@ -134,7 +134,7 @@ impl Torrent {
          // self.peers.insert(id, actor);
       });
    }
-
+}
 /// For incoming from outside sources (e.g Peers, Trackers and Engine)
 pub(crate) enum TorrentMessage {
    /// A message from an announce actor containing new Peers
