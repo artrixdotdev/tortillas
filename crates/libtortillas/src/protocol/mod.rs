@@ -2,9 +2,10 @@ use std::{
    collections::HashMap,
    net::SocketAddr,
    sync::{Arc, atomic::Ordering},
-   time::Duration,
+   time::{Duration, Instant},
 };
 
+use anyhow::Context;
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use commands::{PeerCommand, PeerResponse};
@@ -12,7 +13,7 @@ use kameo::{
    Actor,
    actor::{ActorRef, WeakActorRef},
    mailbox::Signal,
-   prelude::{Context, MailboxReceiver, Message},
+   prelude::{Context as KameoContext, MailboxReceiver, Message},
 };
 use librqbit_utp::UtpSocketUdp;
 use messages::{ExtendedMessage, ExtendedMessageType, PeerMessages};
@@ -39,6 +40,8 @@ pub mod messages;
 pub mod stream;
 
 pub type PeerKey = SocketAddr;
+const PEER_KEEPALIVE_TIMEOUT: u64 = 10;
+const PEER_DISCONNECT_TIMEOUT: u64 = 20;
 
 pub(crate) struct PeerActor {
    peer: Peer,
@@ -71,6 +74,31 @@ impl Actor for PeerActor {
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
    ) -> Option<Signal<Self>> {
+      // Disconnects the peer by killing the actor if a message has not been received
+      // within the last 15 seconds, *only after* sending a KeepAlive message when a
+      // message has not been received with the last 10 seconds.
+      let last_message = self
+         .peer
+         .last_message_received()
+         .unwrap_or_else(Instant::now)
+         .elapsed()
+         .as_secs();
+
+      if last_message > PEER_KEEPALIVE_TIMEOUT {
+         self
+            .stream
+            .send(PeerMessages::KeepAlive)
+            .await
+            .context("Peer connection closed");
+      }
+
+      if last_message > PEER_DISCONNECT_TIMEOUT {
+         let id = self.peer.id.expect("Peer ID should exist");
+         self.supervisor.tell(TorrentMessage::KillPeer(id)).await;
+         // The supervisor will kill the peer manually, no need to do it
+         // ourselves.
+      }
+
       tokio::select! {
          signal = mailbox_rx.recv() => signal,
          msg = self.stream.recv() => {
