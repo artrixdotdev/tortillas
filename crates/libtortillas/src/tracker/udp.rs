@@ -1,5 +1,4 @@
 use std::{
-   collections::HashMap,
    fmt::{Debug, Display},
    net::{Ipv4Addr, SocketAddr},
    pin::Pin,
@@ -14,12 +13,13 @@ use anyhow::anyhow;
 use async_stream::stream;
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use dashmap::DashMap;
 use futures::Stream;
 use num_enum::TryFromPrimitive;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::{
    net::{UdpSocket, lookup_host},
-   sync::{Mutex, RwLock, broadcast, mpsc},
+   sync::{RwLock, broadcast, mpsc},
    time::{Duration, sleep, timeout},
 };
 use tokio_retry2::{Retry, RetryError, strategy::ExponentialBackoff};
@@ -375,7 +375,7 @@ type ServerMessage = (usize, TrackerResponse);
 #[derive(Clone, Debug)]
 pub struct UdpServer {
    /// Map of transaction IDs to sender channels for routing responses
-   response_channels: Arc<Mutex<HashMap<TransactionId, mpsc::UnboundedSender<ServerMessage>>>>,
+   response_channels: Arc<DashMap<TransactionId, mpsc::UnboundedSender<ServerMessage>>>,
    /// Shared socket for all trackers
    socket: Arc<UdpSocket>,
 }
@@ -390,7 +390,7 @@ impl UdpServer {
       let socket = Arc::new(UdpSocket::bind(addr).await.unwrap());
 
       let receiver = UdpServer {
-         response_channels: Arc::new(Mutex::new(HashMap::new())),
+         response_channels: Arc::new(DashMap::new()),
          socket,
       };
 
@@ -407,15 +407,13 @@ impl UdpServer {
    async fn register_transaction(
       &self, transaction_id: TransactionId, sender: mpsc::UnboundedSender<(usize, TrackerResponse)>,
    ) {
-      let mut response_channels = self.response_channels.lock().await;
-      response_channels.insert(transaction_id, sender);
+      self.response_channels.insert(transaction_id, sender);
       trace!(transaction_id = transaction_id, "Registered transaction");
    }
 
    /// Unregister a transaction ID
    pub async fn unregister_transaction(&self, transaction_id: &TransactionId) {
-      let mut response_channels = self.response_channels.lock().await;
-      response_channels.remove(transaction_id);
+      self.response_channels.remove(transaction_id);
       trace!(transaction_id = transaction_id, "Unregistered transaction");
    }
 
@@ -426,6 +424,8 @@ impl UdpServer {
       // UDP tracker messages are typically small (< 1500 bytes for MTU)
       // Largest expected response is announce with many peers
       let mut buf = vec![0u8; 8192]; // 8KB should be sufficient for tracker responses
+
+      let response_channels = self.response_channels.clone();
       tokio::spawn(async move {
          loop {
             match receiver.socket.recv_from(&mut buf).await {
@@ -446,7 +446,6 @@ impl UdpServer {
 
                         // Send to the specific transaction channel
                         {
-                           let response_channels = receiver.response_channels.lock().await;
                            if let Some(sender) = response_channels.get(&transaction_id) {
                               if let Err(e) = sender.send((size, response)) {
                                  warn!(
@@ -1196,7 +1195,7 @@ mod tests {
             }
 
             // Wait for all trackers to complete
-            let mut results = HashMap::new();
+            let results = DashMap::new();
             for handle in handles {
                let (tracker_id, result) = handle.await.expect("Task panicked");
                results.insert(tracker_id, result);
