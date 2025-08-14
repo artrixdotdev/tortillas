@@ -89,6 +89,7 @@ impl Torrent {
       let actor_ref = self.actor_ref.clone();
       let our_id = self.id;
       let utp_server = self.utp_server.clone();
+      let peers = self.peers.clone();
 
       tokio::spawn(async move {
          // Should pass the stream to PeerActor at some point
@@ -132,7 +133,7 @@ impl Torrent {
 
          let actor = PeerActor::spawn((peer.clone(), stream, actor_ref));
          // We cant store peers until #86 is implemented
-         // self.peers.insert(id, actor);
+         peers.insert(id, actor);
       });
    }
 }
