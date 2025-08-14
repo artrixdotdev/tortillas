@@ -138,7 +138,8 @@ impl PeerActor {
 
    /// Checks if the peer has any bits in the bitfield that we don't have, and
    /// sends an interested message if so.
-   async fn handle_interest(&mut self) {
+   #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
+   async fn determine_interest(&mut self) {
       let msg = TorrentRequest::Bitfield;
       let our_bitfield = match self.supervisor.ask(msg).await.unwrap() {
          TorrentResponse::Bitfield(bitfield) => bitfield,
@@ -153,12 +154,16 @@ impl PeerActor {
             .send(PeerMessages::Interested)
             .await
             .expect("Failed to send Interested message to peer");
+
+         debug!(overlaps = %overlaps, "Peer has pieces we are interested in");
       } else {
          self
             .stream
             .send(PeerMessages::NotInterested)
             .await
             .expect("Failed to send Uninterested message to peer");
+
+         debug!(overlaps = %overlaps, "Peer has no overlapping pieces we are not interested");
       }
       self.peer.set_am_interested(!no_overlaps);
    }
@@ -330,7 +335,7 @@ impl Message<PeerMessages> for PeerActor {
             let piece_count = bitfield.len();
             debug!(piece_count, "Received bitfield from peer");
             self.peer.pieces = bitfield;
-            self.handle_interest().await;
+            self.determine_interest().await;
          }
          PeerMessages::Handshake(_) => {
             warn!("Received unexpected handshake from peer");
