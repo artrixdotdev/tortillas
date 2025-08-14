@@ -25,7 +25,7 @@ use tokio::{
    },
    time::{sleep, timeout},
 };
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
    errors::PeerTransportError,
@@ -49,12 +49,128 @@ pub(crate) struct PeerActor {
    supervisor: ActorRef<Torrent>,
 }
 
+impl PeerActor {
+   /// Sends an extended handshake in return if the received extended message
+   /// was a handshake.
+   async fn send_extended_handshake(&mut self, extended_id: u8) {
+      // If this is an Extended handshake, send a handshake in response.
+      if extended_id == 0 {
+         let mut supported_extensions = HashMap::new();
+         supported_extensions.insert("ut_metadata".into(), 2);
+         let mut extended_message = ExtendedMessage::new();
+         extended_message.supported_extensions = Some(supported_extensions);
+         let message = PeerMessages::Extended(extended_id, Box::new(Some(extended_message)), None);
+
+         trace!("Sending extended handshake response");
+
+         self
+            .stream
+            .send(message)
+            .await
+            .expect("Something went wrong when sending the Extended Message handshake");
+      }
+   }
+
+   async fn handle_extended_message(
+      &mut self, extended_id: u8, extended_message: Option<ExtendedMessage>,
+      metadata: &Option<Bytes>,
+   ) {
+      trace!(extended_id, "Received extended message");
+
+      self.send_extended_handshake(extended_id).await;
+
+      // Save to Peer.
+      if let Some(inner_metadata) = metadata
+         && let Err(e) = self.peer.info.append_to_bytes(inner_metadata)
+      {
+         warn!(error = %e, "Failed to append metadata bytes");
+      }
+
+      if let Some(extended_message) = extended_message {
+         if let Some(size) = extended_message.metadata_size {
+            debug!(metadata_size = size, "Received metadata size from peer");
+         }
+
+         if let Ok(id) = extended_message.supports_bep_0009() {
+            self.peer.set_bep_0009(id);
+
+            // If peer has metadata and we don't already have it, request metadata from peer
+            if let Some(metadata_size) = extended_message.metadata_size {
+               let piece_num = extended_message.piece.unwrap_or(0);
+               self.request_metadata(metadata_size, piece_num).await;
+            }
+         }
+      }
+
+      if self.peer.info.have_all_bytes() {
+         self
+            .supervisor
+            .tell(TorrentMessage::InfoBytes(self.peer.info.info_bytes()))
+            .await
+            .unwrap();
+      }
+   }
+
+   /// Requests metadata, given a piece number.
+   async fn request_metadata(&mut self, metadata_size: usize, piece: usize) {
+      self.peer.info.set_info_size(metadata_size);
+
+      if self.peer.info.info_size() > 0 && !self.peer.info.have_all_bytes() {
+         let mut extended_message = ExtendedMessage::new();
+         extended_message.piece = Some(piece);
+         extended_message.msg_type = Some(ExtendedMessageType::Request);
+
+         // The Extended ID as specified in BEP 0009 is the ID from the m dictionary
+         // -- in this case the ID listed under ut_metadata
+         let message = PeerMessages::Extended(
+            self.peer.bep_0009_id(),
+            Box::new(Some(extended_message)),
+            None,
+         );
+
+         self
+            .stream
+            .send(message)
+            .await
+            .expect("Something went wrong when sending the message!");
+      }
+   }
+
+   /// Checks if the peer has any bits in the bitfield that we don't have, and
+   /// sends an interested message if so.
+   async fn handle_interest(&mut self) {
+      let msg = TorrentRequest::Bitfield;
+      let our_bitfield = match self.supervisor.ask(msg).await.unwrap() {
+         TorrentResponse::Bitfield(bitfield) => bitfield,
+         _ => unreachable!("Unexpected response from supervisor"),
+      };
+      let overlaps = self.peer.pieces.clone() & our_bitfield;
+      let no_overlaps = overlaps.leading_zeros() == overlaps.len();
+
+      if !no_overlaps {
+         self
+            .stream
+            .send(PeerMessages::Interested)
+            .await
+            .expect("Failed to send Interested message to peer");
+      } else {
+         self
+            .stream
+            .send(PeerMessages::NotInterested)
+            .await
+            .expect("Failed to send Uninterested message to peer");
+      }
+      self.peer.set_am_interested(!no_overlaps);
+   }
+}
+
 impl Actor for PeerActor {
    type Args = (Peer, PeerStream, ActorRef<Torrent>);
    type Error = PeerTransportError;
+
    /// At this point, the peer has already been handshaked with. No other
    /// messages have been sent or received from the peer.
-   async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+   async fn on_start(args: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
       let (peer, mut stream, supervisor) = args;
       let msg = TorrentRequest::Bitfield;
       let bitfield = match supervisor.ask(msg).await.unwrap() {
@@ -89,12 +205,17 @@ impl Actor for PeerActor {
             .stream
             .send(PeerMessages::KeepAlive)
             .await
-            .context("Peer connection closed");
+            .context("Peer connection closed")
+            .expect("Failed to send Keep Alive message to peer");
       }
 
       if last_message > PEER_DISCONNECT_TIMEOUT {
          let id = self.peer.id.expect("Peer ID should exist");
-         self.supervisor.tell(TorrentMessage::KillPeer(id)).await;
+         self
+            .supervisor
+            .tell(TorrentMessage::KillPeer(id))
+            .await
+            .expect("Failed to tell supervisor to kill peer");
          // The supervisor will kill the peer manually, no need to do it
          // ourselves.
       }
@@ -116,83 +237,132 @@ impl Actor for PeerActor {
 impl Message<PeerMessages> for PeerActor {
    type Reply = ();
 
+   #[instrument(skip(self), fields(addr = %self.peer.socket_addr(), protocol = %self.stream))]
    async fn handle(
-      &mut self, msg: PeerMessages, ctx: &mut KameoContext<Self, Self::Reply>,
+      &mut self, msg: PeerMessages, _: &mut KameoContext<Self, Self::Reply>,
    ) -> Self::Reply {
-      let peer_addr = self.peer.socket_addr();
       self.peer.update_last_message_received();
       match msg {
          PeerMessages::Piece(index, offset, data) => {
-            trace!(%peer_addr, piece_index = index, offset, data_len = data.len(), "Received piece data");
+            trace!(
+               piece_index = index,
+               offset,
+               data_len = data.len(),
+               "Received piece data"
+            );
             self.peer.increment_bytes_downloaded(data.len());
             let supervisor_msg =
                TorrentMessage::IncomingPiece(index as usize, offset as usize, data);
-            self.supervisor.tell(supervisor_msg).await;
+
+            let _ = self
+               .supervisor
+               .tell(supervisor_msg)
+               .await
+               .context("Failed to send piece to tracker");
          }
          PeerMessages::Choke => {
             self.peer.set_am_choked(true);
-            debug!(%peer_addr, "Peer choked us");
+            debug!("Peer choked us");
          }
          PeerMessages::Unchoke => {
             self.peer.update_last_optimistic_unchoke();
             self.peer.set_am_choked(false);
-            debug!(%peer_addr, "Peer unchoked us");
+            debug!("Peer unchoked us");
          }
          PeerMessages::Interested => {
             self.peer.set_interested(true);
-            debug!(%peer_addr, "Peer is interested in our pieces");
+            debug!("Peer is interested in our pieces");
          }
          PeerMessages::NotInterested => {
             self.peer.set_interested(false);
-            debug!(%peer_addr, "Peer is not interested in our pieces");
+            debug!("Peer is not interested in our pieces");
          }
          PeerMessages::KeepAlive => {
-            trace!(%peer_addr, "Received keep alive");
+            trace!("Received keep alive");
+            self
+               .stream
+               .send(PeerMessages::KeepAlive)
+               .await
+               .expect("Failed to send keep alive");
          }
          PeerMessages::Have(piece_index) => {
-            trace!(%peer_addr, piece_index, "Peer has piece");
+            trace!(piece_index, "Peer has a piece");
+            self.peer.pieces.set(piece_index as usize, true);
          }
          PeerMessages::Request(index, offset, length) => {
-            trace!(%peer_addr, piece_index = index, offset, length, "Peer requested piece data");
+            trace!(
+               piece_index = index,
+               offset, length, "Peer requested piece data"
+            );
             let supervisor_message =
                TorrentRequest::Request(index as usize, offset as usize, length as usize);
+            let res = self
+               .supervisor
+               .ask(supervisor_message)
+               .await
+               .context("Failed to send piece to tracker")
+               .expect("Failed to get piece");
+
+            match res {
+               TorrentResponse::Request(index, offset, data) => {
+                  self
+                     .stream
+                     .send(PeerMessages::Piece(index as u32, offset as u32, data))
+                     .await
+                     .expect("Failed to send piece");
+               }
+               _ => unreachable!(),
+            };
          }
          PeerMessages::Extended(extended_id, extended_message, metadata) => {
-            unimplemented!()
-            // self
-            //    .peer
-            //    .handle_extended_message(
-            //       *extended_id,
-            //       extended_message,
-            //       metadata,
-            //       &to_engine_tx,
-            //       &from_engine_tx,
-            //       &inner_send_tx,
-            //       info_hash,
-            //    )
-            //    .await;
+            self
+               .handle_extended_message(extended_id, *extended_message, &metadata)
+               .await;
          }
          PeerMessages::Cancel(index, offset, length) => {
-            trace!(%peer_addr, piece_index = index, offset, length, "Peer cancelled piece request");
+            trace!(
+               piece_index = index,
+               offset, length, "Peer cancelled piece request"
+            );
             todo!()
          }
          PeerMessages::Bitfield(bitfield) => {
             let piece_count = bitfield.len();
-            debug!(%peer_addr, piece_count, "Received bitfield from peer");
-            self.peer.pieces = bitfield.clone();
-            unimplemented!()
-
-            // Self::send_to_engine(
-            //    to_engine_tx,
-            //    PeerResponse::Receive {
-            //       message,
-            //       peer_key: peer_addr,
-            //    },
-            //    peer_addr,
-            // );
+            debug!(piece_count, "Received bitfield from peer");
+            self.peer.pieces = bitfield;
+            self.handle_interest().await;
          }
          PeerMessages::Handshake(_) => {
-            warn!(%peer_addr, "Received unexpected handshake from peer");
+            warn!("Received unexpected handshake from peer");
+         }
+      }
+   }
+}
+
+pub(crate) enum PeerTell {
+   NeedPiece(usize, usize, usize),
+}
+
+impl Message<PeerTell> for PeerActor {
+   type Reply = ();
+   async fn handle(&mut self, msg: PeerTell, _: &mut KameoContext<Self, Self::Reply>) {
+      match msg {
+         PeerTell::NeedPiece(index, begin, length) => {
+            let piece_exists = self.peer.pieces[index];
+
+            if !piece_exists {
+               return;
+            }
+
+            self
+               .stream
+               .send(PeerMessages::Request(
+                  index as u32,
+                  begin as u32,
+                  length as u32,
+               ))
+               .await
+               .expect("Failed to send piece request");
          }
       }
    }
