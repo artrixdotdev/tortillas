@@ -83,59 +83,58 @@ impl Torrent {
    /// This function calls [Self::handshake_peer] if no stream is provided to
    /// retrieve the peer id
    #[instrument(skip(self, peer, stream), fields(%self, peer = ?peer.socket_addr()))]
-   async fn append_peer(&mut self, peer: &mut Peer, stream: Option<PeerStream>) {
-      // Should pass the stream to PeerActor at some point
-      let mut id = peer.id;
-      let stream = match stream {
-         Some(mut stream) => {
-            // POSSIBLE REFACTOR: make send_handshake... only send the handshake and not
-            // expect a response back, currently it will send a handshake and forcibly
-            // request, and verify one from the peer immediately after, which isn't what we
-            // want in this situation because the peer has already handshaked us.
-            let handshake = Handshake::new(Arc::new(self.info_hash()), self.id);
-            if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
-               error!("Failed to send handshake to peer: {}", err);
-               return;
-            }
-            stream
-         }
-         None => {
-            if let Ok((peer_id, stream, reserved)) = self.handshake_peer(peer).await {
-               id = Some(peer_id);
-               peer.reserved = reserved;
-               peer.determine_supported().await;
+   async fn append_peer(&self, mut peer: Peer, stream: Option<PeerStream>) {
+      let info_hash = Arc::new(self.info_hash());
+      let actor_ref = self.actor_ref.clone();
+      let our_id = self.id;
+      let utp_server = self.utp_server.clone();
+
+      tokio::spawn(async move {
+         // Should pass the stream to PeerActor at some point
+         let mut id = peer.id;
+         let stream = match stream {
+            Some(mut stream) => {
+               // POSSIBLE REFACTOR: make send_handshake... only send the handshake and not
+               // expect a response back, currently it will send ahandshake and forcibly
+               // request, and verify one from the peer immediately after, which isn't what
+               // we want in this situation because the peer has already handshaked us.
+               let handshake = Handshake::new(info_hash, our_id);
+               if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
+                  error!("Failed to send handshake to peer: {}", err);
+                  return;
+               }
                stream
-            } else {
-               warn!("Failed to handshake with peer... silently exiting");
-               return;
             }
+            None => {
+               let mut stream = PeerStream::connect(peer.socket_addr(), Some(utp_server)).await;
+
+               let handshake = stream.send_handshake(our_id, info_hash).await;
+               if let Ok((peer_id, reserved)) = handshake {
+                  id = Some(peer_id);
+                  peer.reserved = reserved;
+                  peer.determine_supported().await;
+                  stream
+               } else {
+                  warn!("Failed to handshake with peer... silently exiting");
+                  return;
+               }
+            }
+         };
+         // Safe because we always know the id is defined by the lines above
+         let id = id.unwrap();
+
+         // Dont add ourselves as peers
+         if id == our_id {
+            return;
          }
-      };
-      // Safe because we always know the id is defined by the lines above
-      let id = id.unwrap();
+         peer.id = Some(id);
 
-      // Dont add ourselves as peers
-      if id == self.id {
-         return;
-      }
-      peer.id = Some(id);
-
-      let actor = PeerActor::spawn((peer.clone(), stream, self.actor_ref.clone()));
-      self.peers.insert(id, actor);
+         let actor = PeerActor::spawn((peer.clone(), stream, actor_ref));
+         // We cant store peers until #86 is implemented
+         // self.peers.insert(id, actor);
+      });
    }
 
-   async fn handshake_peer(&self, peer: &Peer) -> anyhow::Result<(PeerId, PeerStream, [u8; 8])> {
-      let mut stream = PeerStream::connect(peer.socket_addr(), Some(self.utp_server.clone())).await;
-
-      let (id, reserved) = stream
-         .send_handshake(self.id, Arc::new(self.info_hash()))
-         .await?;
-
-      Ok((id, stream, reserved))
-      // No logging in this function as its calling functions with very verbose
-      // logging
-   }
-}
 /// For incoming from outside sources (e.g Peers, Trackers and Engine)
 pub(crate) enum TorrentMessage {
    /// A message from an announce actor containing new Peers
@@ -256,14 +255,14 @@ impl Message<TorrentMessage> for Torrent {
       match message {
          TorrentMessage::Announce(peers) => {
             for mut peer in peers {
-               self.append_peer(&mut peer, None).await;
+               self.append_peer(peer, None).await;
             }
          }
          TorrentMessage::IncomingPeer(mut peer, stream) => {
-            self.append_peer(&mut peer, Some(*stream)).await
+            self.append_peer(peer, Some(*stream)).await
          }
          TorrentMessage::AddPeer(mut peer) => {
-            self.append_peer(&mut peer, None).await;
+            self.append_peer(peer, None).await;
          }
 
          TorrentMessage::InfoBytes(bytes) => {
@@ -376,7 +375,7 @@ mod tests {
       let mut peers = Vec::new();
 
       let info_hash = metainfo.info_hash().unwrap();
-      let actor = Torrent::spawn_in_thread((peer_id, metainfo, utp_server, udp_server.clone()));
+      let actor = Torrent::spawn((peer_id, metainfo, utp_server, udp_server.clone()));
 
       for tracker in announce_list {
          let instance = tracker
