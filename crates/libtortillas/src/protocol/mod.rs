@@ -141,31 +141,36 @@ impl PeerActor {
    #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
    async fn determine_interest(&mut self) {
       let msg = TorrentRequest::Bitfield;
-      let our_bitfield = match self.supervisor.ask(msg).await.unwrap() {
+      let mut our_bitfield = match self.supervisor.ask(msg).await.unwrap() {
          TorrentResponse::Bitfield(bitfield) => bitfield,
          _ => unreachable!("Unexpected response from supervisor"),
       };
-      let overlaps = self.peer.pieces.clone() & our_bitfield;
-      let no_overlaps = overlaps.leading_zeros() == overlaps.len();
+      let their_bitfield = self.peer.pieces.clone();
 
-      if !no_overlaps {
+      // Find pieces the peer has that we don't have
+      let peer_has_we_dont = their_bitfield & !our_bitfield.clone();
+
+      let has_interesting_pieces = peer_has_we_dont.any();
+
+      if our_bitfield.is_empty() || has_interesting_pieces {
          self
             .stream
             .send(PeerMessages::Interested)
             .await
             .expect("Failed to send Interested message to peer");
 
-         debug!(overlaps = %overlaps, "Peer has pieces we are interested in");
+         debug!(peer_pieces = ?peer_has_we_dont, "Peer has pieces we are interested in");
       } else {
          self
             .stream
             .send(PeerMessages::NotInterested)
             .await
-            .expect("Failed to send Uninterested message to peer");
+            .expect("Failed to send NotInterested message to peer");
 
-         debug!(overlaps = %overlaps, "Peer has no overlapping pieces we are not interested");
+         debug!("Peer has no pieces we need - not interested");
       }
-      self.peer.set_am_interested(!no_overlaps);
+
+      self.peer.set_am_interested(has_interesting_pieces);
    }
 }
 
