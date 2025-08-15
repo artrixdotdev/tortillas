@@ -200,23 +200,7 @@ impl TorrentEngine {
    async fn spawn_handle_peer(
       self: Arc<Self>, peer: Peer, listener: Option<Arc<UtpSocketUdp>>, stream: Option<PeerStream>,
    ) {
-      debug!(peer_addr = %peer.socket_addr(), "Initiating outbound connection to peer");
-
-      let bitfield: BitVec<u8>;
-      {
-         bitfield = self.bitfield.read().await.clone();
-      }
-
-      peer
-         .handle_peer(
-            self.to_engine_tx_rx.0.clone(),
-            self.metainfo.info_hash().unwrap(),
-            self.id,
-            stream,
-            listener,
-            Some(bitfield),
-         )
-         .await;
+      unimplemented!()
    }
 
    /// A helper function for listening for peers trying to connect to us on
@@ -614,25 +598,26 @@ mod tests {
    //
    // This test uses its own subscriber in lieu of traced_test as it desperately
    // needs to show line numbers (which requires the use of tracing_subscriber).
-   #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
-   #[ignore = "Unstable"]
-   async fn test_torrent_with_magnet_uri() {
-      let subscriber = fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .finish();
-      tracing::subscriber::set_global_default(subscriber).expect("subscriber already set");
-
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/wired-cd.txt");
-      let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
-
-      let metainfo = MetaInfo::new(magnet_uri).await.unwrap();
-
-      let engine = Arc::new(TorrentEngine::new(metainfo).await);
-
-      engine.torrent().await.unwrap();
-   }
+   // #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
+   // #[ignore = "Unstable"]
+   // async fn test_torrent_with_magnet_uri() {
+   //    let subscriber = fmt()
+   //       .with_target(true)
+   //       .with_env_filter("libtortillas=trace,off")
+   //       .pretty()
+   //       .finish();
+   //    tracing::subscriber::set_global_default(subscriber).expect("subscriber
+   // already set");
+   //
+   //    let path = std::env::current_dir()
+   //       .unwrap()
+   //       .join("tests/magneturis/wired-cd.txt");
+   //    let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
+   //
+   //    let metainfo = MetaInfo::new(magnet_uri).await.unwrap();
+   //
+   //    let engine = Arc::new(TorrentEngine::new(metainfo).await);
+   //
+   //    engine.torrent().await.unwrap();
+   // }
 }
