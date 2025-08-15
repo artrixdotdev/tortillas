@@ -84,7 +84,7 @@ impl Torrent {
    /// This function calls [Self::handshake_peer] if no stream is provided to
    /// retrieve the peer id
    #[instrument(skip(self, peer, stream), fields(%self, peer = ?peer.socket_addr()))]
-   async fn append_peer(&self, mut peer: Peer, stream: Option<PeerStream>) {
+   fn append_peer(&self, mut peer: Peer, stream: Option<PeerStream>) {
       let info_hash = Arc::new(self.info_hash());
       let actor_ref = self.actor_ref.clone();
       let our_id = self.id;
@@ -263,14 +263,12 @@ impl Message<TorrentMessage> for Torrent {
       match message {
          TorrentMessage::Announce(peers) => {
             for peer in peers {
-               self.append_peer(peer, None).await;
+               self.append_peer(peer, None);
             }
          }
-         TorrentMessage::IncomingPeer(peer, stream) => {
-            self.append_peer(peer, Some(*stream)).await
-         }
+         TorrentMessage::IncomingPeer(peer, stream) => self.append_peer(peer, Some(*stream)),
          TorrentMessage::AddPeer(peer) => {
-            self.append_peer(peer, None).await;
+            self.append_peer(peer, None);
          }
 
          TorrentMessage::InfoBytes(bytes) => {
