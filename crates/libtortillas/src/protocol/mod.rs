@@ -141,7 +141,7 @@ impl PeerActor {
    #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
    async fn determine_interest(&mut self) {
       let msg = TorrentRequest::Bitfield;
-      let mut our_bitfield = match self.supervisor.ask(msg).await.unwrap() {
+      let our_bitfield = match self.supervisor.ask(msg).await.unwrap() {
          TorrentResponse::Bitfield(bitfield) => bitfield,
          _ => unreachable!("Unexpected response from supervisor"),
       };
@@ -159,7 +159,7 @@ impl PeerActor {
             .await
             .expect("Failed to send Interested message to peer");
 
-         debug!(peer_pieces = ?peer_has_we_dont, "Peer has pieces we are interested in");
+         debug!(peer_pieces = ?!peer_has_we_dont, "Peer has pieces we are interested in");
       } else {
          self
             .stream

@@ -262,14 +262,14 @@ impl Message<TorrentMessage> for Torrent {
       trace!(message = ?message, "Received message");
       match message {
          TorrentMessage::Announce(peers) => {
-            for mut peer in peers {
+            for peer in peers {
                self.append_peer(peer, None).await;
             }
          }
-         TorrentMessage::IncomingPeer(mut peer, stream) => {
+         TorrentMessage::IncomingPeer(peer, stream) => {
             self.append_peer(peer, Some(*stream)).await
          }
-         TorrentMessage::AddPeer(mut peer) => {
+         TorrentMessage::AddPeer(peer) => {
             self.append_peer(peer, None).await;
          }
 
@@ -359,8 +359,9 @@ mod tests {
    use tokio::time::{sleep, timeout};
 
    use super::*;
+   use crate::metainfo::TorrentFile;
 
-   #[tokio::test(flavor = "multi_thread", worker_threads = 200)]
+   #[tokio::test(flavor = "multi_thread")]
    async fn test_torrent_actor() {
       tracing_subscriber::fmt()
          .with_target(true)
