@@ -367,10 +367,10 @@ mod tests {
          .with_env_filter("libtortillas=trace,off")
          .pretty()
          .init();
-      let metainfo =
-         MetaInfo::new(include_str!("../../tests/magneturis/big-buck-bunny.txt").into())
-            .await
-            .unwrap();
+      let metainfo = TorrentFile::parse(include_bytes!(
+         "../../tests/torrents/big-buck-bunny.torrent"
+      ))
+      .unwrap();
 
       let port: u16 = random_range(1024..65535);
 
