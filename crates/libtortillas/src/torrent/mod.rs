@@ -1,4 +1,4 @@
-use std::{fmt, sync::Arc};
+use std::{fmt, net::SocketAddr, sync::Arc};
 
 use bitvec::vec::BitVec;
 use bytes::Bytes;
@@ -206,13 +206,25 @@ actor_request_response!(
 );
 
 impl Actor for Torrent {
-   type Args = (PeerId, MetaInfo, Arc<UtpSocketUdp>, UdpServer);
+   type Args = (
+      PeerId,
+      MetaInfo,
+      Arc<UtpSocketUdp>,
+      UdpServer,
+      Option<SocketAddr>,
+   );
 
    // FIXME: This should not be a TrackerError
    type Error = TorrentError;
 
    async fn on_start(args: Self::Args, us: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (peer_id, metainfo, utp_server, tracker_server) = args;
+      let (peer_id, metainfo, utp_server, tracker_server, primary_addr) = args;
+      let primary_addr = primary_addr.unwrap_or_else(|| {
+         let addr = utp_server.bind_addr();
+         info!("No primary address provided, using {}", addr);
+         addr
+      });
+
       info!(
          info_hash = %metainfo.info_hash().unwrap(),
          "Starting new torrent instance",
@@ -222,7 +234,13 @@ impl Actor for Torrent {
       let tracker_list = metainfo.announce_list();
       let trackers = DashMap::new();
       for tracker in tracker_list {
-         let actor = TrackerActor::spawn(TrackerActor);
+         let actor = TrackerActor::spawn((
+            tracker.clone(),
+            peer_id,
+            tracker_server.clone(),
+            primary_addr,
+            us.clone(),
+         ));
          trackers.insert(tracker, actor);
       }
       let info = match &metainfo {
@@ -385,7 +403,7 @@ mod tests {
       let mut peers = Vec::new();
 
       let info_hash = metainfo.info_hash().unwrap();
-      let actor = Torrent::spawn((peer_id, metainfo, utp_server, udp_server.clone()));
+      let actor = Torrent::spawn((peer_id, metainfo, utp_server, udp_server.clone(), None));
 
       for tracker in announce_list {
          let instance = tracker
@@ -396,28 +414,26 @@ mod tests {
             continue;
          }
          let instance = instance.unwrap();
-         let comms = timeout(Duration::from_secs(3), instance.configure()).await;
+         let comms = timeout(Duration::from_secs(3), instance.initialize()).await;
          match comms {
             Ok(Err(_)) => continue,
             Err(_) => continue,
             _ => {}
          }
 
-         let stream = timeout(Duration::from_secs(3), instance.announce_stream()).await;
+         let announce = timeout(Duration::from_secs(3), instance.announce()).await;
 
-         match stream {
-            Ok(mut stream) => {
-               let _ = timeout(Duration::from_secs(2), async {
-                  while let Some(peer) = stream.next().await {
-                     if peers.len() > 100 {
-                        break;
-                     }
-                     peers.push(peer);
+         match announce {
+            Ok(Ok(announce)) => {
+               for peer in announce {
+                  if peers.len() > 100 {
+                     break;
                   }
-               })
-               .await;
+                  peers.push(peer);
+               }
             }
             Err(_) => continue,
+            _ => continue,
          }
       }
 

@@ -173,22 +173,26 @@ impl HttpTracker {
          stats_hook: StatsHook::default(),
       }
    }
-   /// Sends tracker statistics to the receiver created from the
-   /// [configure](HttpTracker::configure) function.
-   #[instrument(skip(self), fields(tracker_uri = %self.uri, stats = %self.stats))]
-   async fn send_stats(&self) {
-      let tx = &self.stats_hook.tx();
-      if let Err(e) = tx.send(self.stats.clone()) {
-         error!(error = %e, "Failed to send tracker stats");
-      }
-      trace!("Sent tracker stats");
+
+   pub fn stats(&self) -> TrackerStats {
+      self.stats.clone()
    }
 
-   #[instrument(skip(self), fields(
-           tracker_uri = %self.uri,
-           info_hash = %self.info_hash,
-           peer_id = %self.peer_id
-       ))]
+   pub fn interval(&self) -> usize {
+      self.interval.load(Ordering::Acquire)
+   }
+
+   pub fn set_interval(&self, interval: usize) {
+      self.interval.store(interval, Ordering::Release)
+   }
+}
+#[async_trait]
+impl TrackerInstance for HttpTracker {
+   async fn initialize(&self) -> Result<()> {
+      // HTTP doesn't need initialization
+      Ok(())
+   }
+
    async fn announce(&self) -> Result<Vec<Peer>> {
       // Update statistics
       self.stats.increment_announce_attempts();
@@ -261,71 +265,32 @@ impl HttpTracker {
 
       Ok(response.peers)
    }
-   pub fn interval(&self) -> usize {
-      self.interval.load(Ordering::Acquire)
-   }
 
-   pub fn set_interval(&self, interval: usize) {
-      self.interval.store(interval, Ordering::Release)
-   }
-}
-#[async_trait]
-impl TrackerInstance for HttpTracker {
-   async fn configure(
-      &self,
-   ) -> anyhow::Result<(
-      mpsc::Sender<TrackerUpdate>,
-      broadcast::Receiver<TrackerStats>,
-   )> {
-      let (tx, mut rx) = mpsc::channel(100);
-      let tracker = self.clone();
-      // tracker.connect().await?;
-      tokio::spawn(async move {
-         while let Some(update) = rx.recv().await {
-            match update {
-               TrackerUpdate::Uploaded(uploaded) => {
-                  let mut params = tracker.params.write().await;
-                  params.uploaded = uploaded;
-               }
-               TrackerUpdate::Downloaded(downloaded) => {
-                  let mut params = tracker.params.write().await;
-                  params.downloaded = downloaded;
-               }
-               TrackerUpdate::Left(left) => {
-                  let mut params = tracker.params.write().await;
-                  params.left = Some(left);
-               }
-               TrackerUpdate::Event(event) => {
-                  let mut params = tracker.params.write().await;
-                  params.event = event;
-               }
-            }
+   async fn update(&self, update: TrackerUpdate) -> Result<()> {
+      let mut params = self.params.write().await;
+      match update {
+         TrackerUpdate::Uploaded(bytes) => {
+            params.uploaded = bytes;
          }
-      });
-      let stats_receiver = self.stats_hook.rx().resubscribe();
-      Ok((tx, stats_receiver))
+         TrackerUpdate::Downloaded(bytes) => {
+            params.downloaded = bytes;
+         }
+         TrackerUpdate::Left(bytes) => {
+            params.left = Some(bytes);
+         }
+         TrackerUpdate::Event(event) => {
+            params.event = event;
+         }
+      }
+      Ok(())
    }
 
-   async fn announce_stream(&self) -> Pin<Box<dyn Stream<Item = Peer> + Send>> {
-      let tracker = self.clone();
+   fn stats(&self) -> TrackerStats {
+      self.stats.clone()
+   }
 
-      Box::pin(stream! {
-          loop {
-              match tracker.announce().await {
-                  Ok(peers) => {
-                      tracker.send_stats().await;
-                      for peer in peers {
-                          yield peer;
-                      }
-                  }
-                  Err(e) => {
-                      error!(error = %e, "Failed to announce to tracker");
-                      // Continue the loop to retry after interval
-                  }
-              }
-              sleep(Duration::from_secs(tracker.interval() as u64)).await;
-          }
-      })
+   fn interval(&self) -> usize {
+      self.interval()
    }
 }
 
@@ -472,7 +437,7 @@ mod tests {
    use crate::{
       metainfo::{MetaInfo, TorrentFile},
       peer::PeerId,
-      tracker::{Event, TrackerInstance, TrackerUpdate},
+      tracker::{Event, TrackerInstance, TrackerUpdate, udp::UdpServer},
    };
 
    #[tokio::test]
@@ -530,98 +495,23 @@ mod tests {
 
             let port: u16 = random_range(1024..65535);
             let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
+            let peer_id = PeerId::new();
+            let server = UdpServer::new(None).await;
 
-            let tracker = HttpTracker::new(
-               announce_url.uri().clone(),
-               info_hash,
-               Some(PeerId::new()),
-               Some(socket_addr),
-            );
-
-            let (update_sender, mut stats_receiver) =
-               tracker.configure().await.expect("Failed to configure");
-
-            // Test sending tracker updates through the channel
-            update_sender
-               .send(TrackerUpdate::Downloaded(1024))
+            let tracker = announce_url
+               .to_instance(info_hash, peer_id, port, server)
                .await
-               .expect("Failed to send downloaded update");
-
-            update_sender
-               .send(TrackerUpdate::Uploaded(512))
-               .await
-               .expect("Failed to send uploaded update");
-
-            update_sender
-               .send(TrackerUpdate::Left(2048))
-               .await
-               .expect("Failed to send left update");
-
-            update_sender
-               .send(TrackerUpdate::Event(Event::Started))
-               .await
-               .expect("Failed to send event update");
+               .unwrap();
 
             // Use the announce_stream method from TrackerInstance trait
-            let announce_stream = tracker.announce_stream().await;
-            pin_mut!(announce_stream); // https://docs.rs/async-stream/latest/async_stream/#usage
-
-            // Collect some peers from the stream
-            let mut peer_count = 0;
-            let max_peers_to_collect = 5;
-
-            // Use timeout to avoid hanging if stream doesn't produce peers quickly
-            let stream_timeout = Duration::from_secs(30);
-            let start_time = Instant::now();
-
-            while peer_count < max_peers_to_collect && start_time.elapsed() < stream_timeout {
-               match timeout(Duration::from_secs(5), announce_stream.next()).await {
-                  Ok(Some(peer)) => {
-                     peer_count += 1;
-                     println!("Received peer {}: {}:{}", peer_count, peer.ip, peer.port);
-
-                     // Verify peer format
-                     assert!(peer.ip.is_ipv4(), "Expected IPv4 peer address");
-                     assert!(peer.port > 0, "Expected valid port number");
-                  }
-                  Ok(None) => {
-                     println!("Stream ended");
-                     break;
-                  }
-                  Err(_) => {
-                     println!("Timeout waiting for peer, continuing...");
-                     // Don't break immediately, allow some retries
-                  }
-               }
-            }
+            let peers = tracker.announce().await.unwrap();
+            let peer_count = peers.len();
 
             // Verify we received at least one peer
             assert!(
                peer_count > 0,
                "Expected to receive at least one peer from announce stream"
             );
-
-            // Test stats receiver (with timeout to avoid hanging)
-            match timeout(Duration::from_secs(5), stats_receiver.recv()).await {
-               Ok(Ok(stats)) => {
-                  println!("Received tracker stats: {:?}", stats);
-                  // Verify stats structure
-                  assert!(
-                     stats.get_last_interaction().is_some(),
-                     "Expected last interaction timestamp"
-                  );
-               }
-               Ok(Err(e)) => {
-                  println!("Stats receiver error: {}", e);
-                  // Don't fail the test for stats receiver errors as they might
-                  // be expected
-               }
-               Err(_) => {
-                  println!("Timeout waiting for stats");
-                  // Don't fail the test for stats timeout as it might not be
-                  // critical
-               }
-            }
 
             println!(
                "TrackerInstance trait test completed successfully with {} peers",

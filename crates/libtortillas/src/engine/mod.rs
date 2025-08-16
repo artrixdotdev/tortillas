@@ -357,15 +357,13 @@ impl TorrentEngine {
             let instance = tracker
                .to_instance(info_hash, me.id, primary_addr.port(), udp_server.clone())
                .await?;
-            instance.configure().await.unwrap();
+            instance.initialize().await.unwrap();
             debug!(tracker_index = index, "Successfully connected to tracker");
-            let mut stream = instance.announce_stream().await;
+            let peers = instance.announce().await.unwrap();
             let (tx, rx) = mpsc::channel(100);
-            tokio::spawn(async move {
-               while let Some(message) = stream.next().await {
-                  tx.send(message).await.unwrap();
-               }
-            });
+            for peer in peers {
+               tx.send(peer);
+            }
             rx_list.push(rx);
          }
 

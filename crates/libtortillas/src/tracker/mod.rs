@@ -6,6 +6,7 @@ use std::{
       Arc,
       atomic::{AtomicUsize, Ordering},
    },
+   time::Duration,
 };
 
 use anyhow::Result;
@@ -13,7 +14,11 @@ use async_trait::async_trait;
 use atomic_time::{AtomicInstant, AtomicOptionInstant};
 use futures::Stream;
 use http::HttpTracker;
-use kameo::Actor;
+use kameo::{
+   Actor,
+   actor::ActorRef,
+   prelude::{Context, Message},
+};
 use num_enum::TryFromPrimitive;
 use serde::{
    Deserialize,
@@ -22,13 +27,15 @@ use serde::{
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::{
    sync::{broadcast, mpsc},
-   time::Instant,
+   time::{self, Instant},
 };
+use tracing::error;
 use udp::UdpTracker;
 
 use crate::{
    hashes::InfoHash,
    peer::{Peer, PeerId},
+   torrent::{Torrent, TorrentMessage, TorrentRequest, TorrentResponse},
    tracker::udp::UdpServer,
 };
 pub mod http;
@@ -95,17 +102,95 @@ pub enum Event {
    Stopped = 3,
 }
 
-#[derive(Actor)]
-pub struct TrackerActor;
+pub(crate) struct TrackerActor {
+   tracker: TrackerEnum,
+   supervisor: ActorRef<Torrent>,
+}
 
-/// An enum for updating data inside a tracker with the [mpsc
-/// Sender](tokio::sync::mpsc::Sender) returned from
-/// [announce_stream](TrackerInstance::announce_stream).
-pub enum TrackerUpdate {
+impl Actor for TrackerActor {
+   type Args = (Tracker, PeerId, UdpServer, SocketAddr, ActorRef<Torrent>);
+   type Error = anyhow::Error;
+
+   async fn on_start(state: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+      let (tracker, peer_id, server, socket_addr, supervisor) = state;
+
+      let info_hash = match supervisor.ask(TorrentRequest::InfoHash).await? {
+         TorrentResponse::InfoHash(info_hash) => info_hash,
+         _ => unreachable!(),
+      };
+
+      let tracker = match tracker {
+         Tracker::Udp(uri) => {
+            let udp_tracker =
+               UdpTracker::new(uri, Some(server), info_hash, (peer_id, socket_addr)).await?;
+            udp_tracker.initialize().await?;
+            TrackerEnum::Udp(udp_tracker)
+         }
+         Tracker::Http(uri) => {
+            let http_tracker = HttpTracker::new(uri, info_hash, Some(peer_id), Some(socket_addr));
+            http_tracker.initialize().await?;
+            TrackerEnum::Http(http_tracker)
+         }
+         _ => unimplemented!(),
+      };
+
+      // Schedule periodic announces
+      let actor_clone = actor_ref.clone();
+      tokio::spawn(async move {
+         loop {
+            actor_clone.tell(TrackerMessage::Announce).await.unwrap();
+            let interval = Duration::from_secs(60); // Default interval
+            time::sleep(interval).await;
+         }
+      });
+
+      Ok(Self {
+         tracker,
+         supervisor,
+      })
+   }
+}
+
+pub(crate) enum TrackerMessage {
+   Announce,
+   GetStats,
+}
+
+pub(crate) enum TrackerUpdate {
    Uploaded(usize),
    Downloaded(usize),
    Left(usize),
    Event(Event),
+}
+
+impl Message<TrackerMessage> for TrackerActor {
+   type Reply = Option<TrackerStats>;
+
+   async fn handle(
+      &mut self, msg: TrackerMessage, _ctx: &mut Context<Self, Self::Reply>,
+   ) -> Self::Reply {
+      match msg {
+         TrackerMessage::Announce => {
+            if let Ok(peers) = self.tracker.announce().await {
+               if let Err(e) = self.supervisor.tell(TorrentMessage::Announce(peers)).await {
+                  error!("Failed to send announce to supervisor: {}", e);
+               }
+            }
+            None
+         }
+         TrackerMessage::GetStats => Some(self.tracker.stats()),
+      }
+   }
+}
+
+impl Message<TrackerUpdate> for TrackerActor {
+   type Reply = ();
+
+   async fn handle(
+      &mut self, msg: TrackerUpdate, _ctx: &mut Context<Self, Self::Reply>,
+   ) -> Self::Reply {
+      self.tracker.update(msg);
+   }
 }
 
 /// Broadcast sender and receiver for statistical information about trackers.
@@ -141,19 +226,64 @@ impl StatsHook {
 
 /// Trait for HTTP and UDP trackers.
 #[async_trait]
-pub trait TrackerInstance {
-   /// Connects to the tracker. If this tracker is an HTTP tracker, no actual
-   /// connection is made. If this tracker is a UDP tracker, a connection is
-   /// established with the peer.
-   async fn configure(
-      &self,
-   ) -> Result<(
-      mpsc::Sender<TrackerUpdate>,
-      broadcast::Receiver<TrackerStats>,
-   )>;
-   /// Returns a stream that appends every new group of peers that we receive
-   /// from a tracker.
-   async fn announce_stream(&self) -> Pin<Box<dyn Stream<Item = Peer> + Send>>;
+pub trait TrackerInstance: Send + Sync {
+   /// Initializes the tracker instance.
+   async fn initialize(&self) -> Result<()>;
+
+   /// Announces to the tracker and returns a list of peers.
+   async fn announce(&self) -> Result<Vec<Peer>>;
+
+   /// Updates tracker stats based on current state.
+   async fn update(&self, update: TrackerUpdate) -> Result<()>;
+
+   /// Gets the current tracker stats.
+   fn stats(&self) -> TrackerStats;
+
+   /// Gets the announce interval.
+   fn interval(&self) -> usize;
+}
+
+#[derive(Clone)]
+enum TrackerEnum {
+   Udp(UdpTracker),
+   Http(HttpTracker),
+}
+
+#[async_trait]
+impl TrackerInstance for TrackerEnum {
+   async fn initialize(&self) -> Result<()> {
+      match self {
+         TrackerEnum::Udp(tracker) => tracker.initialize().await,
+         TrackerEnum::Http(tracker) => tracker.initialize().await,
+      }
+   }
+
+   async fn announce(&self) -> Result<Vec<Peer>> {
+      match self {
+         TrackerEnum::Udp(tracker) => Ok(tracker.announce().await.unwrap()),
+         TrackerEnum::Http(tracker) => tracker.announce().await,
+      }
+   }
+
+   async fn update(&self, update: TrackerUpdate) -> Result<()> {
+      match self {
+         TrackerEnum::Udp(tracker) => tracker.update(update).await,
+         TrackerEnum::Http(tracker) => tracker.update(update).await,
+      }
+   }
+
+   fn interval(&self) -> usize {
+      match self {
+         TrackerEnum::Udp(tracker) => tracker.interval() as usize,
+         TrackerEnum::Http(tracker) => tracker.interval(),
+      }
+   }
+   fn stats(&self) -> TrackerStats {
+      match self {
+         TrackerEnum::Udp(tracker) => tracker.stats(),
+         TrackerEnum::Http(tracker) => tracker.stats(),
+      }
+   }
 }
 
 /// Tracker statistics to be returned from
