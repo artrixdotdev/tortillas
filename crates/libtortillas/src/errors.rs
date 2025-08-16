@@ -99,6 +99,30 @@ pub enum HttpTrackerError {
 }
 
 #[derive(Error, Debug)]
+pub enum TorrentError {
+   #[error("Invalid info hash: {0}")]
+   InvalidInfoHash(String),
+
+   #[error("Failed to encode parameters: {0}")]
+   ParameterEncoding(String),
+
+   #[error("Invalid peer data: {0}")]
+   InvalidPeerData(String),
+
+   #[error(transparent)]
+   Tracker(#[from] TrackerError),
+
+   #[error(transparent)]
+   Peer(#[from] PeerTransportError),
+
+   #[error(transparent)]
+   Request(#[from] reqwest::Error),
+
+   #[error(transparent)]
+   Other(#[from] anyhow::Error),
+}
+
+#[derive(Error, Debug)]
 pub enum PeerTransportError {
    #[error("Invalid response: {0}")]
    InvalidPeerResponse(String),
