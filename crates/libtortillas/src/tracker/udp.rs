@@ -1,7 +1,6 @@
 use std::{
    fmt::{Debug, Display},
    net::{Ipv4Addr, SocketAddr},
-   pin::Pin,
    str::FromStr,
    sync::{
       Arc,
@@ -10,7 +9,6 @@ use std::{
 };
 
 use anyhow::anyhow;
-use async_stream::stream;
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
@@ -19,8 +17,8 @@ use num_enum::TryFromPrimitive;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::{
    net::{UdpSocket, lookup_host},
-   sync::{RwLock, broadcast, mpsc},
-   time::{Duration, sleep, timeout},
+   sync::{RwLock, mpsc},
+   time::{Duration, timeout},
 };
 use tokio_retry2::{Retry, RetryError, strategy::ExponentialBackoff};
 use tracing::{debug, error, instrument, trace, warn};

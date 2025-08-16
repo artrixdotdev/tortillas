@@ -1,7 +1,6 @@
 use std::{
    fmt,
    net::SocketAddr,
-   pin::Pin,
    sync::{
       Arc,
       atomic::{AtomicUsize, Ordering},
@@ -171,11 +170,10 @@ impl Message<TrackerMessage> for TrackerActor {
    ) -> Self::Reply {
       match msg {
          TrackerMessage::Announce => {
-            if let Ok(peers) = self.tracker.announce().await {
-               if let Err(e) = self.supervisor.tell(TorrentMessage::Announce(peers)).await {
+            if let Ok(peers) = self.tracker.announce().await
+               && let Err(e) = self.supervisor.tell(TorrentMessage::Announce(peers)).await {
                   error!("Failed to send announce to supervisor: {}", e);
                }
-            }
             None
          }
          TrackerMessage::GetStats => Some(self.tracker.stats()),

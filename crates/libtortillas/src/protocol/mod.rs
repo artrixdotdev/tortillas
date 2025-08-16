@@ -1,36 +1,24 @@
 use std::{
    collections::HashMap,
    net::SocketAddr,
-   sync::{Arc, atomic::Ordering},
-   time::{Duration, Instant},
+   time::Instant,
 };
 
 use anyhow::Context;
-use bitvec::vec::BitVec;
 use bytes::Bytes;
-use commands::{PeerCommand, PeerResponse};
 use kameo::{
    Actor,
    actor::{ActorRef, WeakActorRef},
    mailbox::Signal,
    prelude::{Context as KameoContext, MailboxReceiver, Message},
 };
-use librqbit_utp::UtpSocketUdp;
 use messages::{ExtendedMessage, ExtendedMessageType, PeerMessages};
-use stream::{PeerSend, PeerStream, PeerWriter};
-use tokio::{
-   sync::{
-      Mutex, broadcast,
-      mpsc::{self, Receiver, Sender},
-   },
-   time::{sleep, timeout},
-};
-use tracing::{debug, error, info, instrument, trace, warn};
+use stream::{PeerSend, PeerStream};
+use tracing::{debug, instrument, trace, warn};
 
 use crate::{
    errors::PeerTransportError,
-   hashes::InfoHash,
-   peer::{Peer, PeerId},
+   peer::Peer,
    protocol::stream::PeerRecv,
    torrent::{Torrent, TorrentMessage, TorrentRequest, TorrentResponse},
 };
