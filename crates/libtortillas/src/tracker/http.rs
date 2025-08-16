@@ -15,10 +15,7 @@ use serde::{
    de::{self, Visitor},
 };
 use serde_with::serde_as;
-use tokio::{
-   sync::RwLock,
-   time::Instant,
-};
+use tokio::{sync::RwLock, time::Instant};
 use tracing::{debug, error, instrument, trace, warn};
 
 /// See https://www.bittorrent.org/beps/bep_0003.html
@@ -27,7 +24,7 @@ use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::InfoHash,
    peer::PeerId,
-   tracker::{Event, StatsHook, TrackerInstance, TrackerStats, TrackerUpdate},
+   tracker::{Event, TrackerInstance, TrackerStats, TrackerUpdate},
 };
 
 #[derive(Debug, Deserialize)]
@@ -132,7 +129,6 @@ pub struct HttpTracker {
    params: Arc<RwLock<TrackerRequest>>,
    interval: Arc<AtomicUsize>,
    stats: TrackerStats,
-   stats_hook: StatsHook,
 }
 
 impl HttpTracker {
@@ -167,7 +163,6 @@ impl HttpTracker {
          params,
          info_hash,
          stats: TrackerStats::default(),
-         stats_hook: StatsHook::default(),
       }
    }
 
@@ -423,18 +418,15 @@ where
 
 #[cfg(test)]
 mod tests {
-   use std::{net::SocketAddr, str::FromStr, time::Duration};
 
-   use futures::{StreamExt, pin_mut};
    use rand::random_range;
-   use tokio::time::{Instant, timeout};
    use tracing_test::traced_test;
 
    use super::HttpTracker;
    use crate::{
       metainfo::{MetaInfo, TorrentFile},
       peer::PeerId,
-      tracker::{Event, TrackerInstance, TrackerUpdate, udp::UdpServer},
+      tracker::{TrackerInstance, udp::UdpServer},
    };
 
    #[tokio::test]
@@ -491,7 +483,6 @@ mod tests {
                .expect("No UDP tracker found in announce list");
 
             let port: u16 = random_range(1024..65535);
-            let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
             let peer_id = PeerId::new();
             let server = UdpServer::new(None).await;
 

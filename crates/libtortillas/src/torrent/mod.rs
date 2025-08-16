@@ -214,7 +214,6 @@ impl Actor for Torrent {
       Option<SocketAddr>,
    );
 
-   // FIXME: This should not be a TrackerError
    type Error = TorrentError;
 
    async fn on_start(args: Self::Args, us: ActorRef<Self>) -> Result<Self, Self::Error> {
@@ -332,7 +331,7 @@ impl Message<TorrentMessage> for Torrent {
                warn!("Received kill tracker message for unknown tracker");
             }
          }
-         TorrentMessage::IncomingPiece(i, offset, bytes) => unimplemented!(),
+         TorrentMessage::IncomingPiece(_, _, _) => unimplemented!(),
       }
    }
 }
@@ -358,7 +357,7 @@ impl Message<TorrentRequest> for Torrent {
          TorrentRequest::InfoHash => TorrentResponse::InfoHash(self.info_hash()),
 
          TorrentRequest::HasInfoDict => TorrentResponse::HasInfoDict(self.info.clone()),
-         TorrentRequest::Request(index, offset, length) => {
+         TorrentRequest::Request(_, _, _) => {
             unimplemented!()
          }
       }
@@ -369,7 +368,6 @@ impl Message<TorrentRequest> for Torrent {
 mod tests {
    use std::{net::SocketAddr, str::FromStr, time::Duration};
 
-   use futures::StreamExt;
    use librqbit_utp::UtpSocket;
    use rand::random_range;
    use tokio::time::{sleep, timeout};

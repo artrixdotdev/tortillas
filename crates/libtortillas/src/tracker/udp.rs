@@ -12,7 +12,6 @@ use anyhow::anyhow;
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
-use futures::Stream;
 use num_enum::TryFromPrimitive;
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::{
@@ -28,7 +27,7 @@ use crate::{
    errors::{TrackerError, UdpTrackerError},
    hashes::InfoHash,
    peer::PeerId,
-   tracker::{Event, StatsHook, TrackerInstance, TrackerStats, TrackerUpdate},
+   tracker::{Event, TrackerInstance, TrackerStats, TrackerUpdate},
 };
 
 /// The connection ID for a UDP connection. This is not the same as a
@@ -566,9 +565,6 @@ pub struct UdpTracker {
    stats: TrackerStats,
    /// Parameters for announce request. See [AnnounceParams].
    announce_params: Arc<RwLock<AnnounceParams>>,
-   /// Broadcast sender and receiver for statistical information about trackers.
-   /// See [StatsHook].
-   stats_hook: StatsHook,
 }
 
 impl UdpTracker {
@@ -623,7 +619,6 @@ impl UdpTracker {
          peer_addr,
          stats: TrackerStats::default(),
          announce_params: Arc::new(RwLock::new(AnnounceParams::default())),
-         stats_hook: StatsHook::default(),
       })
    }
 
@@ -650,17 +645,6 @@ impl UdpTracker {
 
    pub fn stats(&self) -> TrackerStats {
       self.stats.clone()
-   }
-
-   /// Sends tracker statistics to the receiver created from the
-   /// [configure](UdpTracker::configure) function.
-   #[instrument(skip(self), fields(tracker_uri = %self.uri, stats = %self.stats))]
-   async fn send_stats(&self) {
-      let tx = &self.stats_hook.tx();
-      if let Err(e) = tx.send(self.stats.clone()) {
-         error!(error = %e, "Failed to send tracker stats");
-      }
-      trace!("Sent tracker stats");
    }
 
    /// Receives a message based off of a transaction ID and handles any errors
@@ -1004,9 +988,7 @@ impl TrackerInstance for UdpTracker {
 
 #[cfg(test)]
 mod tests {
-   use futures::{StreamExt, pin_mut};
    use rand::random_range;
-   use tokio::time::Instant;
 
    use super::*;
    use crate::metainfo::{MagnetUri, MetaInfo};
@@ -1089,14 +1071,13 @@ mod tests {
                .filter(|t| t.uri().starts_with("udp://"))
             {
                let port: u16 = random_range(1024..65535);
-               let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
 
                let tracker = announce_url
                   .to_instance(info_hash, peer_id, port, udp_server.clone())
                   .await;
 
                if let Ok(tracker) = tracker {
-                  if let Ok(_) = tracker.initialize().await {
+                  if tracker.initialize().await.is_ok() {
                      trackers.push(tracker);
                      tracker_urls.push(announce_url.uri().clone());
                   } else {

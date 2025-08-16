@@ -14,7 +14,6 @@ use tokio::{
    sync::{Mutex, RwLock, broadcast, mpsc},
    time::{Duration, Instant},
 };
-use tokio_stream::StreamExt;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
@@ -362,7 +361,7 @@ impl TorrentEngine {
             let peers = instance.announce().await.unwrap();
             let (tx, rx) = mpsc::channel(100);
             for peer in peers {
-               tx.send(peer);
+               tx.send(peer).await.unwrap();
             }
             rx_list.push(rx);
          }
@@ -583,11 +582,6 @@ impl TorrentEngine {
 
 #[cfg(test)]
 mod tests {
-   use std::sync::Arc;
-
-   use tracing_subscriber::fmt;
-
-   use crate::{engine::TorrentEngine, metainfo::MetaInfo};
 
    // THIS TEST IS NOT COMPLETE!!! (DELETEME when torrent() is completed)
    // Until torrent() is fully implemented, this test is not complete.

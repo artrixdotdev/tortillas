@@ -11,7 +11,6 @@ use std::{
 use anyhow::Result;
 use async_trait::async_trait;
 use atomic_time::{AtomicInstant, AtomicOptionInstant};
-use futures::Stream;
 use http::HttpTracker;
 use kameo::{
    Actor,
@@ -25,7 +24,7 @@ use serde::{
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::{
-   sync::{broadcast, mpsc},
+   sync::mpsc,
    time::{self, Instant},
 };
 use tracing::error;
@@ -155,7 +154,7 @@ pub(crate) enum TrackerMessage {
    GetStats,
 }
 
-pub(crate) enum TrackerUpdate {
+pub enum TrackerUpdate {
    Uploaded(usize),
    Downloaded(usize),
    Left(usize),
@@ -171,9 +170,10 @@ impl Message<TrackerMessage> for TrackerActor {
       match msg {
          TrackerMessage::Announce => {
             if let Ok(peers) = self.tracker.announce().await
-               && let Err(e) = self.supervisor.tell(TorrentMessage::Announce(peers)).await {
-                  error!("Failed to send announce to supervisor: {}", e);
-               }
+               && let Err(e) = self.supervisor.tell(TorrentMessage::Announce(peers)).await
+            {
+               error!("Failed to send announce to supervisor: {}", e);
+            }
             None
          }
          TrackerMessage::GetStats => Some(self.tracker.stats()),
@@ -187,38 +187,7 @@ impl Message<TrackerUpdate> for TrackerActor {
    async fn handle(
       &mut self, msg: TrackerUpdate, _ctx: &mut Context<Self, Self::Reply>,
    ) -> Self::Reply {
-      self.tracker.update(msg);
-   }
-}
-
-/// Broadcast sender and receiver for statistical information about trackers.
-#[derive(Debug)]
-struct StatsHook(
-   broadcast::Sender<TrackerStats>,
-   broadcast::Receiver<TrackerStats>,
-);
-
-impl Default for StatsHook {
-   fn default() -> Self {
-      let (tx, rx) = broadcast::channel(10);
-      Self(tx, rx)
-   }
-}
-
-/// We have to manually implement Clone because we can't clone the receiver
-impl Clone for StatsHook {
-   fn clone(&self) -> Self {
-      Self(self.0.clone(), self.1.resubscribe())
-   }
-}
-
-impl StatsHook {
-   pub fn tx(&self) -> &broadcast::Sender<TrackerStats> {
-      &self.0
-   }
-
-   pub fn rx(&self) -> &broadcast::Receiver<TrackerStats> {
-      &self.1
+      let _ = self.tracker.update(msg).await;
    }
 }
 
