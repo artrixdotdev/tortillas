@@ -8,13 +8,13 @@ use std::{
 
 use anyhow::{Error, Result, anyhow};
 use bitvec::vec::BitVec;
+use kameo::Actor;
 use librqbit_utp::{UtpSocket, UtpSocketUdp};
 use tokio::{
    net::TcpListener,
    sync::{Mutex, RwLock, broadcast, mpsc},
    time::{Duration, Instant},
 };
-use tokio_stream::StreamExt;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
@@ -25,7 +25,8 @@ use crate::{
       messages::PeerMessages,
       stream::PeerStream,
    },
-   tracker::udp::UdpServer,
+   torrent::Torrent,
+   tracker::{TrackerBase, udp::UdpServer},
 };
 
 type PeerMessenger = mpsc::Sender<PeerCommand>;
@@ -198,25 +199,9 @@ impl TorrentEngine {
    /// with the peer through the given channels. The peer thread handles the
    /// remote connection to the peer on its own.
    async fn spawn_handle_peer(
-      self: Arc<Self>, peer: Peer, listener: Option<Arc<UtpSocketUdp>>, stream: Option<PeerStream>,
+      self: Arc<Self>, _: Peer, _: Option<Arc<UtpSocketUdp>>, _: Option<PeerStream>,
    ) {
-      debug!(peer_addr = %peer.socket_addr(), "Initiating outbound connection to peer");
-
-      let bitfield: BitVec<u8>;
-      {
-         bitfield = self.bitfield.read().await.clone();
-      }
-
-      peer
-         .handle_peer(
-            self.to_engine_tx_rx.0.clone(),
-            self.metainfo.info_hash().unwrap(),
-            self.id,
-            stream,
-            listener,
-            Some(bitfield),
-         )
-         .await;
+      unimplemented!()
    }
 
    /// A helper function for listening for peers trying to connect to us on
@@ -369,19 +354,26 @@ impl TorrentEngine {
 
          let info_hash = me.metainfo.info_hash().unwrap();
          let udp_server = UdpServer::new(None).await;
+         // Just here to kill warnings
+         Torrent::spawn((
+            me.id,
+            me.metainfo.clone(),
+            utp_listener.clone(),
+            udp_server.clone(),
+            Some(primary_addr),
+         ));
          for (index, tracker) in me.metainfo.announce_list().iter().enumerate() {
             let instance = tracker
                .to_instance(info_hash, me.id, primary_addr.port(), udp_server.clone())
-               .await;
-            instance.configure().await.unwrap();
+               .await?;
+
+            instance.initialize().await.unwrap();
             debug!(tracker_index = index, "Successfully connected to tracker");
-            let mut stream = instance.announce_stream().await;
+            let peers = instance.announce().await.unwrap();
             let (tx, rx) = mpsc::channel(100);
-            tokio::spawn(async move {
-               while let Some(message) = stream.next().await {
-                  tx.send(message).await.unwrap();
-               }
-            });
+            for peer in peers {
+               tx.send(peer).await.unwrap();
+            }
             rx_list.push(rx);
          }
 
@@ -601,11 +593,6 @@ impl TorrentEngine {
 
 #[cfg(test)]
 mod tests {
-   use std::sync::Arc;
-
-   use tracing_subscriber::fmt;
-
-   use crate::{engine::TorrentEngine, metainfo::MetaInfo};
 
    // THIS TEST IS NOT COMPLETE!!! (DELETEME when torrent() is completed)
    // Until torrent() is fully implemented, this test is not complete.
@@ -614,25 +601,26 @@ mod tests {
    //
    // This test uses its own subscriber in lieu of traced_test as it desperately
    // needs to show line numbers (which requires the use of tracing_subscriber).
-   #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
-   #[ignore = "Unstable"]
-   async fn test_torrent_with_magnet_uri() {
-      let subscriber = fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .finish();
-      tracing::subscriber::set_global_default(subscriber).expect("subscriber already set");
-
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/wired-cd.txt");
-      let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
-
-      let metainfo = MetaInfo::new(magnet_uri).await.unwrap();
-
-      let engine = Arc::new(TorrentEngine::new(metainfo).await);
-
-      engine.torrent().await.unwrap();
-   }
+   // #[tokio::test(flavor = "multi_thread", worker_threads = 50)]
+   // #[ignore = "Unstable"]
+   // async fn test_torrent_with_magnet_uri() {
+   //    let subscriber = fmt()
+   //       .with_target(true)
+   //       .with_env_filter("libtortillas=trace,off")
+   //       .pretty()
+   //       .finish();
+   //    tracing::subscriber::set_global_default(subscriber).expect("subscriber
+   // already set");
+   //
+   //    let path = std::env::current_dir()
+   //       .unwrap()
+   //       .join("tests/magneturis/wired-cd.txt");
+   //    let magnet_uri = tokio::fs::read_to_string(path).await.unwrap();
+   //
+   //    let metainfo = MetaInfo::new(magnet_uri).await.unwrap();
+   //
+   //    let engine = Arc::new(TorrentEngine::new(metainfo).await);
+   //
+   //    engine.torrent().await.unwrap();
+   // }
 }

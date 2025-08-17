@@ -7,7 +7,7 @@ use std::{
    task::{Context, Poll},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use async_trait::async_trait;
 use bytes::BytesMut;
 use librqbit_utp::{UtpSocketUdp, UtpStream, UtpStreamReadHalf, UtpStreamWriteHalf};
@@ -19,7 +19,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 
 use super::messages::{Handshake, PeerMessages};
 use crate::{
-   errors::PeerTransportError,
+   errors::PeerActorError,
    hashes::InfoHash,
    peer::{MAGIC_STRING, PeerId},
 };
@@ -36,11 +36,11 @@ pub enum PeerStream {
 #[async_trait]
 pub trait PeerSend: AsyncWrite + Unpin {
    /// Sends a PeerMessage to a peer.
-   async fn send(&mut self, data: PeerMessages) -> Result<(), PeerTransportError> {
+   async fn send(&mut self, data: PeerMessages) -> Result<(), PeerActorError> {
       let bytes = data.to_bytes().unwrap();
       self.write_all(&bytes).await.map_err(|e| {
          error!(error = %e, "Failed to send message to peer");
-         PeerTransportError::MessageFailed
+         PeerActorError::SendFailed(e.to_string())
       })
    }
 }
@@ -49,14 +49,14 @@ pub trait PeerSend: AsyncWrite + Unpin {
 pub trait PeerRecv: AsyncRead + Unpin {
    /// Receives data from a peers stream. In other words, if you wish to
    /// directly contact a peer, use this function.
-   async fn recv(&mut self) -> Result<PeerMessages, PeerTransportError> {
+   async fn recv(&mut self) -> Result<PeerMessages, PeerActorError> {
       // First 4 bytes is the big endian encoded length field and the 5th byte is a
       // PeerMessage tag
       let mut length_buf = [0u8; 4];
 
       self.read_exact(&mut length_buf).await.map_err(|e| {
          error!(error = %e, "Failed to read message length from peer");
-         PeerTransportError::InvalidPeerResponse("Failed to read message length".into())
+         PeerActorError::ReceiveFailed("Failed to read message length".into())
       })?;
 
       let length = u32::from_be_bytes(length_buf);
@@ -76,7 +76,7 @@ pub trait PeerRecv: AsyncRead + Unpin {
       let mut message_type = [0u8; 1];
       self.read_exact(&mut message_type).await.map_err(|e| {
          error!(error = %e, "Failed to read message type from peer");
-         PeerTransportError::InvalidPeerResponse("Failed to read message type".into())
+         PeerActorError::ReceiveFailed("Failed to read message type".into())
       })?;
 
       trace!(
@@ -91,7 +91,7 @@ pub trait PeerRecv: AsyncRead + Unpin {
       let mut rest = vec![0u8; (length - 1) as usize];
       self.read_exact(&mut rest).await.map_err(|e| {
          error!(error = %e, message_length = length, "Failed to read message payload from peer");
-         PeerTransportError::InvalidPeerResponse("Failed to read message payload".into())
+         PeerActorError::ReceiveFailed("Failed to read message payload".into())
       })?;
 
       message_buf.extend_from_slice(&rest);
@@ -151,7 +151,7 @@ impl PeerStream {
     )]
    pub async fn send_handshake(
       &mut self, our_id: PeerId, info_hash: Arc<InfoHash>,
-   ) -> Result<(PeerId, [u8; 8]), PeerTransportError> {
+   ) -> Result<(PeerId, [u8; 8]), PeerActorError> {
       let handshake = Handshake::new(info_hash.clone(), our_id);
       let remote_addr = self.remote_addr().unwrap();
 
@@ -170,11 +170,12 @@ impl PeerStream {
              remote_addr = %remote_addr,
              "Failed to read handshake response from peer"
          );
-         PeerTransportError::ConnectionFailed(remote_addr.to_string())
+         PeerActorError::ConnectionFailed(remote_addr.to_string())
       })?;
 
-      let handshake =
-         Handshake::from_bytes(&buf).map_err(|e| PeerTransportError::Other(anyhow!("{e}")))?;
+      let handshake = Handshake::from_bytes(&buf).map_err(|e| PeerActorError::HandshakeFailed {
+         reason: e.to_string(),
+      })?;
 
       validate_handshake(&handshake, remote_addr, info_hash)?;
 
@@ -199,14 +200,14 @@ impl PeerStream {
     )]
    pub async fn receive_handshake(
       &mut self, info_hash: Arc<InfoHash>, id: PeerId,
-   ) -> Result<PeerId, PeerTransportError> {
+   ) -> Result<PeerId, PeerActorError> {
       // First 4 bytes is the big endian encoded length field and the 5th byte is a
       // PeerMessage tag
       let mut initial_buf = [0u8; 5];
 
       self.read_exact(&mut initial_buf).await.map_err(|e| {
          error!(error = %e, "Failed to read handshake headers from peer");
-         PeerTransportError::InvalidPeerResponse("Failed to read handshake headers".into())
+         PeerActorError::ReceiveFailed("Failed to read handshake headers".into())
       })?;
 
       let addr = self.remote_addr().unwrap();
@@ -232,7 +233,7 @@ impl PeerStream {
              message_type = initial_buf[4],
              "Received non-handshake message when expecting handshake"
          );
-         return Err(PeerTransportError::InvalidPeerResponse(
+         return Err(PeerActorError::ProtocolViolation(
             "Expected handshake message".into(),
          ));
       };
@@ -247,7 +248,7 @@ impl PeerStream {
              remote_addr = %addr,
              "Failed to read handshake payload from peer"
          );
-         PeerTransportError::InvalidPeerResponse("Failed to read handshake payload".into())
+         PeerActorError::ReceiveFailed("Failed to read handshake payload".into())
       })?;
 
       buf.extend_from_slice(&rest);
@@ -280,7 +281,7 @@ impl PeerStream {
              remote_addr = %addr,
              "Received non-handshake message when expecting handshake"
          );
-         Err(PeerTransportError::InvalidPeerResponse(
+         Err(PeerActorError::ProtocolViolation(
             "Expected handshake message".to_string(),
          ))
       }
@@ -415,7 +416,7 @@ impl PeerSend for PeerWriter {}
 /// with as well as the new peer. It preassigns the our_id to the peer.
 pub fn validate_handshake(
    received_handshake: &Handshake, peer_addr: SocketAddr, info_hash: Arc<InfoHash>,
-) -> Result<(), PeerTransportError> {
+) -> Result<(), PeerActorError> {
    // Validate protocol string
    if MAGIC_STRING != received_handshake.protocol.as_ref() {
       error!(
@@ -424,7 +425,7 @@ pub fn validate_handshake(
           expected_protocol = %String::from_utf8_lossy(MAGIC_STRING),
           "Invalid protocol string received from peer"
       );
-      return Err(PeerTransportError::InvalidMagicString {
+      return Err(PeerActorError::HandshakeMagicMismatch {
          received: String::from_utf8_lossy(&received_handshake.protocol).into(),
          expected: String::from_utf8_lossy(MAGIC_STRING).into(),
       });
@@ -438,7 +439,7 @@ pub fn validate_handshake(
           expected_info_hash = %info_hash.to_hex(),
           "Invalid info hash received from peer"
       );
-      return Err(PeerTransportError::InvalidInfoHash {
+      return Err(PeerActorError::HandshakeInfoHashMismatch {
          received: received_handshake.info_hash.to_hex(),
          expected: info_hash.clone().to_hex(),
       });

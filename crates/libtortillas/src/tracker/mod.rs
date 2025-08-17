@@ -1,46 +1,42 @@
 use std::{
    fmt,
    net::SocketAddr,
-   pin::Pin,
    sync::{
       Arc,
       atomic::{AtomicUsize, Ordering},
    },
+   time::Duration,
 };
 
 use anyhow::Result;
 use async_trait::async_trait;
 use atomic_time::{AtomicInstant, AtomicOptionInstant};
-use futures::Stream;
 use http::HttpTracker;
+use kameo::{
+   Actor,
+   actor::ActorRef,
+   mailbox::Signal,
+   prelude::{Context, Message},
+};
 use num_enum::TryFromPrimitive;
 use serde::{
    Deserialize,
    de::{self, Visitor},
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tokio::{
-   sync::{broadcast, mpsc},
-   time::Instant,
-};
+use tokio::time::{Instant, Interval, interval};
+use tracing::error;
 use udp::UdpTracker;
 
 use crate::{
+   errors::TrackerActorError,
    hashes::InfoHash,
    peer::{Peer, PeerId},
+   torrent::{Torrent, TorrentMessage, TorrentRequest, TorrentResponse},
    tracker::udp::UdpServer,
 };
 pub mod http;
 pub mod udp;
-
-#[async_trait]
-pub trait TrackerTrait: Clone {
-   /// Acts as a wrapper function for get_peers. Should be spawned with
-   /// tokio::spawn.
-   async fn stream_peers(&mut self) -> Result<mpsc::Receiver<Vec<Peer>>>;
-
-   async fn get_peers(&mut self) -> Result<Vec<Peer>>;
-}
 
 /// An Announce URI from a torrent file or magnet URI.
 /// HTTP trackers: <https://www.bittorrent.org/beps/bep_0003.html>
@@ -54,14 +50,13 @@ pub trait TrackerTrait: Clone {
 /// let tracker = Tracker::Http("udp://tracker.opentrackr.org:1337/announce");
 ///
 /// let server = UdpServer::new();
-/// let tracker: Box<dyn TrackerInstance> = tracker.to_instance(info_hash, peer_id, port, Some(server));
+/// let tracker = tracker.to_instance(info_hash, peer_id, port, Some(server));
 ///
-/// let (rx, tx) = tracker.configure();
+/// tracker.initialize().await;
 ///
-/// let peers: Stream<Peer> = tracker.announce_stream();
-/// tx.send({ uploaded: 20 });
+/// let peers: Vec<Peer> = tracker.announce();
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Tracker {
    /// HTTP Spec
    /// <https://www.bittorrent.org/beps/bep_0003.html>
@@ -70,6 +65,271 @@ pub enum Tracker {
    /// <https://www.bittorrent.org/beps/bep_0015.html>
    Udp(String),
    Websocket(String),
+}
+
+impl Tracker {
+   /// Creates a new tracker instance based on the tracker type.
+   #[deprecated(note = "Use `to_instance` instead")]
+   pub async fn to_base(
+      &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
+   ) -> Result<Box<dyn TrackerBase>> {
+      let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
+      match self {
+         Self::Http(uri) => {
+            let tracker =
+               HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
+            Ok(Box::new(tracker))
+         }
+         Self::Udp(uri) => {
+            let tracker =
+               UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
+                  .await?;
+            Ok(Box::new(tracker))
+         }
+         Self::Websocket(_) => {
+            unimplemented!("Websocket trackers not yet supported")
+         }
+      }
+   }
+
+   /// Creates an instance of the [`Tracker`] struct from an info hash,
+   /// a peer ID, a port,
+   pub async fn to_instance(
+      &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
+   ) -> Result<TrackerInstance> {
+      let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
+      match self {
+         Self::Http(uri) => {
+            let tracker =
+               HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
+            Ok(TrackerInstance::Http(tracker))
+         }
+         Self::Udp(uri) => {
+            let tracker =
+               UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
+                  .await?;
+            Ok(TrackerInstance::Udp(tracker))
+         }
+         Self::Websocket(_) => {
+            unimplemented!("Websocket trackers not yet supported")
+         }
+      }
+   }
+
+   pub fn uri(&self) -> String {
+      match self {
+         Tracker::Http(uri) => uri.clone(),
+         Tracker::Udp(uri) => uri.clone(),
+         Tracker::Websocket(uri) => uri.clone(),
+      }
+   }
+}
+
+/// Trait for HTTP and UDP trackers.
+#[async_trait]
+pub trait TrackerBase: Send + Sync {
+   /// Initializes the tracker instance.
+   async fn initialize(&self) -> Result<()>;
+
+   /// Announces to the tracker and returns a list of peers.
+   async fn announce(&self) -> Result<Vec<Peer>>;
+
+   /// Updates tracker stats based on current state.
+   async fn update(&self, update: TrackerUpdate) -> Result<()>;
+
+   /// Gets the current tracker stats.
+   fn stats(&self) -> TrackerStats;
+
+   /// Gets the announce interval.
+   fn interval(&self) -> usize;
+}
+
+/// Enum for the different tracker variants that implement [TrackerBase] rather
+/// than the URIs like [Tracker]
+#[derive(Clone)]
+pub enum TrackerInstance {
+   Udp(UdpTracker),
+   Http(HttpTracker),
+}
+
+#[async_trait]
+impl TrackerBase for TrackerInstance {
+   async fn initialize(&self) -> Result<()> {
+      match self {
+         TrackerInstance::Udp(tracker) => tracker.initialize().await,
+         TrackerInstance::Http(tracker) => tracker.initialize().await,
+      }
+   }
+
+   async fn announce(&self) -> Result<Vec<Peer>> {
+      match self {
+         TrackerInstance::Udp(tracker) => Ok(tracker.announce().await.unwrap()),
+         TrackerInstance::Http(tracker) => tracker.announce().await,
+      }
+   }
+
+   async fn update(&self, update: TrackerUpdate) -> Result<()> {
+      match self {
+         TrackerInstance::Udp(tracker) => tracker.update(update).await,
+         TrackerInstance::Http(tracker) => tracker.update(update).await,
+      }
+   }
+
+   fn interval(&self) -> usize {
+      match self {
+         TrackerInstance::Udp(tracker) => tracker.interval() as usize,
+         TrackerInstance::Http(tracker) => tracker.interval(),
+      }
+   }
+   fn stats(&self) -> TrackerStats {
+      match self {
+         TrackerInstance::Udp(tracker) => tracker.stats(),
+         TrackerInstance::Http(tracker) => tracker.stats(),
+      }
+   }
+}
+
+pub(crate) struct TrackerActor {
+   tracker: TrackerInstance,
+   supervisor: ActorRef<Torrent>,
+   /// A custom struct provided by tokio that allows a `tick` function that will
+   /// wait until the next `duration` passes
+   ///
+   /// See <https://docs.rs/tokio/latest/tokio/time/fn.interval.html>
+   interval: Interval,
+}
+
+impl Actor for TrackerActor {
+   type Args = (Tracker, PeerId, UdpServer, SocketAddr, ActorRef<Torrent>);
+   type Error = TrackerActorError;
+
+   /// Unlike the [`PeerActor`](crate::protocol::PeerActor), there are no
+   /// prerequisites to calling this function. In other words, the tracker is
+   /// not expected to be connected when this function is called.
+   async fn on_start(state: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
+      let (tracker, peer_id, server, socket_addr, supervisor) = state;
+
+      let torrent_response = supervisor
+         .ask(TorrentRequest::InfoHash)
+         .await
+         .map_err(|e| TrackerActorError::SupervisorCommunicationFailed(e.to_string()))?;
+      let info_hash = match torrent_response {
+         TorrentResponse::InfoHash(info_hash) => info_hash,
+         _ => unreachable!(),
+      };
+
+      let tracker_uri = tracker.uri();
+      let tracker = match tracker {
+         Tracker::Udp(uri) => {
+            let udp_tracker =
+               UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
+                  .await
+                  .map_err(|_| TrackerActorError::InitializationFailed {
+                     tracker_type: format!("UDP: {}", uri),
+                  })?;
+            udp_tracker.initialize().await.map_err(|_| {
+               TrackerActorError::InitializationFailed {
+                  tracker_type: format!("UDP: {}", uri),
+               }
+            })?;
+            TrackerInstance::Udp(udp_tracker)
+         }
+         Tracker::Http(uri) => {
+            let http_tracker =
+               HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
+            http_tracker.initialize().await.map_err(|_| {
+               TrackerActorError::InitializationFailed {
+                  tracker_type: format!("HTTP: {}", uri),
+               }
+            })?;
+            TrackerInstance::Http(http_tracker)
+         }
+         _ => {
+            return Err(TrackerActorError::UnsupportedProtocol {
+               protocol: tracker_uri,
+            });
+         }
+      };
+
+      Ok(Self {
+         tracker,
+         supervisor,
+         interval: interval(Duration::from_secs(30)),
+      })
+   }
+
+   async fn next(
+      &mut self, _: kameo::prelude::WeakActorRef<Self>,
+      mailbox_rx: &mut kameo::prelude::MailboxReceiver<Self>,
+   ) -> Option<Signal<Self>> {
+      tokio::select! {
+         signal = mailbox_rx.recv() => signal,
+         // Waits for the next interval to tick
+         _ = self.interval.tick() => {
+            if let Ok(peers) = self.tracker.announce().await {
+               let _ = self.supervisor.tell(TorrentMessage::Announce(peers)).await;
+            }
+            let duration = Duration::from_secs(self.tracker.interval() as u64);
+            self.interval = interval(duration);
+
+            None
+         }
+      }
+   }
+}
+
+/// A message from an outside source.
+#[allow(dead_code)]
+pub(crate) enum TrackerMessage {
+   /// Forces the tracker to make an announce request. By default, announce
+   /// requests are made on an interval.
+   Announce,
+   /// Gets the statistics of the tracker via
+   /// [`tracker.stats()`](TrackerEnum::stats)
+   GetStats,
+}
+
+impl Message<TrackerMessage> for TrackerActor {
+   type Reply = Option<TrackerStats>;
+
+   async fn handle(
+      &mut self, msg: TrackerMessage, _ctx: &mut Context<Self, Self::Reply>,
+   ) -> Self::Reply {
+      match msg {
+         TrackerMessage::Announce => {
+            match self.tracker.announce().await {
+               Ok(peers) => {
+                  if let Err(e) = self.supervisor.tell(TorrentMessage::Announce(peers)).await {
+                     error!("Failed to send announce to supervisor: {}", e);
+                  }
+               }
+               Err(e) => {
+                  error!("Announce request failed: {}", e);
+               }
+            }
+            None
+         }
+         TrackerMessage::GetStats => Some(self.tracker.stats()),
+      }
+   }
+}
+
+/// Updates the tracker's announce fields
+pub enum TrackerUpdate {
+   Uploaded(usize),
+   Downloaded(usize),
+   Left(usize),
+   Event(Event),
+}
+
+impl Message<TrackerUpdate> for TrackerActor {
+   type Reply = ();
+
+   async fn handle(
+      &mut self, msg: TrackerUpdate, _ctx: &mut Context<Self, Self::Reply>,
+   ) -> Self::Reply {
+      let _ = self.tracker.update(msg).await;
+   }
 }
 
 /// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
@@ -94,70 +354,11 @@ pub enum Event {
    Stopped = 3,
 }
 
-/// An enum for updating data inside a tracker with the [mpsc
-/// Sender](tokio::sync::mpsc::Sender) returned from
-/// [announce_stream](TrackerInstance::announce_stream).
-pub enum TrackerUpdate {
-   Uploaded(usize),
-   Downloaded(usize),
-   Left(usize),
-   Event(Event),
-}
-
-/// Broadcast sender and receiver for statistical information about trackers.
-#[derive(Debug)]
-struct StatsHook(
-   broadcast::Sender<TrackerStats>,
-   broadcast::Receiver<TrackerStats>,
-);
-
-impl Default for StatsHook {
-   fn default() -> Self {
-      let (tx, rx) = broadcast::channel(10);
-      Self(tx, rx)
-   }
-}
-
-/// We have to manually implement Clone because we can't clone the receiver
-impl Clone for StatsHook {
-   fn clone(&self) -> Self {
-      Self(self.0.clone(), self.1.resubscribe())
-   }
-}
-
-impl StatsHook {
-   pub fn tx(&self) -> &broadcast::Sender<TrackerStats> {
-      &self.0
-   }
-
-   pub fn rx(&self) -> &broadcast::Receiver<TrackerStats> {
-      &self.1
-   }
-}
-
-/// Trait for HTTP and UDP trackers.
-#[async_trait]
-pub trait TrackerInstance {
-   /// Connects to the tracker. If this tracker is an HTTP tracker, no actual
-   /// connection is made. If this tracker is a UDP tracker, a connection is
-   /// established with the peer.
-   async fn configure(
-      &self,
-   ) -> Result<(
-      mpsc::Sender<TrackerUpdate>,
-      broadcast::Receiver<TrackerStats>,
-   )>;
-   /// Returns a stream that appends every new group of peers that we receive
-   /// from a tracker.
-   async fn announce_stream(&self) -> Pin<Box<dyn Stream<Item = Peer> + Send>>;
-}
-
-/// Tracker statistics to be returned from
-/// [announce_stream](TrackerInstance::announce_stream).
+/// Tracker statistics
 ///
-/// All usages of AtomicOptionInstant or AtomicInstant are a bit hacky, due to
-/// the fact that they only support Instant from std, not tokio. See any of the
-/// getter/setter methods as an example.
+/// All usages of [AtomicOptionInstant] or [AtomicInstant] are a bit hacky, due
+/// to the fact that they only support Instant from std, not tokio. See any of
+/// the getter/setter methods as an example.
 #[derive(Clone)]
 pub struct TrackerStats {
    announce_attempts: Arc<AtomicUsize>,
@@ -288,40 +489,7 @@ impl TrackerStats {
    }
 }
 
-impl Tracker {
-   /// Creates a new tracker instance based on the tracker type.
-   pub async fn to_instance(
-      &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
-   ) -> Box<dyn TrackerInstance> {
-      let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
-      match self {
-         Self::Http(uri) => {
-            let tracker =
-               HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
-            Box::new(tracker)
-         }
-         Self::Udp(uri) => {
-            let tracker =
-               UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
-                  .await
-                  .unwrap();
-            Box::new(tracker)
-         }
-         Self::Websocket(_) => {
-            unimplemented!("Websocket trackers not yet supported")
-         }
-      }
-   }
-
-   pub fn uri(&self) -> String {
-      match self {
-         Tracker::Http(uri) => uri.clone(),
-         Tracker::Udp(uri) => uri.clone(),
-         Tracker::Websocket(uri) => uri.clone(),
-      }
-   }
-}
-
+/// Serde visitor used for deserializing the URI of a [tracker](Tracker).
 struct TrackerVisitor;
 
 impl<'de> Deserialize<'de> for Tracker {

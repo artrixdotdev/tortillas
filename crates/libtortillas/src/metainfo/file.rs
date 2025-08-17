@@ -13,7 +13,7 @@ use crate::{
    tracker::Tracker,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TorrentFile {
    /// The primary announce URI for the torrent.
    pub announce: Tracker,
@@ -135,6 +135,10 @@ impl Info {
       hasher.update(serde_bencode::to_bytes(&self)?);
       let result = hasher.finalize();
       Ok(Hash::from_hex(hex::encode(result))?)
+   }
+
+   pub fn piece_count(&self) -> usize {
+      self.pieces.len()
    }
 }
 

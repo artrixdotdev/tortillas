@@ -4,4 +4,6 @@ pub mod hashes;
 pub mod metainfo;
 pub mod peer;
 pub mod protocol;
+pub mod torrent;
 pub mod tracker;
+pub mod util;
