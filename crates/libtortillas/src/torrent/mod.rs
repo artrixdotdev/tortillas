@@ -190,6 +190,9 @@ actor_request_response!(
    /// Current peers of the torrent
    CurrentPeers
    CurrentPeers(Vec<&'static Peer>),
+
+   PeerCount
+   PeerCount(usize),
    /// Current trackers of the torrent
    CurrentTrackers
    CurrentTrackers(Vec<&'static Tracker>),
@@ -344,6 +347,7 @@ impl Message<TorrentRequest> for Torrent {
    ) -> Self::Reply {
       match message {
          TorrentRequest::Bitfield => TorrentResponse::Bitfield(self.bitfield.clone()),
+         TorrentRequest::PeerCount => TorrentResponse::PeerCount(self.peers.len()),
          TorrentRequest::CurrentPeers => {
             unimplemented!()
             // TorrentResponse::CurrentPeers(self.peers.values().map(|peer|
@@ -367,20 +371,18 @@ impl Message<TorrentRequest> for Torrent {
 mod tests {
    use std::{net::SocketAddr, str::FromStr, time::Duration};
 
+   use anyhow::Context;
    use librqbit_utp::UtpSocket;
    use rand::random_range;
    use tokio::time::sleep;
+   use tracing_test::traced_test;
 
    use super::*;
    use crate::metainfo::TorrentFile;
 
+   #[traced_test]
    #[tokio::test(flavor = "multi_thread")]
    async fn test_torrent_actor() {
-      tracing_subscriber::fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .init();
       let metainfo = TorrentFile::parse(include_bytes!(
          "../../tests/torrents/big-buck-bunny.torrent"
       ))
@@ -396,6 +398,29 @@ mod tests {
 
       let actor = Torrent::spawn((peer_id, metainfo, utp_server, udp_server.clone(), None));
 
-      sleep(Duration::from_secs(30)).await;
+      // Blocking loop that runs until we successfully handshake with atleast 6 peers
+      loop {
+         let peers_count = match actor.ask(TorrentRequest::PeerCount).await.unwrap() {
+            TorrentResponse::PeerCount(count) => count,
+            _ => unreachable!(),
+         };
+         if peers_count > 6 {
+            break;
+         } else {
+            info!(
+               current_peers_count = peers_count,
+               "Waiting for more peers...."
+            )
+         }
+         sleep(Duration::from_millis(100)).await;
+      }
+
+      let peers_count = match actor.ask(TorrentRequest::PeerCount).await.unwrap() {
+         TorrentResponse::PeerCount(count) => count,
+         _ => unreachable!(),
+      };
+
+      actor.stop_gracefully().await.expect("Failed to stop");
+      info!("Connected to {peers_count} peers!")
    }
 }
