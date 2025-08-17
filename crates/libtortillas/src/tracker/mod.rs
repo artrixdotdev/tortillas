@@ -29,6 +29,7 @@ use tracing::error;
 use udp::UdpTracker;
 
 use crate::{
+   errors::TrackerActorError,
    hashes::InfoHash,
    peer::{Peer, PeerId},
    torrent::{Torrent, TorrentMessage, TorrentRequest, TorrentResponse},
@@ -200,7 +201,7 @@ pub(crate) struct TrackerActor {
 
 impl Actor for TrackerActor {
    type Args = (Tracker, PeerId, UdpServer, SocketAddr, ActorRef<Torrent>);
-   type Error = anyhow::Error;
+   type Error = TrackerActorError;
 
    /// Unlike the [`PeerActor`](crate::protocol::PeerActor), there are no
    /// prerequisites to calling this function. In other words, the tracker is
@@ -208,25 +209,46 @@ impl Actor for TrackerActor {
    async fn on_start(state: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
       let (tracker, peer_id, server, socket_addr, supervisor) = state;
 
-      let torrent_response = supervisor.ask(TorrentRequest::InfoHash).await?;
+      let torrent_response = supervisor
+         .ask(TorrentRequest::InfoHash)
+         .await
+         .map_err(|e| TrackerActorError::SupervisorCommunicationFailed(e.to_string()))?;
       let info_hash = match torrent_response {
          TorrentResponse::InfoHash(info_hash) => info_hash,
          _ => unreachable!(),
       };
 
+      let tracker_uri = tracker.uri();
       let tracker = match tracker {
          Tracker::Udp(uri) => {
             let udp_tracker =
-               UdpTracker::new(uri, Some(server), info_hash, (peer_id, socket_addr)).await?;
-            udp_tracker.initialize().await?;
+               UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
+                  .await
+                  .map_err(|_| TrackerActorError::InitializationFailed {
+                     tracker_type: format!("UDP: {}", uri),
+                  })?;
+            udp_tracker.initialize().await.map_err(|_| {
+               TrackerActorError::InitializationFailed {
+                  tracker_type: format!("UDP: {}", uri),
+               }
+            })?;
             TrackerInstance::Udp(udp_tracker)
          }
          Tracker::Http(uri) => {
-            let http_tracker = HttpTracker::new(uri, info_hash, Some(peer_id), Some(socket_addr));
-            http_tracker.initialize().await?;
+            let http_tracker =
+               HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
+            http_tracker.initialize().await.map_err(|_| {
+               TrackerActorError::InitializationFailed {
+                  tracker_type: format!("HTTP: {}", uri),
+               }
+            })?;
             TrackerInstance::Http(http_tracker)
          }
-         _ => unimplemented!(),
+         _ => {
+            return Err(TrackerActorError::UnsupportedProtocol {
+               protocol: tracker_uri,
+            });
+         }
       };
 
       Ok(Self {
@@ -275,10 +297,15 @@ impl Message<TrackerMessage> for TrackerActor {
    ) -> Self::Reply {
       match msg {
          TrackerMessage::Announce => {
-            if let Ok(peers) = self.tracker.announce().await
-               && let Err(e) = self.supervisor.tell(TorrentMessage::Announce(peers)).await
-            {
-               error!("Failed to send announce to supervisor: {}", e);
+            match self.tracker.announce().await {
+               Ok(peers) => {
+                  if let Err(e) = self.supervisor.tell(TorrentMessage::Announce(peers)).await {
+                     error!("Failed to send announce to supervisor: {}", e);
+                  }
+               }
+               Err(e) => {
+                  error!("Announce request failed: {}", e);
+               }
             }
             None
          }

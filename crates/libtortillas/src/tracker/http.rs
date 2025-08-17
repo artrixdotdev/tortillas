@@ -21,7 +21,7 @@ use tracing::{debug, error, instrument, trace, warn};
 /// See https://www.bittorrent.org/beps/bep_0003.html
 use super::Peer;
 use crate::{
-   errors::{HttpTrackerError, TrackerError},
+   errors::TrackerActorError,
    hashes::InfoHash,
    peer::PeerId,
    tracker::{Event, TrackerBase, TrackerStats, TrackerUpdate},
@@ -209,7 +209,7 @@ impl TrackerBase for HttpTracker {
              request_uri = %uri,
              "HTTP request to tracker failed"
          );
-         HttpTrackerError::Request(e)
+         TrackerActorError::Http(e)
       })?;
 
       let status = response.status();
@@ -220,7 +220,7 @@ impl TrackerBase for HttpTracker {
 
       let response_bytes = response.bytes().await.map_err(|e| {
          error!(error = %e, "Failed to read tracker response body");
-         HttpTrackerError::Request(e)
+         TrackerActorError::Http(e)
       })?;
 
       let request_duration = request_start.elapsed();
@@ -235,7 +235,7 @@ impl TrackerBase for HttpTracker {
              response_size = response_bytes.len(),
              "Failed to decode bencode response"
          );
-         HttpTrackerError::Tracker(TrackerError::BencodeError(e))
+         TrackerActorError::BencodeDecoding(e)
       })?;
 
       self.stats.increment_announce_successes();

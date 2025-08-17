@@ -4,7 +4,7 @@ use std::{
    sync::Arc,
 };
 
-use anyhow::{Error, Result, anyhow, bail};
+use anyhow::{Error, Result, bail};
 use bencode::streaming::{BencodeEvent, StreamingParser};
 use bitvec::prelude::*;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -13,7 +13,7 @@ use serde_repr::{Deserialize_repr, Serialize_repr};
 use tracing::{debug, error, trace};
 
 use crate::{
-   errors::PeerTransportError,
+   errors::PeerActorError,
    hashes::Hash,
    peer::{MAGIC_STRING, PeerId},
 };
@@ -121,7 +121,7 @@ pub enum PeerMessages {
 }
 
 impl PeerMessages {
-   pub fn to_bytes(&self) -> Result<Bytes, PeerTransportError> {
+   pub fn to_bytes(&self) -> Result<Bytes, PeerActorError> {
       Ok(match self {
          PeerMessages::Handshake(handshake) => handshake.to_bytes(),
          PeerMessages::Choke => create_message_with_id(0, &[]),
@@ -160,11 +160,13 @@ impl PeerMessages {
             }
             create_message_with_id(20, &payload)
          }
-         _ => return Err(PeerTransportError::Other(anyhow!("Unknown message type"))),
+         _ => return Err(PeerActorError::MessageParsingFailed {
+            reason: "Unknown message type".to_string()
+         }),
       })
    }
 
-   pub fn from_bytes(mut bytes: Bytes) -> Result<PeerMessages, PeerTransportError> {
+   pub fn from_bytes(mut bytes: Bytes) -> Result<PeerMessages, PeerActorError> {
       let bytes_len = bytes.len();
 
       // Check if it's a handshake (handshakes don't have length prefix)
@@ -174,7 +176,9 @@ impl PeerMessages {
          return Ok(PeerMessages::Handshake(
             Handshake::from_bytes(&bytes).map_err(|e| {
                error!(error = %e, "Failed to parse handshake");
-               PeerTransportError::Other(anyhow!("{e}"))
+               PeerActorError::HandshakeFailed {
+                  reason: e.to_string(),
+               }
             })?,
          ));
       }
@@ -182,7 +186,10 @@ impl PeerMessages {
       // For regular messages, we need at least 4 bytes for the length prefix
       if bytes_len < 4 {
          trace!(bytes_len, "Message too short for length prefix");
-         return Err(PeerTransportError::MessageTooShort);
+         return Err(PeerActorError::MessageTooShort {
+            expected: 4,
+            received: bytes_len,
+         });
       }
 
       let length = bytes.get_u32() as usize;
@@ -194,7 +201,10 @@ impl PeerMessages {
             expected_len = 4 + length,
             "Message too short for declared length"
          );
-         return Err(PeerTransportError::MessageTooShort);
+         return Err(PeerActorError::MessageTooShort {
+            expected: 4 + length,
+            received: bytes_len,
+         });
       }
 
       // Empty message (keep-alive)
@@ -206,7 +216,9 @@ impl PeerMessages {
       // Regular message with ID
       if length < 1 {
          trace!(length, "Message length too short for message ID");
-         return Err(PeerTransportError::MessageFailed);
+         return Err(PeerActorError::InvalidMessagePayload {
+            message_type: "Unknown".to_string(),
+         });
       }
 
       let id = bytes.get_u8();
@@ -229,7 +241,9 @@ impl PeerMessages {
                   payload_len = payload.len(),
                   "Invalid Have message payload length"
                );
-               return Err(PeerTransportError::MessageFailed);
+               return Err(PeerActorError::InvalidMessagePayload {
+                  message_type: "Have".to_string(),
+               });
             }
             let mut payload_buf = payload;
             let index = payload_buf.get_u32();
@@ -246,7 +260,9 @@ impl PeerMessages {
                   payload_len = payload.len(),
                   "Invalid Request message payload length"
                );
-               return Err(PeerTransportError::MessageFailed);
+               return Err(PeerActorError::InvalidMessagePayload {
+                  message_type: "Request".to_string(),
+               });
             }
             let (index, begin, length) = parse_triplet(&payload)?;
             trace!(
@@ -261,7 +277,9 @@ impl PeerMessages {
                   payload_len = payload.len(),
                   "Invalid Piece message payload length"
                );
-               return Err(PeerTransportError::MessageFailed);
+               return Err(PeerActorError::InvalidMessagePayload {
+                  message_type: "Piece".to_string(),
+               });
             }
             let mut payload_buf = payload;
             let index = payload_buf.get_u32();
@@ -281,7 +299,9 @@ impl PeerMessages {
                   payload_len = payload.len(),
                   "Invalid Cancel message payload length"
                );
-               return Err(PeerTransportError::MessageFailed);
+               return Err(PeerActorError::InvalidMessagePayload {
+                  message_type: "Cancel".to_string(),
+               });
             }
             let (index, begin, length) = parse_triplet(&payload)?;
             trace!(
@@ -343,7 +363,9 @@ impl PeerMessages {
          }
          _ => {
             trace!(unknown_id = id, "Received unknown message type");
-            Err(PeerTransportError::Other(anyhow!("Unknown message type")))
+            Err(PeerActorError::MessageParsingFailed {
+               reason: "Unknown message type".to_string(),
+            })
          }
       }
    }
@@ -585,9 +607,11 @@ fn create_message_with_id(id: u8, payload: &[u8]) -> Bytes {
 }
 
 /// Helper to parse u32 triplets
-fn parse_triplet(payload: &Bytes) -> Result<(u32, u32, u32), PeerTransportError> {
+fn parse_triplet(payload: &Bytes) -> Result<(u32, u32, u32), PeerActorError> {
    if payload.len() != 12 {
-      return Err(PeerTransportError::MessageFailed);
+      return Err(PeerActorError::InvalidMessagePayload {
+         message_type: "triplet".to_string(),
+      });
    }
    let mut buf = payload.clone();
    Ok((buf.get_u32(), buf.get_u32(), buf.get_u32()))

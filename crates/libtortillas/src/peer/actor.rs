@@ -13,7 +13,7 @@ use stream::{PeerSend, PeerStream};
 use tracing::{debug, error, instrument, trace, warn};
 
 use crate::{
-   errors::PeerTransportError,
+   errors::PeerActorError,
    peer::Peer,
    protocol::{stream::PeerRecv, *},
    torrent::{Torrent, TorrentMessage, TorrentRequest, TorrentResponse},
@@ -169,7 +169,7 @@ impl PeerActor {
 
 impl Actor for PeerActor {
    type Args = (Peer, PeerStream, ActorRef<Torrent>);
-   type Error = PeerTransportError;
+   type Error = PeerActorError;
 
    /// At this point, the peer has already been handshaked with. No other
    /// messages have been sent or received from the peer.

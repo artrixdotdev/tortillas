@@ -24,7 +24,7 @@ use tracing::{debug, error, instrument, trace, warn};
 
 use super::Peer;
 use crate::{
-   errors::{TrackerError, UdpTrackerError},
+   errors::TrackerActorError,
    hashes::InfoHash,
    peer::PeerId,
    tracker::{Event, TrackerBase, TrackerStats, TrackerUpdate},
@@ -39,7 +39,7 @@ type AtomicConnectionId = AtomicU64;
 /// connection ID
 type TransactionId = u32;
 /// A type alias for all Results in this file, for convenience.
-type Result<T> = anyhow::Result<T, UdpTrackerError>;
+type Result<T> = anyhow::Result<T, TrackerActorError>;
 /// A magic constant for the UDP tracker protocol. needed in
 /// [TrackerRequest::Connect]
 const MAGIC_CONSTANT: ConnectionId = 0x41727101980;
@@ -215,7 +215,7 @@ impl TrackerResponse {
             actual = bytes.len(),
             "Response too short to contain action field"
          );
-         return Err(UdpTrackerError::ResponseTooShort {
+         return Err(TrackerActorError::ResponseTooShort {
             expected: 4,
             actual: bytes.len(),
          });
@@ -228,7 +228,7 @@ impl TrackerResponse {
             invalid_action = e.number,
             "Received invalid action in response"
          );
-         TrackerError::InvalidAction(e.number)
+         TrackerActorError::InvalidAction { action: e.number }
       })?;
 
       trace!(action = ?action, "Parsed response action");
@@ -241,7 +241,7 @@ impl TrackerResponse {
                   actual = bytes.len(),
                   "Connect response too short"
                );
-               return Err(UdpTrackerError::ResponseTooShort {
+               return Err(TrackerActorError::ResponseTooShort {
                   expected: MIN_CONNECT_RESPONSE_SIZE,
                   actual: bytes.len(),
                });
@@ -263,7 +263,7 @@ impl TrackerResponse {
                   actual = bytes.len(),
                   "Announce response too short"
                );
-               return Err(UdpTrackerError::ResponseTooShort {
+               return Err(TrackerActorError::ResponseTooShort {
                   expected: MIN_ANNOUNCE_RESPONSE_SIZE,
                   actual: bytes.len(),
                });
@@ -311,7 +311,7 @@ impl TrackerResponse {
                   actual = bytes.len(),
                   "Error response too short"
                );
-               return Err(UdpTrackerError::ResponseTooShort {
+               return Err(TrackerActorError::ResponseTooShort {
                   expected: MIN_ERROR_RESPONSE_SIZE,
                   actual: bytes.len(),
                });
@@ -334,9 +334,9 @@ impl TrackerResponse {
          }
          _ => {
             error!(unsupported_action = ?action, "Received unsupported action in response");
-            Err(UdpTrackerError::InvalidResponse(format!(
-               "Unsupported action: {action:?}"
-            )))
+            Err(TrackerActorError::InvalidResponse {
+               reason: format!("Unsupported action: {action:?}"),
+            })
          }
       };
       response.inspect(|r| trace!(response = %r, "Successfully processed response"))
@@ -482,7 +482,9 @@ impl UdpServer {
    pub async fn send_message(&self, message: &Bytes, addr: SocketAddr) -> Result<()> {
       self.socket.send_to(message, addr).await.map_err(|e| {
          error!(error = ?e, "Failed to send message to tracker");
-         UdpTrackerError::InvalidResponse(format!("send_to failed: {e}"))
+         TrackerActorError::InvalidResponse {
+            reason: format!("send_to failed: {e}"),
+         }
       })?;
 
       Ok(())
@@ -655,7 +657,7 @@ impl UdpTracker {
    ))]
    async fn to_retry_error(
       &self, transaction_id: &TransactionId,
-   ) -> anyhow::Result<TrackerResponse, RetryError<UdpTrackerError>> {
+   ) -> anyhow::Result<TrackerResponse, RetryError<TrackerActorError>> {
       // Create a channel to receive the response
       let (response_tx, mut response_rx) = mpsc::unbounded_channel();
 
@@ -690,7 +692,7 @@ impl UdpTracker {
                "Response channel closed before receiving message"
             );
             return Err(RetryError::Transient {
-               err: UdpTrackerError::MessageTimeout,
+               err: TrackerActorError::RequestTimeout { seconds: 15 },
                retry_after: None,
             });
          }
@@ -701,7 +703,7 @@ impl UdpTracker {
                 "Tracker timed out"
             );
             return Err(RetryError::Transient {
-               err: UdpTrackerError::MessageTimeout,
+               err: TrackerActorError::RequestTimeout { seconds: 15 },
                retry_after: None,
             });
          }
@@ -716,7 +718,7 @@ impl UdpTracker {
    ))]
    async fn send_and_recv_retry(
       &self, message: &TrackerRequest, transaction_id: &TransactionId,
-   ) -> anyhow::Result<TrackerResponse, RetryError<UdpTrackerError>> {
+   ) -> anyhow::Result<TrackerResponse, RetryError<TrackerActorError>> {
       let message_bytes = message.to_bytes();
 
       // Send the message through the shared message receiver
@@ -794,7 +796,7 @@ impl UdpTracker {
       let request = TrackerRequest::Connect(MAGIC_CONSTANT, Action::Connect, transaction_id);
       let response = timeout(CONNECTION_TIMEOUT, self.send_and_wait(request)).await;
 
-      let response = response.map_err(|_| UdpTrackerError::MessageTimeout)??;
+      let response = response.map_err(|_| TrackerActorError::RequestTimeout { seconds: 15 })??;
 
       match response {
          TrackerResponse::Connect {
@@ -821,16 +823,16 @@ impl UdpTracker {
                 transaction_id = transaction_id,
                 "Tracker returned error for connect request"
             );
-            Err(UdpTrackerError::TrackerMessage(message))
+            Err(TrackerActorError::TrackerError { message })
          }
          _ => {
             error!(
                 response_type = ?response,
                 "Unexpected response type to connect request"
             );
-            Err(UdpTrackerError::InvalidResponse(
-               "Expected connect response".to_string(),
-            ))
+            Err(TrackerActorError::InvalidResponse {
+               reason: "Expected connect response".to_string(),
+            })
          }
       }
    }
@@ -912,7 +914,10 @@ impl TrackerBase for UdpTracker {
                   received_tid = resp_tid,
                   "Transaction ID mismatch in announce response"
                );
-               return Err(anyhow!(TrackerError::TransactionMismatch));
+               return Err(anyhow!(TrackerActorError::TransactionMismatch {
+                  expected: transaction_id,
+                  received: resp_tid
+               }));
             }
 
             // Update statistics
@@ -940,16 +945,16 @@ impl TrackerBase for UdpTracker {
                 transaction_id = transaction_id,
                 "Tracker returned error for announce request"
             );
-            Err(anyhow!(UdpTrackerError::TrackerMessage(message)))
+            Err(anyhow!(TrackerActorError::TrackerError { message }))
          }
          _ => {
             error!(
                 response_type = ?response,
                 "Unexpected response type to announce request"
             );
-            Err(anyhow!(UdpTrackerError::InvalidResponse(
-               "Expected announce response".to_string(),
-            )))
+            Err(anyhow!(TrackerActorError::InvalidResponse {
+               reason: "Expected announce response".to_string(),
+            }))
          }
       }
    }
