@@ -371,9 +371,7 @@ impl Message<TorrentRequest> for Torrent {
 mod tests {
    use std::{net::SocketAddr, str::FromStr, time::Duration};
 
-   use anyhow::Context;
    use librqbit_utp::UtpSocket;
-   use rand::random_range;
    use tokio::time::sleep;
    use tracing_test::traced_test;
 
@@ -388,13 +386,13 @@ mod tests {
       ))
       .unwrap();
 
-      let port: u16 = random_range(1024..65535);
-
-      let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
       let peer_id = PeerId::default();
 
       let udp_server = UdpServer::new(None).await;
-      let utp_server = UtpSocket::new_udp(socket_addr).await.unwrap();
+      let utp_server =
+         UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
+            .await
+            .unwrap();
 
       let actor = Torrent::spawn((peer_id, metainfo, utp_server, udp_server.clone(), None));
 
