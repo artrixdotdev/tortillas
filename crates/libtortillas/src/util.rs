@@ -8,19 +8,19 @@
 /// actor_request_response!(
 ///     pub Request,
 ///     pub Response,
-///     Ping,
-///     Pong(u8), // Delay
+///     Ping Pong(u8),
+///     Ding(u8) Dong(u8),
 /// );
 ///
 /// // The same as
 /// pub enum Request {
 ///     Ping,
-///     Pong,
+///     Ding(u8),
 /// }
 ///
 /// pub enum Response {
-///     Ping,
 ///     Pong(u8),
+///     Dong(u8)
 /// }
 /// ```
 #[macro_export]

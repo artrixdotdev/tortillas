@@ -864,7 +864,6 @@ impl TrackerBase for UdpTracker {
         ready_state = ?self.ready_state,
         connection_id = ?self.get_connection_id()
     ))]
-
    async fn announce(&self) -> anyhow::Result<Vec<Peer>> {
       if self.get_ready_state() != ReadyState::Ready {
          error!(
