@@ -21,7 +21,6 @@ pub enum PeerCommand {
 #[derive(Debug, Clone)]
 pub enum PeerResponse {
    /// An initialization message to be sent when
-   /// [handle_peer](super::Peer::handle_peer) is called. We do NOT establish
    /// a connection with the peer before sending this message.
    Init {
       from_engine_tx: mpsc::Sender<PeerCommand>,

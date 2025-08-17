@@ -536,9 +536,9 @@ struct AnnounceParams {
 /// The core struct for Udp Trackers.
 ///
 /// This struct contains quite a few getter and setter functions, such as
-/// [set_connection_id]. Consequently, these functions are not documented. They
-/// are generally wrapped because the underlying field is an atomic, and
-/// accessing an atomic takes a few lines of code.
+/// [UdpTracker::set_connection_id]. Consequently, these functions are not
+/// documented. They are generally wrapped because the underlying field is an
+/// atomic, and accessing an atomic takes a few lines of code.
 #[derive(Clone)]
 pub struct UdpTracker {
    /// Raw SocketAddr for the tracker
@@ -849,8 +849,6 @@ impl UdpTracker {
 
 #[async_trait]
 impl TrackerBase for UdpTracker {
-   /// Configures a tracker by connecting to the tracker itself with
-   /// [`self.connect()`](UdpTracker::connect)
    async fn initialize(&self) -> anyhow::Result<()> {
       self.connect().await?;
       Ok(())

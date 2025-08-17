@@ -91,7 +91,7 @@ impl Tracker {
       }
    }
 
-   /// Creates an instance of the [`Tracker`](Tracker) struct from an info hash,
+   /// Creates an instance of the [`Tracker`] struct from an info hash,
    /// a peer ID, a port,
    pub async fn to_instance(
       &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
@@ -327,12 +327,11 @@ pub enum Event {
    Stopped = 3,
 }
 
-/// Tracker statistics to be returned from
-/// [announce_stream](TrackerInstance::announce_stream).
+/// Tracker statistics
 ///
-/// All usages of AtomicOptionInstant or AtomicInstant are a bit hacky, due to
-/// the fact that they only support Instant from std, not tokio. See any of the
-/// getter/setter methods as an example.
+/// All usages of [AtomicOptionInstant] or [AtomicInstant] are a bit hacky, due
+/// to the fact that they only support Instant from std, not tokio. See any of
+/// the getter/setter methods as an example.
 #[derive(Clone)]
 pub struct TrackerStats {
    announce_attempts: Arc<AtomicUsize>,
