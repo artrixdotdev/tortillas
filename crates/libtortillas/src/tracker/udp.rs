@@ -199,16 +199,6 @@ enum TrackerResponse {
 
 /// Accepts a response (in bytes) from a UDP [tracker request](TrackerRequest).
 impl TrackerResponse {
-   pub fn size(&self) -> usize {
-      match self {
-         Self::Connect { .. } => MIN_CONNECT_RESPONSE_SIZE,
-         Self::Announce { peers, .. } => {
-            MIN_ANNOUNCE_RESPONSE_SIZE + (peers.len() * size_of::<Peer>())
-         }
-         Self::Error { message, .. } => MIN_ERROR_RESPONSE_SIZE + message.len(),
-      }
-   }
-
    pub fn transaction_id(&self) -> TransactionId {
       match self {
          Self::Connect { transaction_id, .. } => *transaction_id,
@@ -376,11 +366,7 @@ impl Display for TrackerResponse {
 }
 
 /// The data type that we send to every [UdpTracker] from [UdpServer]
-///
-/// This type was previously `(usize, TrackerResponse)`. Assigning a type to
-/// another type may be redundant, but in this case, we believe it makes the
-/// following section every so slightly more readable.
-type ServerMessage = TrackerResponse;
+type ServerMessage = (usize, TrackerResponse);
 
 /// Centralized message receiver that broadcasts messages to all trackers
 #[derive(Clone, Debug)]
@@ -416,7 +402,7 @@ impl UdpServer {
 
    /// Register a transaction ID with a response channel
    async fn register_transaction(
-      &self, transaction_id: TransactionId, sender: mpsc::UnboundedSender<ServerMessage>,
+      &self, transaction_id: TransactionId, sender: mpsc::UnboundedSender<(usize, TrackerResponse)>,
    ) {
       self.response_channels.insert(transaction_id, sender);
       trace!(transaction_id = transaction_id, "Registered transaction");
@@ -458,7 +444,7 @@ impl UdpServer {
                         // Send to the specific transaction channel
                         {
                            if let Some(sender) = response_channels.get(&transaction_id) {
-                              if let Err(e) = sender.send(response) {
+                              if let Err(e) = sender.send((size, response)) {
                                  warn!(
                                      transaction_id = transaction_id,
                                      error = %e,
@@ -685,14 +671,14 @@ impl UdpTracker {
       let timeout_result = timeout(MESSAGE_TIMEOUT, response_rx.recv()).await;
 
       match timeout_result {
-         Ok(Some(response)) => {
+         Ok(Some((size, response))) => {
             trace!(
                 transaction_id = transaction_id,
                 response_type = %response,
                 "Successfully received response"
             );
             self.stats.set_last_interaction();
-            self.stats.increment_bytes_received(response.size());
+            self.stats.increment_bytes_received(size);
 
             // Unregister the transaction ID
             self.server.unregister_transaction(transaction_id).await;
