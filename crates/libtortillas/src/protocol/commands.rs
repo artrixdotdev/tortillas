@@ -1,7 +1,10 @@
 use bytes::Bytes;
 use tokio::sync::mpsc;
 
-use super::{ExtendedMessage, PeerKey, PeerMessages};
+use super::{
+   PeerKey,
+   messages::{ExtendedMessage, PeerMessages},
+};
 
 #[derive(Debug)]
 pub enum PeerCommand {

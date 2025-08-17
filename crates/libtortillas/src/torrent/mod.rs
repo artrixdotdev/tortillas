@@ -17,9 +17,8 @@ use crate::{
    errors::TorrentError,
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
-   peer::{Peer, PeerId},
+   peer::{Peer, PeerActor, PeerId},
    protocol::{
-      PeerActor,
       messages::{Handshake, PeerMessages},
       stream::{PeerSend, PeerStream},
    },

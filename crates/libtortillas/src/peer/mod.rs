@@ -1,3 +1,4 @@
+mod actor;
 mod id;
 mod info;
 mod state;
@@ -9,12 +10,14 @@ use std::{
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
 };
 
+pub use actor::*;
 use bitvec::vec::BitVec;
 use bytes::BytesMut;
 pub use id::*;
 pub use info::*;
 pub use state::*;
 pub use supports::*;
+
 /// It should be noted that the *name* PeerKey is slightly deprecated from
 /// previous renditions of libtortillas. The idea of having a type for the "key"
 /// of a peer is still completely relevant though.
