@@ -67,7 +67,7 @@ impl PeerActor {
 
       if let Some(extended_message) = extended_message {
          if let Some(size) = extended_message.metadata_size {
-            debug!(metadata_size = size, "Received metadata size from peer");
+            trace!(metadata_size = size, "Received metadata size from peer");
          }
 
          if let Ok(id) = extended_message.supports_bep_0009() {
@@ -82,6 +82,7 @@ impl PeerActor {
       }
 
       if self.peer.info.have_all_bytes() {
+         debug!("Peer has all info bytes, sending them to supervisor...");
          self
             .supervisor
             .tell(TorrentMessage::InfoBytes(self.peer.info.info_bytes()))
@@ -138,7 +139,10 @@ impl PeerActor {
             .await
             .expect("Failed to send Interested message to peer");
 
-         debug!(peer_pieces = ?!peer_has_we_dont, "Peer has pieces we are interested in");
+         debug!(
+            "Peer has {} pieces we are interested in",
+            peer_has_we_dont.count_ones()
+         );
       } else {
          self
             .stream
@@ -175,7 +179,7 @@ impl Actor for PeerActor {
          supervisor,
       })
    }
-
+   /// Coerces messages from the [PeerStream] to a [Message]
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
    ) -> Option<Signal<Self>> {
