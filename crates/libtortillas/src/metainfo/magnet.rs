@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// Magnet URI Spec: <https://en.wikipedia.org/wiki/Magnet_URI_scheme> or <https://www.bittorrent.org/beps/bep_0053.html>
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct MagnetUri {
    /// use `Self::info_hash` to get the info hash as a `Hash` struct.
    #[serde(rename(deserialize = "xt"))]

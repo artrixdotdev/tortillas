@@ -13,7 +13,7 @@ use crate::{
    tracker::Tracker,
 };
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct TorrentFile {
    /// The primary announce URI for the torrent.
    pub announce: Tracker,
