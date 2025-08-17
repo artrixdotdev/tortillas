@@ -198,7 +198,7 @@ impl Actor for TrackerActor {
 
    /// Unlike the [`PeerActor`](crate::protocol::PeerActor), there are no
    /// prerequisites to calling this function. In other words, the tracker is
-   /// not expted to be connected when this function is called.
+   /// not expected to be connected when this function is called.
    async fn on_start(state: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
       let (tracker, peer_id, server, socket_addr, supervisor) = state;
 
