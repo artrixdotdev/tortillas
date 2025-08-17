@@ -482,7 +482,7 @@ impl UdpServer {
    pub async fn send_message(&self, message: &Bytes, addr: SocketAddr) -> Result<()> {
       self.socket.send_to(message, addr).await.map_err(|e| {
          error!(error = ?e, "Failed to send message to tracker");
-         UdpTrackerError::MessageTimeout
+         UdpTrackerError::InvalidResponse(format!("send_to failed: {e}"))
       })?;
 
       Ok(())
@@ -610,10 +610,10 @@ impl UdpTracker {
       Ok(UdpTracker {
          addr,
          uri,
-         interval: Arc::new(u32::MAX.into()),
-         connection_id: Arc::new(0.into()),
+         interval: Arc::new(AtomicU32::new(u32::MAX)),
+         connection_id: Arc::new(AtomicU64::new(0)),
          server,
-         ready_state: Arc::new((ReadyState::Disconnected as u8).into()),
+         ready_state: Arc::new(AtomicU8::new(ReadyState::Disconnected as u8)),
          peer_id,
          info_hash,
          peer_addr,
@@ -835,15 +835,6 @@ impl UdpTracker {
       }
    }
 
-   /// Makes an announce request to a tracker. In other words, this function
-   /// handles getting and receiving peers as well as updating the statistics
-   /// for the tracker.
-   #[instrument(skip(self), fields(
-        tracker_uri = %self.uri,
-        ready_state = ?self.ready_state,
-        connection_id = ?self.get_connection_id()
-    ))]
-
    /// Gets the [ReadyState] enum for the tracker from an atomic u8.
    fn get_ready_state(&self) -> ReadyState {
       self.ready_state.load(Ordering::Acquire).try_into().unwrap()
@@ -864,15 +855,23 @@ impl TrackerBase for UdpTracker {
       self.connect().await?;
       Ok(())
    }
+
+   /// Makes an announce request to a tracker. In other words, this function
+   /// handles getting and receiving peers as well as updating the statistics
+   /// for the tracker.
+   #[instrument(skip(self), fields(
+        tracker_uri = %self.uri,
+        ready_state = ?self.ready_state,
+        connection_id = ?self.get_connection_id()
+    ))]
+
    async fn announce(&self) -> anyhow::Result<Vec<Peer>> {
       if self.get_ready_state() != ReadyState::Ready {
          error!(
              current_state = ?self.ready_state,
              "Tracker not ready for announce request"
          );
-         return Err(anyhow!(
-            "Tracker not ready for announce request".to_string(),
-         ));
+         return Err(anyhow!("Tracker not ready for announce request"));
       };
 
       self.stats.increment_announce_attempts();
@@ -1096,12 +1095,10 @@ mod tests {
 
                   let mut peers = vec![];
 
-                  if let Ok(wrapped_peers) =
-                     timeout(Duration::from_secs(1), tracker.announce()).await
+                  if let Ok(res) = timeout(Duration::from_secs(1), tracker.announce()).await
+                     && let Ok(wrapped_peers) = res
                   {
-                     for peer in wrapped_peers.unwrap() {
-                        peers.push(peer);
-                     }
+                     peers.extend(wrapped_peers);
                   }
 
                   if !peers.is_empty() {
