@@ -49,7 +49,7 @@ This will install `tortillas` to your local Rust toolchain.
 Libtortillas is the library that powers the frontend TUI application. It is a library that can be used to build your own frontend application or integrate with existing frontend applications.
 
 ```bash
-cargo add --package libtortillas --git https://github.com/artrixdotdev/tortillas libtortillas
+cargo add --git https://github.com/artrixdotdev/tortillas libtortillas
 ```
 ## 🤝 Contributing
 
