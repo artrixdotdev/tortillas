@@ -15,6 +15,7 @@ use http::HttpTracker;
 use kameo::{
    Actor,
    actor::ActorRef,
+   mailbox::Signal,
    prelude::{Context, Message},
 };
 use num_enum::TryFromPrimitive;
@@ -23,7 +24,7 @@ use serde::{
    de::{self, Visitor},
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tokio::time::{self, Instant};
+use tokio::time::{self, Instant, Interval, interval};
 use tracing::error;
 use udp::UdpTracker;
 
@@ -190,6 +191,11 @@ impl TrackerBase for TrackerInstance {
 pub(crate) struct TrackerActor {
    tracker: TrackerInstance,
    supervisor: ActorRef<Torrent>,
+   /// A custom struct provided by tokio that allows a `tick` function that will
+   /// wait until the next `duration` passes
+   ///
+   /// See <https://docs.rs/tokio/latest/tokio/time/fn.interval.html>
+   interval: Interval,
 }
 
 impl Actor for TrackerActor {
@@ -223,20 +229,30 @@ impl Actor for TrackerActor {
          _ => unimplemented!(),
       };
 
-      // Schedule periodic announces
-      let actor_clone = actor_ref.clone();
-      tokio::spawn(async move {
-         loop {
-            actor_clone.tell(TrackerMessage::Announce).await.unwrap();
-            let interval = Duration::from_secs(60); // Default interval
-            time::sleep(interval).await;
-         }
-      });
-
       Ok(Self {
          tracker,
          supervisor,
+         interval: interval(Duration::from_secs(30)),
       })
+   }
+
+   async fn next(
+      &mut self, _: kameo::prelude::WeakActorRef<Self>,
+      mailbox_rx: &mut kameo::prelude::MailboxReceiver<Self>,
+   ) -> Option<Signal<Self>> {
+      tokio::select! {
+         signal = mailbox_rx.recv() => signal,
+         // Waits for the next interval to tick
+         _ = self.interval.tick() => {
+            if let Ok(peers) = self.tracker.announce().await {
+               let _ = self.supervisor.tell(TorrentMessage::Announce(peers)).await;
+            }
+            let duration = Duration::from_secs(self.tracker.interval() as u64);
+            self.interval = interval(duration);
+
+            None
+         }
+      }
    }
 }
 
