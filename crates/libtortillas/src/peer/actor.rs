@@ -10,7 +10,7 @@ use kameo::{
 };
 use messages::{ExtendedMessage, ExtendedMessageType, PeerMessages};
 use stream::{PeerSend, PeerStream};
-use tracing::{debug, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace, warn};
 
 use crate::{
    errors::PeerTransportError,
@@ -91,28 +91,38 @@ impl PeerActor {
       }
    }
 
-   /// Requests metadata, given a piece number.
+   #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
    async fn request_metadata(&mut self, metadata_size: usize, piece: usize) {
+      trace!(metadata_size, piece, "Requesting metadata");
+
       self.peer.info.set_info_size(metadata_size);
 
       if self.peer.info.info_size() > 0 && !self.peer.info.have_all_bytes() {
+         trace!(piece, "Preparing metadata request");
+
          let mut extended_message = ExtendedMessage::new();
          extended_message.piece = Some(piece);
          extended_message.msg_type = Some(ExtendedMessageType::Request);
 
-         // The Extended ID as specified in BEP 0009 is the ID from the m dictionary
-         // -- in this case the ID listed under ut_metadata
          let message = PeerMessages::Extended(
             self.peer.bep_0009_id(),
             Box::new(Some(extended_message)),
             None,
          );
 
-         self
-            .stream
-            .send(message)
-            .await
-            .expect("Something went wrong when sending the message!");
+         debug!(
+            bep_0009_id = self.peer.bep_0009_id(),
+            piece, "Sending metadata request"
+         );
+
+         if let Err(e) = self.stream.send(message).await {
+            error!(error = %e, piece, "Failed to send metadata request");
+         }
+      } else {
+         warn!(
+            info_size = self.peer.info.info_size(),
+            "Peer already has all metadata bytes or info size is invalid"
+         );
       }
    }
 
@@ -230,7 +240,7 @@ impl Actor for PeerActor {
 impl Message<PeerMessages> for PeerActor {
    type Reply = ();
 
-   #[instrument(skip(self), fields(addr = %self.peer.socket_addr(), protocol = %self.stream))]
+   #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
    async fn handle(
       &mut self, msg: PeerMessages, _: &mut KameoContext<Self, Self::Reply>,
    ) -> Self::Reply {
