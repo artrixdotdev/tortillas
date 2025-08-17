@@ -84,9 +84,7 @@ impl TrackerRequest {
 
       params.join("&")
    }
-}
 
-impl TrackerRequest {
    #[instrument(fields(peer_tracker_addr = ?peer_tracker_addr))]
    /// peer_tracker_addr refers to the port that we are listening on (which
    /// could be TCP, uTP, etc.).
