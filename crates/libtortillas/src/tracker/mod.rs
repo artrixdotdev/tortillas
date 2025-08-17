@@ -143,8 +143,8 @@ pub trait TrackerBase: Send + Sync {
    fn interval(&self) -> usize;
 }
 
-/// Enum for the [tracker instances](AnounceProvider) rather than the URIs like
-/// [Tracker]
+/// Enum for the different tracker variants that implement [TrackerBase] rather
+/// than the URIs like [Tracker]
 #[derive(Clone)]
 pub enum TrackerInstance {
    Udp(UdpTracker),
