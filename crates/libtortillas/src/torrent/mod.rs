@@ -33,6 +33,7 @@ pub(crate) struct Torrent {
    id: PeerId,
    info: Option<Info>,
    metainfo: MetaInfo,
+   #[allow(dead_code)]
    tracker_server: UdpServer,
    /// Should only be used to create new connections
    utp_server: Arc<UtpSocketUdp>,
@@ -137,6 +138,7 @@ impl Torrent {
    }
 }
 /// For incoming from outside sources (e.g Peers, Trackers and Engine)
+#[allow(dead_code)]
 pub(crate) enum TorrentMessage {
    /// A message from an announce actor containing new Peers
    Announce(Vec<Peer>),
@@ -178,8 +180,8 @@ impl fmt::Debug for TorrentMessage {
       }
    }
 }
-
 actor_request_response!(
+   #[allow(dead_code)]
    pub(crate) TorrentRequest,
    pub(crate) TorrentResponse #[derive(Reply)],
 

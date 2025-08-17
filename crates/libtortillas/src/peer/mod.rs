@@ -10,7 +10,7 @@ use std::{
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
 };
 
-pub use actor::*;
+pub(crate) use actor::*;
 use bitvec::vec::BitVec;
 use bytes::BytesMut;
 pub use id::*;

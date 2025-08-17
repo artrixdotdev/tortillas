@@ -24,7 +24,7 @@ use serde::{
    de::{self, Visitor},
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tokio::time::{self, Instant, Interval, interval};
+use tokio::time::{Instant, Interval, interval};
 use tracing::error;
 use udp::UdpTracker;
 
@@ -205,7 +205,7 @@ impl Actor for TrackerActor {
    /// Unlike the [`PeerActor`](crate::protocol::PeerActor), there are no
    /// prerequisites to calling this function. In other words, the tracker is
    /// not expected to be connected when this function is called.
-   async fn on_start(state: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+   async fn on_start(state: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
       let (tracker, peer_id, server, socket_addr, supervisor) = state;
 
       let torrent_response = supervisor.ask(TorrentRequest::InfoHash).await?;
@@ -257,6 +257,7 @@ impl Actor for TrackerActor {
 }
 
 /// A message from an outside source.
+#[allow(dead_code)]
 pub(crate) enum TrackerMessage {
    /// Forces the tracker to make an announce request. By default, announce
    /// requests are made on an interval.

@@ -487,7 +487,7 @@ mod tests {
             let server = UdpServer::new(None).await;
 
             let tracker = announce_url
-               .to_base(info_hash, peer_id, port, server)
+               .to_instance(info_hash, peer_id, port, server)
                .await
                .unwrap();
 

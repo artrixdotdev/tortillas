@@ -1073,7 +1073,7 @@ mod tests {
                let port: u16 = random_range(1024..65535);
 
                let tracker = announce_url
-                  .to_base(info_hash, peer_id, port, udp_server.clone())
+                  .to_instance(info_hash, peer_id, port, udp_server.clone())
                   .await;
 
                if let Ok(tracker) = tracker {

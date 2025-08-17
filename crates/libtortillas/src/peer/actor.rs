@@ -328,6 +328,7 @@ impl Message<PeerMessages> for PeerActor {
    }
 }
 
+#[allow(dead_code)]
 pub(crate) enum PeerTell {
    NeedPiece(usize, usize, usize),
 }

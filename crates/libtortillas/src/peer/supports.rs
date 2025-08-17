@@ -29,6 +29,7 @@ impl PeerSupports {
    }
 }
 
+#[allow(dead_code)]
 impl Peer {
    pub(crate) fn supports_bep_0009(&self) -> bool {
       self.bep_0009_id() > 0

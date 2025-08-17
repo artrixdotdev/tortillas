@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Error, Result, anyhow};
 use bitvec::vec::BitVec;
+use kameo::Actor;
 use librqbit_utp::{UtpSocket, UtpSocketUdp};
 use tokio::{
    net::TcpListener,
@@ -24,7 +25,8 @@ use crate::{
       messages::PeerMessages,
       stream::PeerStream,
    },
-   tracker::udp::UdpServer,
+   torrent::Torrent,
+   tracker::{TrackerBase, udp::UdpServer},
 };
 
 type PeerMessenger = mpsc::Sender<PeerCommand>;
@@ -197,7 +199,7 @@ impl TorrentEngine {
    /// with the peer through the given channels. The peer thread handles the
    /// remote connection to the peer on its own.
    async fn spawn_handle_peer(
-      self: Arc<Self>, peer: Peer, listener: Option<Arc<UtpSocketUdp>>, stream: Option<PeerStream>,
+      self: Arc<Self>, _: Peer, _: Option<Arc<UtpSocketUdp>>, _: Option<PeerStream>,
    ) {
       unimplemented!()
    }
@@ -352,10 +354,19 @@ impl TorrentEngine {
 
          let info_hash = me.metainfo.info_hash().unwrap();
          let udp_server = UdpServer::new(None).await;
+         // Just here to kill warnings
+         Torrent::spawn((
+            me.id,
+            me.metainfo.clone(),
+            utp_listener.clone(),
+            udp_server.clone(),
+            Some(primary_addr),
+         ));
          for (index, tracker) in me.metainfo.announce_list().iter().enumerate() {
             let instance = tracker
-               .to_base(info_hash, me.id, primary_addr.port(), udp_server.clone())
+               .to_instance(info_hash, me.id, primary_addr.port(), udp_server.clone())
                .await?;
+
             instance.initialize().await.unwrap();
             debug!(tracker_index = index, "Successfully connected to tracker");
             let peers = instance.announce().await.unwrap();
