@@ -354,7 +354,7 @@ impl TorrentEngine {
          let udp_server = UdpServer::new(None).await;
          for (index, tracker) in me.metainfo.announce_list().iter().enumerate() {
             let instance = tracker
-               .to_instance(info_hash, me.id, primary_addr.port(), udp_server.clone())
+               .to_base(info_hash, me.id, primary_addr.port(), udp_server.clone())
                .await?;
             instance.initialize().await.unwrap();
             debug!(tracker_index = index, "Successfully connected to tracker");

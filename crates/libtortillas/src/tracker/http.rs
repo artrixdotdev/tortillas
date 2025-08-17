@@ -24,7 +24,7 @@ use crate::{
    errors::{HttpTrackerError, TrackerError},
    hashes::InfoHash,
    peer::PeerId,
-   tracker::{Event, TrackerInstance, TrackerStats, TrackerUpdate},
+   tracker::{Event, TrackerBase, TrackerStats, TrackerUpdate},
 };
 
 #[derive(Debug, Deserialize)]
@@ -179,7 +179,7 @@ impl HttpTracker {
    }
 }
 #[async_trait]
-impl TrackerInstance for HttpTracker {
+impl TrackerBase for HttpTracker {
    async fn initialize(&self) -> Result<()> {
       // HTTP doesn't need initialization
       Ok(())
@@ -426,7 +426,7 @@ mod tests {
    use crate::{
       metainfo::{MetaInfo, TorrentFile},
       peer::PeerId,
-      tracker::{TrackerInstance, udp::UdpServer},
+      tracker::{TrackerBase, udp::UdpServer},
    };
 
    #[tokio::test]
@@ -487,7 +487,7 @@ mod tests {
             let server = UdpServer::new(None).await;
 
             let tracker = announce_url
-               .to_instance(info_hash, peer_id, port, server)
+               .to_base(info_hash, peer_id, port, server)
                .await
                .unwrap();
 

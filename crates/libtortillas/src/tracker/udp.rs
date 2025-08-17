@@ -27,7 +27,7 @@ use crate::{
    errors::{TrackerError, UdpTrackerError},
    hashes::InfoHash,
    peer::PeerId,
-   tracker::{Event, TrackerInstance, TrackerStats, TrackerUpdate},
+   tracker::{Event, TrackerBase, TrackerStats, TrackerUpdate},
 };
 
 /// The connection ID for a UDP connection. This is not the same as a
@@ -857,7 +857,7 @@ impl UdpTracker {
 }
 
 #[async_trait]
-impl TrackerInstance for UdpTracker {
+impl TrackerBase for UdpTracker {
    /// Configures a tracker by connecting to the tracker itself with
    /// [`self.connect()`](UdpTracker::connect)
    async fn initialize(&self) -> anyhow::Result<()> {
@@ -1073,7 +1073,7 @@ mod tests {
                let port: u16 = random_range(1024..65535);
 
                let tracker = announce_url
-                  .to_instance(info_hash, peer_id, port, udp_server.clone())
+                  .to_base(info_hash, peer_id, port, udp_server.clone())
                   .await;
 
                if let Ok(tracker) = tracker {

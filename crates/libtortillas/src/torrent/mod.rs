@@ -405,7 +405,7 @@ mod tests {
 
       for tracker in announce_list {
          let instance = tracker
-            .to_instance(info_hash, peer_id, port, udp_server.clone())
+            .to_base(info_hash, peer_id, port, udp_server.clone())
             .await;
          if let Err(err) = instance {
             error!("Failed to create tracker instance: {}", err);

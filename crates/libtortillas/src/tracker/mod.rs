@@ -23,10 +23,7 @@ use serde::{
    de::{self, Visitor},
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tokio::{
-   sync::mpsc,
-   time::{self, Instant},
-};
+use tokio::time::{self, Instant};
 use tracing::error;
 use udp::UdpTracker;
 
@@ -38,15 +35,6 @@ use crate::{
 };
 pub mod http;
 pub mod udp;
-
-#[async_trait]
-pub trait TrackerTrait: Clone {
-   /// Acts as a wrapper function for get_peers. Should be spawned with
-   /// tokio::spawn.
-   async fn stream_peers(&mut self) -> Result<mpsc::Receiver<Vec<Peer>>>;
-
-   async fn get_peers(&mut self) -> Result<Vec<Peer>>;
-}
 
 /// An Announce URI from a torrent file or magnet URI.
 /// HTTP trackers: <https://www.bittorrent.org/beps/bep_0003.html>
@@ -60,12 +48,11 @@ pub trait TrackerTrait: Clone {
 /// let tracker = Tracker::Http("udp://tracker.opentrackr.org:1337/announce");
 ///
 /// let server = UdpServer::new();
-/// let tracker: Box<dyn TrackerInstance> = tracker.to_instance(info_hash, peer_id, port, Some(server));
+/// let tracker = tracker.to_instance(info_hash, peer_id, port, Some(server));
 ///
-/// let (rx, tx) = tracker.configure();
+/// tracker.initialize().await;
 ///
-/// let peers: Stream<Peer> = tracker.announce_stream();
-/// tx.send({ uploaded: 20 });
+/// let peers: Vec<Peer> = tracker.announce();
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Tracker {
@@ -78,30 +65,130 @@ pub enum Tracker {
    Websocket(String),
 }
 
-/// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
-/// Enum for UDP Tracker Protocol Events parameter. See this resource for more information: <https://xbtt.sourceforge.net/udp_tracker_protocol.html>
-#[derive(
-   Debug,
-   Default,
-   Serialize_repr,
-   Deserialize_repr,
-   Clone,
-   Copy,
-   PartialEq,
-   Eq,
-   TryFromPrimitive
-)]
-#[repr(u32)]
-pub enum Event {
-   Empty = 0,
-   #[default]
-   Started = 1,
-   Completed = 2,
-   Stopped = 3,
+impl Tracker {
+   /// Creates a new tracker instance based on the tracker type.
+   #[deprecated(note = "Use `to_instance` instead")]
+   pub async fn to_base(
+      &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
+   ) -> Result<Box<dyn TrackerBase>> {
+      let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
+      match self {
+         Self::Http(uri) => {
+            let tracker =
+               HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
+            Ok(Box::new(tracker))
+         }
+         Self::Udp(uri) => {
+            let tracker =
+               UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
+                  .await?;
+            Ok(Box::new(tracker))
+         }
+         Self::Websocket(_) => {
+            unimplemented!("Websocket trackers not yet supported")
+         }
+      }
+   }
+
+   /// Creates an instance of the [`Tracker`](Tracker) struct from an info hash,
+   /// a peer ID, a port,
+   pub async fn to_instance(
+      &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
+   ) -> Result<TrackerInstance> {
+      let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
+      match self {
+         Self::Http(uri) => {
+            let tracker =
+               HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
+            Ok(TrackerInstance::Http(tracker))
+         }
+         Self::Udp(uri) => {
+            let tracker =
+               UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
+                  .await?;
+            Ok(TrackerInstance::Udp(tracker))
+         }
+         Self::Websocket(_) => {
+            unimplemented!("Websocket trackers not yet supported")
+         }
+      }
+   }
+
+   pub fn uri(&self) -> String {
+      match self {
+         Tracker::Http(uri) => uri.clone(),
+         Tracker::Udp(uri) => uri.clone(),
+         Tracker::Websocket(uri) => uri.clone(),
+      }
+   }
+}
+
+/// Trait for HTTP and UDP trackers.
+#[async_trait]
+pub trait TrackerBase: Send + Sync {
+   /// Initializes the tracker instance.
+   async fn initialize(&self) -> Result<()>;
+
+   /// Announces to the tracker and returns a list of peers.
+   async fn announce(&self) -> Result<Vec<Peer>>;
+
+   /// Updates tracker stats based on current state.
+   async fn update(&self, update: TrackerUpdate) -> Result<()>;
+
+   /// Gets the current tracker stats.
+   fn stats(&self) -> TrackerStats;
+
+   /// Gets the announce interval.
+   fn interval(&self) -> usize;
+}
+
+/// Enum for the [tracker instances](AnounceProvider) rather than the URIs like
+/// [Tracker]
+#[derive(Clone)]
+pub enum TrackerInstance {
+   Udp(UdpTracker),
+   Http(HttpTracker),
+}
+
+#[async_trait]
+impl TrackerBase for TrackerInstance {
+   async fn initialize(&self) -> Result<()> {
+      match self {
+         TrackerInstance::Udp(tracker) => tracker.initialize().await,
+         TrackerInstance::Http(tracker) => tracker.initialize().await,
+      }
+   }
+
+   async fn announce(&self) -> Result<Vec<Peer>> {
+      match self {
+         TrackerInstance::Udp(tracker) => Ok(tracker.announce().await.unwrap()),
+         TrackerInstance::Http(tracker) => tracker.announce().await,
+      }
+   }
+
+   async fn update(&self, update: TrackerUpdate) -> Result<()> {
+      match self {
+         TrackerInstance::Udp(tracker) => tracker.update(update).await,
+         TrackerInstance::Http(tracker) => tracker.update(update).await,
+      }
+   }
+
+   fn interval(&self) -> usize {
+      match self {
+         TrackerInstance::Udp(tracker) => tracker.interval() as usize,
+         TrackerInstance::Http(tracker) => tracker.interval(),
+      }
+   }
+   fn stats(&self) -> TrackerStats {
+      match self {
+         TrackerInstance::Udp(tracker) => tracker.stats(),
+         TrackerInstance::Http(tracker) => tracker.stats(),
+      }
+   }
 }
 
 pub(crate) struct TrackerActor {
-   tracker: TrackerEnum,
+   tracker: TrackerInstance,
    supervisor: ActorRef<Torrent>,
 }
 
@@ -109,10 +196,14 @@ impl Actor for TrackerActor {
    type Args = (Tracker, PeerId, UdpServer, SocketAddr, ActorRef<Torrent>);
    type Error = anyhow::Error;
 
+   /// Unlike the [`PeerActor`](crate::protocol::PeerActor), there are no
+   /// prerequisites to calling this function. In other words, the tracker is
+   /// not expted to be connected when this function is called.
    async fn on_start(state: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
       let (tracker, peer_id, server, socket_addr, supervisor) = state;
 
-      let info_hash = match supervisor.ask(TorrentRequest::InfoHash).await? {
+      let torrent_response = supervisor.ask(TorrentRequest::InfoHash).await?;
+      let info_hash = match torrent_response {
          TorrentResponse::InfoHash(info_hash) => info_hash,
          _ => unreachable!(),
       };
@@ -122,12 +213,12 @@ impl Actor for TrackerActor {
             let udp_tracker =
                UdpTracker::new(uri, Some(server), info_hash, (peer_id, socket_addr)).await?;
             udp_tracker.initialize().await?;
-            TrackerEnum::Udp(udp_tracker)
+            TrackerInstance::Udp(udp_tracker)
          }
          Tracker::Http(uri) => {
             let http_tracker = HttpTracker::new(uri, info_hash, Some(peer_id), Some(socket_addr));
             http_tracker.initialize().await?;
-            TrackerEnum::Http(http_tracker)
+            TrackerInstance::Http(http_tracker)
          }
          _ => unimplemented!(),
       };
@@ -149,16 +240,14 @@ impl Actor for TrackerActor {
    }
 }
 
+/// A message from an outside source.
 pub(crate) enum TrackerMessage {
+   /// Forces the tracker to make an announce request. By default, announce
+   /// requests are made on an interval.
    Announce,
+   /// Gets the statistics of the tracker via
+   /// [`tracker.stats()`](TrackerEnum::stats)
    GetStats,
-}
-
-pub enum TrackerUpdate {
-   Uploaded(usize),
-   Downloaded(usize),
-   Left(usize),
-   Event(Event),
 }
 
 impl Message<TrackerMessage> for TrackerActor {
@@ -181,6 +270,14 @@ impl Message<TrackerMessage> for TrackerActor {
    }
 }
 
+/// Updates the tracker's announce fields
+pub enum TrackerUpdate {
+   Uploaded(usize),
+   Downloaded(usize),
+   Left(usize),
+   Event(Event),
+}
+
 impl Message<TrackerUpdate> for TrackerActor {
    type Reply = ();
 
@@ -191,66 +288,26 @@ impl Message<TrackerUpdate> for TrackerActor {
    }
 }
 
-/// Trait for HTTP and UDP trackers.
-#[async_trait]
-pub trait TrackerInstance: Send + Sync {
-   /// Initializes the tracker instance.
-   async fn initialize(&self) -> Result<()>;
-
-   /// Announces to the tracker and returns a list of peers.
-   async fn announce(&self) -> Result<Vec<Peer>>;
-
-   /// Updates tracker stats based on current state.
-   async fn update(&self, update: TrackerUpdate) -> Result<()>;
-
-   /// Gets the current tracker stats.
-   fn stats(&self) -> TrackerStats;
-
-   /// Gets the announce interval.
-   fn interval(&self) -> usize;
-}
-
-#[derive(Clone)]
-enum TrackerEnum {
-   Udp(UdpTracker),
-   Http(HttpTracker),
-}
-
-#[async_trait]
-impl TrackerInstance for TrackerEnum {
-   async fn initialize(&self) -> Result<()> {
-      match self {
-         TrackerEnum::Udp(tracker) => tracker.initialize().await,
-         TrackerEnum::Http(tracker) => tracker.initialize().await,
-      }
-   }
-
-   async fn announce(&self) -> Result<Vec<Peer>> {
-      match self {
-         TrackerEnum::Udp(tracker) => Ok(tracker.announce().await.unwrap()),
-         TrackerEnum::Http(tracker) => tracker.announce().await,
-      }
-   }
-
-   async fn update(&self, update: TrackerUpdate) -> Result<()> {
-      match self {
-         TrackerEnum::Udp(tracker) => tracker.update(update).await,
-         TrackerEnum::Http(tracker) => tracker.update(update).await,
-      }
-   }
-
-   fn interval(&self) -> usize {
-      match self {
-         TrackerEnum::Udp(tracker) => tracker.interval() as usize,
-         TrackerEnum::Http(tracker) => tracker.interval(),
-      }
-   }
-   fn stats(&self) -> TrackerStats {
-      match self {
-         TrackerEnum::Udp(tracker) => tracker.stats(),
-         TrackerEnum::Http(tracker) => tracker.stats(),
-      }
-   }
+/// Event. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
+/// Enum for UDP Tracker Protocol Events parameter. See this resource for more information: <https://xbtt.sourceforge.net/udp_tracker_protocol.html>
+#[derive(
+   Debug,
+   Default,
+   Serialize_repr,
+   Deserialize_repr,
+   Clone,
+   Copy,
+   PartialEq,
+   Eq,
+   TryFromPrimitive
+)]
+#[repr(u32)]
+pub enum Event {
+   Empty = 0,
+   #[default]
+   Started = 1,
+   Completed = 2,
+   Stopped = 3,
 }
 
 /// Tracker statistics to be returned from
@@ -389,39 +446,7 @@ impl TrackerStats {
    }
 }
 
-impl Tracker {
-   /// Creates a new tracker instance based on the tracker type.
-   pub async fn to_instance(
-      &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
-   ) -> Result<Box<dyn TrackerInstance>> {
-      let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
-      match self {
-         Self::Http(uri) => {
-            let tracker =
-               HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
-            Ok(Box::new(tracker))
-         }
-         Self::Udp(uri) => {
-            let tracker =
-               UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
-                  .await?;
-            Ok(Box::new(tracker))
-         }
-         Self::Websocket(_) => {
-            unimplemented!("Websocket trackers not yet supported")
-         }
-      }
-   }
-
-   pub fn uri(&self) -> String {
-      match self {
-         Tracker::Http(uri) => uri.clone(),
-         Tracker::Udp(uri) => uri.clone(),
-         Tracker::Websocket(uri) => uri.clone(),
-      }
-   }
-}
-
+/// Serde visitor used for deserializing the URI of a [tracker](Tracker).
 struct TrackerVisitor;
 
 impl<'de> Deserialize<'de> for Tracker {
