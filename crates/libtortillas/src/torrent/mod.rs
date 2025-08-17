@@ -369,7 +369,7 @@ mod tests {
 
    use librqbit_utp::UtpSocket;
    use rand::random_range;
-   use tokio::time::{sleep, timeout};
+   use tokio::time::sleep;
 
    use super::*;
    use crate::metainfo::TorrentFile;
@@ -393,48 +393,8 @@ mod tests {
 
       let udp_server = UdpServer::new(None).await;
       let utp_server = UtpSocket::new_udp(socket_addr).await.unwrap();
-      let announce_list = metainfo.announce_list();
-      let announce_list = announce_list
-         .iter()
-         .filter(|t| !matches!(**t, Tracker::Websocket(..)));
-      let mut peers = Vec::new();
 
-      let info_hash = metainfo.info_hash().unwrap();
       let actor = Torrent::spawn((peer_id, metainfo, utp_server, udp_server.clone(), None));
-
-      for tracker in announce_list {
-         let instance = tracker
-            .to_base(info_hash, peer_id, port, udp_server.clone())
-            .await;
-         if let Err(err) = instance {
-            error!("Failed to create tracker instance: {}", err);
-            continue;
-         }
-         let instance = instance.unwrap();
-         let comms = timeout(Duration::from_secs(3), instance.initialize()).await;
-         match comms {
-            Ok(Err(_)) => continue,
-            Err(_) => continue,
-            _ => {}
-         }
-
-         let announce = timeout(Duration::from_secs(3), instance.announce()).await;
-
-         match announce {
-            Ok(Ok(announce)) => {
-               for peer in announce {
-                  if peers.len() > 100 {
-                     break;
-                  }
-                  peers.push(peer);
-               }
-            }
-            Err(_) => continue,
-            _ => continue,
-         }
-      }
-
-      actor.tell(TorrentMessage::Announce(peers)).await.unwrap();
 
       sleep(Duration::from_secs(30)).await;
    }
