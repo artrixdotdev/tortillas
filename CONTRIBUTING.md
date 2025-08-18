@@ -45,9 +45,10 @@ All changes (new features, bug fixes, refactors, or removals) should follow this
 - Make changes **atomic** (one topic per PR)
 - Add **tests** for complex features
 - **All** PRs must pass the following before merging:
-  - Code linting
-  - Formatting checks
-  - Tests
+  - Code linting `cargo clippy`
+  - Documentation linting `cargo doc`
+  - Formatting checks `cargo fmt`
+  - Tests `cargo nextest r`
 - Use [**clear, detailed logging**](#Logging)
 
 ## Logging
