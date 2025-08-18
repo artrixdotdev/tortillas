@@ -29,7 +29,8 @@ pub(crate) enum EngineMessage {
    #[allow(dead_code)]
    /// Creates a new [Torrent](crate::torrent::Torrent) actor.
    Torrent(Box<MetaInfo>),
-   /// Handles an incoming peer connection.
+   /// Handles an incoming peer connection. The peer has been neither handshaked
+   /// nor verified at this point.
    IncomingPeer(Box<PeerStream>),
 }
 
@@ -54,10 +55,11 @@ pub struct Engine {
    udp_server: UdpServer,
    /// A Dashmap of Torrent actors
    torrents: Arc<DashMap<InfoHash, ActorRef<Torrent>>>,
-   /// Our peer ID, used for all actors "below" the engine
-   /// ([Torrent](crate::torrent::Torrent),
-   /// [PeerActor](crate::peer::PeerActor), and
-   /// [TrackerActor](crate::tracker::TrackerActor)).
+   /// Our peer ID, used for the following actors "below" the engine.
+   ///
+   /// - [Torrent](crate::torrent::Torrent)
+   /// - [PeerActor](crate::peer::PeerActor)
+   /// - [TrackerActor](crate::tracker::TrackerActor)
    ///
    /// The peer id is created in the [Engine::on_start] method.
    peer_id: PeerId,
@@ -67,11 +69,15 @@ pub struct Engine {
 
 impl Actor for Engine {
    /// TCP socket address for incoming peers, uTP socket address for incoming
-   /// peers, UDP socket address for UDP trackers
+   /// peers, UDP socket address for UDP trackers.
+   ///
+   /// If an address is not provided, [on_start](Self::on_start) will use an
+   /// unspecified address (`0.0.0.0`) and a dynamically assigned port (`0`).
    type Args = (Option<SocketAddr>, Option<SocketAddr>, Option<SocketAddr>);
    type Error = EngineError;
 
-   /// See Kameo documentation for docs on the `on_start()` function itself.
+   /// See Kameo documentation for docs on the
+   /// [on_start](kameo::Actor::on_start) function itself.
    ///
    /// Initializes the TCP listener, uTP socket, UDP server, and peer ID.
    async fn on_start(
