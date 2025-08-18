@@ -1,17 +1,33 @@
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
 
 use dashmap::DashMap;
-use kameo::{Actor, Reply, actor::ActorRef};
+use kameo::{
+   Actor, Reply,
+   actor::{ActorRef, WeakActorRef},
+   mailbox::Signal,
+   prelude::{Context, MailboxReceiver, Message},
+};
 use librqbit_utp::UtpSocketUdp;
 use tokio::net::TcpListener;
+use tracing::error;
 
 use crate::{
-   actor_request_response, errors::EngineError, hashes::InfoHash, metainfo::MetaInfo, peer::PeerId,
-   torrent::Torrent, tracker::udp::UdpServer,
+   actor_request_response,
+   errors::EngineError,
+   hashes::InfoHash,
+   metainfo::MetaInfo,
+   peer::{Peer, PeerId},
+   protocol::{
+      messages::PeerMessages,
+      stream::{PeerRecv, PeerStream},
+   },
+   torrent::{Torrent, TorrentMessage},
+   tracker::udp::UdpServer,
 };
 
 pub(crate) enum EngineMessage {
    Torrent(MetaInfo),
+   IncomingPeer(Box<PeerStream>),
 }
 
 actor_request_response!(
@@ -54,5 +70,77 @@ impl Actor for Engine {
          torrents: Arc::new(DashMap::new()),
          peer_id,
       })
+   }
+   async fn next(
+      &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
+   ) -> Option<Signal<Self>> {
+      tokio::select! {
+         signal = mailbox_rx.recv() => signal,
+         peer_stream = self.tcp_socket.accept() => match peer_stream {
+            Ok((stream, _)) => {
+               let peer_stream = Box::new(PeerStream::Tcp(stream));
+               Some(Signal::Message {
+                  message: Box::new(EngineMessage::IncomingPeer(peer_stream)),
+                  actor_ref: actor_ref.upgrade().unwrap(),
+                  reply: None,
+                  sent_within_actor: true,
+               })
+            }
+            Err(err) => {
+               error!("Failed to accept incoming peer: {}", err);
+               None
+            }
+         },
+         peer_stream = self.utp_socket.accept() => match peer_stream {
+            Ok(stream) => {
+               let peer_stream = Box::new(PeerStream::Utp(stream));
+               Some(Signal::Message {
+                  message: Box::new(EngineMessage::IncomingPeer(peer_stream)),
+                  actor_ref: actor_ref.upgrade().unwrap(),
+                  reply: None,
+                  sent_within_actor: true,
+               })
+            }
+            Err(err) => {
+               error!("Failed to accept incoming peer: {}", err);
+               None
+            }
+         },
+      }
+   }
+}
+
+impl Message<EngineMessage> for Engine {
+   type Reply = ();
+   async fn handle(
+      &mut self, msg: EngineMessage, _: &mut Context<Self, Self::Reply>,
+   ) -> Self::Reply {
+      match msg {
+         EngineMessage::IncomingPeer(mut stream) => {
+            let msg = stream.recv().await.expect("Can't read from peer stream");
+            let peer_addr = stream.remote_addr().expect("Can't get remote address");
+
+            if let PeerMessages::Handshake(handshake) = msg {
+               let info_hash = *handshake.info_hash;
+               let peer = Peer::from_socket_addr(peer_addr);
+
+               if self.torrents.contains_key(&info_hash) {
+                  let torrent = self.torrents.get(&info_hash).unwrap();
+                  torrent
+                     .tell(TorrentMessage::IncomingPeer(peer, stream))
+                     .await
+                     .expect("Failed to tell torrent about incoming peer");
+               } else {
+                  error!(%stream, "Received incoming peer for unknown torrent, killing connection");
+                  // Drop *should* kill the peer, if not we need to implement a kill method on the
+                  // stream itself
+                  drop(stream);
+               }
+            } else {
+               error!("Received unexpected message from peer");
+            }
+         }
+         EngineMessage::Torrent(metainfo) => todo!(),
+      };
    }
 }
