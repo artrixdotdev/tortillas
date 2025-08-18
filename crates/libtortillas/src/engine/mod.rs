@@ -27,7 +27,9 @@ use crate::{
 
 pub(crate) enum EngineMessage {
    #[allow(dead_code)]
+   /// Creates a new [Torrent](crate::torrent::Torrent) actor.
    Torrent(Box<MetaInfo>),
+   /// Handles an incoming peer connection.
    IncomingPeer(Box<PeerStream>),
 }
 
@@ -37,12 +39,29 @@ actor_request_response!(
    pub(crate) EngineResponse #[derive(Reply)],
 );
 
+/// The "top level" struct for torrenting. Handles all
+/// [Torrent](crate::torrent::Torrent) actors. Note that the engine itself also
+/// implements the [Actor](kameo::Actor) trait, and consequently behaves like an
+/// actor.
 pub struct Engine {
+   /// Listener to wait for incoming TCP connections from peers
    tcp_socket: TcpListener,
+   /// Socket to wait for incoming uTP connections from peers
    utp_socket: Arc<UtpSocketUdp>,
+   /// The central UDP server that all UDP trackers use. [UdpServer] implements
+   /// clone, which makes it easy to pass to multiple [Tracker
+   /// Actors](crate::tracker::TrackerActor).
    udp_server: UdpServer,
+   /// A Dashmap of Torrent actors
    torrents: Arc<DashMap<InfoHash, ActorRef<Torrent>>>,
+   /// Our peer ID, used for all actors "below" the engine
+   /// ([Torrent](crate::torrent::Torrent),
+   /// [PeerActor](crate::peer::PeerActor), and
+   /// [TrackerActor](crate::tracker::TrackerActor)).
+   ///
+   /// The peer id is created in the [Engine::on_start] method.
    peer_id: PeerId,
+   /// Our actor reference. Created in [Engine::on_start]
    actor_ref: ActorRef<Engine>,
 }
 
@@ -52,6 +71,9 @@ impl Actor for Engine {
    type Args = (Option<SocketAddr>, Option<SocketAddr>, Option<SocketAddr>);
    type Error = EngineError;
 
+   /// See Kameo documentation for docs on the `on_start()` function itself.
+   ///
+   /// Initializes the TCP listener, uTP socket, UDP server, and peer ID.
    async fn on_start(
       args: Self::Args, actor_ref: kameo::prelude::ActorRef<Self>,
    ) -> Result<Self, Self::Error> {
@@ -75,6 +97,7 @@ impl Actor for Engine {
          actor_ref,
       })
    }
+
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
    ) -> Option<Signal<Self>> {
