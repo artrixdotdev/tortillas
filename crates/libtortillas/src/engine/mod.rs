@@ -41,6 +41,7 @@ pub struct Engine {
    udp_server: UdpServer,
    torrents: Arc<DashMap<InfoHash, ActorRef<Torrent>>>,
    peer_id: PeerId,
+   actor_ref: ActorRef<Engine>,
 }
 
 impl Actor for Engine {
@@ -69,6 +70,7 @@ impl Actor for Engine {
          udp_server,
          torrents: Arc::new(DashMap::new()),
          peer_id,
+         actor_ref,
       })
    }
    async fn next(
@@ -140,7 +142,20 @@ impl Message<EngineMessage> for Engine {
                error!("Received unexpected message from peer");
             }
          }
-         EngineMessage::Torrent(metainfo) => todo!(),
+         EngineMessage::Torrent(metainfo) => {
+            let info_hash = metainfo.info_hash().expect("Failed to unwrap info hash");
+            let torrent_ref = Torrent::spawn((
+               self.peer_id,
+               metainfo,
+               self.utp_socket.clone(),
+               self.udp_server.clone(),
+               None,
+            ));
+
+            self.actor_ref.link(&torrent_ref).await;
+
+            self.torrents.insert(info_hash, torrent_ref);
+         }
       };
    }
 }
