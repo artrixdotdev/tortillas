@@ -26,11 +26,13 @@ use crate::{
 };
 
 pub(crate) enum EngineMessage {
-   Torrent(MetaInfo),
+   #[allow(dead_code)]
+   Torrent(Box<MetaInfo>),
    IncomingPeer(Box<PeerStream>),
 }
 
 actor_request_response!(
+   #[allow(dead_code)]
    pub(crate) EngineRequest,
    pub(crate) EngineResponse #[derive(Reply)],
 );
@@ -146,7 +148,7 @@ impl Message<EngineMessage> for Engine {
             let info_hash = metainfo.info_hash().expect("Failed to unwrap info hash");
             let torrent_ref = Torrent::spawn((
                self.peer_id,
-               metainfo,
+               *metainfo,
                self.utp_socket.clone(),
                self.udp_server.clone(),
                None,
