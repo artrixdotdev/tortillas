@@ -1,11 +1,23 @@
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
 
 use dashmap::DashMap;
-use kameo::{Actor, actor::ActorRef};
+use kameo::{Actor, Reply, actor::ActorRef};
 use librqbit_utp::UtpSocketUdp;
 use tokio::net::TcpListener;
 
-use crate::{errors::EngineError, hashes::InfoHash, peer::PeerId, torrent::Torrent};
+use crate::{
+   actor_request_response, errors::EngineError, hashes::InfoHash, metainfo::MetaInfo, peer::PeerId,
+   torrent::Torrent,
+};
+
+pub(crate) enum EngineMessage {
+   Torrent(MetaInfo),
+}
+
+actor_request_response!(
+   pub(crate) EngineRequest,
+   pub(crate) EngineResponse #[derive(Reply)],
+);
 
 pub struct Engine {
    tcp_socket: TcpListener,
