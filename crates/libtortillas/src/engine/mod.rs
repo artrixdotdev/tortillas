@@ -84,13 +84,17 @@ impl Actor for Engine {
       args: Self::Args, actor_ref: kameo::prelude::ActorRef<Self>,
    ) -> Result<Self, Self::Error> {
       let (tcp_addr, utp_addr, udp_addr) = args;
-      let tcp_addr = tcp_addr.unwrap_or(SocketAddr::from_str("0.0.0.0:0").unwrap());
-      // Should this be port 6881?
-      let utp_addr = utp_addr.unwrap_or(SocketAddr::from_str("0.0.0.0:0").unwrap());
-      let udp_addr = udp_addr.unwrap_or(SocketAddr::from_str("0.0.0.0:0").unwrap());
 
-      let tcp_socket = TcpListener::bind(tcp_addr).await.unwrap();
-      let utp_socket = UtpSocketUdp::new_udp(utp_addr).await.unwrap();
+      let tcp_addr = tcp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
+      // Should this be port 6881?
+      let utp_addr = utp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
+      let udp_addr = udp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
+      let tcp_socket = TcpListener::bind(tcp_addr)
+         .await
+         .map_err(|e| EngineError::NetworkSetupFailed(format!("tcp bind {}: {}", tcp_addr, e)))?;
+      let utp_socket = UtpSocketUdp::new_udp(utp_addr)
+         .await
+         .map_err(|e| EngineError::NetworkSetupFailed(format!("utp bind {}: {}", utp_addr, e)))?;
       let udp_server = UdpServer::new(Some(udp_addr)).await;
 
       let peer_id = PeerId::new();
@@ -174,7 +178,21 @@ impl Message<EngineMessage> for Engine {
             }
          }
          EngineMessage::Torrent(metainfo) => {
-            let info_hash = metainfo.info_hash().expect("Failed to unwrap info hash");
+            let info_hash = metainfo
+               .info_hash()
+               .map_err(|e| {
+                  error!(error = %e, "Failed to unwrap info hash");
+               })
+               .expect("Failed to unwrap info hash");
+
+            if self.torrents.contains_key(&info_hash) {
+               error!(
+                  ?info_hash,
+                  "Torrent already exists; ignoring duplicate EngineMessage::Torrent"
+               );
+               return;
+            }
+
             let torrent_ref = Torrent::spawn((
                self.peer_id,
                *metainfo,
