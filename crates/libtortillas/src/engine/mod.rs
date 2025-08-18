@@ -5,12 +5,13 @@ use kameo::{Actor, actor::ActorRef};
 use librqbit_utp::UtpSocketUdp;
 use tokio::net::TcpListener;
 
-use crate::{errors::EngineError, hashes::InfoHash, torrent::Torrent};
+use crate::{errors::EngineError, hashes::InfoHash, peer::PeerId, torrent::Torrent};
 
 pub struct Engine {
    tcp_socket: TcpListener,
    utp_socket: Arc<UtpSocketUdp>,
    torrents: Arc<DashMap<InfoHash, ActorRef<Torrent>>>,
+   peer_id: PeerId,
 }
 
 impl Actor for Engine {
@@ -29,10 +30,13 @@ impl Actor for Engine {
 
       let tcp_socket = TcpListener::bind(tcp_addr).await.unwrap();
       let utp_socket = UtpSocketUdp::new_udp(utp_addr).await.unwrap();
+
+      let peer_id = PeerId::new();
       Ok(Self {
          tcp_socket,
          utp_socket,
          torrents: Arc::new(DashMap::new()),
+         peer_id,
       })
    }
 }
