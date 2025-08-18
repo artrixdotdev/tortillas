@@ -27,7 +27,7 @@ use thiserror::Error;
 use crate::peer::PeerId;
 
 #[derive(Error, Debug)]
-pub enum TorrentEngineError {
+pub enum EngineError {
    /// No peers were provided by any tracker
    #[error("No peers were provided by trackers")]
    InsufficientPeers,
