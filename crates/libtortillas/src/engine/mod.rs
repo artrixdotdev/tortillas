@@ -76,8 +76,14 @@ impl Engine {
    /// - A remote URL to a torrent file over HTTP/HTTPS
    /// - The path, either absolute or relative, to a local torrent file
    /// - A magnet URI
+   ///
+   /// If the inputted value is a remote url to a torrent file, this function
+   /// requests the bytes and deserializes them into a [TorrentFile]. If
+   /// it isn't, we assume that it is either a magnet URI or a path to a
+   /// torrent file, and pass the string to [MetaInfo::new()].
    pub async fn add_torrent(&self, metainfo_file_or_url: &str) -> Result<InfoHash, EngineError> {
-      // Assuming this is a remote url to a torrent file
+      // File paths should either start with "/" or "./", and magnet URIs start
+      // with "magnet:", so a check like this should be entirely appropriate.
       let metainfo = if metainfo_file_or_url.starts_with("http") {
          let torrent_file_bytes = reqwest::get(metainfo_file_or_url)
             .await
@@ -89,6 +95,7 @@ impl Engine {
       } else {
          MetaInfo::new(metainfo_file_or_url.into()).await
       };
+
       let metainfo = metainfo.map_err(EngineError::Other)?;
 
       let info_hash = metainfo.info_hash().map_err(EngineError::Other)?;
