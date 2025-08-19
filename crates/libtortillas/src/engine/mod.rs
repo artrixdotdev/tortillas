@@ -169,8 +169,6 @@ impl Message<EngineMessage> for Engine {
                      .expect("Failed to tell torrent about incoming peer");
                } else {
                   error!(%stream, "Received incoming peer for unknown torrent, killing connection");
-                  // Drop *should* kill the peer, if not we need to implement a kill method on the
-                  // stream itself
                   drop(stream);
                }
             } else {

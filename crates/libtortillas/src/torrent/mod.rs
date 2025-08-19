@@ -96,10 +96,6 @@ impl Torrent {
          let mut id = peer.id;
          let stream = match stream {
             Some(mut stream) => {
-               // POSSIBLE REFACTOR: make send_handshake... only send the handshake and not
-               // expect a response back, currently it will send ahandshake and forcibly
-               // request, and verify one from the peer immediately after, which isn't what
-               // we want in this situation because the peer has already handshaked us.
                let handshake = Handshake::new(info_hash, our_id);
                if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
                   error!("Failed to send handshake to peer: {}", err);
