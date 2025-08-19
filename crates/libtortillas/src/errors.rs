@@ -40,6 +40,10 @@ pub enum EngineError {
    #[error("Network setup failed: {0}")]
    NetworkSetupFailed(String),
 
+   /// Failed to fetch [crate::metainfo::MetaInfo]
+   #[error(transparent)]
+   MetaInfoFetchError(#[from] reqwest::Error),
+
    /// Any other engine-level error wrapped in [`anyhow::Error`]
    #[error(transparent)]
    Other(#[from] anyhow::Error),

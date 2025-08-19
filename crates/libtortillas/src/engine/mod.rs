@@ -1,5 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
+use anyhow::Context as _;
 use dashmap::DashMap;
 use kameo::{
    Actor, Reply,
@@ -15,7 +16,7 @@ use crate::{
    actor_request_response,
    errors::EngineError,
    hashes::InfoHash,
-   metainfo::MetaInfo,
+   metainfo::{MetaInfo, TorrentFile},
    peer::{Peer, PeerId},
    protocol::{
       messages::PeerMessages,
@@ -65,6 +66,33 @@ pub struct Engine {
    peer_id: PeerId,
    /// Our actor reference. Created in [Engine::on_start]
    actor_ref: ActorRef<Engine>,
+}
+
+impl Engine {
+   pub async fn add_torrent(&self, metainfo_file_or_url: &str) -> Result<InfoHash, EngineError> {
+      // Assuming this is a remote url to a torrent file
+      let metainfo = if metainfo_file_or_url.starts_with("http") {
+         let torrent_file_bytes = reqwest::get(metainfo_file_or_url)
+            .await
+            .map_err(EngineError::MetaInfoFetchError)?
+            .bytes()
+            .await
+            .map_err(EngineError::MetaInfoFetchError)?;
+         TorrentFile::parse(&torrent_file_bytes)
+      } else {
+         MetaInfo::new(metainfo_file_or_url.into()).await
+      };
+      let metainfo = metainfo.map_err(EngineError::Other)?;
+
+      let info_hash = metainfo.info_hash().map_err(EngineError::Other)?;
+      self
+         .actor_ref
+         .tell(EngineMessage::Torrent(Box::new(metainfo)))
+         .await
+         .expect("Failed to add torrent");
+
+      Ok(info_hash)
+   }
 }
 
 impl Actor for Engine {
