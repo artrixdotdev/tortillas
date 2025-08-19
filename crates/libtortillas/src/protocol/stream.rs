@@ -15,7 +15,7 @@ use tokio::{
    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
    net::{TcpStream, tcp},
 };
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace};
 
 use super::messages::{Handshake, PeerMessages};
 use crate::{
@@ -138,8 +138,8 @@ impl PeerStream {
       }
    }
 
-   /// Handshakes with a peer and returns the socket address of the peer. This
-   /// socket address is also a [PeerKey](super::PeerKey).
+   /// Sends a handshake to a peer. Returns nothing if the handshake is sent
+   /// without error.
    #[instrument(
         skip(self)
         fields(
@@ -151,140 +151,33 @@ impl PeerStream {
     )]
    pub async fn send_handshake(
       &mut self, our_id: PeerId, info_hash: Arc<InfoHash>,
-   ) -> Result<(PeerId, [u8; 8]), PeerActorError> {
+   ) -> Result<(), PeerActorError> {
       let handshake = Handshake::new(info_hash.clone(), our_id);
-      let remote_addr = self.remote_addr().unwrap();
 
-      self.write_all(&handshake.to_bytes()).await.unwrap();
+      self.write_all(&handshake.to_bytes()).await?;
       trace!("Sent handshake to peer");
-
-      // Calculate expected size for response
-      // 1 byte + protocol + reserved + hashes
-      const EXPECTED_SIZE: usize = 1 + MAGIC_STRING.len() + 8 + 40;
-      let mut buf = [0u8; EXPECTED_SIZE];
-
-      // Read response handshake
-      self.read_exact(&mut buf).await.map_err(|e| {
-         error!(
-             error = %e,
-             remote_addr = %remote_addr,
-             "Failed to read handshake response from peer"
-         );
-         PeerActorError::ConnectionFailed(remote_addr.to_string())
-      })?;
-
-      let handshake = Handshake::from_bytes(&buf).map_err(|e| PeerActorError::HandshakeFailed {
-         reason: e.to_string(),
-      })?;
-
-      validate_handshake(&handshake, remote_addr, info_hash)?;
-
-      info!(
-          remote_addr = %remote_addr,
-          peer_id = %handshake.peer_id,
-          "Successfully completed handshake with peer"
-      );
-
-      Ok((handshake.peer_id, handshake.reserved))
+      Ok(())
    }
 
    /// Receives an incoming handshake from a peer.
-   #[instrument(
-        skip(self)
-        fields(
-            protocol = self.protocol(),
-            remote_addr = self.remote_addr().unwrap().to_string(),
-            info_hash = info_hash.to_string(),
-            our_id = id.to_string()
-        )
-    )]
-   pub async fn receive_handshake(
-      &mut self, info_hash: Arc<InfoHash>, id: PeerId,
-   ) -> Result<PeerId, PeerActorError> {
-      // First 4 bytes is the big endian encoded length field and the 5th byte is a
-      // PeerMessage tag
-      let mut initial_buf = [0u8; 5];
+   ///
+   /// Will fail if the next message is not a handshake.
+   #[instrument(skip(self), fields(%self))]
+   pub async fn recv_handshake(&mut self) -> Result<(PeerId, [u8; 8]), PeerActorError> {
+      // Handshakes will always be 68 bytes
+      //
+      // mem::size_of::<Handshake>() is 72 bytes, for some reason. We think it might
+      // be due to the Arc<>(s) in the Handshake struct
+      let mut buf = [0u8; 68];
 
-      self.read_exact(&mut initial_buf).await.map_err(|e| {
-         error!(error = %e, "Failed to read handshake headers from peer");
-         PeerActorError::ReceiveFailed("Failed to read handshake headers".into())
-      })?;
+      self.read_exact(&mut buf).await?;
 
-      let addr = self.remote_addr().unwrap();
+      let Handshake {
+         peer_id, reserved, ..
+      } = Handshake::from_bytes(&buf)
+         .map_err(|e| PeerActorError::HandshakeFailed { reason: e.into() })?;
 
-      trace!(
-          message_type = initial_buf[4],
-          remote_addr = %addr,
-          "Received message headers, validating handshake"
-      );
-
-      let is_handshake = is_handshake(&initial_buf);
-
-      let length = if is_handshake {
-         // This is a handshake.
-         // The length of a handshake is always 68 and we already have the
-         // first 5 bytes of it, so we need 68 - 5 bytes (the current buffer length)
-         68 - initial_buf.len() as u32
-      } else {
-         // This is not a handshake
-         // Non handshake messages have a length field from bytes 0-4
-         warn!(
-             remote_addr = %addr,
-             message_type = initial_buf[4],
-             "Received non-handshake message when expecting handshake"
-         );
-         return Err(PeerActorError::ProtocolViolation(
-            "Expected handshake message".into(),
-         ));
-      };
-
-      let mut buf = BytesMut::with_capacity(68);
-      buf.extend_from_slice(&initial_buf);
-
-      let mut rest = vec![0u8; length as usize];
-      self.read_exact(&mut rest).await.map_err(|e| {
-         error!(
-             error = %e,
-             remote_addr = %addr,
-             "Failed to read handshake payload from peer"
-         );
-         PeerActorError::ReceiveFailed("Failed to read handshake payload".into())
-      })?;
-
-      buf.extend_from_slice(&rest);
-
-      let full_length = buf.len();
-
-      trace!(
-          message_type = buf[4],
-          total_bytes = full_length,
-          remote_addr = %addr,
-          "Successfully read complete handshake from peer"
-      );
-
-      // Creates a new handshake and sends it
-      let message = PeerMessages::from_bytes(buf.freeze())?;
-      if let PeerMessages::Handshake(handshake) = message {
-         validate_handshake(&handshake, addr, info_hash.clone())?;
-         let response = PeerMessages::Handshake(Handshake::new(info_hash, id));
-         self.send(response).await?;
-
-         info!(
-             remote_addr = %addr,
-             peer_id = %handshake.peer_id,
-             "Successfully completed incoming handshake with peer"
-         );
-
-         Ok(handshake.peer_id)
-      } else {
-         warn!(
-             remote_addr = %addr,
-             "Received non-handshake message when expecting handshake"
-         );
-         Err(PeerActorError::ProtocolViolation(
-            "Expected handshake message".to_string(),
-         ))
-      }
+      Ok((peer_id, reserved))
    }
 
    /// Returns the addr of the connected peer
@@ -454,11 +347,6 @@ pub fn validate_handshake(
    Ok(())
 }
 
-/// Checks to see if a peer message is a handshake using the first 5 bytes.
-fn is_handshake(buf: &[u8]) -> bool {
-   buf[0] as usize == MAGIC_STRING.len() && buf[1..5] == MAGIC_STRING[0..4]
-}
-
 #[cfg(test)]
 mod tests {
    use tokio::net::TcpListener;
@@ -474,32 +362,25 @@ mod tests {
       let addr = listener.local_addr().unwrap();
 
       let info_hash = Arc::new(Hash::new([1u8; 20]));
-      let server_id = PeerId::new();
       let client_id = PeerId::new();
 
       // Spawn client that sends handshake
       let client_info_hash = info_hash.clone();
-      let server_id_clone = server_id;
       tokio::spawn(async move {
          let mut stream = PeerStream::Tcp(TcpStream::connect(addr).await.unwrap());
 
-         let response = stream
+         stream
             .send_handshake(client_id, client_info_hash)
             .await
             .unwrap();
-
-         assert_eq!(response.0, server_id_clone);
       });
 
       // Server side
       let (stream, _) = listener.accept().await.unwrap();
       let mut peer_stream = PeerStream::Tcp(stream);
 
-      let response = peer_stream
-         .receive_handshake(info_hash, server_id)
-         .await
-         .unwrap();
+      let (incoming_id, _) = peer_stream.recv_handshake().await.unwrap();
 
-      assert_eq!(response, client_id);
+      assert_eq!(incoming_id, client_id);
    }
 }

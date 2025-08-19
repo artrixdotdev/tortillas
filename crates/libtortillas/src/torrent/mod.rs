@@ -96,10 +96,6 @@ impl Torrent {
          let mut id = peer.id;
          let stream = match stream {
             Some(mut stream) => {
-               // POSSIBLE REFACTOR: make send_handshake... only send the handshake and not
-               // expect a response back, currently it will send ahandshake and forcibly
-               // request, and verify one from the peer immediately after, which isn't what
-               // we want in this situation because the peer has already handshaked us.
                let handshake = Handshake::new(info_hash, our_id);
                if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
                   error!("Failed to send handshake to peer: {}", err);
@@ -109,16 +105,23 @@ impl Torrent {
             }
             None => {
                let mut stream = PeerStream::connect(peer.socket_addr(), Some(utp_server)).await;
-
-               let handshake = stream.send_handshake(our_id, info_hash).await;
-               if let Ok((peer_id, reserved)) = handshake {
-                  id = Some(peer_id);
-                  peer.reserved = reserved;
-                  peer.determine_supported().await;
-                  stream
-               } else {
-                  warn!("Failed to handshake with peer... silently exiting");
-                  return;
+               match stream.send_handshake(our_id, Arc::clone(&info_hash)).await {
+                  Ok(_) => match stream.recv_handshake().await {
+                     Ok((peer_id, reserved)) => {
+                        id = Some(peer_id);
+                        peer.reserved = reserved;
+                        peer.determine_supported().await;
+                        stream
+                     }
+                     Err(err) => {
+                        warn!(error = %err, "Failed to receive handshake from peer; exiting");
+                        return;
+                     }
+                  },
+                  Err(err) => {
+                     warn!(error = %err, "Failed to send handshake to peer; exiting");
+                     return;
+                  }
                }
             }
          };
@@ -375,14 +378,17 @@ mod tests {
 
    use librqbit_utp::UtpSocket;
    use tokio::time::sleep;
-   use tracing_test::traced_test;
 
    use super::*;
    use crate::metainfo::TorrentFile;
 
-   #[traced_test]
    #[tokio::test(flavor = "multi_thread")]
    async fn test_torrent_actor() {
+      tracing_subscriber::fmt()
+         .with_target(true)
+         .with_env_filter("libtortillas=trace,off")
+         .pretty()
+         .init();
       let metainfo = TorrentFile::parse(include_bytes!(
          "../../tests/torrents/big-buck-bunny.torrent"
       ))
