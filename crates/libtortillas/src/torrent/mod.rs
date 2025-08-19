@@ -25,7 +25,7 @@ use crate::{
    tracker::{Tracker, TrackerActor, udp::UdpServer},
 };
 
-pub(crate) struct Torrent {
+pub struct Torrent {
    peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
    trackers: Arc<DashMap<Tracker, ActorRef<TrackerActor>>>,
 
@@ -54,7 +54,7 @@ impl fmt::Display for Torrent {
 }
 
 impl Torrent {
-   fn info_dict(&self) -> Option<&Info> {
+   pub fn info_dict(&self) -> Option<&Info> {
       if let Some(info) = &self.info {
          Some(info)
       } else {
@@ -65,7 +65,7 @@ impl Torrent {
       }
    }
 
-   fn info_hash(&self) -> InfoHash {
+   pub fn info_hash(&self) -> InfoHash {
       if let Some(info) = &self.info_dict() {
          info.hash().expect("Failed to compute info hash")
       } else {
