@@ -112,7 +112,7 @@ impl Torrent {
 
                match stream.send_handshake(our_id, info_hash).await {
                   Ok(_) => {
-                     let (peer_id, reserved) = stream.receive_handshake().await.unwrap();
+                     let (peer_id, reserved) = stream.recv_handshake().await.unwrap();
                      id = Some(peer_id);
                      peer.reserved = reserved;
                      peer.determine_supported().await;

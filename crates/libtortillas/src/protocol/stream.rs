@@ -163,7 +163,7 @@ impl PeerStream {
    ///
    /// Will fail if the next message is not a handshake.
    #[instrument(skip(self), fields(%self))]
-   pub async fn receive_handshake(&mut self) -> Result<(PeerId, [u8; 8]), PeerActorError> {
+   pub async fn recv_handshake(&mut self) -> Result<(PeerId, [u8; 8]), PeerActorError> {
       // Handshakes will always be 68 bytes
       //
       // mem::size_of::<Handshake>() is 72 bytes, for some reason. We think it might
@@ -382,7 +382,7 @@ mod tests {
       let (stream, _) = listener.accept().await.unwrap();
       let mut peer_stream = PeerStream::Tcp(stream);
 
-      let (incoming_id, _) = peer_stream.receive_handshake().await.unwrap();
+      let (incoming_id, _) = peer_stream.recv_handshake().await.unwrap();
 
       assert_eq!(incoming_id, client_id);
    }
