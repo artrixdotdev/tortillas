@@ -112,9 +112,8 @@ impl Torrent {
 
                match stream.send_handshake(our_id, info_hash).await {
                   Ok(_) => {
-                     let peer_id = unimplemented!();
-                     let reserved = unimplemented!();
-                     let id = Some(peer_id);
+                     let (peer_id, reserved) = stream.receive_handshake().await.unwrap();
+                     id = Some(peer_id);
                      peer.reserved = reserved;
                      peer.determine_supported().await;
                      stream
@@ -387,9 +386,13 @@ mod tests {
    use super::*;
    use crate::metainfo::TorrentFile;
 
-   #[traced_test]
    #[tokio::test(flavor = "multi_thread")]
    async fn test_torrent_actor() {
+      tracing_subscriber::fmt()
+         .with_target(true)
+         .with_env_filter("libtortillas=trace,off")
+         .pretty()
+         .init();
       let metainfo = TorrentFile::parse(include_bytes!(
          "../../tests/torrents/big-buck-bunny.torrent"
       ))
