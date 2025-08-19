@@ -41,8 +41,8 @@ actor_request_response!(
 );
 
 /// The "top level" struct for torrenting. Handles all
-/// [Torrent](crate::torrent::Torrent) actors. Note that the engine itself also
-/// implements the [Actor](kameo::Actor) trait, and consequently behaves like an
+/// [Torrent] actors. Note that the engine itself also
+/// implements the [Actor] trait, and consequently behaves like an
 /// actor.
 pub struct Engine {
    /// Listener to wait for incoming TCP connections from peers
@@ -92,8 +92,9 @@ impl Engine {
    /// #[tokio::main]
    /// async fn main() {
    ///    let mut engine = Engine::new(todo!());
+   ///    let torrent_link = "https://example.com/example.torrent";
    ///    let torrent_key = engine
-   ///       .add_torrent("https://mydomain.com/video.torrent")
+   ///       .add_torrent(torrent_link)
    ///       .await
    ///       .expect("Failed to add torrent");
    ///
@@ -107,9 +108,10 @@ impl Engine {
    ///
    /// #[tokio::main]
    /// async fn main() {
-   ///    let mut engine = Engine::new(todo!);
+   ///    let mut engine = Engine::new(todo!());
    ///    let magnet_uri = "magnet:?xt=?????";
-   ///    let torrent_key = engine.add_torrent(magnet_uri)
+   ///    let torrent_key = engine
+   ///       .add_torrent(magnet_uri)
    ///       .await
    ///       .expect("Failed to add torrent");
    ///
