@@ -1,7 +1,6 @@
 use std::{
    fmt,
    fmt::Display,
-   mem,
    net::SocketAddr,
    pin::Pin,
    sync::Arc,
@@ -16,7 +15,7 @@ use tokio::{
    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
    net::{TcpStream, tcp},
 };
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, error, instrument, trace};
 
 use super::messages::{Handshake, PeerMessages};
 use crate::{
@@ -349,11 +348,6 @@ pub fn validate_handshake(
    );
 
    Ok(())
-}
-
-/// Checks to see if a peer message is a handshake using the first 5 bytes.
-fn is_handshake(buf: &[u8]) -> bool {
-   buf[0] as usize == MAGIC_STRING.len() && buf[1..5] == MAGIC_STRING[0..4]
 }
 
 #[cfg(test)]

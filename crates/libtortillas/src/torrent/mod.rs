@@ -381,7 +381,6 @@ mod tests {
 
    use librqbit_utp::UtpSocket;
    use tokio::time::sleep;
-   use tracing_test::traced_test;
 
    use super::*;
    use crate::metainfo::TorrentFile;
