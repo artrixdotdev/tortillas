@@ -154,7 +154,7 @@ impl PeerStream {
    ) -> Result<(), PeerActorError> {
       let handshake = Handshake::new(info_hash.clone(), our_id);
 
-      self.write_all(&handshake.to_bytes()).await.unwrap();
+      self.write_all(&handshake.to_bytes()).await?;
       trace!("Sent handshake to peer");
       Ok(())
    }
@@ -172,13 +172,10 @@ impl PeerStream {
 
       self.read_exact(&mut buf).await?;
 
-      trace!("Received 68 bytes from peer");
-
       let Handshake {
          peer_id, reserved, ..
-      } = Handshake::from_bytes(&buf).expect("Failed to unwrap handshake");
-
-      trace!("Unwrapped handshake successfully");
+      } = Handshake::from_bytes(&buf)
+         .map_err(|e| PeerActorError::HandshakeFailed { reason: e.into() })?;
 
       Ok((peer_id, reserved))
    }

@@ -109,20 +109,21 @@ impl Torrent {
             }
             None => {
                let mut stream = PeerStream::connect(peer.socket_addr(), Some(utp_server)).await;
-
-               match stream.send_handshake(our_id, info_hash).await {
-                  Ok(_) => {
-                     let (peer_id, reserved) = stream.recv_handshake().await.unwrap();
-                     id = Some(peer_id);
-                     peer.reserved = reserved;
-                     peer.determine_supported().await;
-                     stream
-                  }
+               match stream.send_handshake(our_id, Arc::clone(&info_hash)).await {
+                  Ok(_) => match stream.recv_handshake().await {
+                     Ok((peer_id, reserved)) => {
+                        id = Some(peer_id);
+                        peer.reserved = reserved;
+                        peer.determine_supported().await;
+                        stream
+                     }
+                     Err(err) => {
+                        warn!(error = %err, "Failed to receive handshake from peer; exiting");
+                        return;
+                     }
+                  },
                   Err(err) => {
-                     warn!(
-                        error = %err,
-                        "Failed to handshake with peer... silently exiting"
-                     );
+                     warn!(error = %err, "Failed to send handshake to peer; exiting");
                      return;
                   }
                }
