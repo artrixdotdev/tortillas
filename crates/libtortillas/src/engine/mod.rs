@@ -15,7 +15,7 @@ use crate::{
    actor_request_response,
    errors::EngineError,
    hashes::InfoHash,
-   metainfo::MetaInfo,
+   metainfo::{MetaInfo, TorrentFile},
    peer::{Peer, PeerId},
    protocol::{
       messages::PeerMessages,
@@ -41,8 +41,8 @@ actor_request_response!(
 );
 
 /// The "top level" struct for torrenting. Handles all
-/// [Torrent](crate::torrent::Torrent) actors. Note that the engine itself also
-/// implements the [Actor](kameo::Actor) trait, and consequently behaves like an
+/// [Torrent] actors. Note that the engine itself also
+/// implements the [Actor] trait, and consequently behaves like an
 /// actor.
 pub struct Engine {
    /// Listener to wait for incoming TCP connections from peers
@@ -65,6 +65,91 @@ pub struct Engine {
    peer_id: PeerId,
    /// Our actor reference. Created in [Engine::on_start]
    actor_ref: ActorRef<Engine>,
+}
+
+impl Engine {
+   /// Starts the torrenting process for a given torrent. This function
+   /// automatically contacts trackers and connects to peers. The spawned
+   /// [Torrent Actor](Torrent) will be controlled by the [Engine].
+   ///
+   /// This function accepts the following as input:
+   /// - A remote URL to a torrent file over HTTP/HTTPS
+   /// - The path, either absolute or relative, to a local torrent file
+   /// - A magnet URI
+   ///
+   /// If the inputted value is a remote url to a torrent file, this function
+   /// requests the bytes and deserializes them into a [TorrentFile]. If
+   /// it isn't, we assume that it is either a magnet URI or a path to a
+   /// torrent file, and pass the string to [MetaInfo::new].
+   ///
+   ///
+   /// # Examples
+   ///
+   /// With a remote torrent file
+   /// ```no_run
+   /// use libtortillas::Engine;
+   ///
+   /// #[tokio::main]
+   /// async fn main() {
+   ///    let mut engine = Engine::new(todo!());
+   ///    let torrent_link = "https://example.com/example.torrent";
+   ///    let torrent_key = engine
+   ///       .add_torrent(torrent_link)
+   ///       .await
+   ///       .expect("Failed to add torrent");
+   ///
+   ///    println!("Started Torrenting: {}", torrent_key);
+   /// }
+   /// ```
+   ///
+   /// With a magnet URI
+   /// ```no_run
+   /// use libtortillas::Engine;
+   ///
+   /// #[tokio::main]
+   /// async fn main() {
+   ///    let mut engine = Engine::new(todo!());
+   ///    let magnet_uri = "magnet:?xt=?????";
+   ///    let torrent_key = engine
+   ///       .add_torrent(magnet_uri)
+   ///       .await
+   ///       .expect("Failed to add torrent");
+   ///
+   ///    println!("Started Torrenting: {}", torrent_key);
+   /// }
+   /// ```
+   pub async fn add_torrent(&self, metainfo: &str) -> Result<InfoHash, EngineError> {
+      // File paths should either start with "/" or "./", and magnet URIs start
+      // with "magnet:", so a check like this should be entirely appropriate.
+      let metainfo = if metainfo.starts_with("http") {
+         let torrent_file_bytes = reqwest::get(metainfo)
+            .await
+            .map_err(EngineError::MetaInfoFetchError)?
+            .bytes()
+            .await
+            .map_err(EngineError::MetaInfoFetchError)?;
+         let torrent_file = TorrentFile::parse(&torrent_file_bytes);
+         torrent_file.map_err(|_| {
+            error!(remote_url = metainfo);
+            EngineError::MetaInfoDeserializeError
+         })?
+      } else {
+         MetaInfo::new(metainfo.into()).await.map_err(|_| {
+            error!(magnet_uri_or_file = metainfo);
+            EngineError::MetaInfoDeserializeError
+         })?
+      };
+
+      let info_hash = metainfo.info_hash().map_err(EngineError::Other)?;
+
+      self
+         .actor_ref
+         .tell(EngineMessage::Torrent(Box::new(metainfo)))
+         .await
+         .expect("Failed to add torrent");
+
+      Ok(info_hash)
+   }
 }
 
 impl Actor for Engine {
