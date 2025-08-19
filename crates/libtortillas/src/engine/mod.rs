@@ -69,6 +69,13 @@ pub struct Engine {
 }
 
 impl Engine {
+   /// Starts the torrenting process for a given torrent. The spawned [Torrent
+   /// Actor](Torrent) will be controlled by the [Engine]
+   ///
+   /// This function accepts the following as input:
+   /// - A remote URL to a torrent file over HTTP/HTTPS
+   /// - The path, either absolute or relative, to a local torrent file
+   /// - A magnet URI
    pub async fn add_torrent(&self, metainfo_file_or_url: &str) -> Result<InfoHash, EngineError> {
       // Assuming this is a remote url to a torrent file
       let metainfo = if metainfo_file_or_url.starts_with("http") {
