@@ -151,41 +151,12 @@ impl PeerStream {
     )]
    pub async fn send_handshake(
       &mut self, our_id: PeerId, info_hash: Arc<InfoHash>,
-   ) -> Result<(PeerId, [u8; 8]), PeerActorError> {
+   ) -> Result<(), PeerActorError> {
       let handshake = Handshake::new(info_hash.clone(), our_id);
-      let remote_addr = self.remote_addr().unwrap();
 
       self.write_all(&handshake.to_bytes()).await.unwrap();
       trace!("Sent handshake to peer");
-
-      // Calculate expected size for response
-      // 1 byte + protocol + reserved + hashes
-      const EXPECTED_SIZE: usize = 1 + MAGIC_STRING.len() + 8 + 40;
-      let mut buf = [0u8; EXPECTED_SIZE];
-
-      // Read response handshake
-      self.read_exact(&mut buf).await.map_err(|e| {
-         error!(
-             error = %e,
-             remote_addr = %remote_addr,
-             "Failed to read handshake response from peer"
-         );
-         PeerActorError::ConnectionFailed(remote_addr.to_string())
-      })?;
-
-      let handshake = Handshake::from_bytes(&buf).map_err(|e| PeerActorError::HandshakeFailed {
-         reason: e.to_string(),
-      })?;
-
-      validate_handshake(&handshake, remote_addr, info_hash)?;
-
-      info!(
-          remote_addr = %remote_addr,
-          peer_id = %handshake.peer_id,
-          "Successfully completed handshake with peer"
-      );
-
-      Ok((handshake.peer_id, handshake.reserved))
+      Ok(())
    }
 
    /// Receives an incoming handshake from a peer.
@@ -483,12 +454,10 @@ mod tests {
       tokio::spawn(async move {
          let mut stream = PeerStream::Tcp(TcpStream::connect(addr).await.unwrap());
 
-         let response = stream
+         stream
             .send_handshake(client_id, client_info_hash)
             .await
             .unwrap();
-
-         assert_eq!(response.0, server_id_clone);
       });
 
       // Server side

@@ -110,15 +110,22 @@ impl Torrent {
             None => {
                let mut stream = PeerStream::connect(peer.socket_addr(), Some(utp_server)).await;
 
-               let handshake = stream.send_handshake(our_id, info_hash).await;
-               if let Ok((peer_id, reserved)) = handshake {
-                  id = Some(peer_id);
-                  peer.reserved = reserved;
-                  peer.determine_supported().await;
-                  stream
-               } else {
-                  warn!("Failed to handshake with peer... silently exiting");
-                  return;
+               match stream.send_handshake(our_id, info_hash).await {
+                  Ok(_) => {
+                     let peer_id = unimplemented!();
+                     let reserved = unimplemented!();
+                     let id = Some(peer_id);
+                     peer.reserved = reserved;
+                     peer.determine_supported().await;
+                     stream
+                  }
+                  Err(err) => {
+                     warn!(
+                        error = %err,
+                        "Failed to handshake with peer... silently exiting"
+                     );
+                     return;
+                  }
                }
             }
          };
