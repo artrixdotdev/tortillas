@@ -44,6 +44,10 @@ pub enum EngineError {
    #[error(transparent)]
    MetaInfoFetchError(#[from] reqwest::Error),
 
+   /// Failed to deserialize [MetaInfo](crate::metainfo::MetaInfo)
+   #[error("Failed to deserialize meta info")]
+   MetaInfoDeserializeError,
+
    /// Any other engine-level error wrapped in [`anyhow::Error`]
    #[error(transparent)]
    Other(#[from] anyhow::Error),

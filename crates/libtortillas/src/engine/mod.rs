@@ -1,6 +1,5 @@
 use std::{net::SocketAddr, sync::Arc};
 
-use anyhow::Context as _;
 use dashmap::DashMap;
 use kameo::{
    Actor, Reply,
@@ -81,24 +80,30 @@ impl Engine {
    /// requests the bytes and deserializes them into a [TorrentFile]. If
    /// it isn't, we assume that it is either a magnet URI or a path to a
    /// torrent file, and pass the string to [MetaInfo::new()].
-   pub async fn add_torrent(&self, metainfo_file_or_url: &str) -> Result<InfoHash, EngineError> {
+   pub async fn add_torrent(&self, metainfo: &str) -> Result<InfoHash, EngineError> {
       // File paths should either start with "/" or "./", and magnet URIs start
       // with "magnet:", so a check like this should be entirely appropriate.
-      let metainfo = if metainfo_file_or_url.starts_with("http") {
-         let torrent_file_bytes = reqwest::get(metainfo_file_or_url)
+      let metainfo = if metainfo.starts_with("http") {
+         let torrent_file_bytes = reqwest::get(metainfo)
             .await
             .map_err(EngineError::MetaInfoFetchError)?
             .bytes()
             .await
             .map_err(EngineError::MetaInfoFetchError)?;
-         TorrentFile::parse(&torrent_file_bytes)
+         let torrent_file = TorrentFile::parse(&torrent_file_bytes);
+         torrent_file.map_err(|_| {
+            error!(remote_url = metainfo);
+            EngineError::MetaInfoDeserializeError
+         })?
       } else {
-         MetaInfo::new(metainfo_file_or_url.into()).await
+         MetaInfo::new(metainfo.into()).await.map_err(|_| {
+            error!(magnet_uri_or_file = metainfo);
+            EngineError::MetaInfoDeserializeError
+         })?
       };
 
-      let metainfo = metainfo.map_err(EngineError::Other)?;
-
       let info_hash = metainfo.info_hash().map_err(EngineError::Other)?;
+
       self
          .actor_ref
          .tell(EngineMessage::Torrent(Box::new(metainfo)))
