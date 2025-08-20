@@ -380,7 +380,7 @@ mod tests {
    use tokio::time::sleep;
 
    use super::*;
-   use crate::metainfo::TorrentFile;
+   use crate::metainfo::{MagnetUri, TorrentFile};
 
    #[tokio::test(flavor = "multi_thread")]
    async fn test_torrent_actor() {
@@ -428,5 +428,48 @@ mod tests {
 
       actor.stop_gracefully().await.expect("Failed to stop");
       info!("Connected to {peers_count} peers!")
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn test_info_dict_retrieval() {
+      tracing_subscriber::fmt()
+         .with_target(true)
+         .with_env_filter("libtortillas=trace,off")
+         .pretty()
+         .init();
+
+      // Test with a magnet URI, since magnet URIs don't come with an info dict
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/big-buck-bunny.txt");
+      let contents = tokio::fs::read_to_string(path).await.unwrap();
+
+      let metainfo = MagnetUri::parse(contents).unwrap();
+
+      let peer_id = PeerId::default();
+
+      let udp_server = UdpServer::new(None).await;
+      let utp_server =
+         UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
+            .await
+            .unwrap();
+
+      let actor = Torrent::spawn((peer_id, metainfo, utp_server, udp_server.clone(), None));
+
+      // Blocking loop that runs until we get an info dict
+      loop {
+         match actor.ask(TorrentRequest::HasInfoDict).await.unwrap() {
+            TorrentResponse::HasInfoDict(maybe_info_dict) => {
+               if maybe_info_dict.is_some() {
+                  trace!("Got info dict!");
+                  break;
+               }
+            }
+            _ => unreachable!(),
+         };
+         sleep(Duration::from_millis(100)).await;
+      }
+
+      actor.stop_gracefully().await.expect("Failed to stop");
    }
 }
