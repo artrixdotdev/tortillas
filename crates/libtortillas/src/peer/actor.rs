@@ -58,11 +58,13 @@ impl PeerActor {
 
       self.send_extended_handshake(extended_id).await;
 
-      // Save to Peer.
-      if let Some(inner_metadata) = metadata
-         && let Err(e) = self.peer.info.append_to_bytes(inner_metadata)
-      {
-         warn!(error = %e, "Failed to append metadata bytes");
+      // Save metadata to Peer
+      if let Some(inner_metadata) = metadata {
+         if let Err(e) = self.peer.info.append_to_bytes(inner_metadata) {
+            warn!(error = %e, "Failed to append metadata bytes");
+         } else {
+            trace!(metadata_len = inner_metadata.len(), "Appended metadata");
+         }
       }
 
       if let Some(extended_message) = extended_message {
