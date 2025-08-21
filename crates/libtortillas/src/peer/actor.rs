@@ -56,20 +56,20 @@ impl PeerActor {
    ) {
       trace!(extended_id, "Received extended message");
 
-      self.send_extended_handshake(extended_id).await;
-
-      // Save metadata to Peer
-      if let Some(inner_metadata) = metadata {
-         if let Err(e) = self.peer.info.append_to_bytes(inner_metadata) {
-            warn!(error = %e, "Failed to append metadata bytes");
-         } else {
-            trace!(metadata_len = inner_metadata.len(), "Appended metadata");
-         }
-      }
-
       if let Some(extended_message) = extended_message {
          if let Some(size) = extended_message.metadata_size {
             trace!(metadata_size = size, "Received metadata size from peer");
+         }
+
+         // Save metadata to Peer
+         if extended_message.is_bep_0009_data().unwrap_or(false) {
+            if let Some(inner_metadata) = metadata {
+               if let Err(e) = self.peer.info.append_to_bytes(inner_metadata) {
+                  warn!(error = %e, "Failed to append metadata bytes");
+               } else {
+                  trace!(metadata_len = inner_metadata.len(), "Appended metadata");
+               }
+            }
          }
 
          if let Ok(id) = extended_message.supports_bep_0009() {
@@ -323,6 +323,11 @@ impl Message<PeerMessages> for PeerActor {
             self
                .handle_extended_message(extended_id, *extended_message, &metadata)
                .await;
+
+            // If the message is a handshake, send a handshake in return
+            if extended_id == 0 {
+               self.send_extended_handshake(0).await;
+            }
          }
          PeerMessages::Cancel(index, offset, length) => {
             trace!(

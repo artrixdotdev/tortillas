@@ -8,6 +8,7 @@ use anyhow::{Error, Result, bail};
 use bencode::streaming::{BencodeEvent, StreamingParser};
 use bitvec::prelude::*;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use num_enum::TryFromPrimitive;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tracing::{debug, error, trace};
@@ -378,7 +379,15 @@ impl PeerMessages {
 ///
 /// An unrecognized message ID MUST be ignored in order to support future
 /// extensibility.
-#[derive(Serialize_repr, Debug, Clone, PartialEq, Eq, Deserialize_repr)]
+#[derive(
+   Serialize_repr,
+   Debug,
+   Clone,
+   PartialEq,
+   Eq,
+   Deserialize_repr,
+   TryFromPrimitive
+)]
 #[repr(u8)]
 pub enum ExtendedMessageType {
    Request = 0u8,
@@ -475,7 +484,6 @@ impl ExtendedMessage {
    /// Returns true if a peer supports [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
    /// based on the m dictionary passed with the Extended handshake.
    pub fn supports_bep_0009(&self) -> Result<u8, Error> {
-      // We have to clone here for some reason?
       if let Some(m) = &self.supported_extensions {
          if let Some(id) = m.get("ut_metadata") {
             debug!(extension_id = *id, "Peer supports BEP 0009");
@@ -486,6 +494,36 @@ impl ExtendedMessage {
       }
       debug!("Peer did not send supported extensions dictionary");
       bail!("Peer did not send an m dict with the given Extended message");
+   }
+
+   /// Returns true if a given extended message is a request message based on [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
+   /// based on the m dictionary passed with the Extended handshake.
+   pub fn is_bep_0009_request(&self) -> Result<bool, Error> {
+      if let Some(msg_type) = &self.msg_type {
+         return Ok(msg_type.clone() as u8 == 0);
+      }
+      debug!("Peer did not supply a msg_type");
+      bail!("Peer did not supply a msg_type");
+   }
+
+   /// Returns true if a given extended message is a data message based on [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
+   /// based on the m dictionary passed with the Extended handshake.
+   pub fn is_bep_0009_data(&self) -> Result<bool, Error> {
+      if let Some(msg_type) = &self.msg_type {
+         return Ok(msg_type.clone() as u8 == 1);
+      }
+      debug!("Peer did not supply a msg_type");
+      bail!("Peer did not supply a msg_type");
+   }
+
+   /// Returns true if a given extended message is a reject message based on [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
+   /// based on the m dictionary passed with the Extended handshake.
+   pub fn is_bep_0009_reject(&self) -> Result<bool, Error> {
+      if let Some(msg_type) = &self.msg_type {
+         return Ok(msg_type.clone() as u8 == 2);
+      }
+      debug!("Peer did not supply a msg_type");
+      bail!("Peer did not supply a msg_type");
    }
 }
 
