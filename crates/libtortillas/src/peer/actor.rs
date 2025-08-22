@@ -324,14 +324,13 @@ impl Message<PeerMessages> for PeerActor {
             };
          }
          PeerMessages::Extended(extended_id, extended_message, metadata) => {
-            self
-               .handle_extended_message(extended_id, *extended_message, &metadata)
-               .await;
-
             // If the message is a handshake, send a handshake in return
             if extended_id == 0 {
                self.send_extended_handshake(0).await;
             }
+            self
+               .handle_extended_message(extended_id, *extended_message, &metadata)
+               .await;
          }
          PeerMessages::Cancel(index, offset, length) => {
             trace!(
