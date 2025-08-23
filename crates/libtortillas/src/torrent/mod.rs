@@ -17,7 +17,7 @@ use crate::{
    errors::TorrentError,
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
-   peer::{Peer, PeerActor, PeerId},
+   peer::{Peer, PeerActor, PeerId, PeerTell},
    protocol::{
       messages::{Handshake, PeerMessages},
       stream::{PeerSend, PeerStream},
@@ -145,6 +145,29 @@ impl Torrent {
          // We cant store peers until #86 is implemented
          peers.insert(id, actor);
       });
+   }
+   /// Broadcasts a message to all peers,
+   /// This isn't by no means efficient or performant, and needs to be
+   /// refactored.
+   ///
+   /// The reason why this function is bad is because it blocks our entire
+   /// message queue until each peer has received and processed the message.
+   /// It also holds on to the [DashMap] reference until this function
+   /// completes, which means it will block other functions trying
+   /// to use it at the same time.
+   ///
+   /// To top it all off, it sends the messages to peers one at a time, so if 1
+   /// peer doesn't respond, or takes too long, the peers after it will not
+   /// receive the message.
+   #[instrument(skip(self, tell), fields(msg = ?tell))]
+   async fn broadcast_to_peers(&self, tell: PeerTell) {
+      let peers = self.peers.clone();
+
+      for peer in peers.iter() {
+         if let Err(e) = peer.tell(tell.clone()).await {
+            warn!("Failed to send to peer: {:?}", e);
+         }
+      }
    }
 }
 /// For incoming from outside sources (e.g Peers, Trackers and Engine)
@@ -320,6 +343,9 @@ impl Message<TorrentMessage> for Torrent {
                   serde_bencode::from_bytes(&bytes).expect("Failed to parse info dict");
                self.bitfield.resize(info.piece_count(), false);
                self.info = Some(info);
+               self
+                  .broadcast_to_peers(PeerTell::HaveInfoDict(self.bitfield.clone()))
+                  .await;
             } else {
                warn!(
                   dict = %String::from_utf8_lossy(&bytes),
