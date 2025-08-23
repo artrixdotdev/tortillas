@@ -1,6 +1,7 @@
 use std::{collections::HashMap, time::Instant};
 
 use anyhow::Context;
+use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{
    Actor,
@@ -183,7 +184,10 @@ impl Actor for PeerActor {
          _ => unreachable!("Unexpected response from supervisor"),
       };
 
-      stream.send(PeerMessages::Bitfield(bitfield)).await?;
+      // Dont send `BitVec::EMPTY`
+      if !bitfield.is_empty() {
+         stream.send(PeerMessages::Bitfield(bitfield)).await?;
+      }
 
       Ok(Self {
          peer,
@@ -348,13 +352,18 @@ impl Message<PeerMessages> for PeerActor {
    }
 }
 
+#[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(crate) enum PeerTell {
    NeedPiece(usize, usize, usize),
+   HaveInfoDict(BitVec<u8>),
+   // TODO: Add Have(usize) for notifying the peer that we have a new piece
 }
 
 impl Message<PeerTell> for PeerActor {
    type Reply = ();
+
+   #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
    async fn handle(&mut self, msg: PeerTell, _: &mut KameoContext<Self, Self::Reply>) {
       match msg {
          PeerTell::NeedPiece(index, begin, length) => {
@@ -373,6 +382,14 @@ impl Message<PeerTell> for PeerActor {
                ))
                .await
                .expect("Failed to send piece request");
+         }
+         PeerTell::HaveInfoDict(bitfield) => {
+            self
+               .stream
+               .send(PeerMessages::Bitfield(bitfield))
+               .await
+               .expect("Failed to send bitfield");
+            trace!("Sent bitfield to peer");
          }
       }
    }
