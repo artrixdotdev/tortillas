@@ -46,6 +46,13 @@ impl MetaInfo {
          MetaInfo::MagnetUri(magnet) => magnet.announce_list(),
       }
    }
+
+   pub fn set_announce_list(&mut self) {
+      match self {
+         MetaInfo::Torrent(file) => file.announce_list = None,
+         MetaInfo::MagnetUri(magnet) => magnet.announce_list = None,
+      };
+   }
 }
 
 #[cfg(test)]
