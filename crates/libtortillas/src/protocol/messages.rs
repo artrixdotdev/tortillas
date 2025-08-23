@@ -500,7 +500,7 @@ impl ExtendedMessage {
    /// based on the m dictionary passed with the Extended handshake.
    pub fn is_bep_0009_request(&self) -> Result<bool, Error> {
       if let Some(msg_type) = &self.msg_type {
-         return Ok(msg_type.clone() as u8 == 0);
+         return Ok(matches!(msg_type, ExtendedMessageType::Request));
       }
       debug!("Peer did not supply a msg_type");
       bail!("Peer did not supply a msg_type");
@@ -510,7 +510,7 @@ impl ExtendedMessage {
    /// based on the m dictionary passed with the Extended handshake.
    pub fn is_bep_0009_data(&self) -> Result<bool, Error> {
       if let Some(msg_type) = &self.msg_type {
-         return Ok(msg_type.clone() as u8 == 1);
+         return Ok(matches!(msg_type, ExtendedMessageType::Data));
       }
       debug!("Peer did not supply a msg_type");
       bail!("Peer did not supply a msg_type");
@@ -520,7 +520,7 @@ impl ExtendedMessage {
    /// based on the m dictionary passed with the Extended handshake.
    pub fn is_bep_0009_reject(&self) -> Result<bool, Error> {
       if let Some(msg_type) = &self.msg_type {
-         return Ok(msg_type.clone() as u8 == 2);
+         return Ok(matches!(msg_type, ExtendedMessageType::Reject));
       }
       debug!("Peer did not supply a msg_type");
       bail!("Peer did not supply a msg_type");

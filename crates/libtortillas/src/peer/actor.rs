@@ -63,7 +63,7 @@ impl PeerActor {
          }
 
          // Save metadata to Peer
-         if extended_message.is_bep_0009_data().unwrap_or(false)
+         if extended_message.is_bep_0009_data().unwrap_or_default()
             && let Some(inner_metadata) = metadata
          {
             if let Err(e) = self.peer.info.append_to_bytes(inner_metadata) {
