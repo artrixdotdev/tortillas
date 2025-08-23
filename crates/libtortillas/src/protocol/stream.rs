@@ -37,7 +37,7 @@ pub enum PeerStream {
 pub trait PeerSend: AsyncWrite + Unpin {
    /// Sends a PeerMessage to a peer.
    async fn send(&mut self, data: PeerMessages) -> Result<(), PeerActorError> {
-      let bytes = data.to_bytes().unwrap();
+      let bytes = data.to_bytes()?;
       self.write_all(&bytes).await.map_err(|e| {
          error!(error = %e, "Failed to send message to peer");
          PeerActorError::SendFailed(e.to_string())

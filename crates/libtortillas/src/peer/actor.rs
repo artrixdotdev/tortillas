@@ -63,13 +63,13 @@ impl PeerActor {
          }
 
          // Save metadata to Peer
-         if extended_message.is_bep_0009_data().unwrap_or(false) {
-            if let Some(inner_metadata) = metadata {
-               if let Err(e) = self.peer.info.append_to_bytes(inner_metadata) {
-                  warn!(error = %e, "Failed to append metadata bytes");
-               } else {
-                  trace!(metadata_len = inner_metadata.len(), "Appended metadata");
-               }
+         if extended_message.is_bep_0009_data().unwrap_or(false)
+            && let Some(inner_metadata) = metadata
+         {
+            if let Err(e) = self.peer.info.append_to_bytes(inner_metadata) {
+               warn!(error = %e, "Failed to append metadata bytes");
+            } else {
+               trace!(metadata_len = inner_metadata.len(), "Appended metadata");
             }
          }
 
