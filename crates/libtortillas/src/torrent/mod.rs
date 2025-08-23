@@ -433,11 +433,7 @@ impl Message<TorrentRequest> for Torrent {
 
 #[cfg(test)]
 mod tests {
-   use std::{
-      net::{IpAddr, SocketAddr},
-      str::FromStr,
-      time::Duration,
-   };
+   use std::{net::SocketAddr, str::FromStr, time::Duration};
 
    use librqbit_utp::UtpSocket;
    use tokio::time::sleep;
