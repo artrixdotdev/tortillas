@@ -105,22 +105,30 @@ impl Torrent {
                stream
             }
             None => {
-               let mut stream = PeerStream::connect(peer.socket_addr(), Some(utp_server)).await;
-               match stream.send_handshake(our_id, Arc::clone(&info_hash)).await {
-                  Ok(_) => match stream.recv_handshake().await {
-                     Ok((peer_id, reserved)) => {
-                        id = Some(peer_id);
-                        peer.reserved = reserved;
-                        peer.determine_supported().await;
-                        stream
+               let stream = PeerStream::connect(peer.socket_addr(), Some(utp_server)).await;
+               match stream {
+                  Ok(mut stream) => {
+                     match stream.send_handshake(our_id, Arc::clone(&info_hash)).await {
+                        Ok(_) => match stream.recv_handshake().await {
+                           Ok((peer_id, reserved)) => {
+                              id = Some(peer_id);
+                              peer.reserved = reserved;
+                              peer.determine_supported().await;
+                              stream
+                           }
+                           Err(err) => {
+                              warn!(error = %err, "Failed to receive handshake from peer; exiting");
+                              return;
+                           }
+                        },
+                        Err(err) => {
+                           warn!(error = %err, "Failed to send handshake to peer; exiting");
+                           return;
+                        }
                      }
-                     Err(err) => {
-                        warn!(error = %err, "Failed to receive handshake from peer; exiting");
-                        return;
-                     }
-                  },
+                  }
                   Err(err) => {
-                     warn!(error = %err, "Failed to send handshake to peer; exiting");
+                     warn!(error = %err, "Failed to connect to peer; exiting");
                      return;
                   }
                }

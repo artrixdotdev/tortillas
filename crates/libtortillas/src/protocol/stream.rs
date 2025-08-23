@@ -119,22 +119,24 @@ impl PeerStream {
    ///
    /// utp_socket should be None ONLY for testing, when we only wish to utilize
    /// a TcpStream.
-   pub async fn connect(peer_addr: SocketAddr, utp_socket: Option<Arc<UtpSocketUdp>>) -> Self {
+   pub async fn connect(
+      peer_addr: SocketAddr, utp_socket: Option<Arc<UtpSocketUdp>>,
+   ) -> Result<Self, PeerActorError> {
       trace!(peer_addr = %peer_addr, "Attempting connection to peer");
       if let Some(utp_socket) = utp_socket {
          tokio::select! {
              stream = utp_socket.connect(peer_addr) => {
                  debug!(peer_addr = %peer_addr, protocol = "uTP", "Connected to peer");
-                 PeerStream::Utp(stream.unwrap())
+                 Ok(PeerStream::Utp(stream?))
              },
              stream = TcpStream::connect(peer_addr) => {
                  debug!(peer_addr = %peer_addr, protocol = "TCP", "Connected to peer");
-                 PeerStream::Tcp(stream.unwrap())
+                 Ok(PeerStream::Tcp(stream?))
              }
          }
       } else {
          debug!(peer_addr = %peer_addr, protocol = "TCP", "Connecting to peer");
-         PeerStream::Tcp(TcpStream::connect(peer_addr).await.unwrap())
+         Ok(PeerStream::Tcp(TcpStream::connect(peer_addr).await?))
       }
    }
 
