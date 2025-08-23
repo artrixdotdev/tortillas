@@ -433,7 +433,11 @@ impl Message<TorrentRequest> for Torrent {
 
 #[cfg(test)]
 mod tests {
-   use std::{net::SocketAddr, str::FromStr, time::Duration};
+   use std::{
+      net::{IpAddr, SocketAddr},
+      str::FromStr,
+      time::Duration,
+   };
 
    use librqbit_utp::UtpSocket;
    use tokio::time::sleep;
@@ -518,6 +522,84 @@ mod tests {
       // Blocking loop that runs until we get an info dict
       loop {
          match actor.ask(TorrentRequest::HasInfoDict).await.unwrap() {
+            TorrentResponse::HasInfoDict(maybe_info_dict) => {
+               if maybe_info_dict.is_some() {
+                  trace!("Got info dict!");
+                  break;
+               }
+            }
+            _ => unreachable!(),
+         };
+         sleep(Duration::from_millis(100)).await;
+      }
+
+      actor.stop_gracefully().await.expect("Failed to stop");
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn test_info_dict_single_peer() {
+      tracing_subscriber::fmt()
+         .with_target(true)
+         .with_env_filter("libtortillas=trace,off")
+         .pretty()
+         .init();
+
+      // Test with a magnet URI, since magnet URIs don't come with an info dict
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/big-buck-bunny.txt");
+      let contents = tokio::fs::read_to_string(path).await.unwrap();
+      let mut metainfo = MagnetUri::parse(contents).unwrap();
+      metainfo.set_announce_list();
+
+      let utp_server =
+         UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
+            .await
+            .unwrap();
+      let info_hash = Arc::new(metainfo.info_hash().unwrap());
+      let our_id = PeerId::default();
+      let mut peer = Peer::new(IpAddr::from_str("72.21.17.101").unwrap(), 63407);
+      let stream = PeerStream::connect(peer.socket_addr(), Some(utp_server.clone())).await;
+
+      // Manually connect to a peer (taken from Torrent::append_peer)
+      let new_stream = match stream {
+         Ok(mut stream) => match stream.send_handshake(our_id, Arc::clone(&info_hash)).await {
+            Ok(_) => match stream.recv_handshake().await {
+               Ok((id, reserved)) => {
+                  peer.id = Some(id);
+                  peer.reserved = reserved;
+                  peer.determine_supported().await;
+                  stream
+               }
+               Err(err) => {
+                  warn!(error = %err, "Failed to receive handshake from peer; exiting");
+                  return;
+               }
+            },
+            Err(err) => {
+               warn!(error = %err, "Failed to send handshake to peer; exiting");
+               return;
+            }
+         },
+         Err(err) => {
+            warn!(error = %err, "Failed to connect to peer; exiting");
+            return;
+         }
+      };
+
+      // Spawn a torrent so for the actor_ref argument in PeerActor::spawn()
+      let udp_server = UdpServer::new(None).await;
+      let torrent_actor = Torrent::spawn((our_id, metainfo, utp_server.clone(), udp_server, None));
+
+      let actor = PeerActor::spawn((peer.clone(), new_stream, torrent_actor.clone()));
+
+      // Blocking loop that runs until we get an info dict
+      loop {
+         match torrent_actor
+            .ask(TorrentRequest::HasInfoDict)
+            .await
+            .unwrap()
+         {
             TorrentResponse::HasInfoDict(maybe_info_dict) => {
                if maybe_info_dict.is_some() {
                   trace!("Got info dict!");
