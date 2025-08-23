@@ -10,6 +10,7 @@ use kameo::{
 };
 use librqbit_utp::UtpSocketUdp;
 use sha1::{Digest, Sha1};
+use tokio::task::JoinSet;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use crate::{
@@ -146,26 +147,43 @@ impl Torrent {
          peers.insert(id, actor);
       });
    }
-   /// Broadcasts a message to all peers,
-   /// This isn't by no means efficient or performant, and needs to be
-   /// refactored.
+
+   /// Broadcasts a message to all peers concurrently.
    ///
-   /// The reason why this function is bad is because it blocks our entire
-   /// message queue until each peer has received and processed the message.
-   /// It also holds on to the [DashMap] reference until this function
-   /// completes, which means it will block other functions trying
-   /// to use it at the same time.
+   /// This function snapshots the current set of peer actor references before
+   /// sending, which avoids holding the [`DashMap`] lock across `.await`
+   /// points. This means other tasks can continue to access and modify the
+   /// peer set while the broadcast is in progress.
    ///
-   /// To top it all off, it sends the messages to peers one at a time, so if 1
-   /// peer doesn't respond, or takes too long, the peers after it will not
-   /// receive the message.
+   /// Each peer receives the message in parallel using a
+   /// [`tokio::task::JoinSet`]. This prevents a slow or unresponsive peer
+   /// from blocking delivery to others. However, this also means that
+   /// broadcasting may use more memory, since all messages are cloned and
+   /// dispatched at once.
+   ///
+   /// Any errors from individual peers are logged, but do not stop the
+   /// broadcast from continuing to other peers.
    #[instrument(skip(self, tell), fields(msg = ?tell))]
    async fn broadcast_to_peers(&self, tell: PeerTell) {
-      let peers = self.peers.clone();
+      // Snapshot actor refs to release DashMap locks before awaiting.
+      // Might use more memory but it will increase performance
+      let actor_refs: Vec<ActorRef<PeerActor>> = self
+         .peers
+         .iter()
+         .map(|entry| entry.value().clone())
+         .collect();
 
-      for peer in peers.iter() {
-         if let Err(e) = peer.tell(tell.clone()).await {
-            warn!("Failed to send to peer: {:?}", e);
+      // Fan out concurrently; each task awaits its own tell.
+      let mut set = JoinSet::new();
+      for actor in actor_refs {
+         let msg = tell.clone();
+         set.spawn(async move { actor.tell(msg).await });
+      }
+      while let Some(res) = set.join_next().await {
+         match res {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!(error = %e, "Failed to send to peer"),
+            Err(join_err) => warn!(error = %join_err, "broadcast_to_peers task panicked"),
          }
       }
    }
