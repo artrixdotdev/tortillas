@@ -64,12 +64,22 @@ impl PeerActor {
 
          // Save metadata to Peer
          if extended_message.is_bep_0009_data().unwrap_or_default()
-            && let Some(inner_metadata) = metadata
+            && let Some(metadata) = metadata
          {
-            if let Err(e) = self.peer.info.append_to_bytes(inner_metadata) {
+            if let Err(e) = self.peer.info.append_to_bytes(metadata) {
                warn!(error = %e, "Failed to append metadata bytes");
             } else {
-               trace!(metadata_len = inner_metadata.len(), "Appended metadata");
+               trace!(metadata_len = metadata.len(), "Appended metadata");
+
+               // Request next piece if we don't have all the piece bytes
+               if !self.peer.info.have_all_bytes() {
+                  let next_piece = extended_message.piece.expect("Should always be Some") + 1;
+
+                  trace!(next_piece = next_piece, "Requesting next piece...");
+                  self
+                     .request_metadata(extended_message.metadata_size, next_piece)
+                     .await;
+               }
             }
          }
 
@@ -78,8 +88,18 @@ impl PeerActor {
 
             // If peer has metadata and we don't already have it, request metadata from peer
             if let Some(metadata_size) = extended_message.metadata_size {
+               let needs_info_dict = match self.supervisor.ask(TorrentRequest::HasInfoDict).await {
+                  Ok(TorrentResponse::HasInfoDict(r)) => r.is_none(),
+                  _ => unreachable!(),
+               };
+
                let piece_num = extended_message.piece.unwrap_or(0);
-               self.request_metadata(metadata_size, piece_num).await;
+
+               // Sends initial metadata request (we have no metadata pieces yet)
+               if piece_num == 0 && needs_info_dict {
+                  trace!(needs_info_dict, "Sending initial metadata request");
+                  self.request_metadata(Some(metadata_size), piece_num).await;
+               }
             }
          }
       }
@@ -95,10 +115,12 @@ impl PeerActor {
    }
 
    #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
-   async fn request_metadata(&mut self, metadata_size: usize, piece: usize) {
+   async fn request_metadata(&mut self, metadata_size: Option<usize>, piece: usize) {
       trace!(metadata_size, piece, "Requesting metadata");
 
-      self.peer.info.set_info_size(metadata_size);
+      if let Some(size) = metadata_size {
+         self.peer.info.set_info_size(size);
+      }
 
       if self.peer.info.info_size() > 0 && !self.peer.info.have_all_bytes() {
          trace!(piece, "Preparing metadata request");
