@@ -132,6 +132,13 @@ impl Torrent {
          if id == our_id {
             return;
          }
+
+         // #109
+         if peers.contains_key(&id) {
+            warn!("Peer already exists, ignoring");
+            return;
+         }
+
          peer.id = Some(id);
 
          let actor = PeerActor::spawn((peer.clone(), stream, actor_ref));
