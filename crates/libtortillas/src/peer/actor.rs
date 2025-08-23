@@ -30,6 +30,7 @@ pub(crate) struct PeerActor {
 }
 
 impl PeerActor {
+   /// Sends an extended handshake in return if the received extended message
    /// was a handshake.
    async fn send_extended_handshake(&mut self, extended_id: u8) {
       // If this is an Extended handshake, send a handshake in response.
