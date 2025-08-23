@@ -127,6 +127,10 @@ pub enum PeerActorError {
    #[error(transparent)]
    Io(#[from] std::io::Error),
 
+   /// [uTP](https://github.com/ikatson/librqbit-utp) error
+   #[error(transparent)]
+   Utp(#[from] librqbit_utp::Error),
+
    /// Any other peer-level error wrapped in `anyhow::Error`
    #[error(transparent)]
    Other(#[from] anyhow::Error),
