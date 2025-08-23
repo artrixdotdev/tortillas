@@ -550,7 +550,7 @@ mod tests {
          .join("tests/magneturis/big-buck-bunny.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
       let mut metainfo = MagnetUri::parse(contents).unwrap();
-      metainfo.set_announce_list();
+      metainfo.clear_announce_list();
 
       let utp_server =
          UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
