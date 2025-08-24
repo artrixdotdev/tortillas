@@ -203,7 +203,7 @@ impl Actor for TrackerActor {
    type Args = (Tracker, PeerId, UdpServer, SocketAddr, ActorRef<Torrent>);
    type Error = TrackerActorError;
 
-   /// Unlike the [`PeerActor`](crate::protocol::PeerActor), there are no
+   /// Unlike the [`PeerActor`](crate::peer::PeerActor), there are no
    /// prerequisites to calling this function. In other words, the tracker is
    /// not expected to be connected when this function is called.
    async fn on_start(state: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
@@ -285,7 +285,7 @@ pub(crate) enum TrackerMessage {
    /// requests are made on an interval.
    Announce,
    /// Gets the statistics of the tracker via
-   /// [`tracker.stats()`](TrackerEnum::stats)
+   /// [`tracker.stats()`](TrackerInstance::stats)
    GetStats,
 }
 
