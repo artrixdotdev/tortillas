@@ -710,8 +710,8 @@ impl UdpTracker {
       }
    }
 
-   /// Uses [send_message](UdpServer::send_message) to send a message and
-   /// [recv_retry][UdpTracker::recv_retry] to receive the message.
+   /// Uses [`UdpServer::send_message`] to send a message and
+   /// [`UdpTracker::to_retry_error`] to receive the message.
    #[instrument(skip(self, message), fields(
         tracker_uri = %self.uri,
         connection_id = ?self.get_connection_id()
