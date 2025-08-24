@@ -61,3 +61,6 @@ jobs:
 
       - name: 💅 Run format checker
         run: cargo fmt --check
+        
+      - name: 📖 Run doc linter
+        run: cargo doc --no-deps --document-private-items
