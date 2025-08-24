@@ -27,7 +27,7 @@ use crate::{
 
 pub(crate) enum EngineMessage {
    #[allow(dead_code)]
-   /// Creates a new [Torrent](crate::torrent::Torrent) actor.
+   /// Creates a new [Torrent] actor.
    Torrent(Box<MetaInfo>),
    /// Handles an incoming peer connection. The peer has been neither handshaked
    /// nor verified at this point.
@@ -57,7 +57,7 @@ pub struct Engine {
    torrents: Arc<DashMap<InfoHash, ActorRef<Torrent>>>,
    /// Our peer ID, used for the following actors "below" the engine.
    ///
-   /// - [Torrent](crate::torrent::Torrent)
+   /// - [Torrent]
    /// - [PeerActor](crate::peer::PeerActor)
    /// - [TrackerActor](crate::tracker::TrackerActor)
    ///

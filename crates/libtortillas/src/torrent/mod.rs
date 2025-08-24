@@ -79,11 +79,17 @@ impl Torrent {
       }
    }
 
-   /// Utility function that will create the peer actor and add it to the
-   /// torrent.
+   /// Spawns a new [`PeerActor`] for the given [`Peer`] and adds it to the
+   /// torrent's peer set.
    ///
-   /// This function calls [Self::handshake_peer] if no stream is provided to
-   /// retrieve the peer id
+   /// - If a [`PeerStream`] is provided, a handshake is sent immediately.
+   /// - If no stream is provided, this function attempts to connect to the peer
+   ///   and performs the handshake sequence inline.
+   ///
+   /// The peer is ignored if:
+   /// - The handshake fails,
+   /// - The peer ID matches our own, or
+   /// - The peer already exists in the peer set.
    #[instrument(skip(self, peer, stream), fields(%self, peer = ?peer.socket_addr()))]
    fn append_peer(&self, mut peer: Peer, stream: Option<PeerStream>) {
       let info_hash = Arc::new(self.info_hash());
