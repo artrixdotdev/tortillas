@@ -228,6 +228,10 @@ pub(crate) enum TorrentMessage {
 
    KillPeer(PeerId),
    KillTracker(Tracker),
+
+   /// A received bitfield from a peer. When this message is received, it is assumed that no
+   /// other operations have been made to the bitfield by this time (no and-ing, no xor-ing, etc.).
+   Bitfield(BitVec<u8>),
 }
 
 impl fmt::Debug for TorrentMessage {
@@ -402,6 +406,9 @@ impl Message<TorrentMessage> for Torrent {
             } else {
                warn!("Received kill tracker message for unknown tracker");
             }
+         }
+         TorrentMessage::Bitfield(_) => {
+            unimplemented!();
          }
          TorrentMessage::IncomingPiece(_, _, _) => unimplemented!(),
       }

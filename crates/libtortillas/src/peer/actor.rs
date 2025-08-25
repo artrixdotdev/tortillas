@@ -1,6 +1,6 @@
 use std::{collections::HashMap, time::Instant};
 
-use anyhow::Context;
+use anyhow::{Context, anyhow};
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{
@@ -364,7 +364,15 @@ impl Message<PeerMessages> for PeerActor {
          PeerMessages::Bitfield(bitfield) => {
             let piece_count = bitfield.len();
             debug!(piece_count, "Received bitfield from peer");
-            self.peer.pieces = bitfield;
+
+            // This is a potentially costly operation that could be optimized in the future.
+            self.peer.pieces = bitfield.clone();
+            self
+               .supervisor
+               .tell(TorrentMessage::Bitfield(bitfield))
+               .await
+               .expect("Error sending bitfield to actor");
+
             self.determine_interest().await;
          }
          PeerMessages::Handshake(_) => {
