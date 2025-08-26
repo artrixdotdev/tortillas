@@ -44,7 +44,7 @@ actor_request_response!(
 /// [Torrent] actors. Note that the engine itself also
 /// implements the [Actor] trait, and consequently behaves like an
 /// actor.
-pub struct Engine {
+pub struct EngineActor {
    /// Listener to wait for incoming TCP connections from peers
    tcp_socket: TcpListener,
    /// Socket to wait for incoming uTP connections from peers
@@ -64,10 +64,10 @@ pub struct Engine {
    /// The peer id is created in the [Engine::on_start] method.
    peer_id: PeerId,
    /// Our actor reference. Created in [Engine::on_start]
-   actor_ref: ActorRef<Engine>,
+   actor_ref: ActorRef<EngineActor>,
 }
 
-impl Engine {
+impl EngineActor {
    /// Starts the torrenting process for a given torrent. This function
    /// automatically contacts trackers and connects to peers. The spawned
    /// [Torrent Actor](Torrent) will be controlled by the [Engine].
@@ -152,7 +152,7 @@ impl Engine {
    }
 }
 
-impl Actor for Engine {
+impl Actor for EngineActor {
    /// TCP socket address for incoming peers, uTP socket address for incoming
    /// peers, UDP socket address for UDP trackers.
    ///
@@ -232,7 +232,7 @@ impl Actor for Engine {
    }
 }
 
-impl Message<EngineMessage> for Engine {
+impl Message<EngineMessage> for EngineActor {
    type Reply = ();
    async fn handle(
       &mut self, msg: EngineMessage, _: &mut Context<Self, Self::Reply>,
