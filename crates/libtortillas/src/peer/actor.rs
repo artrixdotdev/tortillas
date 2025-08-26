@@ -1,6 +1,9 @@
 use std::{
    collections::HashMap,
-   sync::{Arc, atomic::AtomicU8},
+   sync::{
+      Arc,
+      atomic::{AtomicU8, Ordering},
+   },
    time::Instant,
 };
 
@@ -160,21 +163,31 @@ impl PeerActor {
    #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
    async fn determine_interest(&mut self) {
       let msg = TorrentRequest::Bitfield;
+
+      let their_bitfield = self.peer.pieces.clone();
       let our_bitfield = match self.supervisor.ask(msg).await.unwrap() {
          TorrentResponse::Bitfield(bitfield) => bitfield,
          _ => unreachable!("Unexpected response from supervisor"),
       };
-      let their_bitfield = self.peer.pieces.clone();
+
+      let is_our_bitfield_empty = our_bitfield.is_empty();
 
       // Find pieces the peer has that we don't have
-      //
-      // Yes, this is a little bit inefficient. Unfortunately, there's not much of a
-      // better way to do this.
-      let peer_has_we_dont = their_bitfield.as_ref().clone() & !our_bitfield.as_ref().clone();
+      let their_bitfield = their_bitfield
+         .as_raw_slice()
+         .iter()
+         .map(|byte| byte.load(Ordering::Acquire))
+         .collect::<BitVec<u8>>();
+      let our_bitfield = our_bitfield
+         .as_raw_slice()
+         .iter()
+         .map(|byte| byte.load(Ordering::Acquire))
+         .collect::<BitVec<u8>>();
+      let peer_has_we_dont = their_bitfield & !our_bitfield;
 
       let has_interesting_pieces = peer_has_we_dont.any();
 
-      if our_bitfield.is_empty() || has_interesting_pieces {
+      if is_our_bitfield_empty || has_interesting_pieces {
          self
             .stream
             .send(PeerMessages::Interested)

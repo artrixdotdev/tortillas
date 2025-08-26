@@ -258,13 +258,13 @@ impl PeerMessages {
          }
          5 => {
             trace!(bitfield_len = payload.len(), "Received Bitfield message");
-            // We should definitely come back to this in the future. If you know how to get
+            // We should come back to this in the future. If you know how to get
             // the code below working, *please* make a PR.
             //
             // let bytes = bytes.into_iter();
             // let bytes = bytes.map(|byte| AtomicU8::new(byte)).collect();
-            let mut atomicu8_bytes = vec![];
-            for byte in bytes {
+            let mut atomicu8_bytes = Vec::with_capacity(payload.len());
+            for byte in payload {
                atomicu8_bytes.push(AtomicU8::new(byte));
             }
             Ok(PeerMessages::Bitfield(Arc::new(BitVec::from_slice(
