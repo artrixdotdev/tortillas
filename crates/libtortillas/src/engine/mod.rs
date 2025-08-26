@@ -7,6 +7,7 @@ use crate::{
    errors::EngineError,
    hashes::InfoHash,
    metainfo::{MetaInfo, TorrentFile},
+   torrent::Torrent,
 };
 
 pub struct Engine(ActorRef<EngineActor>);
@@ -46,14 +47,14 @@ impl Engine {
    ///
    /// #[tokio::main]
    /// async fn main() {
-   ///    let mut engine = Engine::new(todo!());
+   ///    let mut engine = Engine::new(None);
    ///    let torrent_link = "https://example.com/example.torrent";
-   ///    let torrent_key = engine
+   ///    let torrent = engine
    ///       .add_torrent(torrent_link)
    ///       .await
    ///       .expect("Failed to add torrent");
    ///
-   ///    println!("Started Torrenting: {}", torrent_key);
+   ///    println!("Started Torrenting: {}", torrent.key());
    /// }
    /// ```
    ///
@@ -63,17 +64,17 @@ impl Engine {
    ///
    /// #[tokio::main]
    /// async fn main() {
-   ///    let mut engine = Engine::new(todo!());
+   ///    let mut engine = Engine::new(None);
    ///    let magnet_uri = "magnet:?xt=?????";
-   ///    let torrent_key = engine
+   ///    let torrent = engine
    ///       .add_torrent(magnet_uri)
    ///       .await
    ///       .expect("Failed to add torrent");
    ///
-   ///    println!("Started Torrenting: {}", torrent_key);
+   ///    println!("Started Torrenting: {}", torrent.key());
    /// }
    /// ```
-   pub async fn add_torrent(&self, metainfo: impl ToString) -> Result<InfoHash, EngineError> {
+   pub async fn add_torrent(&self, metainfo: impl ToString) -> Result<Torrent, EngineError> {
       let metainfo = metainfo.to_string();
       // File paths should either start with "/" or "./", and magnet URIs start
       // with "magnet:", so a check like this should be entirely appropriate.
@@ -96,14 +97,21 @@ impl Engine {
          })?
       };
 
-      let info_hash = metainfo.info_hash().map_err(EngineError::Other)?;
+      let info_hash = metainfo.info_hash().expect("Failed to fetch info hash");
 
-      self
+      let torrent_ref = match self
          .actor()
          .ask(EngineRequest::Torrent(Box::new(metainfo)))
          .await
-         .expect("Failed to add torrent");
+         .expect("Failed to add torrent")
+      {
+         EngineResponse::Torrent(torrent_ref) => torrent_ref,
+         #[allow(unreachable_patterns)]
+         _ => unreachable!(),
+      };
 
-      Ok(info_hash)
+      Ok(Torrent::new(info_hash, torrent_ref))
+      // We don't need to assign link or insert the ref here because its already
+      // done by the engine actor
    }
 }
