@@ -5,6 +5,7 @@ use kameo::actor::ActorRef;
 use crate::hashes::InfoHash;
 
 /// Should always be used through the [Engine]
+#[allow(dead_code)]
 pub struct Torrent(InfoHash, ActorRef<TorrentActor>);
 
 impl Torrent {

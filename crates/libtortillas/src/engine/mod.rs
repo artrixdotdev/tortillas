@@ -5,7 +5,6 @@ use tracing::error;
 
 use crate::{
    errors::EngineError,
-   hashes::InfoHash,
    metainfo::{MetaInfo, TorrentFile},
    torrent::Torrent,
 };

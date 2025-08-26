@@ -15,7 +15,7 @@ use crate::{
    actor_request_response,
    errors::EngineError,
    hashes::InfoHash,
-   metainfo::{MetaInfo, TorrentFile},
+   metainfo::MetaInfo,
    peer::{Peer, PeerId},
    protocol::{
       messages::PeerMessages,
