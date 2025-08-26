@@ -324,7 +324,7 @@ impl Actor for Torrent {
       }
       let bitfield: Arc<BitVec<AtomicU8>> = if let Some(info) = &info {
          debug!("Using bitfield length {}", info.piece_count());
-         Arc::new(BitVec::with_capacity(info.piece_count()))
+         Arc::new(BitVec::repeat(false, info.piece_count()))
       } else {
          Arc::new(BitVec::EMPTY)
       };
