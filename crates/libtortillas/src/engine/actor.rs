@@ -152,13 +152,15 @@ impl EngineActor {
    }
 }
 
+pub(crate) type EngineActorArgs = (Option<SocketAddr>, Option<SocketAddr>, Option<SocketAddr>);
+
 impl Actor for EngineActor {
    /// TCP socket address for incoming peers, uTP socket address for incoming
    /// peers, UDP socket address for UDP trackers.
    ///
    /// If an address is not provided, [on_start](Self::on_start) will use an
    /// unspecified address (`0.0.0.0`) and a dynamically assigned port (`0`).
-   type Args = (Option<SocketAddr>, Option<SocketAddr>, Option<SocketAddr>);
+   type Args = EngineActorArgs;
    type Error = EngineError;
 
    /// See Kameo documentation for docs on the
