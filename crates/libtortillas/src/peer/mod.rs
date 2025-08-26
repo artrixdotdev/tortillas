@@ -8,6 +8,7 @@ use std::{
    fmt::{self, Debug, Display},
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+   sync::{Arc, atomic::AtomicU8},
 };
 
 pub(crate) use actor::*;
@@ -32,7 +33,7 @@ pub struct Peer {
    pub ip: IpAddr,
    pub port: u16,
    pub state: PeerState,
-   pub pieces: BitVec<u8>,
+   pub pieces: Arc<BitVec<AtomicU8>>,
    /// The reserved bytes that the peer sent us in their handshake. This
    /// indicates what extensions the peer supports.
    pub reserved: [u8; 8],
@@ -80,7 +81,7 @@ impl Peer {
          ip,
          port,
          state: PeerState::new(),
-         pieces: BitVec::EMPTY,
+         pieces: Arc::new(BitVec::EMPTY),
          reserved: [0u8; 8],
          peer_supports: PeerSupports::new(),
          id: None,

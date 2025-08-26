@@ -1,7 +1,10 @@
 use std::{
    collections::HashMap,
    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-   sync::Arc,
+   sync::{
+      Arc,
+      atomic::{AtomicU8, Ordering},
+   },
 };
 
 use anyhow::{Error, Result, bail};
@@ -48,7 +51,7 @@ pub enum PeerMessages {
    /// Each boolean in the vector corresponds to a piece in the torrent. A
    /// `true` value indicates that the peer has the piece, while `false`
    /// indicates that it does not. This is typically sent after the handshake.
-   Bitfield(BitVec<u8>) = 5u8,
+   Bitfield(Arc<BitVec<AtomicU8>>) = 5u8,
    /// A request for a specific block of data from a piece.
    /// Length is usually a power of 2.
    ///
@@ -130,7 +133,9 @@ impl PeerMessages {
          PeerMessages::Interested => create_message_with_id(2, &[]),
          PeerMessages::NotInterested => create_message_with_id(3, &[]),
          PeerMessages::Have(index) => create_message_with_id(4, &index.to_be_bytes()),
-         PeerMessages::Bitfield(bits) => create_message_with_id(5, bits.as_raw_slice()),
+         // This code is wildly confusing, but all it does is maps the array of AtomicU8s to an
+         // vector of u8s
+         PeerMessages::Bitfield(bits) => create_message_with_id(5, &bits.as_raw_slice().iter().map(|byte| byte.load(Ordering::Acquire)).collect::<Vec<u8>>()),
          PeerMessages::Request(index, begin, length) // Code is identical
          | PeerMessages::Cancel(index, begin, length) => {
             let id = match self {
@@ -253,7 +258,18 @@ impl PeerMessages {
          }
          5 => {
             trace!(bitfield_len = payload.len(), "Received Bitfield message");
-            Ok(PeerMessages::Bitfield(BitVec::from_slice(&payload)))
+            // We should definitely come back to this in the future. If you know how to get
+            // the code below working, *please* make a PR.
+            //
+            // let bytes = bytes.into_iter();
+            // let bytes = bytes.map(|byte| AtomicU8::new(byte)).collect();
+            let mut atomicu8_bytes = vec![];
+            for byte in bytes {
+               atomicu8_bytes.push(AtomicU8::new(byte));
+            }
+            Ok(PeerMessages::Bitfield(Arc::new(BitVec::from_slice(
+               &atomicu8_bytes,
+            ))))
          }
          6 => {
             if payload.len() != 12 {

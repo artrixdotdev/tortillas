@@ -1,4 +1,8 @@
-use std::{collections::HashMap, time::Instant};
+use std::{
+   collections::HashMap,
+   sync::{Arc, atomic::AtomicU8},
+   time::Instant,
+};
 
 use anyhow::Context;
 use bitvec::vec::BitVec;
@@ -163,7 +167,10 @@ impl PeerActor {
       let their_bitfield = self.peer.pieces.clone();
 
       // Find pieces the peer has that we don't have
-      let peer_has_we_dont = their_bitfield & !our_bitfield.clone();
+      //
+      // Yes, this is a little bit inefficient. Unfortunately, there's not much of a
+      // better way to do this.
+      let peer_has_we_dont = their_bitfield.as_ref().clone() & !our_bitfield.as_ref().clone();
 
       let has_interesting_pieces = peer_has_we_dont.any();
 
@@ -318,7 +325,7 @@ impl Message<PeerMessages> for PeerActor {
          }
          PeerMessages::Have(piece_index) => {
             trace!(piece_index, "Peer has a piece");
-            self.peer.pieces.set(piece_index as usize, true);
+            self.peer.pieces.set_aliased(piece_index as usize, true);
          }
          PeerMessages::Request(index, offset, length) => {
             trace!(
@@ -378,7 +385,7 @@ impl Message<PeerMessages> for PeerActor {
 #[allow(dead_code)]
 pub(crate) enum PeerTell {
    NeedPiece(usize, usize, usize),
-   HaveInfoDict(BitVec<u8>),
+   HaveInfoDict(Arc<BitVec<AtomicU8>>),
    // TODO: Add Have(usize) for notifying the peer that we have a new piece
 }
 
