@@ -173,16 +173,8 @@ impl PeerActor {
       let is_our_bitfield_empty = our_bitfield.is_empty();
 
       // Find pieces the peer has that we don't have
-      let their_bitfield = their_bitfield
-         .as_raw_slice()
-         .iter()
-         .map(|byte| byte.load(Ordering::Acquire))
-         .collect::<BitVec<u8>>();
-      let our_bitfield = our_bitfield
-         .as_raw_slice()
-         .iter()
-         .map(|byte| byte.load(Ordering::Acquire))
-         .collect::<BitVec<u8>>();
+      let their_bitfield = (*their_bitfield).clone();
+      let our_bitfield = (*our_bitfield).clone();
       let peer_has_we_dont = their_bitfield & !our_bitfield;
 
       let has_interesting_pieces = peer_has_we_dont.any();
