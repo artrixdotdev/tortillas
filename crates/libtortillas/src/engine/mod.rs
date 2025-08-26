@@ -21,7 +21,7 @@ use crate::{
       messages::PeerMessages,
       stream::{PeerRecv, PeerStream},
    },
-   torrent::{Torrent, TorrentMessage},
+   torrent::{TorrentActor, TorrentMessage},
    tracker::udp::UdpServer,
 };
 
@@ -54,7 +54,7 @@ pub struct Engine {
    /// Actors](crate::tracker::TrackerActor).
    udp_server: UdpServer,
    /// A Dashmap of Torrent actors
-   torrents: Arc<DashMap<InfoHash, ActorRef<Torrent>>>,
+   torrents: Arc<DashMap<InfoHash, ActorRef<TorrentActor>>>,
    /// Our peer ID, used for the following actors "below" the engine.
    ///
    /// - [Torrent]
@@ -276,7 +276,7 @@ impl Message<EngineMessage> for Engine {
                return;
             }
 
-            let torrent_ref = Torrent::spawn((
+            let torrent_ref = TorrentActor::spawn((
                self.peer_id,
                *metainfo,
                self.utp_socket.clone(),

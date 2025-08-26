@@ -21,7 +21,7 @@ use crate::{
    errors::PeerActorError,
    peer::Peer,
    protocol::{stream::PeerRecv, *},
-   torrent::{Torrent, TorrentMessage, TorrentRequest, TorrentResponse},
+   torrent::{TorrentActor, TorrentMessage, TorrentRequest, TorrentResponse},
 };
 
 const PEER_KEEPALIVE_TIMEOUT: u64 = 10;
@@ -30,7 +30,7 @@ const PEER_DISCONNECT_TIMEOUT: u64 = 20;
 pub(crate) struct PeerActor {
    peer: Peer,
    stream: PeerStream,
-   supervisor: ActorRef<Torrent>,
+   supervisor: ActorRef<TorrentActor>,
 }
 
 impl PeerActor {
@@ -202,7 +202,7 @@ impl PeerActor {
 }
 
 impl Actor for PeerActor {
-   type Args = (Peer, PeerStream, ActorRef<Torrent>);
+   type Args = (Peer, PeerStream, ActorRef<TorrentActor>);
    type Error = PeerActorError;
 
    /// At this point, the peer has already been handshaked with. No other

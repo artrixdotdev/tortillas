@@ -30,7 +30,7 @@ use crate::{
    tracker::{Tracker, TrackerActor, udp::UdpServer},
 };
 
-pub struct Torrent {
+pub struct TorrentActor {
    peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
    trackers: Arc<DashMap<Tracker, ActorRef<TrackerActor>>>,
 
@@ -45,7 +45,7 @@ pub struct Torrent {
    actor_ref: ActorRef<Self>,
 }
 
-impl fmt::Display for Torrent {
+impl fmt::Display for TorrentActor {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
       let working_trackers = self.trackers.len();
       let working_peers = self.peers.len();
@@ -58,7 +58,7 @@ impl fmt::Display for Torrent {
    }
 }
 
-impl Torrent {
+impl TorrentActor {
    pub fn info_dict(&self) -> Option<&Info> {
       if let Some(info) = &self.info {
          Some(info)
@@ -278,7 +278,7 @@ actor_request_response!(
    Request(usize, usize, Bytes),
 );
 
-impl Actor for Torrent {
+impl Actor for TorrentActor {
    type Args = (
       PeerId,
       MetaInfo,
@@ -343,7 +343,7 @@ impl Actor for Torrent {
    }
 }
 
-impl Message<TorrentMessage> for Torrent {
+impl Message<TorrentMessage> for TorrentActor {
    type Reply = ();
 
    async fn handle(
@@ -412,7 +412,7 @@ impl Message<TorrentMessage> for Torrent {
    }
 }
 
-impl Message<TorrentRequest> for Torrent {
+impl Message<TorrentRequest> for TorrentActor {
    type Reply = TorrentResponse;
 
    // TODO: Figure out a way to send the peers back to the engine (if needed)
@@ -471,7 +471,7 @@ mod tests {
             .await
             .unwrap();
 
-      let actor = Torrent::spawn((peer_id, metainfo, utp_server, udp_server.clone(), None));
+      let actor = TorrentActor::spawn((peer_id, metainfo, utp_server, udp_server.clone(), None));
 
       // Blocking loop that runs until we successfully handshake with atleast 6 peers
       loop {
@@ -523,7 +523,7 @@ mod tests {
             .await
             .unwrap();
 
-      let actor = Torrent::spawn((peer_id, metainfo, utp_server, udp_server.clone(), None));
+      let actor = TorrentActor::spawn((peer_id, metainfo, utp_server, udp_server.clone(), None));
 
       // Blocking loop that runs until we get an info dict
       loop {

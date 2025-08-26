@@ -32,7 +32,7 @@ use crate::{
    errors::TrackerActorError,
    hashes::InfoHash,
    peer::{Peer, PeerId},
-   torrent::{Torrent, TorrentMessage, TorrentRequest, TorrentResponse},
+   torrent::{TorrentActor, TorrentMessage, TorrentRequest, TorrentResponse},
    tracker::udp::UdpServer,
 };
 pub mod http;
@@ -191,7 +191,7 @@ impl TrackerBase for TrackerInstance {
 
 pub(crate) struct TrackerActor {
    tracker: TrackerInstance,
-   supervisor: ActorRef<Torrent>,
+   supervisor: ActorRef<TorrentActor>,
    /// A custom struct provided by tokio that allows a `tick` function that will
    /// wait until the next `duration` passes
    ///
@@ -200,7 +200,7 @@ pub(crate) struct TrackerActor {
 }
 
 impl Actor for TrackerActor {
-   type Args = (Tracker, PeerId, UdpServer, SocketAddr, ActorRef<Torrent>);
+   type Args = (Tracker, PeerId, UdpServer, SocketAddr, ActorRef<TorrentActor>);
    type Error = TrackerActorError;
 
    /// Unlike the [`PeerActor`](crate::peer::PeerActor), there are no
