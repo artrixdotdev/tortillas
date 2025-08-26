@@ -30,7 +30,7 @@ use crate::{
    tracker::{Tracker, TrackerActor, udp::UdpServer},
 };
 
-pub struct TorrentActor {
+pub(crate) struct TorrentActor {
    peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
    trackers: Arc<DashMap<Tracker, ActorRef<TrackerActor>>>,
 
