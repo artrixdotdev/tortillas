@@ -1,9 +1,6 @@
 use std::{
    collections::HashMap,
-   sync::{
-      Arc,
-      atomic::{AtomicU8, Ordering},
-   },
+   sync::{Arc, atomic::AtomicU8},
    time::Instant,
 };
 
