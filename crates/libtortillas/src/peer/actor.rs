@@ -327,7 +327,21 @@ impl Message<PeerMessages> for PeerActor {
          }
          PeerMessages::Have(piece_index) => {
             trace!(piece_index, "Peer has a piece");
-            self.peer.pieces.set_aliased(piece_index as usize, true);
+            let idx = piece_index as usize;
+            if idx < self.peer.pieces.len() {
+               let was_set = self.peer.pieces[idx];
+               self.peer.pieces.set_aliased(idx, true);
+               // If this is a new piece, our interest may change.
+               if !was_set {
+                  self.determine_interest().await;
+               }
+            } else {
+               warn!(
+                  piece_index,
+                  len = self.peer.pieces.len(),
+                  "Have index out of bounds; ignoring"
+               );
+            }
          }
          PeerMessages::Request(index, offset, length) => {
             trace!(
