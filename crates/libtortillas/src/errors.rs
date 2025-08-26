@@ -24,7 +24,7 @@ use std::net::AddrParseError;
 
 use thiserror::Error;
 
-use crate::peer::PeerId;
+use crate::{hashes::InfoHash, peer::PeerId};
 
 #[derive(Error, Debug)]
 pub enum EngineError {
@@ -47,6 +47,9 @@ pub enum EngineError {
    /// Failed to deserialize [MetaInfo](crate::metainfo::MetaInfo)
    #[error("Failed to deserialize meta info")]
    MetaInfoDeserializeError,
+
+   #[error("Torrent already exists: {0}")]
+   TorrentAlreadyExists(InfoHash),
 
    /// Any other engine-level error wrapped in [`anyhow::Error`]
    #[error(transparent)]

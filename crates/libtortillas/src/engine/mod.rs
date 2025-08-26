@@ -100,7 +100,7 @@ impl Engine {
 
       self
          .actor()
-         .tell(EngineMessage::Torrent(Box::new(metainfo)))
+         .ask(EngineRequest::Torrent(Box::new(metainfo)))
          .await
          .expect("Failed to add torrent");
 

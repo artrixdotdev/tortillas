@@ -26,9 +26,6 @@ use crate::{
 };
 
 pub(crate) enum EngineMessage {
-   #[allow(dead_code)]
-   /// Creates a new [Torrent] actor.
-   Torrent(Box<MetaInfo>),
    /// Handles an incoming peer connection. The peer has been neither handshaked
    /// nor verified at this point.
    IncomingPeer(Box<PeerStream>),
@@ -38,6 +35,9 @@ actor_request_response!(
    #[allow(dead_code)]
    pub(crate) EngineRequest,
    pub(crate) EngineResponse #[derive(Reply)],
+   /// Creates a new [Torrent] actor.
+   Torrent(Box<MetaInfo>) Torrent(ActorRef<TorrentActor>),
+
 );
 
 /// The "top level" struct for torrenting. Handles all
@@ -177,7 +177,18 @@ impl Message<EngineMessage> for EngineActor {
                error!("Received unexpected message from peer");
             }
          }
-         EngineMessage::Torrent(metainfo) => {
+      };
+   }
+}
+
+impl Message<EngineRequest> for EngineActor {
+   type Reply = Result<EngineResponse, EngineError>;
+
+   async fn handle(
+      &mut self, msg: EngineRequest, _: &mut Context<Self, Self::Reply>,
+   ) -> Self::Reply {
+      match msg {
+         EngineRequest::Torrent(metainfo) => {
             let info_hash = metainfo
                .info_hash()
                .map_err(|e| {
@@ -190,7 +201,7 @@ impl Message<EngineMessage> for EngineActor {
                   ?info_hash,
                   "Torrent already exists; ignoring duplicate EngineMessage::Torrent"
                );
-               return;
+               return Err(EngineError::TorrentAlreadyExists(info_hash));
             }
 
             let torrent_ref = TorrentActor::spawn((
@@ -203,8 +214,9 @@ impl Message<EngineMessage> for EngineActor {
 
             self.actor_ref.link(&torrent_ref).await;
 
-            self.torrents.insert(info_hash, torrent_ref);
+            self.torrents.insert(info_hash, torrent_ref.clone());
+            Ok(EngineResponse::Torrent(torrent_ref))
          }
-      };
+      }
    }
 }
