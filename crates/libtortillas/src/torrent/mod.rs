@@ -1,4 +1,8 @@
-use std::{fmt, net::SocketAddr, sync::Arc};
+use std::{
+   fmt,
+   net::SocketAddr,
+   sync::{Arc, atomic::AtomicU8},
+};
 
 use bitvec::vec::BitVec;
 use bytes::Bytes;
@@ -30,7 +34,7 @@ pub struct Torrent {
    peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
    trackers: Arc<DashMap<Tracker, ActorRef<TrackerActor>>>,
 
-   bitfield: BitVec<u8>,
+   bitfield: Arc<BitVec<AtomicU8>>,
    id: PeerId,
    info: Option<Info>,
    metainfo: MetaInfo,
@@ -252,7 +256,7 @@ actor_request_response!(
 
    /// Bitfield of the torrent
    Bitfield
-   Bitfield(BitVec<u8>),
+   Bitfield(Arc<BitVec<AtomicU8>>),
 
    /// Current peers of the torrent
    CurrentPeers
@@ -318,11 +322,11 @@ impl Actor for Torrent {
       if info.is_none() {
          debug!("No info dict found in metainfo, you're probably using a magnet uri");
       }
-      let bitfield: BitVec<u8> = if let Some(info) = &info {
+      let bitfield: Arc<BitVec<AtomicU8>> = if let Some(info) = &info {
          debug!("Using bitfield length {}", info.piece_count());
-         BitVec::with_capacity(info.piece_count())
+         Arc::new(BitVec::with_capacity(info.piece_count()))
       } else {
-         BitVec::EMPTY
+         Arc::new(BitVec::EMPTY)
       };
 
       Ok(Self {
@@ -373,7 +377,7 @@ impl Message<TorrentMessage> for Torrent {
                info!("Received valid info dict, starting torrent process...");
                let info: Info =
                   serde_bencode::from_bytes(&bytes).expect("Failed to parse info dict");
-               self.bitfield.resize(info.piece_count(), false);
+               self.bitfield = Arc::new(BitVec::with_capacity(info.piece_count()));
                self.info = Some(info);
                self
                   .broadcast_to_peers(PeerTell::HaveInfoDict(self.bitfield.clone()))

@@ -1,4 +1,8 @@
-use std::{collections::HashMap, time::Instant};
+use std::{
+   collections::HashMap,
+   sync::{Arc, atomic::AtomicU8},
+   time::Instant,
+};
 
 use anyhow::Context;
 use bitvec::vec::BitVec;
@@ -156,18 +160,23 @@ impl PeerActor {
    #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
    async fn determine_interest(&mut self) {
       let msg = TorrentRequest::Bitfield;
+
+      let their_bitfield = self.peer.pieces.clone();
       let our_bitfield = match self.supervisor.ask(msg).await.unwrap() {
          TorrentResponse::Bitfield(bitfield) => bitfield,
          _ => unreachable!("Unexpected response from supervisor"),
       };
-      let their_bitfield = self.peer.pieces.clone();
+
+      let is_our_bitfield_empty = our_bitfield.is_empty();
 
       // Find pieces the peer has that we don't have
-      let peer_has_we_dont = their_bitfield & !our_bitfield.clone();
+      let their_bitfield = (*their_bitfield).clone();
+      let our_bitfield = (*our_bitfield).clone();
+      let peer_has_we_dont = their_bitfield & !our_bitfield;
 
       let has_interesting_pieces = peer_has_we_dont.any();
 
-      if our_bitfield.is_empty() || has_interesting_pieces {
+      if is_our_bitfield_empty || has_interesting_pieces {
          self
             .stream
             .send(PeerMessages::Interested)
@@ -318,7 +327,7 @@ impl Message<PeerMessages> for PeerActor {
          }
          PeerMessages::Have(piece_index) => {
             trace!(piece_index, "Peer has a piece");
-            self.peer.pieces.set(piece_index as usize, true);
+            self.peer.pieces.set_aliased(piece_index as usize, true);
          }
          PeerMessages::Request(index, offset, length) => {
             trace!(
@@ -378,7 +387,7 @@ impl Message<PeerMessages> for PeerActor {
 #[allow(dead_code)]
 pub(crate) enum PeerTell {
    NeedPiece(usize, usize, usize),
-   HaveInfoDict(BitVec<u8>),
+   HaveInfoDict(Arc<BitVec<AtomicU8>>),
    // TODO: Add Have(usize) for notifying the peer that we have a new piece
 }
 
