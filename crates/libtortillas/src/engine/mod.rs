@@ -48,6 +48,7 @@ use tracing::error;
 use crate::{
    errors::EngineError,
    metainfo::{MetaInfo, TorrentFile},
+   peer::PeerId,
    torrent::Torrent,
 };
 
@@ -93,10 +94,13 @@ impl Engine {
       utp_addr: Option<SocketAddr>,
       /// Address to connect to UDP [trackers](crate::tracker::Tracker).
       udp_addr: Option<SocketAddr>,
+      /// Custom peer ID for peer discovery.
+      #[builder(default)]
+      custom_id: PeerId,
    ) -> Self {
-      let addrs = (tcp_addr, utp_addr, udp_addr);
+      let args: EngineActorArgs = (tcp_addr, utp_addr, udp_addr, Some(custom_id));
 
-      let actor = EngineActor::spawn(addrs);
+      let actor = EngineActor::spawn(args);
 
       Engine(actor)
    }

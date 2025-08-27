@@ -44,7 +44,15 @@ pub struct EngineActor {
    pub(crate) actor_ref: ActorRef<EngineActor>,
 }
 
-pub(crate) type EngineActorArgs = (Option<SocketAddr>, Option<SocketAddr>, Option<SocketAddr>);
+pub(crate) type EngineActorArgs = (
+   // TCP Addr
+   Option<SocketAddr>,
+   // uTP Addr
+   Option<SocketAddr>,
+   // UDP Addr
+   Option<SocketAddr>,
+   Option<PeerId>,
+);
 
 impl Actor for EngineActor {
    /// TCP socket address for incoming peers, uTP socket address for incoming
@@ -62,7 +70,7 @@ impl Actor for EngineActor {
    async fn on_start(
       args: Self::Args, actor_ref: kameo::prelude::ActorRef<Self>,
    ) -> Result<Self, Self::Error> {
-      let (tcp_addr, utp_addr, udp_addr) = args;
+      let (tcp_addr, utp_addr, udp_addr, peer_id) = args;
 
       let tcp_addr = tcp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
       // Should this be port 6881?
@@ -76,7 +84,8 @@ impl Actor for EngineActor {
          .map_err(|e| EngineError::NetworkSetupFailed(format!("utp bind {}: {}", utp_addr, e)))?;
       let udp_server = UdpServer::new(Some(udp_addr)).await;
 
-      let peer_id = PeerId::new();
+      let peer_id = peer_id.unwrap_or_default();
+
       Ok(Self {
          tcp_socket,
          utp_socket,
