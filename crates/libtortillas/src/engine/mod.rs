@@ -13,6 +13,7 @@ use crate::{
 };
 
 pub struct Engine(ActorRef<EngineActor>);
+
 #[bon::bon]
 impl Engine {
    #[builder(on(SocketAddr, into))]
@@ -125,5 +126,11 @@ impl Engine {
       Ok(Torrent::new(info_hash, torrent_ref))
       // We don't need to assign link or insert the ref here because its already
       // done by the engine actor
+   }
+}
+
+impl Default for Engine {
+   fn default() -> Self {
+      Self::builder().build()
    }
 }
