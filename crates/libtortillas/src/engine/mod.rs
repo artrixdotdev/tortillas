@@ -1,4 +1,41 @@
+//! # Engine
+//!
+//! The [`Engine`] is the central controller for multiple torrenting operations.
+//! It manages communication with trackers, incoming peers, and spawns
+//! individual [`Torrent`] actors to handle torrent
+//! sessions.
+//!
+//! ## Overview
+//!
+//! - The `Engine` is backed by an [`EngineActor`] that manages torrent state
+//!   and peer connections (based on [kameo actors](https://github.com/tqwewe/kameo)).
+//! - It provides a high-level API for adding torrents from different sources
+//!   (remote `.torrent` files, local files, or magnet URIs).
+//! - Each torrent is represented by a [`Torrent`] handle, which can be used to
+//!   interact with the torrent session.
+//!
+//! ## Example
+//!
+//! ```no_run
+//! use libtortillas::Engine;
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!    // Create a new engine listening on default addresses
+//!    let engine = Engine::default()
+//!
+//!    // Add a torrent from a magnet URI
+//!    let torrent = engine
+//!       .add_torrent("magnet:?xt=urn:btih:...")
+//!       .await
+//!       .expect("Failed to add torrent");
+//!
+//!    println!("Started torrenting: {}", torrent.key());
+//! }
+//! ```
+
 mod actor;
+
 use std::net::SocketAddr;
 
 pub(crate) use actor::*;
@@ -12,12 +49,41 @@ use crate::{
    torrent::Torrent,
 };
 
+/// The main entry point for managing torrents.
+///
+/// The [`Engine`] is responsible for:
+/// - Spawning and supervising the lower level [`EngineActor`]
+/// - Adding new [torrents](Torrent) from different sources
+/// - Managing peer connections and tracker communication
+///
+/// Typically, you create a single `Engine` instance per application and attach
+/// multiple [`Torrent`] instances to it.
+///
+/// # Example
+/// ```no_run
+/// use libtortillas::prelude::Engine;
+/// // Create an engine with no explicit addresses
+/// let engine = Engine::builder()
+///    // Optionally provide addresses for our sockets to listen on
+///    .tcp_addr("127.0.0.1:6881".parse().unwrap())
+///    .utp_addr("127.0.0.1:6882".parse().unwrap())
+///    .udp_addr("127.0.0.1:6883".parse().unwrap())
+///    .build();
+/// ```
+/// Or with all default settings
+/// ```
+/// use libtortillas::prelude::Engine;
+/// let engine = Engine::default();
+/// ```
 pub struct Engine(ActorRef<EngineActor>);
 
 #[bon::bon]
 impl Engine {
+   /// Creates a new [`Engine`] instance.
+   ///
+   /// Use [`Engine::default`] for the default settings.
    #[builder(on(SocketAddr, into))]
-   fn new(
+   pub fn new(
       /// The address to listen for TCP peers on.
       tcp_addr: Option<SocketAddr>,
       /// The address to listen for uTP peers on.
@@ -60,7 +126,7 @@ impl Engine {
    ///
    /// #[tokio::main]
    /// async fn main() {
-   ///    let mut engine = Engine::new(None);
+   ///    let engine = Engine::default();
    ///    let torrent_link = "https://example.com/example.torrent";
    ///    let torrent = engine
    ///       .add_torrent(torrent_link)
@@ -77,7 +143,7 @@ impl Engine {
    ///
    /// #[tokio::main]
    /// async fn main() {
-   ///    let mut engine = Engine::new(None);
+   ///    let engine = Engine::default();
    ///    let magnet_uri = "magnet:?xt=?????";
    ///    let torrent = engine
    ///       .add_torrent(magnet_uri)
