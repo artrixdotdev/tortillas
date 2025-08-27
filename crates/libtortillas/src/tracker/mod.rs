@@ -200,7 +200,13 @@ pub(crate) struct TrackerActor {
 }
 
 impl Actor for TrackerActor {
-   type Args = (Tracker, PeerId, UdpServer, SocketAddr, ActorRef<TorrentActor>);
+   type Args = (
+      Tracker,
+      PeerId,
+      UdpServer,
+      SocketAddr,
+      ActorRef<TorrentActor>,
+   );
    type Error = TrackerActorError;
 
    /// Unlike the [`PeerActor`](crate::peer::PeerActor), there are no
