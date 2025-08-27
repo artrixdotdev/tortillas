@@ -35,12 +35,14 @@
 //! ```
 
 mod actor;
+mod messages;
 
 use std::net::SocketAddr;
 
 pub(crate) use actor::*;
 use bon;
 use kameo::{Actor, actor::ActorRef};
+pub(crate) use messages::*;
 use tracing::error;
 
 use crate::{

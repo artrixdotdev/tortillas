@@ -1,6 +1,8 @@
 mod actor;
+mod messages;
 pub(crate) use actor::*;
 use kameo::actor::ActorRef;
+pub(crate) use messages::*;
 
 use crate::hashes::InfoHash;
 
