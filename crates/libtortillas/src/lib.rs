@@ -6,4 +6,24 @@ pub mod peer;
 pub mod protocol;
 pub mod torrent;
 pub mod tracker;
-pub mod util;
+pub(crate) mod util;
+
+/// The prelude for this crate.
+///
+/// This module re-exports the most commonly used types, traits, and functions
+/// so that you can conveniently import them all at once:
+///
+/// ```
+/// use libtortillas::prelude::*;
+/// ```
+pub mod prelude {
+   pub use crate::{
+      engine::*,
+      errors::*,
+      hashes::InfoHash,
+      metainfo::*,
+      peer::{Peer, PeerId},
+      torrent::*,
+      tracker::Tracker,
+   };
+}
