@@ -110,7 +110,12 @@ impl TorrentActor {
          }
       }
    }
-
+   /// Checks if the torrent is empty (we haven't downloaded any pieces yet) by
+   /// checking if our bitfield is filled with zeros.
+   ///
+   /// The reason why we can't just use `self.bitfield.is_empty()` is because a
+   /// bitfield filled with zeros isn't considered "empty" since it still has
+   /// data in it
    pub fn is_empty(&self) -> bool {
       self.bitfield.count_zeros() == self.bitfield.len()
    }
