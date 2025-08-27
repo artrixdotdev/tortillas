@@ -12,7 +12,7 @@ use kameo::{
 use sha1::{Digest, Sha1};
 use tracing::{debug, info, trace, warn};
 
-use super::TorrentActor;
+use super::{PieceStorageStrategy, TorrentActor};
 use crate::{
    actor_request_response,
    hashes::InfoHash,
@@ -48,6 +48,8 @@ pub(crate) enum TorrentMessage {
 
    KillPeer(PeerId),
    KillTracker(Tracker),
+
+   PieceStorage(PieceStorageStrategy),
 }
 
 impl fmt::Debug for TorrentMessage {
@@ -159,6 +161,13 @@ impl Message<TorrentMessage> for TorrentActor {
             }
          }
          TorrentMessage::IncomingPiece(_, _, _) => unimplemented!(),
+         TorrentMessage::PieceStorage(strategy) => {
+            if !self.is_empty() {
+               // Intentional panic because this is unintended behavior
+               panic!("Cannot change piece storage strategy after we've already received pieces");
+            }
+            self.piece_storage = strategy;
+         }
       }
    }
 }

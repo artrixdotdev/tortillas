@@ -70,8 +70,7 @@ pub(crate) struct TorrentActor {
    /// Should only be used to create new connections
    pub(super) utp_server: Arc<UtpSocketUdp>,
    pub(super) actor_ref: ActorRef<Self>,
-   #[allow(dead_code)]
-   piece_storage: PieceStorageStrategy,
+   pub(super) piece_storage: PieceStorageStrategy,
 }
 
 impl fmt::Display for TorrentActor {
@@ -110,6 +109,10 @@ impl TorrentActor {
                .expect("Magnet URIs should always have info hashes"),
          }
       }
+   }
+
+   pub fn is_empty(&self) -> bool {
+      self.bitfield.count_zeros() == self.bitfield.len()
    }
 
    /// Spawns a new [`PeerActor`] for the given [`Peer`] and adds it to the
