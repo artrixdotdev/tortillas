@@ -6,6 +6,7 @@ use crate::hashes::InfoHash;
 
 /// Should always be used through the [`Engine`](crate::engine::Engine)
 #[allow(dead_code)]
+#[derive(Debug, Clone)]
 pub struct Torrent(InfoHash, ActorRef<TorrentActor>);
 
 impl Torrent {

@@ -75,6 +75,7 @@ use crate::{
 /// use libtortillas::prelude::Engine;
 /// let engine = Engine::default();
 /// ```
+#[derive(Debug, Clone)]
 pub struct Engine(ActorRef<EngineActor>);
 
 #[bon::bon]
