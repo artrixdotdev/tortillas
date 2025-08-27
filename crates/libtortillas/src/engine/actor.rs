@@ -13,8 +13,12 @@ use tracing::error;
 
 use super::EngineMessage;
 use crate::{
-   errors::EngineError, hashes::InfoHash, peer::PeerId, protocol::stream::PeerStream,
-   torrent::TorrentActor, tracker::udp::UdpServer,
+   errors::EngineError,
+   hashes::InfoHash,
+   peer::PeerId,
+   protocol::stream::PeerStream,
+   torrent::{PieceStorageStrategy, TorrentActor},
+   tracker::udp::UdpServer,
 };
 
 /// The "top level" struct for torrenting. Handles all
@@ -42,6 +46,8 @@ pub struct EngineActor {
    pub peer_id: PeerId,
    /// Our actor reference. Created in [Engine::on_start]
    pub(crate) actor_ref: ActorRef<EngineActor>,
+
+   pub(crate) default_piece_storage_strategy: PieceStorageStrategy,
 }
 
 pub(crate) type EngineActorArgs = (
@@ -52,6 +58,8 @@ pub(crate) type EngineActorArgs = (
    // UDP Addr
    Option<SocketAddr>,
    Option<PeerId>,
+   // Strategy for storing pieces of the torrent.
+   PieceStorageStrategy,
 );
 
 impl Actor for EngineActor {
@@ -70,7 +78,7 @@ impl Actor for EngineActor {
    async fn on_start(
       args: Self::Args, actor_ref: kameo::prelude::ActorRef<Self>,
    ) -> Result<Self, Self::Error> {
-      let (tcp_addr, utp_addr, udp_addr, peer_id) = args;
+      let (tcp_addr, utp_addr, udp_addr, peer_id, default_piece_storage_strategy) = args;
 
       let tcp_addr = tcp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
       // Should this be port 6881?
@@ -93,6 +101,7 @@ impl Actor for EngineActor {
          torrents: Arc::new(DashMap::new()),
          peer_id,
          actor_ref,
+         default_piece_storage_strategy,
       })
    }
 

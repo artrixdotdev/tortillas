@@ -49,7 +49,7 @@ use crate::{
    errors::EngineError,
    metainfo::{MetaInfo, TorrentFile},
    peer::PeerId,
-   torrent::Torrent,
+   torrent::{PieceStorageStrategy, Torrent},
 };
 
 /// The main entry point for managing torrents.
@@ -97,8 +97,17 @@ impl Engine {
       /// Custom peer ID for peer discovery.
       #[builder(default)]
       custom_id: PeerId,
+      /// Strategy for storing pieces of the torrent.
+      #[builder(default)]
+      piece_storage_strategy: PieceStorageStrategy,
    ) -> Self {
-      let args: EngineActorArgs = (tcp_addr, utp_addr, udp_addr, Some(custom_id));
+      let args: EngineActorArgs = (
+         tcp_addr,
+         utp_addr,
+         udp_addr,
+         Some(custom_id),
+         piece_storage_strategy,
+      );
 
       let actor = EngineActor::spawn(args);
 

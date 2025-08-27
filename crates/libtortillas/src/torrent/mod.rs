@@ -1,6 +1,6 @@
 mod actor;
 mod messages;
-pub(crate) use actor::*;
+pub use actor::*;
 use kameo::actor::ActorRef;
 pub(crate) use messages::*;
 

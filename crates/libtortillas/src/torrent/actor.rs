@@ -1,6 +1,7 @@
 use std::{
    fmt,
    net::SocketAddr,
+   path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
 };
 
@@ -23,6 +24,39 @@ use crate::{
    tracker::{Tracker, TrackerActor, udp::UdpServer},
 };
 
+/// Defines how torrent pieces are stored and accessed.
+///
+/// A torrent is composed of multiple pieces, and this enum determines
+/// whether those pieces are referenced directly from the downloaded
+/// files or written into a separate cache directory.
+///
+/// # Variants
+///
+/// - [`InFile`]: References pieces directly from the files that the torrent
+///   describes. No extra storage is used; the piece data is read directly from
+///   the final output files. This is the default strategy and is efficient when
+///   you are downloading directly into the final file layout.
+///
+/// - [`Disk(PathBuf)`]: Stores each piece as a separate file in the specified
+///   cache directory. The filename for each piece is its SHA‑1 hash. This
+///   strategy is required if you are using a custom output stream, since pieces
+///   need to be retreived later on for future seeding. It is also useful for:
+///   - HTTP Streaming or when the file itself is never actually written to disk
+///   - Supporting non-standard output backends
+#[derive(Debug, Default, Clone)]
+pub enum PieceStorageStrategy {
+   /// Reference pieces directly from the downloaded files themselves.
+   ///
+   /// This avoids extra storage overhead and is the default strategy.
+   #[default]
+   InFile,
+   /// Write each piece to disk separately in the given cache directory.
+   ///
+   /// Each piece is stored as a file named by its SHA‑1 hash.
+   /// This strategy is **required** when using a custom [`OutputType`].
+   Disk(PathBuf),
+}
+
 pub(crate) struct TorrentActor {
    pub(crate) peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
    pub(crate) trackers: Arc<DashMap<Tracker, ActorRef<TrackerActor>>>,
@@ -36,6 +70,8 @@ pub(crate) struct TorrentActor {
    /// Should only be used to create new connections
    pub(super) utp_server: Arc<UtpSocketUdp>,
    pub(super) actor_ref: ActorRef<Self>,
+   #[allow(dead_code)]
+   piece_storage: PieceStorageStrategy,
 }
 
 impl fmt::Display for TorrentActor {
@@ -207,12 +243,13 @@ impl Actor for TorrentActor {
       Arc<UtpSocketUdp>,
       UdpServer,
       Option<SocketAddr>,
+      PieceStorageStrategy,
    );
 
    type Error = TorrentError;
 
    async fn on_start(args: Self::Args, us: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (peer_id, metainfo, utp_server, tracker_server, primary_addr) = args;
+      let (peer_id, metainfo, utp_server, tracker_server, primary_addr, piece_storage) = args;
       let primary_addr = primary_addr.unwrap_or_else(|| {
          let addr = utp_server.bind_addr();
          info!("No primary address provided, using {}", addr);
@@ -261,6 +298,7 @@ impl Actor for TorrentActor {
          metainfo,
          info,
          actor_ref: us,
+         piece_storage,
       })
    }
 }
@@ -299,7 +337,14 @@ mod tests {
             .await
             .unwrap();
 
-      let actor = TorrentActor::spawn((peer_id, metainfo, utp_server, udp_server.clone(), None));
+      let actor = TorrentActor::spawn((
+         peer_id,
+         metainfo,
+         utp_server,
+         udp_server.clone(),
+         None,
+         PieceStorageStrategy::default(),
+      ));
 
       // Blocking loop that runs until we successfully handshake with atleast 6 peers
       loop {
@@ -351,7 +396,14 @@ mod tests {
             .await
             .unwrap();
 
-      let actor = TorrentActor::spawn((peer_id, metainfo, utp_server, udp_server.clone(), None));
+      let actor = TorrentActor::spawn((
+         peer_id,
+         metainfo,
+         utp_server,
+         udp_server.clone(),
+         None,
+         PieceStorageStrategy::default(),
+      ));
 
       // Blocking loop that runs until we get an info dict
       loop {

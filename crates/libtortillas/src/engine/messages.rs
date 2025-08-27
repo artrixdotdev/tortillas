@@ -93,6 +93,7 @@ impl Message<EngineRequest> for EngineActor {
                self.utp_socket.clone(),
                self.udp_server.clone(),
                None,
+               self.default_piece_storage_strategy.clone(),
             ));
 
             self.actor_ref.link(&torrent_ref).await;
