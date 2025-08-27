@@ -7,7 +7,7 @@
 //!
 //! ## Overview
 //!
-//! - The `Engine` is backed by an [`EngineActor`] that manages torrent state
+//! - The `Engine` is backed by an `EngineActor` that manages torrent state
 //!   and peer connections (based on [kameo actors](https://github.com/tqwewe/kameo)).
 //! - It provides a high-level API for adding torrents from different sources
 //!   (remote `.torrent` files, local files, or magnet URIs).
@@ -52,7 +52,7 @@ use crate::{
 /// The main entry point for managing torrents.
 ///
 /// The [`Engine`] is responsible for:
-/// - Spawning and supervising the lower level [`EngineActor`]
+/// - Spawning and supervising the lower level `EngineActor`
 /// - Adding new [torrents](Torrent) from different sources
 /// - Managing peer connections and tracker communication
 ///
