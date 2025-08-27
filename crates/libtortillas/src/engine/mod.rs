@@ -1,5 +1,8 @@
 mod actor;
+use std::net::SocketAddr;
+
 pub(crate) use actor::*;
+use bon;
 use kameo::{Actor, actor::ActorRef};
 use tracing::error;
 
@@ -10,11 +13,21 @@ use crate::{
 };
 
 pub struct Engine(ActorRef<EngineActor>);
-
+#[bon::bon]
 impl Engine {
-   pub fn new(addrs: Option<EngineActorArgs>) -> Self {
-      let addrs = addrs.unwrap_or_default();
+   #[builder(on(SocketAddr, into))]
+   fn new(
+      /// The address to listen for TCP peers on.
+      tcp_addr: Option<SocketAddr>,
+      /// The address to listen for uTP peers on.
+      utp_addr: Option<SocketAddr>,
+      /// Address to connect to UDP [trackers](crate::tracker::Tracker).
+      udp_addr: Option<SocketAddr>,
+   ) -> Self {
+      let addrs = (tcp_addr, utp_addr, udp_addr);
+
       let actor = EngineActor::spawn(addrs);
+
       Engine(actor)
    }
 

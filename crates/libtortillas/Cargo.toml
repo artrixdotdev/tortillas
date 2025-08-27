@@ -31,6 +31,7 @@ async-stream = "0.3.6"
 bytes = "1"
 kameo = "0.17"
 dashmap = "6.1.0"
+bon = "3.7.1"
 
 [dev-dependencies]
 tracing-test = "0.2.5"
