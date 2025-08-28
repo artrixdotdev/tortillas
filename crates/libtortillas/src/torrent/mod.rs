@@ -118,7 +118,9 @@ impl Torrent {
    ///
    /// # Panics
    ///
-   /// Panics if the message could not be sent to the actor.
+   /// Panics if:
+   /// - The message could not be sent to the actor.
+   /// - The torrent isn't in a [`TorrentState::Inactive`] state.
    pub async fn set_piece_storage(&self, piece_storage: PieceStorageStrategy) {
       self
          .actor()
