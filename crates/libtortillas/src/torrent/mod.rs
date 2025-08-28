@@ -43,9 +43,9 @@ pub struct StreamedPiece {
 pub(super) enum OutputStrategy {
    /// The specified output folder.
    ///
-   /// This option must be set -- libtortillas will not function properly if the
-   /// output directory is not specified. See
-   /// [`Torrent::with_output_folder`] for more.
+   /// One output strategy must be configured before starting the torrent
+   /// (either a folder or streaming). See
+   /// [`Torrent::with_output_folder`] and [`Torrent::with_output_stream`].
    Folder(PathBuf),
 
    /// Tells the [`TorrentActor`](crate::torrent::TorrentActor)
