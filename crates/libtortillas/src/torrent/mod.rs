@@ -211,6 +211,10 @@ impl Torrent {
 
    /// Starts the torrent download and begins the download & seeding process.
    ///
+   /// If all pieces have been downloaded, it will set the state to
+   /// [`TorrentState::Seeding`]. Otherwise, it will set the state to
+   /// [`TorrentState::Downloading`].
+   ///
    /// # Panics
    ///
    /// Panics if the message could not be sent to the actor.
