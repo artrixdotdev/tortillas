@@ -24,8 +24,9 @@ pub struct StreamedPiece {
 
    /// The offset of the piece
    pub offset: usize,
+
    // Note: libtortillas should never clone this struct. The `Clone` derive exists
-   // only incase the end developer choose to clone thist
+   // only in case the end developer chooses to clone this.
    /// The raw bytes of the piece
    pub data: Bytes,
 }
@@ -34,7 +35,7 @@ pub struct StreamedPiece {
 ///
 /// # Variants
 ///
-/// - [`Self::Folder()`]: The specified output folder
+/// - [`Self::Folder(PathBuf)`]: The specified output folder
 /// - [`Self::Stream`]: When specified, all pieces will be sent through a
 ///   message channel
 #[allow(dead_code)]
@@ -45,35 +46,73 @@ pub(super) enum OutputStrategy {
    /// output directory is not specified. See
    /// [`Torrent::with_output_folder`] for more.
    Folder(PathBuf),
+
    /// Tells the [`TorrentActor`](crate::torrent::TorrentActor)
    /// to send all received pieces through a message channel instead of
    /// directly writing them to disk.
    Stream,
 }
 
-/// Should always be used through the [`Engine`](crate::engine::Engine)
+/// A handle to a torrent managed by the engine.
+///
+/// This struct acts as the primary interface for controlling and configuring
+/// a torrent after it has been added to the [`Engine`](crate::engine::Engine).
+///
+/// Internally, it wraps around our Actor modelusing [kameo](https://github.com/tqwewe/kameo) which
+/// performs the actual torrent logic.
+///
+/// # Examples
+///
+/// ```no_run
+/// use libtortillas::prelude::*;
+///
+/// let engine = Engine::default();
+/// let torrent = engine.add_torrent("https://example.com/file.torrent");
+///
+/// // Configure output
+/// torrent.with_output_folder("downloads/");
+///
+/// // Start downloading
+/// torrent.start();
+/// ```
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Torrent(InfoHash, ActorRef<TorrentActor>);
 
 impl Torrent {
+   /// Creates a new [`Torrent`] handle from an [`InfoHash`] and a reference
+   /// to its underlying [`TorrentActor`].
+   ///
+   /// This is typically only used internally by the engine.
    pub(crate) fn new(info_hash: InfoHash, actor_ref: ActorRef<TorrentActor>) -> Self {
       Torrent(info_hash, actor_ref)
    }
 
+   /// Returns a reference to the underlying [`ActorRef`] for this torrent.
+   ///
+   /// This is primarily useful for internal communication with the
+   /// [`TorrentActor`].
    pub(crate) fn actor(&self) -> &ActorRef<TorrentActor> {
       &self.1
    }
 
+   /// Returns the [`InfoHash`] that uniquely identifies this torrent.
    pub fn info_hash(&self) -> InfoHash {
       self.0
    }
 
-   /// Alias for [Self::info_hash]
+   /// Alias for [`Self::info_hash`].
    pub fn key(&self) -> InfoHash {
       self.info_hash()
    }
 
+   /// Sets the piece storage strategy for this torrent.
+   ///
+   /// This determines how pieces are stored (e.g. in memory, on disk, etc.).
+   ///
+   /// # Panics
+   ///
+   /// Panics if the message could not be sent to the actor.
    pub fn set_piece_storage(&self, piece_storage: PieceStorageStrategy) -> &Self {
       self
          .actor()
@@ -89,7 +128,7 @@ impl Torrent {
 
    /// Specifies the output folder that each file will eventually be written to.
    ///
-   /// This function or [Self::with_output_stream] is strictly required to be
+   /// This function or [`Self::with_output_stream`] is strictly required to be
    /// set before the download begins.
    ///
    /// # Examples
@@ -112,7 +151,7 @@ impl Torrent {
    /// Configures this torrent to stream its output instead of writing it to
    /// disk.
    ///
-   /// When using this mode, all downlaoded pieces are sent through a channel
+   /// When using this mode, all downloaded pieces are sent through a channel
    /// rather than being persisted to the filesystem. This allows you to consume
    /// the torrent data in real time (e.g. for streaming, playing, custom
    /// storage backends, etc.).
@@ -143,7 +182,7 @@ impl Torrent {
    ///    // Required if you want to use a custom output stream
    ///    .set_piece_storage(PieceStorageStrategy::Disk("path/to/output").into());
    ///
-   /// let stream = torrent.with_output_stream();
+   /// let mut receiver = torrent.with_output_stream();
    ///
    /// tokio::spawn(async move {
    ///    while let Some(piece) = receiver.recv().await {
@@ -170,6 +209,11 @@ impl Torrent {
       }
    }
 
+   /// Starts the torrent download and begins the download & seeding process.
+   ///
+   /// # Panics
+   ///
+   /// Panics if the message could not be sent to the actor.
    pub fn start(&self) {
       let msg = TorrentMessage::Start;
 
