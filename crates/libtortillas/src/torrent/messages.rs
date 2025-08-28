@@ -58,14 +58,14 @@ pub(crate) enum TorrentMessage {
 impl fmt::Debug for TorrentMessage {
    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
       match self {
-         TorrentMessage::InfoBytes(bytes) => write!(f, "InfoBytes({:?})", bytes),
-         TorrentMessage::KillPeer(peer_id) => write!(f, "KillPeer({:?})", peer_id),
-         TorrentMessage::KillTracker(tracker) => write!(f, "KillTracker({:?})", tracker),
-         TorrentMessage::AddPeer(peer) => write!(f, "AddPeer({:?})", peer),
+         TorrentMessage::InfoBytes(bytes) => write!(f, "InfoBytes({bytes:?})"),
+         TorrentMessage::KillPeer(peer_id) => write!(f, "KillPeer({peer_id:?})"),
+         TorrentMessage::KillTracker(tracker) => write!(f, "KillTracker({tracker:?})"),
+         TorrentMessage::AddPeer(peer) => write!(f, "AddPeer({peer:?})"),
          TorrentMessage::IncomingPiece(index, offset, data) => {
-            write!(f, "IncomingPiece({}, {}, {:?})", index, offset, data)
+            write!(f, "IncomingPiece({index}, {offset}, {data:?})")
          }
-         TorrentMessage::Announce(peers) => write!(f, "Announce({:?})", peers),
+         TorrentMessage::Announce(peers) => write!(f, "Announce({peers:?})"),
          _ => write!(f, "TorrentMessage"), // Add more later,
       }
    }
