@@ -126,9 +126,6 @@ impl Torrent {
       self
          .actor()
          .tell(TorrentMessage::PieceStorage(piece_storage))
-         // Use blocking send here because we want to ensure the message is processed before
-         // continuing.
-         // Also because we don't want the end user to have to use async for this.
          .await
          .expect("Failed to set piece storage");
    }
