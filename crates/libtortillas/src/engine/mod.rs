@@ -35,18 +35,21 @@
 //! ```
 
 mod actor;
+mod messages;
 
 use std::net::SocketAddr;
 
 pub(crate) use actor::*;
 use bon;
 use kameo::{Actor, actor::ActorRef};
+pub(crate) use messages::*;
 use tracing::error;
 
 use crate::{
    errors::EngineError,
    metainfo::{MetaInfo, TorrentFile},
-   torrent::Torrent,
+   peer::PeerId,
+   torrent::{PieceStorageStrategy, Torrent},
 };
 
 /// The main entry point for managing torrents.
@@ -91,10 +94,22 @@ impl Engine {
       utp_addr: Option<SocketAddr>,
       /// Address to connect to UDP [trackers](crate::tracker::Tracker).
       udp_addr: Option<SocketAddr>,
+      /// Custom peer ID for peer discovery.
+      #[builder(default)]
+      custom_id: PeerId,
+      /// Strategy for storing pieces of the torrent.
+      #[builder(default)]
+      piece_storage_strategy: PieceStorageStrategy,
    ) -> Self {
-      let addrs = (tcp_addr, utp_addr, udp_addr);
+      let args: EngineActorArgs = (
+         tcp_addr,
+         utp_addr,
+         udp_addr,
+         Some(custom_id),
+         piece_storage_strategy,
+      );
 
-      let actor = EngineActor::spawn(addrs);
+      let actor = EngineActor::spawn(args);
 
       Engine(actor)
    }
@@ -193,6 +208,15 @@ impl Engine {
       Ok(Torrent::new(info_hash, torrent_ref))
       // We don't need to assign link or insert the ref here because its already
       // done by the engine actor
+   }
+   /// Starts all torrents managed by the engine.
+   /// See [`Torrent::start`] for more information.
+   pub async fn start_all(&self) {
+      self
+         .actor()
+         .tell(EngineMessage::StartAll)
+         .await
+         .expect("Failed to start all torrents");
    }
 }
 
