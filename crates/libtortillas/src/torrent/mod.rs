@@ -224,7 +224,7 @@ impl Torrent {
          .actor()
          .ask(TorrentRequest::OutputStrategy(strategy))
          .await
-         .expect("Failed to send request for ");
+         .expect("Failed to request output stream");
 
       match res {
          TorrentResponse::OutputStrategy(Some(receiver)) => receiver,
