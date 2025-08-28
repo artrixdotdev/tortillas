@@ -119,7 +119,7 @@ impl Torrent {
    /// # Panics
    ///
    /// Panics if the message could not be sent to the actor.
-   pub async fn set_piece_storage(&self, piece_storage: PieceStorageStrategy) -> &Self {
+   pub async fn set_piece_storage(&self, piece_storage: PieceStorageStrategy) {
       self
          .actor()
          .tell(TorrentMessage::PieceStorage(piece_storage))
@@ -128,8 +128,6 @@ impl Torrent {
          // Also because we don't want the end user to have to use async for this.
          .await
          .expect("Failed to set piece storage");
-
-      self
    }
 
    /// Specifies the output folder that each file will eventually be written to.
