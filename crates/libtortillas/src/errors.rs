@@ -24,7 +24,7 @@ use std::net::AddrParseError;
 
 use thiserror::Error;
 
-use crate::peer::PeerId;
+use crate::{hashes::InfoHash, peer::PeerId};
 
 #[derive(Error, Debug)]
 pub enum EngineError {
@@ -47,6 +47,11 @@ pub enum EngineError {
    /// Failed to deserialize [MetaInfo](crate::metainfo::MetaInfo)
    #[error("Failed to deserialize meta info")]
    MetaInfoDeserializeError,
+
+   /// Tried to start torrenting, but a torrent with the same info hash already
+   /// exists
+   #[error("Torrent already exists: {0}")]
+   TorrentAlreadyExists(InfoHash),
 
    /// Any other engine-level error wrapped in [`anyhow::Error`]
    #[error(transparent)]
@@ -300,7 +305,7 @@ pub trait ErrorContext {
 
 impl ErrorContext for std::io::Error {
    fn with_peer_context(self, peer_id: &PeerId) -> PeerActorError {
-      PeerActorError::ConnectionFailed(format!("Peer {}: {}", peer_id, self))
+      PeerActorError::ConnectionFailed(format!("Peer {peer_id}: {self}"))
    }
 
    fn with_tracker_context(self, tracker_url: &str) -> TrackerActorError {
@@ -312,10 +317,10 @@ impl ErrorContext for std::io::Error {
 
 impl ErrorContext for anyhow::Error {
    fn with_peer_context(self, peer_id: &PeerId) -> PeerActorError {
-      PeerActorError::Other(self.context(format!("Peer {}", peer_id)))
+      PeerActorError::Other(self.context(format!("Peer {peer_id}")))
    }
 
    fn with_tracker_context(self, tracker_url: &str) -> TrackerActorError {
-      TrackerActorError::Other(self.context(format!("Tracker {}", tracker_url)))
+      TrackerActorError::Other(self.context(format!("Tracker {tracker_url}")))
    }
 }

@@ -32,7 +32,7 @@ use crate::{
    errors::TrackerActorError,
    hashes::InfoHash,
    peer::{Peer, PeerId},
-   torrent::{Torrent, TorrentMessage, TorrentRequest, TorrentResponse},
+   torrent::{TorrentActor, TorrentMessage, TorrentRequest, TorrentResponse},
    tracker::udp::UdpServer,
 };
 pub mod http;
@@ -189,9 +189,13 @@ impl TrackerBase for TrackerInstance {
    }
 }
 
+/// The actor that handles all communication with a given tracker
 pub(crate) struct TrackerActor {
+   /// The tracker logic itself -- recall that [TrackerActor] is simply a
+   /// wrapper around this logic
    tracker: TrackerInstance,
-   supervisor: ActorRef<Torrent>,
+   /// The torrent instance that controls this tracker.
+   supervisor: ActorRef<TorrentActor>,
    /// A custom struct provided by tokio that allows a `tick` function that will
    /// wait until the next `duration` passes
    ///
@@ -200,7 +204,13 @@ pub(crate) struct TrackerActor {
 }
 
 impl Actor for TrackerActor {
-   type Args = (Tracker, PeerId, UdpServer, SocketAddr, ActorRef<Torrent>);
+   type Args = (
+      Tracker,
+      PeerId,
+      UdpServer,
+      SocketAddr,
+      ActorRef<TorrentActor>,
+   );
    type Error = TrackerActorError;
 
    /// Unlike the [`PeerActor`](crate::peer::PeerActor), there are no
@@ -225,11 +235,11 @@ impl Actor for TrackerActor {
                UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
                   .await
                   .map_err(|_| TrackerActorError::InitializationFailed {
-                     tracker_type: format!("UDP: {}", uri),
+                     tracker_type: format!("UDP: {uri}"),
                   })?;
             udp_tracker.initialize().await.map_err(|_| {
                TrackerActorError::InitializationFailed {
-                  tracker_type: format!("UDP: {}", uri),
+                  tracker_type: format!("UDP: {uri}"),
                }
             })?;
             TrackerInstance::Udp(udp_tracker)
@@ -239,7 +249,7 @@ impl Actor for TrackerActor {
                HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
             http_tracker.initialize().await.map_err(|_| {
                TrackerActorError::InitializationFailed {
-                  tracker_type: format!("HTTP: {}", uri),
+                  tracker_type: format!("HTTP: {uri}"),
                }
             })?;
             TrackerInstance::Http(http_tracker)
@@ -316,9 +326,13 @@ impl Message<TrackerMessage> for TrackerActor {
 
 /// Updates the tracker's announce fields
 pub enum TrackerUpdate {
+   /// The amount of data uploaded, in bytes
    Uploaded(usize),
+   /// The amount of data downloaded, in bytes
    Downloaded(usize),
+   /// The amount of data left to download, in bytes
    Left(usize),
+   /// See documentation for [Event].
    Event(Event),
 }
 
