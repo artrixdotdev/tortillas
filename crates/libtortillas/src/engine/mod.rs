@@ -17,12 +17,12 @@
 //! ## Example
 //!
 //! ```no_run
-//! use libtortillas::Engine;
+//! use libtortillas::prelude::*;
 //!
 //! #[tokio::main]
 //! async fn main() {
 //!    // Create a new engine listening on default addresses
-//!    let engine = Engine::default()
+//!    let engine = Engine::default();
 //!
 //!    // Add a torrent from a magnet URI
 //!    let torrent = engine
@@ -64,7 +64,7 @@ use crate::{
 ///
 /// # Example
 /// ```no_run
-/// use libtortillas::prelude::Engine;
+/// use libtortillas::prelude::*;
 /// // Create an engine with no explicit addresses
 /// let engine = Engine::builder()
 ///    // Optionally provide addresses for our sockets to listen on
@@ -75,7 +75,7 @@ use crate::{
 /// ```
 /// Or with all default settings
 /// ```
-/// use libtortillas::prelude::Engine;
+/// use libtortillas::prelude::*;
 /// let engine = Engine::default();
 /// ```
 #[derive(Debug, Clone)]
@@ -138,7 +138,7 @@ impl Engine {
    ///
    /// With a remote torrent file
    /// ```no_run
-   /// use libtortillas::Engine;
+   /// use libtortillas::prelude::*;
    ///
    /// #[tokio::main]
    /// async fn main() {
@@ -149,13 +149,13 @@ impl Engine {
    ///       .await
    ///       .expect("Failed to add torrent");
    ///
-   ///    println!("Started Torrenting: {}", torrent.key());
+   ///    println!("Started torrenting: {}", torrent.key());
    /// }
    /// ```
    ///
    /// With a magnet URI
    /// ```no_run
-   /// use libtortillas::Engine;
+   /// use libtortillas::prelude::*;
    ///
    /// #[tokio::main]
    /// async fn main() {
@@ -166,7 +166,7 @@ impl Engine {
    ///       .await
    ///       .expect("Failed to add torrent");
    ///
-   ///    println!("Started Torrenting: {}", torrent.key());
+   ///    println!("Started torrenting: {}", torrent.key());
    /// }
    /// ```
    pub async fn add_torrent(&self, metainfo: impl ToString) -> Result<Torrent, EngineError> {

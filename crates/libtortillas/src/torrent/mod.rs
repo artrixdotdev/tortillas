@@ -58,7 +58,7 @@ pub(super) enum OutputStrategy {
 /// This struct acts as the primary interface for controlling and configuring
 /// a torrent after it has been added to the [`Engine`](crate::engine::Engine).
 ///
-/// Internally, it wraps around our Actor modelusing [kameo](https://github.com/tqwewe/kameo) which
+/// Internally, it wraps around our Actor model using [kameo](https://github.com/tqwewe/kameo) which
 /// performs the actual torrent logic.
 ///
 /// # Examples
@@ -66,14 +66,20 @@ pub(super) enum OutputStrategy {
 /// ```no_run
 /// use libtortillas::prelude::*;
 ///
-/// let engine = Engine::default();
-/// let torrent = engine.add_torrent("https://example.com/file.torrent");
+/// #[tokio::main]
+/// async fn main() {
+///    let engine = Engine::default();
+///    let torrent = engine
+///       .add_torrent("https://example.com/file.torrent")
+///       .await
+///       .expect("Failed to add torrent");
 ///
-/// // Configure output
-/// torrent.with_output_folder("downloads/");
+///    // Configure output
+///    torrent.with_output_folder("downloads/").await;
 ///
-/// // Start downloading
-/// torrent.start();
+///    // Start downloading
+///    torrent.start().await;
+/// }
 /// ```
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
@@ -135,9 +141,17 @@ impl Torrent {
    ///
    /// ```no_run
    /// use libtortillas::prelude::*;
-   /// let engine = Engine::default();
-   /// let torrent = engine.add_torrent("https://example.com/file.torrent");
-   /// torrent.with_output_folder("~/awesome-folder/");
+   ///
+   /// #[tokio::main]
+   /// async fn main() {
+   ///    let engine = Engine::default();
+   ///    let torrent = engine
+   ///       .add_torrent("https://example.com/file.torrent")
+   ///       .await
+   ///       .expect("Failed to add torrent");
+   ///
+   ///    torrent.with_output_folder("~/awesome-folder/").await;
+   /// }
    /// ```
    pub async fn with_output_folder(&self, folder: impl Into<PathBuf>) {
       let strategy = OutputStrategy::Folder(folder.into());
@@ -175,25 +189,34 @@ impl Torrent {
    /// # Example
    ///
    /// ```no_run
-   /// use libtortillas::prelude::*;
-   /// let engine = Engine::default();
-   /// let torrent = engine
-   ///    .add_torrent("https://example.com/file.torrent")
+   /// use libtortillas::{prelude::*, torrent::PieceStorageStrategy};
+   ///
+   /// #[tokio::main]
+   /// async fn main() {
+   ///    let engine = Engine::default();
+   ///    let torrent = engine
+   ///       .add_torrent("https://example.com/file.torrent")
+   ///       .await
+   ///       .expect("Failed to add torrent");
+   ///
    ///    // Required if you want to use a custom output stream
-   ///    .set_piece_storage(PieceStorageStrategy::Disk("path/to/output").into());
+   ///    torrent
+   ///       .set_piece_storage(PieceStorageStrategy::Disk("path/to/output".into()))
+   ///       .await;
    ///
-   /// let mut receiver = torrent.with_output_stream();
+   ///    let mut receiver = torrent.with_output_stream().await;
    ///
-   /// tokio::spawn(async move {
-   ///    while let Some(piece) = receiver.recv().await {
-   ///       println!(
-   ///          "Received piece {} ({} bytes)",
-   ///          piece.index,
-   ///          piece.data.len()
-   ///       );
-   ///       // Handle piece (e.g. write to memory, forward to player, etc.)
-   ///    }
-   /// });
+   ///    tokio::spawn(async move {
+   ///       while let Some(piece) = receiver.recv().await {
+   ///          println!(
+   ///             "Received piece {} ({} bytes)",
+   ///             piece.index,
+   ///             piece.data.len()
+   ///          );
+   ///          // Handle piece (e.g. write to memory, forward to player, etc.)
+   ///       }
+   ///    });
+   /// }
    /// ```
    pub async fn with_output_stream(&self) -> mpsc::Receiver<StreamedPiece> {
       let strategy = OutputStrategy::Stream;
