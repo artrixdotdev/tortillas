@@ -209,6 +209,15 @@ impl Engine {
       // We don't need to assign link or insert the ref here because its already
       // done by the engine actor
    }
+   /// Starts all torrents managed by the engine.
+   /// See [`Torrent::start`] for more information.
+   pub fn start_all(&self) {
+      self
+         .actor()
+         .tell(EngineMessage::StartAll)
+         .blocking_send()
+         .expect("Failed to start all torrents");
+   }
 }
 
 impl Default for Engine {

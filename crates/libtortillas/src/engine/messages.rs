@@ -21,6 +21,8 @@ pub(crate) enum EngineMessage {
    /// Handles an incoming peer connection. The peer has been neither handshaked
    /// nor verified at this point.
    IncomingPeer(Box<PeerStream>),
+   /// Starts all torrents managed by the engine.
+   StartAll,
 }
 
 actor_request_response!(
@@ -58,6 +60,14 @@ impl Message<EngineMessage> for EngineActor {
                }
             } else {
                error!("Received unexpected message from peer");
+            }
+         }
+         EngineMessage::StartAll => {
+            for torrent in self.torrents.iter() {
+               torrent
+                  .tell(TorrentMessage::Start)
+                  .await
+                  .expect("Failed to start torrent");
             }
          }
       };
