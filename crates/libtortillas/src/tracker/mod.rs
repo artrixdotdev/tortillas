@@ -189,8 +189,11 @@ impl TrackerBase for TrackerInstance {
    }
 }
 
+/// The actor that handles all communication with a given tracker
 pub(crate) struct TrackerActor {
+   /// The tracker logic itself -- recall that [TrackerActor] is simply a wrapper around this logic
    tracker: TrackerInstance,
+   /// The torrent instance that controls this tracker.
    supervisor: ActorRef<TorrentActor>,
    /// A custom struct provided by tokio that allows a `tick` function that will
    /// wait until the next `duration` passes
@@ -322,9 +325,13 @@ impl Message<TrackerMessage> for TrackerActor {
 
 /// Updates the tracker's announce fields
 pub enum TrackerUpdate {
+   /// The amount of data uploaded, in bytes
    Uploaded(usize),
+   /// The amount of data downloaded, in bytes
    Downloaded(usize),
+   /// The amount of data left to download, in bytes
    Left(usize),
+   /// See documentation for [Event].
    Event(Event),
 }
 

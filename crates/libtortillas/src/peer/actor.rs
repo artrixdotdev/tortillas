@@ -27,9 +27,13 @@ use crate::{
 const PEER_KEEPALIVE_TIMEOUT: u64 = 10;
 const PEER_DISCONNECT_TIMEOUT: u64 = 20;
 
+/// The actor that handles all communications with a given peer.
 pub(crate) struct PeerActor {
+   /// The peers state and statistics
    peer: Peer,
+   /// The stream connecting to the peer -- either TCP or uTP
    stream: PeerStream,
+   /// The [TorrentActor] that manages this peer
    supervisor: ActorRef<TorrentActor>,
 }
 
@@ -55,6 +59,12 @@ impl PeerActor {
       }
    }
 
+   /// Handles an incoming extended message.
+   ///
+   /// This message will handle Extended handshakes as specified in [BEP
+   /// 0010](https://www.bittorrent.org/beps/bep_0010.html), and the 3 extension messages as specified
+   /// in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html), with the exception of
+   /// `Reject`.
    async fn handle_extended_message(
       &mut self, extended_id: u8, extended_message: Option<ExtendedMessage>,
       metadata: &Option<Bytes>,
@@ -118,6 +128,7 @@ impl PeerActor {
       }
    }
 
+   /// Contains the logic for requesting a piece from a peer under [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html)/[BEP 0010](https://www.bittorrent.org/beps/bep_0010.html). This function expects the exact piece to be specified -- in other words, when requesting the next piece of metadata, this function will not automatically increment the `piece` field. The caller of the function is expected to handle this.
    #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
    async fn request_metadata(&mut self, metadata_size: Option<usize>, piece: usize) {
       trace!(metadata_size, piece, "Requesting metadata");
@@ -226,6 +237,7 @@ impl Actor for PeerActor {
          supervisor,
       })
    }
+
    /// Coerces messages from the [PeerStream] to a [Message]
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
