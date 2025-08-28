@@ -236,9 +236,9 @@ impl Torrent {
    /// [`TorrentState::Seeding`]. Otherwise, it will set the state to
    /// [`TorrentState::Downloading`].
    ///
-   /// # Panics
+   /// # Errors
    ///
-   /// Panics if the message could not be sent to the actor.
+   /// Returns an error if the message could not be delivered to the actor.
    pub async fn start(&self) -> Result<(), anyhow::Error> {
       let msg = TorrentMessage::Start;
 
