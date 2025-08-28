@@ -93,10 +93,10 @@ impl Actor for EngineActor {
       let udp_addr = udp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
       let tcp_socket = TcpListener::bind(tcp_addr)
          .await
-         .map_err(|e| EngineError::NetworkSetupFailed(format!("tcp bind {}: {}", tcp_addr, e)))?;
+         .map_err(|e| EngineError::NetworkSetupFailed(format!("tcp bind {tcp_addr}: {e}")))?;
       let utp_socket = UtpSocketUdp::new_udp(utp_addr)
          .await
-         .map_err(|e| EngineError::NetworkSetupFailed(format!("utp bind {}: {}", utp_addr, e)))?;
+         .map_err(|e| EngineError::NetworkSetupFailed(format!("utp bind {utp_addr}: {e}")))?;
       let udp_server = UdpServer::new(Some(udp_addr)).await;
 
       let peer_id = PeerId::new();

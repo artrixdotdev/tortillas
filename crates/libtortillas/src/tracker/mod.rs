@@ -234,11 +234,11 @@ impl Actor for TrackerActor {
                UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
                   .await
                   .map_err(|_| TrackerActorError::InitializationFailed {
-                     tracker_type: format!("UDP: {}", uri),
+                     tracker_type: format!("UDP: {uri}"),
                   })?;
             udp_tracker.initialize().await.map_err(|_| {
                TrackerActorError::InitializationFailed {
-                  tracker_type: format!("UDP: {}", uri),
+                  tracker_type: format!("UDP: {uri}"),
                }
             })?;
             TrackerInstance::Udp(udp_tracker)
@@ -248,7 +248,7 @@ impl Actor for TrackerActor {
                HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
             http_tracker.initialize().await.map_err(|_| {
                TrackerActorError::InitializationFailed {
-                  tracker_type: format!("HTTP: {}", uri),
+                  tracker_type: format!("HTTP: {uri}"),
                }
             })?;
             TrackerInstance::Http(http_tracker)

@@ -67,7 +67,7 @@ impl TrackerRequest {
       let mut params = Vec::new();
 
       if let Some(ip) = &self.ip {
-         params.push(format!("ip={}", ip));
+         params.push(format!("ip={ip}"));
       }
 
       params.push(format!("port={}", self.port));
@@ -75,11 +75,11 @@ impl TrackerRequest {
       params.push(format!("downloaded={}", self.downloaded));
 
       if let Some(left) = self.left {
-         params.push(format!("left={}", left));
+         params.push(format!("left={left}"));
       }
       let event_str = format!("{:?}", self.event).to_lowercase(); // Hack to get the string representation of the enum
 
-      params.push(format!("event={}", event_str));
+      params.push(format!("event={event_str}"));
       params.push(format!("compact={}", self.compact.unwrap_or(true) as u8));
 
       params.join("&")
