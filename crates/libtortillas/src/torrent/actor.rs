@@ -32,12 +32,12 @@ use crate::{
 ///
 /// # Variants
 ///
-/// - [`InFile`]: References pieces directly from the files that the torrent
-///   describes. No extra storage is used; the piece data is read directly from
-///   the final output files. This is the default strategy and is efficient when
-///   you are downloading directly into the final file layout.
+/// - [`Self::InFile`]: References pieces directly from the files that the
+///   torrent describes. No extra storage is used; the piece data is read
+///   directly from the final output files. This is the default strategy and is
+///   efficient when you are downloading directly into the final file layout.
 ///
-/// - [`Disk(PathBuf)`]: Stores each piece as a separate file in the specified
+/// - [`Self::Disk`]: Stores each piece as a separate file in the specified
 ///   cache directory. The filename for each piece is its SHA‑1 hash. This
 ///   strategy is required if you are using a custom output stream, since pieces
 ///   need to be retreived later on for future seeding. It is also useful for:
@@ -53,7 +53,7 @@ pub enum PieceStorageStrategy {
    /// Write each piece to disk separately in the given cache directory.
    ///
    /// Each piece is stored as a file named by its SHA‑1 hash.
-   /// This strategy is **required** when using a custom [`OutputType`].
+   /// This strategy is **required** when using a custom piece receiver.
    Disk(PathBuf),
 }
 
