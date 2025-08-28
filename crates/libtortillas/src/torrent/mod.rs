@@ -169,4 +169,14 @@ impl Torrent {
          _ => unreachable!(),
       }
    }
+
+   pub fn start(&self) {
+      let msg = TorrentMessage::Start;
+
+      self
+         .actor()
+         .tell(msg)
+         .blocking_send()
+         .expect("Failed to start torrent");
+   }
 }

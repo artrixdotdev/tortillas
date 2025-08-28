@@ -51,6 +51,8 @@ pub(crate) enum TorrentMessage {
    KillTracker(Tracker),
 
    PieceStorage(PieceStorageStrategy),
+   /// Start the torrenting process & actually start downloading pieces/seeding
+   Start,
 }
 
 impl fmt::Debug for TorrentMessage {
@@ -172,6 +174,7 @@ impl Message<TorrentMessage> for TorrentActor {
             }
             self.piece_storage = strategy;
          }
+         TorrentMessage::Start => unimplemented!(),
       }
    }
 }
