@@ -211,11 +211,11 @@ impl Engine {
    }
    /// Starts all torrents managed by the engine.
    /// See [`Torrent::start`] for more information.
-   pub fn start_all(&self) {
+   pub async fn start_all(&self) {
       self
          .actor()
          .tell(EngineMessage::StartAll)
-         .blocking_send()
+         .await
          .expect("Failed to start all torrents");
    }
 }

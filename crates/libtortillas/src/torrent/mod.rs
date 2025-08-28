@@ -113,14 +113,14 @@ impl Torrent {
    /// # Panics
    ///
    /// Panics if the message could not be sent to the actor.
-   pub fn set_piece_storage(&self, piece_storage: PieceStorageStrategy) -> &Self {
+   pub async fn set_piece_storage(&self, piece_storage: PieceStorageStrategy) -> &Self {
       self
          .actor()
          .tell(TorrentMessage::PieceStorage(piece_storage))
          // Use blocking send here because we want to ensure the message is processed before
          // continuing.
          // Also because we don't want the end user to have to use async for this.
-         .blocking_send()
+         .await
          .expect("Failed to set piece storage");
 
       self
@@ -139,12 +139,12 @@ impl Torrent {
    /// let torrent = engine.add_torrent("https://example.com/file.torrent");
    /// torrent.with_output_folder("~/awesome-folder/");
    /// ```
-   pub fn with_output_folder(&self, folder: impl Into<PathBuf>) {
+   pub async fn with_output_folder(&self, folder: impl Into<PathBuf>) {
       let strategy = OutputStrategy::Folder(folder.into());
       self
          .actor()
          .ask(TorrentRequest::OutputStrategy(strategy))
-         .blocking_send()
+         .await
          .expect("Failed to set output folder");
    }
 
@@ -195,12 +195,12 @@ impl Torrent {
    ///    }
    /// });
    /// ```
-   pub fn with_output_stream(&self) -> mpsc::Receiver<StreamedPiece> {
+   pub async fn with_output_stream(&self) -> mpsc::Receiver<StreamedPiece> {
       let strategy = OutputStrategy::Stream;
       let res = self
          .actor()
          .ask(TorrentRequest::OutputStrategy(strategy))
-         .blocking_send()
+         .await
          .expect("Failed to send request for ");
 
       match res {
@@ -218,13 +218,13 @@ impl Torrent {
    /// # Panics
    ///
    /// Panics if the message could not be sent to the actor.
-   pub fn start(&self) {
+   pub async fn start(&self) {
       let msg = TorrentMessage::Start;
 
       self
          .actor()
          .tell(msg)
-         .blocking_send()
+         .await
          .expect("Failed to start torrent");
    }
 
@@ -233,13 +233,13 @@ impl Torrent {
    /// # Panics
    ///
    /// Panics if the message could not be sent to the actor.
-   pub fn state(&self) -> TorrentState {
+   pub async fn state(&self) -> TorrentState {
       let msg = TorrentRequest::State;
 
       match self
          .actor()
          .ask(msg)
-         .blocking_send()
+         .await
          .expect("Failed to send request for state")
       {
          TorrentResponse::State(state) => state,
