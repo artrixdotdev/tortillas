@@ -7,6 +7,7 @@ use bytes::Bytes;
 use kameo::actor::ActorRef;
 pub(crate) use messages::*;
 use tokio::sync::mpsc;
+use tracing::error;
 
 use crate::hashes::InfoHash;
 
@@ -241,14 +242,16 @@ impl Torrent {
    /// # Panics
    ///
    /// Panics if the message could not be sent to the actor.
-   pub async fn start(&self) {
+   pub async fn start(&self) -> Result<(), anyhow::Error> {
       let msg = TorrentMessage::Start;
 
       self
          .actor()
          .tell(msg)
          .await
-         .expect("Failed to start torrent");
+         .inspect_err(|e| error!(error = %e, "Failed to start torrent"))?;
+
+      Ok(())
    }
 
    /// Returns the current state of the torrent. See [`TorrentState`]
