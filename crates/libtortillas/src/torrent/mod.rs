@@ -223,4 +223,23 @@ impl Torrent {
          .blocking_send()
          .expect("Failed to start torrent");
    }
+
+   /// Returns the current state of the torrent. See [`TorrentState`]
+   ///
+   /// # Panics
+   ///
+   /// Panics if the message could not be sent to the actor.
+   pub fn state(&self) -> TorrentState {
+      let msg = TorrentRequest::State;
+
+      match self
+         .actor()
+         .ask(msg)
+         .blocking_send()
+         .expect("Failed to send request for state")
+      {
+         TorrentResponse::State(state) => state,
+         _ => unreachable!(),
+      }
+   }
 }

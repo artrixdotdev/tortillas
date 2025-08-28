@@ -40,7 +40,7 @@ use crate::{
 /// - [`Self::Disk`]: Stores each piece as a separate file in the specified
 ///   cache directory. The filename for each piece is its SHA‑1 hash. This
 ///   strategy is required if you are using a custom output stream, since pieces
-///   need to be retreived later on for future seeding. It is also useful for:
+///   need to be retrieved later on for future seeding. It is also useful for:
 ///   - HTTP Streaming or when the file itself is never actually written to disk
 ///   - Supporting non-standard output backends
 #[derive(Debug, Default, Clone)]
@@ -57,6 +57,22 @@ pub enum PieceStorageStrategy {
    Disk(PathBuf),
 }
 
+/// The current state of the torrent, defaults to `Paused`
+#[derive(Debug, Default, Clone, Copy)]
+pub enum TorrentState {
+   /// Torrent is downloading new pieces actively
+   ///
+   /// > Note: Even when in this state, we still seed the pieces that we *do*
+   /// > have.
+   Downloading,
+   /// Torrent is seeding and has already completed the file
+   Seeding,
+   /// Torrent is paused or currently inactive, no seeding or piece downloading
+   /// is happening.
+   #[default]
+   Inactive,
+}
+
 pub(crate) struct TorrentActor {
    pub(crate) peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
    pub(crate) trackers: Arc<DashMap<Tracker, ActorRef<TrackerActor>>>,
@@ -71,6 +87,7 @@ pub(crate) struct TorrentActor {
    pub(super) utp_server: Arc<UtpSocketUdp>,
    pub(super) actor_ref: ActorRef<Self>,
    pub(super) piece_storage: PieceStorageStrategy,
+   pub state: TorrentState,
 }
 
 impl fmt::Display for TorrentActor {
@@ -307,6 +324,7 @@ impl Actor for TorrentActor {
          info,
          actor_ref: us,
          piece_storage,
+         state: TorrentState::default(),
       })
    }
 }

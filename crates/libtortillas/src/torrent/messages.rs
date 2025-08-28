@@ -13,7 +13,7 @@ use sha1::{Digest, Sha1};
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
-use super::{OutputStrategy, PieceStorageStrategy, StreamedPiece, TorrentActor};
+use super::{OutputStrategy, PieceStorageStrategy, StreamedPiece, TorrentActor, TorrentState};
 use crate::{
    actor_request_response,
    hashes::InfoHash,
@@ -100,6 +100,9 @@ actor_request_response!(
    /// Asks the Torrent Actor to use an output stream instead of writing the pieces to disk
    OutputStrategy(OutputStrategy)
    OutputStrategy(Option<mpsc::Receiver<StreamedPiece>>),
+
+   State
+   State(TorrentState),
 );
 
 impl Message<TorrentMessage> for TorrentActor {
@@ -174,7 +177,16 @@ impl Message<TorrentMessage> for TorrentActor {
             }
             self.piece_storage = strategy;
          }
-         TorrentMessage::Start => unimplemented!(),
+         TorrentMessage::Start => {
+            if self.is_empty() {
+               self.state = TorrentState::Downloading;
+            } else {
+               self.state = TorrentState::Seeding;
+            }
+            unimplemented!(
+               "Should start sending all peers requests for pieces, and send interests or uninterests"
+            )
+         }
       }
    }
 }
@@ -212,6 +224,7 @@ impl Message<TorrentRequest> for TorrentActor {
                unimplemented!()
             }
          },
+         TorrentRequest::State => TorrentResponse::State(self.state),
       }
    }
 }
