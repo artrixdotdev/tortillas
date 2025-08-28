@@ -48,7 +48,7 @@ pub enum EngineError {
    #[error("Failed to deserialize meta info")]
    MetaInfoDeserializeError,
 
-   /// Tried to start a [crate::torrent::TorrentActor], but one with the same info hash already exists
+   /// Tried to start torrenting, but a torrent with the same info hash already exists
    #[error("Torrent already exists: {0}")]
    TorrentAlreadyExists(InfoHash),
 
