@@ -1,10 +1,29 @@
 mod actor;
 mod messages;
+use std::path::PathBuf;
+
 pub use actor::*;
+use bytes::Bytes;
 use kameo::actor::ActorRef;
 pub(crate) use messages::*;
 
 use crate::hashes::InfoHash;
+
+// Note: libtortillas should never clone this struct. The `Clone` derive exists
+// only incase the end developer choose to clone thist
+#[derive(Debug, Clone)]
+pub struct StreamedPiece {
+   pub name: String,
+   pub index: usize,
+   pub offset: usize,
+   pub data: Bytes,
+}
+
+#[allow(dead_code)]
+pub(super) enum OutputStrategy {
+   Folder(PathBuf),
+   Stream,
+}
 
 /// Should always be used through the [`Engine`](crate::engine::Engine)
 #[allow(dead_code)]

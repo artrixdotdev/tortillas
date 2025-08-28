@@ -12,7 +12,7 @@ use kameo::{
 use sha1::{Digest, Sha1};
 use tracing::{debug, info, trace, warn};
 
-use super::{PieceStorageStrategy, TorrentActor};
+use super::{OutputStrategy, PieceStorageStrategy, StreamedPiece, TorrentActor};
 use crate::{
    actor_request_response,
    hashes::InfoHash,
@@ -94,6 +94,9 @@ actor_request_response!(
    /// Requests a piece from the torrent
    Request(usize, usize, usize)
    Request(usize, usize, Bytes),
+   /// Asks the Torrent Actor to use an output stream instead of writing the pieces to disk
+   OutputStrategy(OutputStrategy)
+   OutputStrategy(Option<mpsc::Receiver<StreamedPiece>>),
 );
 
 impl Message<TorrentMessage> for TorrentActor {
