@@ -191,7 +191,8 @@ impl TrackerBase for TrackerInstance {
 
 /// The actor that handles all communication with a given tracker
 pub(crate) struct TrackerActor {
-   /// The tracker logic itself -- recall that [TrackerActor] is simply a wrapper around this logic
+   /// The tracker logic itself -- recall that [TrackerActor] is simply a
+   /// wrapper around this logic
    tracker: TrackerInstance,
    /// The torrent instance that controls this tracker.
    supervisor: ActorRef<TorrentActor>,
