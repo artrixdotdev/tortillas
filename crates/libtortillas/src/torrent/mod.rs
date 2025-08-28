@@ -6,6 +6,7 @@ pub use actor::*;
 use bytes::Bytes;
 use kameo::actor::ActorRef;
 pub(crate) use messages::*;
+use tokio::sync::mpsc;
 
 use crate::hashes::InfoHash;
 
@@ -59,5 +60,28 @@ impl Torrent {
          .expect("Failed to set piece storage");
 
       self
+   }
+
+   pub fn with_output_folder(&self, folder: impl Into<PathBuf>) {
+      let strategy = OutputStrategy::Folder(folder.into());
+      self
+         .actor()
+         .ask(TorrentRequest::OutputStrategy(strategy))
+         .blocking_send()
+         .expect("Failed to set output folder");
+   }
+
+   pub fn with_output_stream(&self) -> mpsc::Receiver<StreamedPiece> {
+      let strategy = OutputStrategy::Stream;
+      let res = self
+         .actor()
+         .ask(TorrentRequest::OutputStrategy(strategy))
+         .blocking_send()
+         .expect("Failed to send request for ");
+
+      match res {
+         TorrentResponse::OutputStrategy(Some(receiver)) => receiver,
+         _ => unreachable!(),
+      }
    }
 }

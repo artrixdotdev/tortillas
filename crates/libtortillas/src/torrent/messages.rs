@@ -10,6 +10,7 @@ use kameo::{
    prelude::{Context, Message},
 };
 use sha1::{Digest, Sha1};
+use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
 use super::{OutputStrategy, PieceStorageStrategy, StreamedPiece, TorrentActor};
@@ -200,6 +201,14 @@ impl Message<TorrentRequest> for TorrentActor {
          TorrentRequest::Request(_, _, _) => {
             unimplemented!()
          }
+         TorrentRequest::OutputStrategy(strategy) => match strategy {
+            OutputStrategy::Folder(_) => {
+               unimplemented!()
+            }
+            OutputStrategy::Stream => {
+               unimplemented!()
+            }
+         },
       }
    }
 }
