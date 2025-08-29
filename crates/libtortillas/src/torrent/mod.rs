@@ -1,5 +1,6 @@
 mod actor;
 mod messages;
+mod piece_manager;
 use std::path::PathBuf;
 
 pub use actor::*;
