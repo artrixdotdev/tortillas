@@ -58,13 +58,13 @@ impl TorrentFile {
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Info {
-   name: String,
+   pub name: String,
    #[serde(rename = "piece length")]
    piece_length: u64,
    /// Binary string of concatenated 20-byte SHA-1 hash values
    pieces: HashVec<20>,
    #[serde(flatten)]
-   file: InfoKeys,
+   pub file: InfoKeys,
    /// If true, the client MUST publish its presence to get other peers ONLY via
    /// the trackers explicitly described in the metainfo file. If false, the
    /// client may obtain peers from other means, e.g. PEX peer exchange, DHT.
@@ -77,16 +77,16 @@ pub struct Info {
    /// info
    #[serde(rename = "private")]
    #[serde_as(as = "Option<BoolFromInt>")]
-   is_private: Option<bool>,
+   pub is_private: Option<bool>,
 
    /// This is undocumented, AFAIK
-   publisher: Option<String>,
+   pub publisher: Option<String>,
 
    /// This is undocumented, AFAIK
    #[serde(rename = "publisher-url")]
-   publisher_url: Option<String>,
+   pub publisher_url: Option<String>,
 
-   source: Option<String>,
+   pub source: Option<String>,
 }
 
 impl PartialEq for Info {
@@ -116,16 +116,16 @@ pub enum InfoKeys {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfoFile {
    /// The length of the file, in bytes.
-   length: usize,
+   pub length: usize,
 
    /// Subdirectory names for this file, the last of which is the actual file
    /// name (a zero length list is an error case).
-   path: Vec<String>,
+   pub path: Vec<String>,
 
    /// A 32-character hex string corresponding to the MD5 sum of the file. Not
    /// used by BitTorrent at all, but included by some programs for greater
    /// compatablility.
-   md5sum: Option<String>,
+   pub md5sum: Option<String>,
 }
 
 impl Info {
