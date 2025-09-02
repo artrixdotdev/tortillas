@@ -89,11 +89,11 @@ mod tests {
          base_path: path.clone(),
       };
 
-      manager
-         .create_empty_file(&path, 1_000_000_000)
-         .await
-         .unwrap();
+      manager.create_empty_file(&path, 1_000).await.unwrap();
 
       assert!(path.exists());
+
+      // This is not absolutely necessary, but it is the appropriate thing to do.
+      fs::remove_file(path.clone()).await.unwrap();
    }
 }
