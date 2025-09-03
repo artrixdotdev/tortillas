@@ -1,6 +1,7 @@
 use std::{
    fmt,
    sync::{Arc, atomic::AtomicU8},
+   time::Duration,
 };
 
 use bitvec::vec::BitVec;
@@ -10,7 +11,7 @@ use kameo::{
    prelude::{Context, Message},
 };
 use sha1::{Digest, Sha1};
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::sleep};
 use tracing::{debug, info, trace, warn};
 
 use super::{OutputStrategy, PieceStorageStrategy, StreamedPiece, TorrentActor, TorrentState};
@@ -183,9 +184,63 @@ impl Message<TorrentMessage> for TorrentActor {
             } else {
                self.state = TorrentState::Seeding;
             }
-            unimplemented!(
-               "Should start sending all peers requests for pieces, and send interests or uninterests"
-            )
+
+            // The following code roughly translates into this pseudocode:
+            //
+            // if at any time we have the piece, skip it
+            //
+            // get first 5 pieces
+            // for piece in bitfield after first 5:
+            // 	wait for piece to come in
+            // 	send next piece request
+
+            let mut bitfield_index = 0;
+
+            // We should not be having to clone this, and this is potentially costly
+            let piece_length = self
+               .info
+               .clone()
+               .expect("Info dict has not yet been retrieved")
+               .piece_length;
+
+            while bitfield_index < 5 {
+               if self.bitfield[bitfield_index] {
+                  continue;
+               }
+
+               self
+                  .broadcast_to_peers(PeerTell::NeedPiece(
+                     bitfield_index,
+                     0,
+                     piece_length as usize,
+                  ))
+                  .await;
+               bitfield_index += 1;
+            }
+
+            while bitfield_index < self.bitfield.len() {
+               let current_piece = self.bitfield[bitfield_index];
+               if current_piece {
+                  continue;
+               }
+
+               // This should be appropriate, since the bitfield will be updated from another
+               // thread (namely when an `IncomingPiece` message is received)
+               #[allow(clippy::while_immutable_condition)]
+               {
+                  while !self.bitfield[bitfield_index] {
+                     sleep(Duration::from_millis(50)).await;
+                  }
+               }
+
+               self
+                  .broadcast_to_peers(PeerTell::NeedPiece(
+                     current_piece as usize,
+                     0,
+                     piece_length as usize,
+                  ))
+                  .await;
+            }
          }
       }
    }
