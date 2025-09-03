@@ -197,14 +197,18 @@ impl Message<TorrentMessage> for TorrentActor {
             let mut bitfield_index = 0;
 
             // We should not be having to clone this, and this is potentially costly
-            let piece_length = self
+            let info = self
                .info
-               .clone()
-               .expect("Info dict has not yet been retrieved")
-               .piece_length;
+               .as_ref()
+               .expect("Info dict has not yet been retrieved");
+            let piece_length = info.piece_length;
+            let pieces = info.pieces.len();
 
-            while bitfield_index < 5 {
+            let mut pieces_requested = 0;
+
+            while pieces_requested < 5 && pieces_requested < pieces {
                if self.bitfield[bitfield_index] {
+                  bitfield_index += 1;
                   continue;
                }
 
@@ -215,7 +219,9 @@ impl Message<TorrentMessage> for TorrentActor {
                      piece_length as usize,
                   ))
                   .await;
+
                bitfield_index += 1;
+               pieces_requested += 1;
             }
 
             while bitfield_index < self.bitfield.len() {
@@ -224,7 +230,7 @@ impl Message<TorrentMessage> for TorrentActor {
                   continue;
                }
 
-               // This should be appropriate, since the bitfield will be updated from another
+               // This is appropriate since the bitfield will be updated from another
                // thread (namely when an `IncomingPiece` message is received)
                #[allow(clippy::while_immutable_condition)]
                {
@@ -240,6 +246,8 @@ impl Message<TorrentMessage> for TorrentActor {
                      piece_length as usize,
                   ))
                   .await;
+
+               bitfield_index += 1;
             }
          }
       }
