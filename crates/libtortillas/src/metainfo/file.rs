@@ -62,7 +62,7 @@ pub struct Info {
    #[serde(rename = "piece length")]
    pub piece_length: u64,
    /// Binary string of concatenated 20-byte SHA-1 hash values
-   pieces: HashVec<20>,
+   pub pieces: HashVec<20>,
    #[serde(flatten)]
    pub file: InfoKeys,
    /// If true, the client MUST publish its presence to get other peers ONLY via
