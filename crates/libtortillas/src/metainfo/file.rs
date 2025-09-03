@@ -60,7 +60,7 @@ impl TorrentFile {
 pub struct Info {
    pub name: String,
    #[serde(rename = "piece length")]
-   piece_length: u64,
+   pub piece_length: u64,
    /// Binary string of concatenated 20-byte SHA-1 hash values
    pieces: HashVec<20>,
    #[serde(flatten)]
