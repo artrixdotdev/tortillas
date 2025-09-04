@@ -1,7 +1,7 @@
 use std::{
    fmt,
    net::SocketAddr,
-   path::PathBuf,
+   path::{Path, PathBuf},
    sync::{Arc, atomic::AtomicU8},
 };
 
@@ -266,6 +266,25 @@ impl TorrentActor {
             Err(join_err) => warn!(error = %join_err, "broadcast_to_peers task panicked"),
          }
       }
+   }
+
+   /// Gets the path to a piece file based on the index. Only should be used
+   /// when the piece storage strategy is [`Disk`](PieceStorageStrategy::Disk),
+   /// this function will panic otherwise.
+   pub(super) fn get_piece_path(&self, index: usize) -> PathBuf {
+      let hash = self.info_dict().expect("Cannot get info hash").pieces[index];
+      assert!(
+         matches!(self.piece_storage, PieceStorageStrategy::Disk(_)),
+         "Piece storage strategy is not Disk"
+      );
+      let mut path = match &self.piece_storage {
+         PieceStorageStrategy::Disk(path) => path.clone(),
+         _ => panic!("Piece storage strategy is not Disk"),
+      };
+
+      path.push(format!("{hash}.piece"));
+
+      path
    }
 }
 
