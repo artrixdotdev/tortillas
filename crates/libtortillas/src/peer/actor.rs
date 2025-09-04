@@ -427,6 +427,10 @@ impl Message<PeerTell> for PeerActor {
             let piece_exists = self.peer.pieces[index];
 
             if !piece_exists {
+               trace!(
+                  piece_index = index,
+                  "Peer does not have piece, not sending request"
+               );
                return;
             }
 
@@ -439,6 +443,7 @@ impl Message<PeerTell> for PeerActor {
                ))
                .await
                .expect("Failed to send piece request");
+            trace!(piece_index = index, "Sent piece request to peer");
          }
          PeerTell::HaveInfoDict(bitfield) => {
             self
