@@ -88,6 +88,7 @@ pub(crate) struct TorrentActor {
    pub(super) actor_ref: ActorRef<Self>,
    pub(super) piece_storage: PieceStorageStrategy,
    pub state: TorrentState,
+   pub next_piece: usize,
 }
 
 impl fmt::Display for TorrentActor {
@@ -325,6 +326,7 @@ impl Actor for TorrentActor {
          actor_ref: us,
          piece_storage,
          state: TorrentState::default(),
+         next_piece: 0,
       })
    }
 }

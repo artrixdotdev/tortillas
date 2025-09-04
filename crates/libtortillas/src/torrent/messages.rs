@@ -7,7 +7,7 @@ use std::{
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{
-   Reply,
+   Actor, Reply,
    prelude::{Context, Message},
 };
 use sha1::{Digest, Sha1};
@@ -170,7 +170,14 @@ impl Message<TorrentMessage> for TorrentActor {
                warn!("Received kill tracker message for unknown tracker");
             }
          }
-         TorrentMessage::IncomingPiece(_, _, _) => unimplemented!(),
+         TorrentMessage::IncomingPiece(index, _, _) => {
+            // Handling piece here
+
+            self.next_piece += 1;
+            self
+               .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, 0))
+               .await;
+         }
          TorrentMessage::PieceStorage(strategy) => {
             if !self.is_empty() {
                // Intentional panic because this is unintended behavior
@@ -181,73 +188,16 @@ impl Message<TorrentMessage> for TorrentActor {
          TorrentMessage::Start => {
             if self.is_empty() {
                self.state = TorrentState::Downloading;
+               let info = self.info_dict().expect("Info dict was ...");
+               self
+                  .broadcast_to_peers(PeerTell::NeedPiece(
+                     self.next_piece,
+                     0,
+                     info.piece_length as usize,
+                  ))
+                  .await;
             } else {
                self.state = TorrentState::Seeding;
-            }
-
-            // The following code roughly translates into this pseudocode:
-            //
-            // if at any time we have the piece, skip it
-            //
-            // get first 5 pieces
-            // for piece in bitfield after first 5:
-            // 	wait for piece to come in
-            // 	send next piece request
-
-            let mut bitfield_index = 0;
-
-            // We should not be having to clone this, and this is potentially costly
-            let info = self
-               .info
-               .as_ref()
-               .expect("Info dict has not yet been retrieved");
-            let piece_length = info.piece_length;
-            let pieces = info.pieces.len();
-
-            let mut pieces_requested = 0;
-
-            while pieces_requested < 5 && pieces_requested < pieces {
-               if self.bitfield[bitfield_index] {
-                  bitfield_index += 1;
-                  continue;
-               }
-
-               self
-                  .broadcast_to_peers(PeerTell::NeedPiece(
-                     bitfield_index,
-                     0,
-                     piece_length as usize,
-                  ))
-                  .await;
-
-               bitfield_index += 1;
-               pieces_requested += 1;
-            }
-
-            while bitfield_index < self.bitfield.len() {
-               let current_piece = self.bitfield[bitfield_index];
-               if current_piece {
-                  continue;
-               }
-
-               // This is appropriate since the bitfield will be updated from another
-               // thread (namely when an `IncomingPiece` message is received)
-               #[allow(clippy::while_immutable_condition)]
-               {
-                  while !self.bitfield[bitfield_index] {
-                     sleep(Duration::from_millis(50)).await;
-                  }
-               }
-
-               self
-                  .broadcast_to_peers(PeerTell::NeedPiece(
-                     current_piece as usize,
-                     0,
-                     piece_length as usize,
-                  ))
-                  .await;
-
-               bitfield_index += 1;
             }
          }
       }
