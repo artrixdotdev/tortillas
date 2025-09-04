@@ -191,6 +191,26 @@ impl Message<TorrentMessage> for TorrentActor {
             } else {
                self.state = TorrentState::Downloading;
                let info = self.info_dict().expect("Info dict was ...");
+
+               // Create files for all pieces
+               if let PieceStorageStrategy::Disk(_) = &self.piece_storage {
+                  for index in 0..info.pieces.len() {
+                     let piece_path = self.get_piece_path(index);
+                     let piece_length = info.piece_length as usize;
+                     tokio::spawn(async move {
+                        util::create_empty_file(&piece_path, piece_length)
+                           .await
+                           .unwrap_or_else(|_| {
+                              panic!(
+                                 "Failed to create empty file for piece {}",
+                                 piece_path.display()
+                              );
+                           });
+                     });
+                  }
+               }
+
+               // Request first piece from peers
                self
                   .broadcast_to_peers(PeerTell::NeedPiece(
                      self.next_piece,
