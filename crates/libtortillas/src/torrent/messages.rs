@@ -1,26 +1,28 @@
 use std::{
    fmt,
    sync::{Arc, atomic::AtomicU8},
-   time::Duration,
 };
 
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{
-   Actor, Reply,
+   Reply,
    prelude::{Context, Message},
 };
 use sha1::{Digest, Sha1};
-use tokio::{sync::mpsc, time::sleep};
+use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
-use super::{OutputStrategy, PieceStorageStrategy, StreamedPiece, TorrentActor, TorrentState};
+use super::{
+   BLOCK_SIZE, OutputStrategy, PieceStorageStrategy, StreamedPiece, TorrentActor, TorrentState,
+};
 use crate::{
    actor_request_response,
    hashes::InfoHash,
    metainfo::Info,
    peer::{Peer, PeerId, PeerTell},
    protocol::stream::PeerStream,
+   torrent::util,
    tracker::Tracker,
 };
 
@@ -170,13 +172,47 @@ impl Message<TorrentMessage> for TorrentActor {
                warn!("Received kill tracker message for unknown tracker");
             }
          }
-         TorrentMessage::IncomingPiece(index, _, _) => {
-            // Handling piece here
+         TorrentMessage::IncomingPiece(index, offset, block) => {
+            let info_dict = self
+               .info_dict()
+               .expect("Can't receive piece without info dict");
 
-            self.next_piece += 1;
+            let piece_hash = info_dict.pieces[index];
+
             self
-               .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, 0))
-               .await;
+               .block_map
+               .entry(index)
+               .and_modify(|bv| bv.set(offset / BLOCK_SIZE, true))
+               .or_default();
+
+            let block_len = block.len();
+
+            let is_last_block = offset + block_len == info_dict.piece_length as usize;
+
+            match &self.piece_storage {
+               PieceStorageStrategy::Disk(path) => util::write_block_to_file(path, offset, block)
+                  .await
+                  .expect("Failed to write block to file"),
+               PieceStorageStrategy::InFile => {
+                  unimplemented!()
+               }
+            };
+            // We now have the full piece
+            if is_last_block {
+               let _ = self.block_map.remove(&index);
+               self.next_piece += 1;
+               self.bitfield.set_aliased(index, true);
+               // TODO: send message to peers that we have the piece
+               self
+                  .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
+                  .await
+            } else {
+               // We need more blocks
+               // Requests the next block at the next offset
+               self
+                  .broadcast_to_peers(PeerTell::NeedPiece(index, offset + block_len, BLOCK_SIZE))
+                  .await
+            };
          }
          TorrentMessage::PieceStorage(strategy) => {
             if !self.is_empty() {
@@ -218,8 +254,6 @@ impl Message<TorrentMessage> for TorrentActor {
                      info.piece_length as usize,
                   ))
                   .await;
-            } else {
-               self.state = TorrentState::Seeding;
             }
          }
       }
