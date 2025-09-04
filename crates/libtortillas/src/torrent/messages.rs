@@ -220,29 +220,36 @@ impl Message<TorrentMessage> for TorrentActor {
             self.piece_storage = strategy;
          }
          TorrentMessage::Start => {
+            info!(id = %self.info_hash(), "Torrent is starting...");
             if self.is_full() {
                self.state = TorrentState::Seeding;
+               info!(id = %self.info_hash(), "Torrent is now seeding");
             } else {
                self.state = TorrentState::Downloading;
                let info = self.info_dict().expect("Info dict was ...");
+               info!(id = %self.info_hash(), "Torrent is now downloading");
 
                // Create files for all pieces
                if let PieceStorageStrategy::Disk(_) = &self.piece_storage {
                   for index in 0..info.pieces.len() {
                      let piece_path = self.get_piece_path(index);
                      let piece_length = info.piece_length as usize;
+                     let info_hash = self.info_hash();
                      tokio::spawn(async move {
                         util::create_empty_file(&piece_path, piece_length)
                            .await
                            .unwrap_or_else(|_| {
                               panic!(
                                  "Failed to create empty file for piece {}",
-                                 piece_path.display()
+                                 &piece_path.display()
                               );
                            });
+                        trace!(id = %info_hash, piece = %piece_path.display(), "Created empty file for piece");
                      });
                   }
                }
+
+               trace!(id = %self.info_hash(), peer_count = self.peers.len(), "Requesting first piece from peers");
 
                // Request first piece from peers
                self
