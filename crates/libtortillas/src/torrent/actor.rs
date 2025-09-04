@@ -515,6 +515,23 @@ mod tests {
          PieceStorageStrategy::Disk(piece_path.clone()),
       ));
 
+      // Blocking loop that runs until we successfully handshake with atleast 6 peers
+      loop {
+         let peers_count = match actor.ask(TorrentRequest::PeerCount).await.unwrap() {
+            TorrentResponse::PeerCount(count) => count,
+            _ => unreachable!(),
+         };
+         if peers_count > 6 {
+            break;
+         } else {
+            info!(
+               current_peers_count = peers_count,
+               "Waiting for more peers...."
+            )
+         }
+         sleep(Duration::from_millis(100)).await;
+      }
+
       actor.tell(TorrentMessage::Start).await.unwrap();
 
       loop {
