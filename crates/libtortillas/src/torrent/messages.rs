@@ -195,10 +195,23 @@ impl Message<TorrentMessage> for TorrentActor {
                   unimplemented!()
                }
             };
+
             // We now have the full piece
             if is_last_block {
                let _ = self.block_map.remove(&index);
                let cur_piece = self.next_piece;
+
+               match &self.piece_storage {
+                  PieceStorageStrategy::Disk(path) => {
+                     // Clone because of static lifetimes
+                     util::validate_piece_file(path.clone(), info_dict.pieces[cur_piece].clone())
+                        .await
+                        .unwrap();
+                  }
+                  PieceStorageStrategy::InFile => {
+                     unimplemented!()
+                  }
+               }
 
                // Announce to peers that we have this piece
                self.broadcast_to_peers(PeerTell::Have(cur_piece)).await;
