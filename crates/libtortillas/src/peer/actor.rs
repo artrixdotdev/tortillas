@@ -414,7 +414,7 @@ impl Message<PeerMessages> for PeerActor {
 pub(crate) enum PeerTell {
    NeedPiece(usize, usize, usize),
    HaveInfoDict(Arc<BitVec<AtomicU8>>),
-   // TODO: Add Have(usize) for notifying the peer that we have a new piece
+   Have(usize),
 }
 
 impl Message<PeerTell> for PeerActor {
@@ -452,6 +452,20 @@ impl Message<PeerTell> for PeerActor {
                .await
                .expect("Failed to send bitfield");
             trace!("Sent bitfield to peer");
+         }
+         PeerTell::Have(piece) => {
+            self
+               .stream
+               .send(PeerMessages::Have(piece as u32))
+               .await
+               .map_err(|e| {
+                  trace!(
+                     piece_num = piece,
+                     error = %e,
+                     "Failed to send Have message to peer"
+                  )
+               })
+               .unwrap();
          }
       }
    }
