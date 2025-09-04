@@ -177,8 +177,6 @@ impl Message<TorrentMessage> for TorrentActor {
                .info_dict()
                .expect("Can't receive piece without info dict");
 
-            let piece_hash = info_dict.pieces[index];
-
             self
                .block_map
                .entry(index)
@@ -248,11 +246,7 @@ impl Message<TorrentMessage> for TorrentActor {
 
                // Request first piece from peers
                self
-                  .broadcast_to_peers(PeerTell::NeedPiece(
-                     self.next_piece,
-                     0,
-                     info.piece_length as usize,
-                  ))
+                  .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
                   .await;
             }
          }
