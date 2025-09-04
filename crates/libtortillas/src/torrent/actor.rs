@@ -370,13 +370,13 @@ mod tests {
    use std::{net::SocketAddr, str::FromStr, time::Duration};
 
    use librqbit_utp::UtpSocket;
-   use tokio::time::sleep;
+   use tokio::{fs, time::sleep};
    use tracing::trace;
 
    use super::*;
    use crate::{
       metainfo::{MagnetUri, TorrentFile},
-      torrent::{TorrentRequest, TorrentResponse},
+      torrent::{TorrentMessage, TorrentRequest, TorrentResponse},
    };
 
    #[tokio::test(flavor = "multi_thread")]
@@ -482,5 +482,59 @@ mod tests {
       }
 
       actor.stop_gracefully().await.expect("Failed to stop");
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn test_torrent_actor_piece_storage() {
+      tracing_subscriber::fmt()
+         .with_target(true)
+         .with_env_filter("libtortillas=trace,off")
+         .pretty()
+         .init();
+      let metainfo = TorrentFile::parse(include_bytes!(
+         "../../tests/torrents/big-buck-bunny.torrent"
+      ))
+      .unwrap();
+
+      let piece_path = std::env::temp_dir();
+
+      let peer_id = PeerId::default();
+
+      let udp_server = UdpServer::new(None).await;
+      let utp_server =
+         UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
+            .await
+            .unwrap();
+
+      let actor = TorrentActor::spawn((
+         peer_id,
+         metainfo,
+         utp_server,
+         udp_server.clone(),
+         None,
+         PieceStorageStrategy::Disk(piece_path.clone()),
+      ));
+
+      actor.tell(TorrentMessage::Start).await.unwrap();
+
+      loop {
+         // let mut entries = fs::read_dir(&piece_path).await.unwrap();
+         // let mut found_piece = false;
+         //
+         // while let Some(entry) = entries.next_entry().await.unwrap() {
+         //   let path = entry.path();
+         //   if let Some(ext) = path.extension()
+         //      && ext == "piece"
+         //   {
+         //      found_piece = true;
+         //      fs::remove_file(&path).await.unwrap();
+         //   }
+         //}
+         // if found_piece {
+         //   break; // Exit loop once we found and deleted .piece files
+         //}
+
+         sleep(Duration::from_millis(200)).await;
+      }
    }
 }
