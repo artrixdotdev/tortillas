@@ -138,6 +138,13 @@ impl TorrentActor {
       self.bitfield.count_zeros() == self.bitfield.len()
    }
 
+   /// Checks if the torrent has all of the pieces (we've downloaded/have
+   /// started with the entire file) by checking if our bitfield is filled with
+   /// zeroes.
+   pub fn is_full(&self) -> bool {
+      self.bitfield.count_ones() == self.bitfield.len()
+   }
+
    /// Spawns a new [`PeerActor`] for the given [`Peer`] and adds it to the
    /// torrent's peer set.
    ///
