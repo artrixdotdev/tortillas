@@ -3,9 +3,10 @@ use std::{
    net::SocketAddr,
    path::{Path, PathBuf},
    sync::{Arc, atomic::AtomicU8},
+   u16,
 };
 
-use bitvec::vec::BitVec;
+use bitvec::{array::BitArray, vec::BitVec};
 use dashmap::DashMap;
 use kameo::{Actor, actor::ActorRef};
 use librqbit_utp::UtpSocketUdp;
@@ -23,6 +24,8 @@ use crate::{
    },
    tracker::{Tracker, TrackerActor, udp::UdpServer},
 };
+
+pub const BLOCK_SIZE: usize = 16 * 1024;
 
 /// Defines how torrent pieces are stored and accessed.
 ///
@@ -89,6 +92,10 @@ pub(crate) struct TorrentActor {
    pub(super) piece_storage: PieceStorageStrategy,
    pub state: TorrentState,
    pub next_piece: usize,
+   /// Map of piece indices to block indices. These will be used to track which
+   /// blocks we have for each piece. Each entry is deleted when the piece is
+   /// completed.
+   pub(super) block_map: Arc<DashMap<usize, BitVec<usize>>>,
 }
 
 impl fmt::Display for TorrentActor {
@@ -353,6 +360,7 @@ impl Actor for TorrentActor {
          piece_storage,
          state: TorrentState::default(),
          next_piece: 0,
+         block_map: Arc::new(DashMap::new()),
       })
    }
 }
