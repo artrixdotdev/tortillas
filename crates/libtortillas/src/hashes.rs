@@ -1,4 +1,7 @@
-use std::fmt::{self, Display};
+use std::{
+   fmt::{self, Display},
+   ops::Index,
+};
 
 use anyhow::anyhow;
 use bytes::{Bytes, BytesMut};
@@ -152,6 +155,14 @@ impl<const N: usize> TryFrom<Bytes> for Hash<N> {
 impl<const N: usize> From<Hash<N>> for Bytes {
    fn from(hash: Hash<N>) -> Self {
       Bytes::copy_from_slice(hash.as_bytes())
+   }
+}
+
+impl<const N: usize> Index<usize> for HashVec<N> {
+   type Output = Hash<N>;
+
+   fn index(&self, index: usize) -> &Self::Output {
+      &self.0[index]
    }
 }
 
