@@ -10,6 +10,8 @@ pub(crate) use messages::*;
 use tokio::sync::mpsc;
 use tracing::error;
 
+pub mod util;
+
 use crate::hashes::InfoHash;
 
 /// A piece that we have received from a peer. [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html)
