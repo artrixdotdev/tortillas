@@ -198,9 +198,14 @@ impl Message<TorrentMessage> for TorrentActor {
             // We now have the full piece
             if is_last_block {
                let _ = self.block_map.remove(&index);
+               let cur_piece = self.next_piece;
+
+               // Announce to peers that we have this piece
+               self.broadcast_to_peers(PeerTell::Have(cur_piece)).await;
+
                self.next_piece += 1;
                self.bitfield.set_aliased(index, true);
-               // TODO: send message to peers that we have the piece
+
                self
                   .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
                   .await
