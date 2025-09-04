@@ -186,7 +186,9 @@ impl Message<TorrentMessage> for TorrentActor {
             self.piece_storage = strategy;
          }
          TorrentMessage::Start => {
-            if self.is_empty() {
+            if self.is_full() {
+               self.state = TorrentState::Seeding;
+            } else {
                self.state = TorrentState::Downloading;
                let info = self.info_dict().expect("Info dict was ...");
                self
