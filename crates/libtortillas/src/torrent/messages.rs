@@ -207,9 +207,11 @@ impl Message<TorrentMessage> for TorrentActor {
                         .await
                         .is_err()
                      {
-                        warn!(path = %path.display(), index, "Piece file is invalid");
+                        warn!(path = %path.display(), index, "Piece file is invalid, clearing it");
                         let path_clone = path.clone();
                         let piece_size = info_dict.piece_length as usize;
+
+                        // Clears the piece on a new thread
                         tokio::spawn(async move {
                            util::create_empty_file(&path_clone, piece_size)
                               .await
