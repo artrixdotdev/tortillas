@@ -253,6 +253,7 @@ impl TorrentActor {
    #[instrument(skip(self, tell), fields(msg = ?tell))]
    pub(super) async fn broadcast_to_peers(&self, tell: PeerTell) {
       // Snapshot actor refs to release DashMap locks before awaiting.
+
       // Might use more memory but it will increase performance
       let actor_refs: Vec<ActorRef<PeerActor>> = self
          .peers
@@ -260,19 +261,15 @@ impl TorrentActor {
          .map(|entry| entry.value().clone())
          .collect();
 
-      // Fan out concurrently; each task awaits its own tell.
-      let mut set = JoinSet::new();
       for actor in actor_refs {
          let msg = tell.clone();
-         set.spawn(async move { actor.tell(msg).await });
+         tokio::spawn(async move {
+            if let Err(e) = actor.tell(msg).await {
+               warn!(error = %e, "Failed to send to peer");
+            }
+         });
       }
-      while let Some(res) = set.join_next().await {
-         match res {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => warn!(error = %e, "Failed to send to peer"),
-            Err(join_err) => warn!(error = %join_err, "broadcast_to_peers task panicked"),
-         }
-      }
+      // Returns immediately, without waiting for any peer responses
    }
 
    /// Gets the path to a piece file based on the index. Only should be used
