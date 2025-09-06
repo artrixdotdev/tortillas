@@ -11,7 +11,7 @@ use kameo::{
 };
 use sha1::{Digest, Sha1};
 use tokio::sync::mpsc;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::{
    BLOCK_SIZE, OutputStrategy, PieceStorageStrategy, StreamedPiece, TorrentActor, TorrentState,
@@ -203,9 +203,25 @@ impl Message<TorrentMessage> for TorrentActor {
 
                match &self.piece_storage {
                   PieceStorageStrategy::Disk(path) => {
-                     util::validate_piece_file(path.clone(), info_dict.pieces[cur_piece])
+                     if util::validate_piece_file(path.clone(), info_dict.pieces[cur_piece])
                         .await
-                        .unwrap();
+                        .is_err()
+                     {
+                        warn!(path = %path.display(), index, "Piece file is invalid");
+                        let path_clone = path.clone();
+                        let piece_size = info_dict.piece_length as usize;
+                        tokio::spawn(async move {
+                           util::create_empty_file(&path_clone, piece_size)
+                              .await
+                              .unwrap_or_else(|_| {
+                                 error!(
+                                    "Failed to create empty file for piece {}",
+                                    &path_clone.display()
+                                 );
+                              });
+                        });
+                        return;
+                     }
                   }
                   PieceStorageStrategy::InFile => {
                      unimplemented!()
