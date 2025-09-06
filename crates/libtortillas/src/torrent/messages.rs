@@ -203,8 +203,7 @@ impl Message<TorrentMessage> for TorrentActor {
 
                match &self.piece_storage {
                   PieceStorageStrategy::Disk(path) => {
-                     // Clone because of static lifetimes
-                     util::validate_piece_file(path.clone(), info_dict.pieces[cur_piece].clone())
+                     util::validate_piece_file(path.clone(), info_dict.pieces[cur_piece])
                         .await
                         .unwrap();
                   }
