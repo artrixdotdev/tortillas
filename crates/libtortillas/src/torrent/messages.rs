@@ -242,8 +242,27 @@ impl Message<TorrentMessage> for TorrentActor {
             } else {
                // We need more blocks
                // Requests the next block at the next offset
+               let offset = offset + block_len;
+
+               // Check if we're overflowing the piece, this is only when we're requesting the
+               // last block. This happens because if a piece is lets say 100 bytes, and we
+               // request 40 bytes per block, when we're on piece 2, we'll
+               // overflow and request 120 bytes instead of 100. This checks if we're
+               // overflowing and if so, we'll request the remaining bytes of
+               // the piece
+               let is_overflowing = offset + BLOCK_SIZE > info_dict.piece_length as usize;
+               let next_block_len = if is_overflowing {
+                  info_dict.piece_length as usize - offset
+               } else {
+                  BLOCK_SIZE
+               };
+
                self
-                  .broadcast_to_peers(PeerTell::NeedPiece(index, offset + block_len, BLOCK_SIZE))
+                  .broadcast_to_peers(PeerTell::NeedPiece(
+                     index,
+                     offset + block_len,
+                     next_block_len,
+                  ))
                   .await
             };
          }
