@@ -235,7 +235,7 @@ impl Message<TorrentMessage> for TorrentActor {
 
                self.next_piece += 1;
                self.bitfield.set_aliased(index, true);
-
+               trace!(id = %self.info_hash(), piece = index, "Piece is now complete");
                self
                   .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
                   .await
@@ -247,7 +247,7 @@ impl Message<TorrentMessage> for TorrentActor {
                // Check if we're overflowing the piece, this is only when we're requesting the
                // last block. This happens because if a piece is lets say 100 bytes, and we
                // request 40 bytes per block, when we're on piece 2, we'll
-               // overflow and request 120 bytes instead of 100. This checks if we're
+               // overflow and request 120 bytes instargo ad of 100. This checks if we're
                // overflowing and if so, we'll request the remaining bytes of
                // the piece
                let is_overflowing = offset + BLOCK_SIZE > info_dict.piece_length as usize;
@@ -263,7 +263,8 @@ impl Message<TorrentMessage> for TorrentActor {
                      offset + block_len,
                      next_block_len,
                   ))
-                  .await
+                  .await;
+               trace!(id = %self.info_hash(), piece = index, "Requested next block");
             };
          }
          TorrentMessage::PieceStorage(strategy) => {
