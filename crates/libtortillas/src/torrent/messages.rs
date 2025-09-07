@@ -258,11 +258,7 @@ impl Message<TorrentMessage> for TorrentActor {
                };
 
                self
-                  .broadcast_to_peers(PeerTell::NeedPiece(
-                     index,
-                     offset + block_len,
-                     next_block_len,
-                  ))
+                  .broadcast_to_peers(PeerTell::NeedPiece(index, offset, next_block_len))
                   .await;
                trace!(id = %self.info_hash(), piece = index, "Requested next block");
             };
