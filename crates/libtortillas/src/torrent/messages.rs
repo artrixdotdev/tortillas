@@ -177,11 +177,25 @@ impl Message<TorrentMessage> for TorrentActor {
                .info_dict()
                .expect("Can't receive piece without info dict");
 
+            let block_index = offset / BLOCK_SIZE;
+
+            if let Some(block_map) = &self.block_map.get_mut(&index) {
+               if block_map[block_index] {
+                  warn!("Received duplicate piece block");
+                  return;
+               }
+            } else {
+               let total_blocks = (info_dict.piece_length as usize + BLOCK_SIZE - 1) / BLOCK_SIZE;
+               let mut vec = BitVec::with_capacity(total_blocks);
+               vec.resize(total_blocks, false);
+               self.block_map.insert(index, vec);
+            };
+
             self
                .block_map
-               .entry(index)
-               .and_modify(|bv| bv.set(offset / BLOCK_SIZE, true))
-               .or_default();
+               .get_mut(&index)
+               .unwrap() // Unwrap is safe because we just inserted the block map
+               .set(block_index, true);
 
             let block_len = block.len();
 
