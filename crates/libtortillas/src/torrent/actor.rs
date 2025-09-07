@@ -254,25 +254,30 @@ impl TorrentActor {
    #[instrument(skip(self, tell), fields(msg = ?tell))]
    pub(super) async fn broadcast_to_peers(&self, tell: PeerTell) {
       // Snapshot actor refs to release DashMap locks before awaiting.
+      let peers = self.peers.clone(); // assuming Arc<DashMap<..>>
 
-      // Might use more memory but it will increase performance
-      let actor_refs: Vec<ActorRef<PeerActor>> = self
-         .peers
+      let actor_refs: Vec<(PeerId, ActorRef<PeerActor>)> = peers
          .iter()
-         .map(|entry| entry.value().clone())
+         .map(|entry| (entry.key().clone(), entry.value().clone()))
          .collect();
 
-      for actor in actor_refs {
+      for (id, actor) in actor_refs {
          let msg = tell.clone();
+         let peers = peers.clone();
+
          tokio::spawn(async move {
-            if let Err(e) = actor.tell(msg).await {
-               warn!(error = %e, "Failed to send to peer");
+            if actor.is_alive() {
+               if let Err(e) = actor.tell(msg).await {
+                  warn!(error = %e, "Failed to send to peer");
+               }
+            } else {
+               warn!("Peer actor is dead, removing from peers set");
+               peers.remove(&id);
             }
          });
       }
       // Returns immediately, without waiting for any peer responses
    }
-
    /// Gets the path to a piece file based on the index. Only should be used
    /// when the piece storage strategy is [`Disk`](PieceStorageStrategy::Disk),
    /// this function will panic otherwise.
