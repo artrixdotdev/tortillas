@@ -202,13 +202,11 @@ impl Message<TorrentMessage> for TorrentActor {
             let is_last_block = offset + block_len == info_dict.piece_length as usize;
 
             match &self.piece_storage {
-               PieceStorageStrategy::Disk(path) => {
-                  let path = path.clone();
-                  tokio::spawn(async move {
-                     util::write_block_to_file(path, offset, block)
-                        .await
-                        .expect("Failed to write block to file")
-                  })
+               PieceStorageStrategy::Disk(_) => {
+                  let path = self.get_piece_path(index);
+                  util::write_block_to_file(path, offset, block)
+                     .await
+                     .expect("Failed to write block to file")
                }
                PieceStorageStrategy::InFile => {
                   unimplemented!()
@@ -221,7 +219,8 @@ impl Message<TorrentMessage> for TorrentActor {
                let cur_piece = self.next_piece;
 
                match &self.piece_storage {
-                  PieceStorageStrategy::Disk(path) => {
+                  PieceStorageStrategy::Disk(_) => {
+                     let path = self.get_piece_path(index);
                      if util::validate_piece_file(path.clone(), info_dict.pieces[cur_piece])
                         .await
                         .is_err()
@@ -299,25 +298,25 @@ impl Message<TorrentMessage> for TorrentActor {
                let info = self.info_dict().expect("Info dict was ...");
                info!(id = %self.info_hash(), "Torrent is now downloading");
 
-               // Create files for all pieces
-               if let PieceStorageStrategy::Disk(_) = &self.piece_storage {
-                  for index in 0..info.pieces.len() {
-                     let piece_path = self.get_piece_path(index);
-                     let piece_length = info.piece_length as usize;
-                     let info_hash = self.info_hash();
-                     tokio::spawn(async move {
-                        util::create_empty_file(&piece_path, piece_length)
-                           .await
-                           .unwrap_or_else(|_| {
-                              panic!(
-                                 "Failed to create empty file for piece {}",
-                                 &piece_path.display()
-                              );
-                           });
-                        trace!(id = %info_hash, piece = %piece_path.display(), "Created empty file for piece");
-                     });
-                  }
-               }
+               //// Create files for all pieces
+               // if let PieceStorageStrategy::Disk(_) = &self.piece_storage {
+               //   for index in 0..info.pieces.len() {
+               //      let piece_path = self.get_piece_path(index);
+               //      let piece_length = info.piece_length as usize;
+               //      let info_hash = self.info_hash();
+               //      tokio::spawn(async move {
+               //         util::create_empty_file(&piece_path, piece_length)
+               //            .await
+               //            .unwrap_or_else(|_| {
+               //               panic!(
+               //                  "Failed to create empty file for piece {}",
+               //                  &piece_path.display()
+               //               );
+               //            });
+               //         trace!(id = %info_hash, piece = %piece_path.display(), "Created empty
+               // file for piece");      });
+               //   }
+               //}
 
                trace!(id = %self.info_hash(), peer_count = self.peers.len(), "Requesting first piece from peers");
 
