@@ -202,9 +202,14 @@ impl Message<TorrentMessage> for TorrentActor {
             let is_last_block = offset + block_len == info_dict.piece_length as usize;
 
             match &self.piece_storage {
-               PieceStorageStrategy::Disk(path) => util::write_block_to_file(path, offset, block)
-                  .await
-                  .expect("Failed to write block to file"),
+               PieceStorageStrategy::Disk(path) => {
+                  let path = path.clone();
+                  tokio::spawn(async move {
+                     util::write_block_to_file(path, offset, block)
+                        .await
+                        .expect("Failed to write block to file")
+                  })
+               }
                PieceStorageStrategy::InFile => {
                   unimplemented!()
                }
