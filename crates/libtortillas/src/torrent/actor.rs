@@ -8,7 +8,7 @@ use std::{
 
 use bitvec::{array::BitArray, vec::BitVec};
 use dashmap::DashMap;
-use kameo::{Actor, actor::ActorRef};
+use kameo::{Actor, actor::ActorRef, mailbox};
 use librqbit_utp::UtpSocketUdp;
 use tokio::task::JoinSet;
 use tracing::{debug, error, info, instrument, warn};
@@ -229,7 +229,8 @@ impl TorrentActor {
 
          peer.id = Some(id);
 
-         let actor = PeerActor::spawn((peer.clone(), stream, actor_ref));
+         let actor =
+            PeerActor::spawn_with_mailbox((peer.clone(), stream, actor_ref), mailbox::bounded(120));
          // We cant store peers until #86 is implemented
          peers.insert(id, actor);
       });

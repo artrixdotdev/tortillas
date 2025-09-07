@@ -1,5 +1,5 @@
 use kameo::{
-   Actor, Reply,
+   Actor, Reply, mailbox,
    prelude::{ActorRef, Context, Message},
 };
 use tracing::error;
@@ -97,14 +97,17 @@ impl Message<EngineRequest> for EngineActor {
                return Err(EngineError::TorrentAlreadyExists(info_hash));
             }
 
-            let torrent_ref = TorrentActor::spawn((
-               self.peer_id,
-               *metainfo,
-               self.utp_socket.clone(),
-               self.udp_server.clone(),
-               None,
-               self.default_piece_storage_strategy.clone(),
-            ));
+            let torrent_ref = TorrentActor::spawn_in_thread_with_mailbox(
+               (
+                  self.peer_id,
+                  *metainfo,
+                  self.utp_socket.clone(),
+                  self.udp_server.clone(),
+                  None,
+                  self.default_piece_storage_strategy.clone(),
+               ),
+               mailbox::unbounded(),
+            );
 
             self.actor_ref.link(&torrent_ref).await;
 
