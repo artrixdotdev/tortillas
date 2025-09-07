@@ -1,6 +1,6 @@
 use std::{io::SeekFrom, path::Path};
 
-use anyhow::anyhow;
+use anyhow::{anyhow, ensure};
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
 use tokio::{
@@ -96,9 +96,10 @@ pub async fn validate_piece_file(
    })
    .await?;
 
-   if piece_file_hash != hash {
-      return Err(anyhow!("Hashed file was not equal to hash from info dict"));
-   }
+   ensure!(
+      piece_file_hash == hash,
+      "Hashed file was not equal to hash from info dict"
+   );
 
    Ok(())
 }
