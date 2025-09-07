@@ -59,10 +59,13 @@ pub async fn create_empty_file(path: impl AsRef<Path>, length: usize) -> anyhow:
 pub async fn write_block_to_file(
    path: impl AsRef<Path>, offset: usize, block: Bytes,
 ) -> anyhow::Result<()> {
-   let mut file = File::open(path).await?;
+   let mut file = OpenOptions::new()
+      .create(true) // create if it doesn't exist
+      .write(true) // open for writing
+      .open(path)
+      .await?;
 
    file.seek(SeekFrom::Start(offset as u64)).await?;
-
    file.write_all(&block).await?;
    file.flush().await?;
 
