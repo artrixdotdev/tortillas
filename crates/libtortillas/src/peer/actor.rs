@@ -7,6 +7,7 @@ use std::{
 use anyhow::Context;
 use bitvec::vec::BitVec;
 use bytes::Bytes;
+use dashmap::DashSet;
 use kameo::{
    Actor,
    actor::{ActorRef, WeakActorRef},
@@ -35,6 +36,8 @@ pub(crate) struct PeerActor {
    stream: PeerStream,
    /// The [TorrentActor] that manages this peer
    supervisor: ActorRef<TorrentActor>,
+
+   pending_block_requests: Arc<DashSet<(usize, usize, usize)>>,
 }
 
 impl PeerActor {
@@ -235,6 +238,7 @@ impl Actor for PeerActor {
          peer,
          stream,
          supervisor,
+         pending_block_requests: Arc::new(DashSet::new()),
       })
    }
 
@@ -303,6 +307,9 @@ impl Message<PeerMessages> for PeerActor {
                "Received piece data"
             );
             self.peer.increment_bytes_downloaded(data.len());
+            self
+               .pending_block_requests
+               .remove(&(index as usize, offset as usize, data.len()));
             let supervisor_msg =
                TorrentMessage::IncomingPiece(index as usize, offset as usize, data);
 
@@ -413,6 +420,7 @@ impl Message<PeerMessages> for PeerActor {
 #[allow(dead_code)]
 pub(crate) enum PeerTell {
    NeedPiece(usize, usize, usize),
+   CancelPiece(usize, usize, usize),
    HaveInfoDict(Arc<BitVec<AtomicU8>>),
    Have(usize),
 }
@@ -443,7 +451,26 @@ impl Message<PeerTell> for PeerActor {
                ))
                .await
                .expect("Failed to send piece request");
+            self.pending_block_requests.insert((index, begin, length));
             trace!(piece_index = index, "Sent piece request to peer");
+         }
+         PeerTell::CancelPiece(index, begin, length) => {
+            if !self
+               .pending_block_requests
+               .contains(&(index, begin, length))
+            {
+               return; // Silently ignore if we don't have the request
+            }
+            self
+               .stream
+               .send(PeerMessages::Cancel(
+                  index as u32,
+                  begin as u32,
+                  length as u32,
+               ))
+               .await
+               .expect("Failed to send piece request");
+            self.pending_block_requests.remove(&(index, begin, length));
          }
          PeerTell::HaveInfoDict(bitfield) => {
             self

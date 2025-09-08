@@ -180,6 +180,9 @@ impl Message<TorrentMessage> for TorrentActor {
             let block_index = offset / BLOCK_SIZE;
 
             if let Some(block_map) = &self.block_map.get_mut(&index) {
+               self
+                  .broadcast_to_peers(PeerTell::CancelPiece(index, offset, block.len()))
+                  .await;
                if block_map[block_index] {
                   warn!("Received duplicate piece block");
                   return;
