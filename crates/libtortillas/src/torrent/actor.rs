@@ -1,16 +1,14 @@
 use std::{
    fmt,
    net::SocketAddr,
-   path::{Path, PathBuf},
+   path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
-   u16,
 };
 
-use bitvec::{array::BitArray, vec::BitVec};
+use bitvec::vec::BitVec;
 use dashmap::DashMap;
 use kameo::{Actor, actor::ActorRef, mailbox};
 use librqbit_utp::UtpSocketUdp;
-use tokio::task::JoinSet;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::{
@@ -258,7 +256,7 @@ impl TorrentActor {
 
       let actor_refs: Vec<(PeerId, ActorRef<PeerActor>)> = peers
          .iter()
-         .map(|entry| (entry.key().clone(), entry.value().clone()))
+         .map(|entry| (*entry.key(), entry.value().clone()))
          .collect();
 
       for (id, actor) in actor_refs {

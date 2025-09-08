@@ -185,7 +185,7 @@ impl Message<TorrentMessage> for TorrentActor {
                   return;
                }
             } else {
-               let total_blocks = (info_dict.piece_length as usize + BLOCK_SIZE - 1) / BLOCK_SIZE;
+               let total_blocks = (info_dict.piece_length as usize).div_ceil(BLOCK_SIZE);
                let mut vec = BitVec::with_capacity(total_blocks);
                vec.resize(total_blocks, false);
                self.block_map.insert(index, vec);
@@ -295,10 +295,11 @@ impl Message<TorrentMessage> for TorrentActor {
                info!(id = %self.info_hash(), "Torrent is now seeding");
             } else {
                self.state = TorrentState::Downloading;
-               let info = self.info_dict().expect("Info dict was ...");
                info!(id = %self.info_hash(), "Torrent is now downloading");
 
-               //// Create files for all pieces
+               // let info = self.info_dict().expect("Info dict was ...");
+
+               // Create files for all pieces
                // if let PieceStorageStrategy::Disk(_) = &self.piece_storage {
                //   for index in 0..info.pieces.len() {
                //      let piece_path = self.get_piece_path(index);
