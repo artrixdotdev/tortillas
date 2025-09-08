@@ -1,6 +1,6 @@
 use std::{io::SeekFrom, path::Path};
 
-use anyhow::{anyhow, ensure};
+use anyhow::ensure;
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
 use tokio::{
@@ -9,7 +9,7 @@ use tokio::{
    task::spawn_blocking,
 };
 
-use crate::{hashes::Hash, protocol::messages::PeerMessages};
+use crate::hashes::Hash;
 
 /// Creates a blank file padded with 0's.
 ///
@@ -62,6 +62,7 @@ pub async fn write_block_to_file(
    let mut file = OpenOptions::new()
       .create(true) // create if it doesn't exist
       .write(true) // open for writing
+      .truncate(false) // don't clear file if it already exists
       .open(path)
       .await?;
 
