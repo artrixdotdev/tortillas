@@ -1,10 +1,13 @@
-use std::{io::SeekFrom, path::Path};
+use std::{
+   io::SeekFrom,
+   path::{Path, PathBuf},
+};
 
 use anyhow::ensure;
 use bytes::Bytes;
 use sha1::{Digest, Sha1};
 use tokio::{
-   fs::{File, OpenOptions},
+   fs::{self, File, OpenOptions},
    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, copy},
    task::spawn_blocking,
 };
@@ -106,4 +109,15 @@ pub async fn validate_piece_file(
    );
 
    Ok(())
+}
+
+/// Creates a dir if it doesn't exist. This function can be called even if the
+/// directory exists -- if it does, nothing will happen.
+pub async fn create_dir(path: &PathBuf) -> Result<(), tokio::io::Error> {
+   match path.try_exists() {
+      // Path doesn't exist
+      Ok(false) => fs::create_dir_all(path).await,
+      Err(e) => Err(e),
+      _ => Ok(()),
+   }
 }

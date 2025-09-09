@@ -11,6 +11,7 @@ use kameo::{Actor, actor::ActorRef, mailbox};
 use librqbit_utp::UtpSocketUdp;
 use tracing::{debug, error, info, instrument, warn};
 
+use super::util;
 use crate::{
    errors::TorrentError,
    hashes::InfoHash,
@@ -22,7 +23,6 @@ use crate::{
    },
    tracker::{Tracker, TrackerActor, udp::UdpServer},
 };
-
 pub const BLOCK_SIZE: usize = 16 * 1024;
 
 /// Defines how torrent pieces are stored and accessed.
@@ -55,6 +55,9 @@ pub enum PieceStorageStrategy {
    ///
    /// Each piece is stored as a file named by its SHA‑1 hash.
    /// This strategy is **required** when using a custom piece receiver.
+   ///
+   /// The path is not automatically set, and libtortillas will not function
+   /// properly without the path being set.
    Disk(PathBuf),
 }
 
@@ -315,6 +318,9 @@ impl Actor for TorrentActor {
          info!("No primary address provided, using {}", addr);
          addr
       });
+      if let PieceStorageStrategy::Disk(dir) = &piece_storage {
+         util::create_dir(dir).await.unwrap(); // Intended panic
+      }
 
       info!(
          info_hash = %metainfo.info_hash().unwrap(),
@@ -497,7 +503,7 @@ mod tests {
       ))
       .unwrap();
 
-      let piece_path = std::env::temp_dir();
+      let piece_path = std::env::temp_dir().join("tortillas");
 
       let peer_id = PeerId::default();
 
