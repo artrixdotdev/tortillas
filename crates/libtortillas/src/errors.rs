@@ -266,9 +266,17 @@ pub enum TorrentError {
    #[error("Actor spawn failed: {actor_type}")]
    ActorSpawnFailed { actor_type: String },
 
+   /// Missing info dict
+   #[error("Missing info dict")]
+   MissingInfoDict,
+
    /// Actor communication failed
    #[error("Actor communication failed: {actor_type} - {reason}")]
    ActorCommunicationFailed { actor_type: String, reason: String },
+
+   /// IO error
+   #[error(transparent)]
+   IoError(#[from] tokio::io::Error),
 
    /// Torrent entered an invalid state
    #[error("Invalid torrent state: {state}")]

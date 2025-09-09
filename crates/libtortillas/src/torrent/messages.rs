@@ -179,6 +179,7 @@ impl Message<TorrentMessage> for TorrentActor {
                .expect("Can't receive piece without info dict");
 
             let block_index = offset / BLOCK_SIZE;
+            let piece_count = info_dict.piece_count();
 
             if let Some(block_map) = &self.block_map.get_mut(&index) {
                self
@@ -203,11 +204,17 @@ impl Message<TorrentMessage> for TorrentActor {
 
             let block_len = block.len();
 
-            let is_last_block = offset + block_len == info_dict.piece_length as usize;
+            let is_piece_complete = self
+               .block_map
+               .get(&index)
+               .map(|blocks| blocks.iter().all(|b| *b))
+               .unwrap_or(false);
 
             match &self.piece_storage {
                PieceStorageStrategy::Disk(_) => {
-                  let path = self.get_piece_path(index);
+                  let path = self
+                     .get_piece_path(index)
+                     .expect("Failed to get piece path");
                   util::write_block_to_file(path, offset, block)
                      .await
                      .expect("Failed to write block to file")
@@ -218,14 +225,16 @@ impl Message<TorrentMessage> for TorrentActor {
             };
 
             // We now have the full piece
-            if is_last_block {
+            if is_piece_complete {
                let _ = self.block_map.remove(&index);
                let cur_piece = self.next_piece;
 
                match &self.piece_storage {
                   PieceStorageStrategy::Disk(_) => {
-                     let path = self.get_piece_path(index);
-                     if util::validate_piece_file(path.clone(), info_dict.pieces[cur_piece])
+                     let path = self
+                        .get_piece_path(index)
+                        .expect("Failed to get piece path");
+                     if util::validate_piece_file(path.clone(), info_dict.pieces[index])
                         .await
                         .is_err()
                      {
@@ -246,20 +255,21 @@ impl Message<TorrentMessage> for TorrentActor {
                   }
                }
 
-               // Announce to peers that we have this piece
-               self.broadcast_to_peers(PeerTell::Have(cur_piece)).await;
-               if self.next_piece >= info_dict.piece_count() - 1 {
-                  // Handle end of torrenting process
-                  self.state = TorrentState::Seeding;
-                  info!("Torrenting process completed, switching to seeding mode");
-               }
-
                self.next_piece += 1;
                self.bitfield.set_aliased(index, true);
                trace!(id = %self.info_hash(), piece = index, "Piece is now complete");
-               self
-                  .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
-                  .await
+
+               // Announce to peers that we have this piece
+               self.broadcast_to_peers(PeerTell::Have(cur_piece)).await;
+               if self.next_piece >= piece_count - 1 {
+                  // Handle end of torrenting process
+                  self.state = TorrentState::Seeding;
+                  info!("Torrenting process completed, switching to seeding mode");
+               } else {
+                  self
+                     .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
+                     .await;
+               }
             } else {
                // We need more blocks
                // Requests the next block at the next offset

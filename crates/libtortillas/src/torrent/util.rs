@@ -18,8 +18,9 @@ use crate::hashes::Hash;
 ///
 /// # Examples
 ///
-/// ```no_run
-/// let path = "/tmp/my-file";
+/// ```
+/// use std::path::Path;
+/// let path = Path::new("/tmp/my-file");
 /// util::create_empty_file(path, 100).await;
 ///
 /// assert!(path.exists());
@@ -47,21 +48,20 @@ pub async fn create_empty_file(path: impl AsRef<Path>, length: usize) -> anyhow:
 }
 
 /// Writes a single block from a
-/// [Piece](crate::protocol::messages::PeerMessages::Piece) message to a file
-/// already padded with 0's. See [self::create_empty_file] for more.
+/// [Piece](crate::protocol::messages::PeerMessages::Piece) message to a file.
 ///
 /// # Examples
 /// ```no_run
 /// let message = PeerMessages::Piece(0, 0, Bytes::new());
-/// let path = "/tmp/my-file"
+/// let path = "/tmp/my-file";
 ///
 /// if let PeerMessages::Piece(index, begin, block) = message {
-///   util::write_block_to_file(path, begin, block);
+///    util::write_block_to_file(path, begin, block).await;
 /// }
 /// ```
 pub async fn write_block_to_file(
    path: impl AsRef<Path>, offset: usize, block: Bytes,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<(), tokio::io::Error> {
    let mut file = OpenOptions::new()
       .create(true) // create if it doesn't exist
       .write(true) // open for writing
@@ -89,19 +89,19 @@ pub async fn write_block_to_file(
 /// let path = "/tmp/my-file";
 /// let current_piece_hash = info_dict.pieces[0];
 ///
-/// util::validate_piece_file(path, current_piece_hash);
+/// util::validate_piece_file(path, current_piece_hash).await;
 /// ```
 pub async fn validate_piece_file(
    path: impl AsRef<Path> + Send + 'static, hash: Hash<20>,
 ) -> anyhow::Result<()> {
-   let piece_file_hash = spawn_blocking(move || {
+   let piece_file_hash = spawn_blocking(move || -> anyhow::Result<Hash<20>> {
       let mut hasher = Sha1::new();
-      let mut file = std::fs::File::open(&path).unwrap();
-      std::io::copy(&mut file, &mut hasher).unwrap();
+      let mut file = std::fs::File::open(&path)?;
+      std::io::copy(&mut file, &mut hasher)?;
       let hash = hasher.finalize();
-      Hash::from_bytes(hash.into())
+      Ok(Hash::from_bytes(hash.into()))
    })
-   .await?;
+   .await??;
 
    ensure!(
       piece_file_hash == hash,
