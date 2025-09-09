@@ -20,7 +20,7 @@ use crate::hashes::Hash;
 ///
 /// ```no_run
 /// let path = "/tmp/my-file";
-/// util::create_empty_file(path, 100);
+/// util::create_empty_file(path, 100).await;
 ///
 /// assert!(path.exists());
 /// ```
