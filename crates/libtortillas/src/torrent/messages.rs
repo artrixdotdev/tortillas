@@ -1,11 +1,9 @@
 use core::panic;
 use std::{
    fmt,
-   path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
 };
 
-use anyhow::bail;
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{

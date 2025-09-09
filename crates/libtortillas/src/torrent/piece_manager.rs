@@ -54,7 +54,7 @@ mod tests {
       let temp_dir = std::env::temp_dir();
       let path = temp_dir.join("tortillas-test");
 
-      let manager = FilePieceManager {
+      let _manager = FilePieceManager {
          piece_length: 1024,
          total_length: 1024,
          base_path: path.clone(),
