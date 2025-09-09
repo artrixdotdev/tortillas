@@ -120,6 +120,8 @@ impl Torrent {
    ///
    /// This determines how pieces are stored (e.g. in memory, on disk, etc.).
    ///
+   /// If using [PieceStorageStrategy::Disk], the path *must* be set.
+   ///
    /// # Panics
    ///
    /// Panics if:

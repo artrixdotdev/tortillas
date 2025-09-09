@@ -1,8 +1,11 @@
+use core::panic;
 use std::{
    fmt,
+   path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
 };
 
+use anyhow::bail;
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{
@@ -287,6 +290,9 @@ impl Message<TorrentMessage> for TorrentActor {
             if !self.is_empty() {
                // Intentional panic because this is unintended behavior
                panic!("Cannot change piece storage strategy after we've already received pieces");
+            }
+            if let PieceStorageStrategy::Disk(dir) = &strategy {
+               util::create_dir(dir).await.unwrap(); // Intended panic
             }
             self.piece_storage = strategy;
          }
