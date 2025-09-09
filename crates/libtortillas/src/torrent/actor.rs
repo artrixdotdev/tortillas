@@ -299,10 +299,10 @@ impl TorrentActor {
       if let PieceStorageStrategy::Disk(path) = &self.piece_storage {
          let mut path = path.clone();
          path.push(format!("{hash}.piece"));
-         return Ok(path.to_path_buf());
+         Ok(path.to_path_buf())
       } else {
          unreachable!()
-      };
+      }
    }
 }
 
