@@ -502,6 +502,23 @@ mod tests {
          "../../tests/torrents/big-buck-bunny.torrent"
       ))
       .unwrap();
+      let info_dict = match &metainfo {
+         MetaInfo::Torrent(file) => file.info.clone(),
+         _ => unreachable!(),
+      };
+
+      // Clears piece files
+      async fn clear_piece_files(piece_path: &PathBuf) {
+         let mut entries = fs::read_dir(&piece_path).await.unwrap();
+         while let Some(entry) = entries.next_entry().await.unwrap() {
+            let path = entry.path();
+            if let Some(ext) = path.extension()
+               && ext == "piece"
+            {
+               fs::remove_file(&path).await.unwrap();
+            }
+         }
+      }
 
       let piece_path = std::env::temp_dir().join("tortillas");
 
@@ -539,26 +556,34 @@ mod tests {
          sleep(Duration::from_millis(100)).await;
       }
 
+      clear_piece_files(&piece_path).await;
+
       actor.tell(TorrentMessage::Start).await.unwrap();
 
       loop {
-         // let mut entries = fs::read_dir(&piece_path).await.unwrap();
-         // let mut found_piece = false;
-         //
-         // while let Some(entry) = entries.next_entry().await.unwrap() {
-         //   let path = entry.path();
-         //   if let Some(ext) = path.extension()
-         //      && ext == "piece"
-         //   {
-         //      found_piece = true;
-         //      fs::remove_file(&path).await.unwrap();
-         //   }
-         //}
-         // if found_piece {
-         //   break; // Exit loop once we found and deleted .piece files
-         //}
+         let mut entries = fs::read_dir(&piece_path).await.unwrap();
+         let mut found_piece = false;
+         while let Some(entry) = entries.next_entry().await.unwrap() {
+            let path = entry.path();
+            if let Some(ext) = path.extension()
+               && ext == "piece"
+            {
+               let metadata = entry.metadata().await.unwrap();
+               if metadata.len() == info_dict.piece_length {
+                  found_piece = true;
+                  break;
+               }
+            }
+         }
+
+         if found_piece {
+            break;
+         }
 
          sleep(Duration::from_millis(200)).await;
       }
+
+      actor.stop_gracefully().await.unwrap();
+      clear_piece_files(&piece_path).await;
    }
 }
