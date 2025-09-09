@@ -5,6 +5,7 @@ use std::{
    sync::{Arc, atomic::AtomicU8},
 };
 
+use anyhow::ensure;
 use bitvec::vec::BitVec;
 use dashmap::DashMap;
 use kameo::{Actor, actor::ActorRef, mailbox};
@@ -282,20 +283,26 @@ impl TorrentActor {
    /// Gets the path to a piece file based on the index. Only should be used
    /// when the piece storage strategy is [`Disk`](PieceStorageStrategy::Disk),
    /// this function will panic otherwise.
-   pub(super) fn get_piece_path(&self, index: usize) -> PathBuf {
-      let hash = self.info_dict().expect("Cannot get info hash").pieces[index];
+   pub(super) fn get_piece_path(&self, index: usize) -> anyhow::Result<PathBuf> {
+      let info_dict = self.info_dict().ok_or(TorrentError::MissingInfoDict)?;
+      ensure!(info_dict.pieces.len() > index, "Index out of bounds");
+
+      let hash = info_dict.pieces[index];
+
+      // Panic because this is a user error, this function should never be called if
+      // the storage strategy is not Disk
       assert!(
          matches!(self.piece_storage, PieceStorageStrategy::Disk(_)),
          "Piece storage strategy is not Disk"
       );
-      let mut path = match &self.piece_storage {
-         PieceStorageStrategy::Disk(path) => path.clone(),
-         _ => panic!("Piece storage strategy is not Disk"),
+
+      if let PieceStorageStrategy::Disk(path) = &self.piece_storage {
+         let mut path = path.clone();
+         path.push(format!("{hash}.piece"));
+         return Ok(path.to_path_buf());
+      } else {
+         unreachable!()
       };
-
-      path.push(format!("{hash}.piece"));
-
-      path
    }
 }
 
@@ -319,7 +326,7 @@ impl Actor for TorrentActor {
          addr
       });
       if let PieceStorageStrategy::Disk(dir) = &piece_storage {
-         util::create_dir(dir).await.unwrap(); // Intended panic
+         util::create_dir(dir).await?;
       }
 
       info!(

@@ -488,18 +488,9 @@ impl Message<PeerTell> for PeerActor {
             trace!("Sent bitfield to peer");
          }
          PeerTell::Have(piece) => {
-            self
-               .stream
-               .send(PeerMessages::Have(piece as u32))
-               .await
-               .map_err(|e| {
-                  trace!(
-                     piece_num = piece,
-                     error = %e,
-                     "Failed to send Have message to peer"
-                  )
-               })
-               .unwrap();
+            if let Err(e) = self.stream.send(PeerMessages::Have(piece as u32)).await {
+               trace!(piece_num = piece, error = %e, "Failed to send Have message to peer");
+            }
          }
       }
    }
