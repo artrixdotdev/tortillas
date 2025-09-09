@@ -307,17 +307,21 @@ impl Message<PeerMessages> for PeerActor {
                "Received piece data"
             );
             self.peer.increment_bytes_downloaded(data.len());
-            self
-               .pending_block_requests
-               .remove(&(index as usize, offset as usize, data.len()));
-            let supervisor_msg =
-               TorrentMessage::IncomingPiece(index as usize, offset as usize, data);
+            let key = (index as usize, offset as usize, data.len());
+            // Only send the piece to the supervisor if they request it or it hasn't been
+            // cancelled
+            if self.pending_block_requests.contains(&key) {
+               self.pending_block_requests.remove(&key);
 
-            let _ = self
-               .supervisor
-               .tell(supervisor_msg)
-               .await
-               .context("Failed to send piece to tracker");
+               let supervisor_msg =
+                  TorrentMessage::IncomingPiece(index as usize, offset as usize, data);
+
+               let _ = self
+                  .supervisor
+                  .tell(supervisor_msg)
+                  .await
+                  .context("Failed to send piece to tracker");
+            }
          }
          PeerMessages::Choke => {
             self.peer.set_am_choked(true);
@@ -461,15 +465,18 @@ impl Message<PeerTell> for PeerActor {
             {
                return; // Silently ignore if we don't have the request
             }
-            self
-               .stream
-               .send(PeerMessages::Cancel(
-                  index as u32,
-                  begin as u32,
-                  length as u32,
-               ))
-               .await
-               .expect("Failed to send piece request");
+            // TODO: Refactor PeerStream to allow for cancelling requests
+            // This can't be done yet because it would require a refactor of PeerStream, for
+            // now we'll just ignore the request
+            // self
+            //   .stream
+            //   .send(PeerMessages::Cancel(
+            //      index as u32,
+            //      begin as u32,
+            //      length as u32,
+            //   ))
+            //   .await
+            //   .expect("Failed to send piece request");
             self.pending_block_requests.remove(&(index, begin, length));
          }
          PeerTell::HaveInfoDict(bitfield) => {
