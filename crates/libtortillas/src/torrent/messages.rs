@@ -10,7 +10,7 @@ use kameo::{
    prelude::{Context, Message},
 };
 use sha1::{Digest, Sha1};
-use tokio::sync::mpsc;
+use tokio::{fs, sync::mpsc};
 use tracing::{debug, error, info, trace, warn};
 
 use super::{
@@ -230,18 +230,12 @@ impl Message<TorrentMessage> for TorrentActor {
                      {
                         warn!(path = %path.display(), index, "Piece file is invalid, clearing it");
                         let path_clone = path.clone();
-                        let piece_size = info_dict.piece_length as usize;
 
                         // Clears the piece on a new thread
                         tokio::spawn(async move {
-                           util::create_empty_file(&path_clone, piece_size)
-                              .await
-                              .unwrap_or_else(|_| {
-                                 error!(
-                                    "Failed to create empty file for piece {}",
-                                    &path_clone.display()
-                                 );
-                              });
+                           fs::remove_file(&path_clone).await.unwrap_or_else(|_| {
+                              error!("Failed to delete file for piece {}", &path_clone.display());
+                           });
                         });
                         return;
                      }
