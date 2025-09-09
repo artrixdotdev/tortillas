@@ -247,6 +247,11 @@ impl Message<TorrentMessage> for TorrentActor {
 
                // Announce to peers that we have this piece
                self.broadcast_to_peers(PeerTell::Have(cur_piece)).await;
+               if self.next_piece >= info_dict.piece_count() - 1 {
+                  // Handle end of torrenting process
+                  self.state = TorrentState::Seeding;
+                  info!("Torrenting process completed, switching to seeding mode");
+               }
 
                self.next_piece += 1;
                self.bitfield.set_aliased(index, true);
