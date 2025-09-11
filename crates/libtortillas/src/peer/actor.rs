@@ -293,7 +293,7 @@ impl Actor for PeerActor {
 impl Message<PeerMessages> for PeerActor {
    type Reply = ();
 
-   #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self, msg), fields(addr = %self.stream, id = %self.peer.id.unwrap(), message = %msg))]
    async fn handle(
       &mut self, msg: PeerMessages, _: &mut KameoContext<Self, Self::Reply>,
    ) -> Self::Reply {
