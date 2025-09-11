@@ -1,5 +1,6 @@
 use std::{
    collections::HashMap,
+   fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr},
    sync::{
       Arc,
@@ -122,6 +123,42 @@ pub enum PeerMessages {
 
    /// Just a ping message, used to keep the connection alive.
    KeepAlive,
+}
+
+impl Display for PeerMessages {
+   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      match self {
+         PeerMessages::Handshake(handshake) => write!(f, "Handshake({})", handshake.peer_id),
+         PeerMessages::Choke => write!(f, "Choke"),
+         PeerMessages::Unchoke => write!(f, "Unchoke"),
+         PeerMessages::Interested => write!(f, "Interested"),
+         PeerMessages::NotInterested => write!(f, "NotInterested"),
+         PeerMessages::Have(index) => write!(f, "Have({})", index),
+         PeerMessages::Bitfield(bitfield) => write!(
+            f,
+            "Bitfield(true: {}, false: {})",
+            bitfield.count_ones(),
+            bitfield.count_zeros()
+         ),
+         PeerMessages::Request(index, begin, length) => {
+            write!(f, "Request({}, {}, {})", index, begin, length)
+         }
+         PeerMessages::Piece(index, begin, data) => {
+            write!(f, "Piece({}, {}, {})", index, begin, data.len())
+         }
+         PeerMessages::Cancel(index, begin, length) => {
+            write!(f, "Cancel({}, {}, {})", index, begin, length)
+         }
+         PeerMessages::Extended(extended_id, handshake_message, metadata) => write!(
+            f,
+            "Extended({}, {:?}, {:?})",
+            extended_id,
+            handshake_message,
+            metadata.as_ref().map(|m| m.len())
+         ),
+         PeerMessages::KeepAlive => write!(f, "KeepAlive"),
+      }
+   }
 }
 
 impl PeerMessages {
