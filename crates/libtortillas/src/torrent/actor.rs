@@ -223,18 +223,14 @@ impl TorrentActor {
             return;
          }
 
-         // #109
-         if peers.contains_key(&id) {
-            warn!("Peer already exists, ignoring");
-            return;
-         }
-
          peer.id = Some(id);
 
-         let actor =
-            PeerActor::spawn_with_mailbox((peer.clone(), stream, actor_ref), mailbox::bounded(120));
-         // We cant store peers until #86 is implemented
-         peers.insert(id, actor);
+         // Prevents a TOCTOU bug. Checks if peer id is in dashmap. The closure
+         // atomically prevents the `PeerActor` from being created unless there
+         // is no entry for the peer id (?)
+         peers.entry(id).or_insert_with(|| {
+            PeerActor::spawn_with_mailbox((peer.clone(), stream, actor_ref), mailbox::bounded(120))
+         });
       });
    }
 
