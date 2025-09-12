@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "libtortillas"
-version = "0.0.0-alpha.1"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-stream",
