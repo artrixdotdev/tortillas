@@ -67,13 +67,14 @@ impl fmt::Debug for TorrentMessage {
          TorrentMessage::KillTracker(tracker) => write!(f, "KillTracker({tracker:?})"),
          TorrentMessage::AddPeer(peer) => write!(f, "AddPeer({peer:?})"),
          TorrentMessage::IncomingPiece(index, offset, data) => {
-            write!(f, "IncomingPiece({index}, {offset}, {data:?})")
+            write!(f, "IncomingPiece({index}, {offset}, {})", data.len())
          }
          TorrentMessage::Announce(peers) => write!(f, "Announce({peers:?})"),
          _ => write!(f, "TorrentMessage"), // Add more later,
       }
    }
 }
+
 actor_request_response!(
    #[allow(dead_code)]
    pub(crate) TorrentRequest,
