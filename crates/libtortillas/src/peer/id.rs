@@ -356,7 +356,7 @@ define_clients! {
 
 impl Default for PeerId {
    /// Creates a new [PeerId] for the tortillas client using the
-   /// [Azureus](PeerIdFormat::Azureus) format
+   /// [Azureus](PeerIdFormat::Azureus) format.
    fn default() -> Self {
       // Fill entire array with random alphanumeric bytes
       let mut id = [0u8; 20];
@@ -370,17 +370,25 @@ impl Default for PeerId {
       id[0] = b'-';
       id[1..3].copy_from_slice(b"TO");
 
-      let version = String::from(VERSION);
-      let version = version.replace(".", "");
-      let version = if version.len() < 4 {
-         version + "0"
-      } else {
-         version
-      };
-      let version = version.as_bytes();
+      // Extract digits only from version, ignoring prerelease/commit metadata
+      let numeric_version: String = VERSION
+         .split(|c: char| !c.is_ascii_digit() && c != '.') // cut off at '-' or '+'
+         .next()
+         .unwrap_or("0.0.0")
+         .chars()
+         .filter(|c| c.is_ascii_digit())
+         .collect();
 
-      let version_end = std::cmp::min(3 + version.len(), 20);
-      id[3..version_end].copy_from_slice(&version[..version_end - 3]);
+      // Ensure length is at least 4 digits
+      let mut version_digits = numeric_version;
+      if version_digits.len() < 4 {
+         version_digits.push('0');
+      }
+      let version_bytes = version_digits.as_bytes();
+
+      // Write version into peer id
+      let version_end = std::cmp::min(3 + version_bytes.len(), 20);
+      id[3..version_end].copy_from_slice(&version_bytes[..version_end - 3]);
       id[version_end] = b'-';
 
       Self::Tortillas(id)
@@ -444,10 +452,14 @@ mod tests {
    #[test]
    fn test_parse_tortillas_peer_id() {
       let peer = PeerId::new();
-      let correct_version = if VERSION.len() <= 5 {
-         VERSION.to_owned() + "0"
+
+      // Extract numeric-only version string just like in PeerId::default
+      let correct_version: String = VERSION.split("-").next().unwrap_or("0.0.0").to_string();
+
+      let correct_version = if correct_version.len() <= 5 {
+         correct_version.clone() + "0"
       } else {
-         VERSION.to_owned()
+         correct_version
       };
 
       assert_eq!(peer.client_name(), "Tortillas");
