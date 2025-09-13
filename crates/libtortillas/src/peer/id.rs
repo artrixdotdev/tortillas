@@ -371,25 +371,19 @@ impl Default for PeerId {
       id[1..3].copy_from_slice(b"TO");
 
       // Extract digits only from version, ignoring prerelease/commit metadata
-      let numeric_version: String = VERSION
-         .split(|c: char| !c.is_ascii_digit() && c != '.') // cut off at '-' or '+'
+      // Extract core VERSION (before any non-digit/dot), keep only digits,
+      // then pad/truncate to exactly 4 digits for Azureus "-XX####-".
+      let core = VERSION
+         .split(|c: char| !c.is_ascii_digit() && c != '.')
          .next()
-         .unwrap_or("0.0.0")
-         .chars()
-         .filter(|c| c.is_ascii_digit())
-         .collect();
-
-      // Ensure length is at least 4 digits
-      let mut version_digits = numeric_version;
-      if version_digits.len() < 4 {
-         version_digits.push('0');
+         .unwrap_or("0");
+      let mut digits: String = core.chars().filter(|c| c.is_ascii_digit()).collect();
+      while digits.len() < 4 {
+         digits.push('0');
       }
-      let version_bytes = version_digits.as_bytes();
-
-      // Write version into peer id
-      let version_end = std::cmp::min(3 + version_bytes.len(), 20);
-      id[3..version_end].copy_from_slice(&version_bytes[..version_end - 3]);
-      id[version_end] = b'-';
+      let digits4 = &digits[..4];
+      id[3..7].copy_from_slice(digits4.as_bytes());
+      id[7] = b'-';
 
       Self::Tortillas(id)
    }
@@ -452,18 +446,27 @@ mod tests {
    #[test]
    fn test_parse_tortillas_peer_id() {
       let peer = PeerId::new();
-
-      // Extract numeric-only version string just like in PeerId::default
-      let correct_version: String = VERSION.split("-").next().unwrap_or("0.0.0").to_string();
-
-      let correct_version = if correct_version.len() <= 5 {
-         correct_version.clone() + "0"
-      } else {
-         correct_version
-      };
+      // Derive expected Azureus "A.B.CD" exactly like PeerId::default
+      let core = VERSION
+         .split(|c: char| !c.is_ascii_digit() && c != '.')
+         .next()
+         .unwrap_or("0");
+      let mut digits: String = core.chars().filter(|c| c.is_ascii_digit()).collect();
+      while digits.len() < 4 {
+         digits.push('0');
+      }
+      let b = digits.as_bytes();
+      let correct_version = format!(
+         "{}.{}.{}{}",
+         b[0] as char, b[1] as char, b[2] as char, b[3] as char
+      );
 
       assert_eq!(peer.client_name(), "Tortillas");
       assert_eq!(peer.version(), Some(correct_version));
+
+      assert_eq!(peer.as_bytes()[0], b'-');
+      assert_eq!(&peer.as_bytes()[1..3], b"TO");
+      assert_eq!(peer.as_bytes()[7], b'-');
    }
    #[test]
    fn test_parse_webtorrent_peer_id() {
