@@ -60,7 +60,7 @@ macro_rules! define_clients {
          format: $format:expr
       }
    ),* $(,)?) => {
-      #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+      #[derive(Copy, Clone, PartialEq, Eq, Hash)]
       pub enum PeerId {
          $($variant(Id),)*
          Unknown(Id),
