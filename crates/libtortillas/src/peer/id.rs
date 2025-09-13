@@ -409,16 +409,21 @@ impl From<Hash<20>> for PeerId {
 impl fmt::Display for PeerId {
    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
       if let Some(version) = self.version() {
-         write!(
-            f,
-            "{} {} ({})",
-            self.client_name(),
-            version,
-            String::from_utf8_lossy(self.id())
-         )
+         write!(f, "{} {}", self.client_name(), version)
       } else {
-         write!(f, "{} ({})", self.client_name(), hex::encode(self.id()))
+         write!(f, "{}", self.client_name())
       }
+   }
+}
+
+impl fmt::Debug for PeerId {
+   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      write!(
+         f,
+         "{} ({})",
+         self.client_name(),
+         String::from_utf8_lossy(self.id())
+      )
    }
 }
 
