@@ -414,7 +414,7 @@ impl fmt::Display for PeerId {
             "{} {} ({})",
             self.client_name(),
             version,
-            hex::encode(self.id())
+            String::from_utf8_lossy(self.id())
          )
       } else {
          write!(f, "{} ({})", self.client_name(), hex::encode(self.id()))
