@@ -5,6 +5,7 @@ on:
       paths:
          # Only run if these files are changed
          - "**/Cargo.toml"
+         - "**/*.yml"
          - "**/Cargo.lock"
          - "**/*.rs"
       branches:
