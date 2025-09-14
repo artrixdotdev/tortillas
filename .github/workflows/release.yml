@@ -38,7 +38,7 @@ jobs:
 
          - name: Set prerelease version
            run: |
-              cargo set-version -p libtortillas --no-workspace ${{ steps.version.outputs.prerelease_version }}
+              cargo set-version -p libtortillas ${{ steps.version.outputs.prerelease_version }}
 
          - name: Verify package (pre-publish)
            run: cargo package -p libtortillas --allow-dirty
