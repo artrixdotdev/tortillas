@@ -3,6 +3,12 @@ name = "libtortillas"
 license = "MPL-2.0"
 version = "0.0.0"
 edition = "2024"
+description = "An asynchronous library based on the actor model for interacting with the BitTorrent protocol"
+repository = "https://github.com/artrixdotdev/tortillas"
+keywords = ["bittorrent", "p2p", "torrent"]
+categories = ["network-programming", "concurrency"]
+readme = "../../README.md"
+
 
 [dependencies]
 serde = { workspace = true }
