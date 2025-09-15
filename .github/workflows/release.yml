@@ -33,7 +33,7 @@ jobs:
          - name: Compute prerelease version
            id: version
            run: |
-              BASE_VERSION=$(cargo pkgid -p libtortillas | sed 's/.*#//')
+              BASE_VERSION=$(cargo metadata --format-version=1 --no-deps | jq ".packages[1].version")
               PRERELEASE_VERSION="${BASE_VERSION}-alpha.${GITHUB_SHA::7}"
               echo "prerelease_version=$PRERELEASE_VERSION" >> $GITHUB_OUTPUT
 
