@@ -91,7 +91,7 @@ impl Message<EngineRequest> for EngineActor {
             if self.torrents.contains_key(&info_hash) {
                error!(
                   ?info_hash,
-                  "Torrent already exists; ignoring duplicate EngineMessage::Torrent"
+                  "Torrent already exists; ignoring duplicate EngineRequest::Torrent"
                );
                return Err(EngineError::TorrentAlreadyExists(info_hash));
             }
