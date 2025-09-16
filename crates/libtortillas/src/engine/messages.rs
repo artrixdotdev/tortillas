@@ -48,8 +48,7 @@ impl Message<EngineMessage> for EngineActor {
                let info_hash = *handshake.info_hash;
                let peer = Peer::from_socket_addr(peer_addr);
 
-               if self.torrents.contains_key(&info_hash) {
-                  let torrent = self.torrents.get(&info_hash).unwrap();
+               if let Some(torrent) = self.torrents.get(&info_hash) {
                   torrent
                      .tell(TorrentMessage::IncomingPeer(peer, stream))
                      .await
