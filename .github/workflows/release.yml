@@ -14,6 +14,7 @@ on:
 jobs:
    checks:
       uses: ./.github/workflows/checks.yml
+
    publish-crates-io:
       name: Publish prerelease to crates.io
       runs-on: ubuntu-latest
@@ -33,8 +34,16 @@ jobs:
          - name: Compute prerelease version
            id: version
            run: |
-              BASE_VERSION=$(cargo metadata --format-version=1 --no-deps | jq ".packages[1].version")
-              PRERELEASE_VERSION="${BASE_VERSION}-alpha.${GITHUB_SHA::7}"
+              # Get base version from Cargo.toml (0.0.0)
+              BASE_VERSION=$(cargo metadata --format-version=1 --no-deps \
+                | jq -r '.packages[] | select(.name=="libtortillas") | .version')
+
+              # Strip patch for next prerelease (0.0.1-alpha.<sha>)
+              NEXT_VERSION=$(echo "$BASE_VERSION" | awk -F. \
+                '{ printf "%d.%d.%d", $1, $2, $3+1 }')
+
+              PRERELEASE_VERSION="${NEXT_VERSION}-alpha.${GITHUB_SHA::7}"
+
               echo "prerelease_version=$PRERELEASE_VERSION" >> $GITHUB_OUTPUT
 
          - name: Set prerelease version
