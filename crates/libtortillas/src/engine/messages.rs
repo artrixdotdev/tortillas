@@ -2,7 +2,7 @@ use kameo::{
    Actor, Reply, mailbox,
    prelude::{ActorRef, Context, Message},
 };
-use tracing::error;
+use tracing::{error, warn};
 
 use super::EngineActor;
 use crate::{
@@ -107,7 +107,13 @@ impl Message<EngineRequest> for EngineActor {
                ),
                // if the size is 0, we use an unbounded mailbox
                match self.mailbox_size {
-                  0 => mailbox::unbounded(),
+                  0 => {
+                     warn!(
+                        ?info_hash,
+                        "Spawning torrent with unbounded mailbox; this could drastically increase memory usage"
+                     );
+                     mailbox::unbounded()
+                  }
                   size => mailbox::bounded(size),
                },
             );
