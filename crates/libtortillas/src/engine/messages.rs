@@ -105,7 +105,11 @@ impl Message<EngineRequest> for EngineActor {
                   None,
                   self.default_piece_storage_strategy.clone(),
                ),
-               mailbox::unbounded(),
+               // if the size is 0, we use an unbounded mailbox
+               match self.mailbox_size {
+                  0 => mailbox::unbounded(),
+                  size => mailbox::bounded(size),
+               },
             );
 
             self.actor_ref.link(&torrent_ref).await;
