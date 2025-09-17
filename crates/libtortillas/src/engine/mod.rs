@@ -100,6 +100,20 @@ impl Engine {
       /// Strategy for storing pieces of the torrent.
       #[builder(default)]
       piece_storage_strategy: PieceStorageStrategy,
+      /// The mailbox size for each torrent instance.
+      ///
+      /// In simple terms, this is the number of messages that each torrent
+      /// instance can have in queue.
+      ///
+      /// If `Some(0)` is provided, the mailbox will be unbounded (no limit).
+      /// If `None` is provided, a sensible default is used.
+      ///
+      /// Higher values increase memory usage but reduce sender backpressure
+      /// when the mailbox is busy, which can improve throughput. Lower values
+      /// do the inverse.
+      ///
+      /// Default: `64` when `None` is provided.
+      mailbox_size: Option<usize>,
    ) -> Self {
       let args: EngineActorArgs = (
          tcp_addr,
@@ -107,6 +121,7 @@ impl Engine {
          udp_addr,
          Some(custom_id),
          piece_storage_strategy,
+         mailbox_size,
       );
 
       let actor = EngineActor::spawn(args);
