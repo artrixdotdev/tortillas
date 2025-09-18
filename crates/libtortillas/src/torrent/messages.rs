@@ -56,7 +56,7 @@ pub(crate) enum TorrentMessage {
 
    PieceStorage(PieceStorageStrategy),
    /// Start the torrenting process & actually start downloading pieces/seeding
-   Start,
+   SetState(TorrentState),
 }
 
 impl fmt::Debug for TorrentMessage {
@@ -305,21 +305,26 @@ impl Message<TorrentMessage> for TorrentActor {
             }
             self.piece_storage = strategy;
          }
-         TorrentMessage::Start => {
-            info!(id = %self.info_hash(), "Torrent is starting...");
-            if self.is_full() {
-               self.state = TorrentState::Seeding;
-               info!(id = %self.info_hash(), "Torrent is now seeding");
-            } else {
-               self.state = TorrentState::Downloading;
-               info!(id = %self.info_hash(), "Torrent is now downloading");
+         TorrentMessage::SetState(state) => {
+            self.state = state;
 
-               trace!(id = %self.info_hash(), peer_count = self.peers.len(), "Requesting first piece from peers");
+            match &self.state {
+               TorrentState::Downloading => {
+                  info!(id = %self.info_hash(), "Torrent is now downloading");
 
-               // Request first piece from peers
-               self
-                  .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
-                  .await;
+                  trace!(id = %self.info_hash(), peer_count = self.peers.len(), "Requesting first piece from peers");
+
+                  // Request first piece from peers
+                  self
+                     .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
+                     .await;
+               }
+               TorrentState::Seeding => {
+                  info!(id = %self.info_hash(), "Torrent is now seeding");
+               }
+               TorrentState::Inactive => {
+                  info!(id = %self.info_hash(), "Torrent is now inactive");
+               }
             }
          }
       }

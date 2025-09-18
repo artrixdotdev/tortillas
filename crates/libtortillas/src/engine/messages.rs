@@ -14,7 +14,7 @@ use crate::{
       messages::PeerMessages,
       stream::{PeerRecv, PeerStream},
    },
-   torrent::{TorrentActor, TorrentMessage},
+   torrent::{TorrentActor, TorrentMessage, TorrentState},
 };
 
 pub(crate) enum EngineMessage {
@@ -64,7 +64,7 @@ impl Message<EngineMessage> for EngineActor {
          EngineMessage::StartAll => {
             for torrent in self.torrents.iter() {
                torrent
-                  .tell(TorrentMessage::Start)
+                  .tell(TorrentMessage::SetState(TorrentState::Downloading))
                   .await
                   .expect("Failed to start torrent");
             }

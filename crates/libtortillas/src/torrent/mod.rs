@@ -245,7 +245,7 @@ impl Torrent {
    ///
    /// Returns an error if the message could not be delivered to the actor.
    pub async fn start(&self) -> Result<(), anyhow::Error> {
-      let msg = TorrentMessage::Start;
+      let msg = TorrentMessage::SetState(TorrentState::Downloading);
 
       self
          .actor()
