@@ -262,7 +262,7 @@ impl Torrent {
    ///
    /// Panics if the message could not be sent to the actor.
    pub async fn state(&self) -> TorrentState {
-      let msg = TorrentRequest::State;
+      let msg = TorrentRequest::GetState;
 
       match self
          .actor()
@@ -270,7 +270,7 @@ impl Torrent {
          .await
          .expect("Failed to send request for state")
       {
-         TorrentResponse::State(state) => state,
+         TorrentResponse::GetState(state) => state,
          _ => unreachable!(),
       }
    }

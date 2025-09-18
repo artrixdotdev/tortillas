@@ -106,8 +106,8 @@ actor_request_response!(
    OutputStrategy(OutputStrategy)
    OutputStrategy(Option<mpsc::Receiver<StreamedPiece>>),
 
-   State
-   State(TorrentState),
+   GetState
+   GetState(TorrentState),
 );
 
 impl Message<TorrentMessage> for TorrentActor {
@@ -359,7 +359,7 @@ impl Message<TorrentRequest> for TorrentActor {
                unimplemented!()
             }
          },
-         TorrentRequest::State => TorrentResponse::State(self.state),
+         TorrentRequest::GetState => TorrentResponse::GetState(self.state),
       }
    }
 }
