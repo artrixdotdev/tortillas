@@ -3,6 +3,7 @@ use std::{
    net::SocketAddr,
    path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
+   time::Instant,
 };
 
 use anyhow::ensure;
@@ -10,7 +11,7 @@ use bitvec::vec::BitVec;
 use dashmap::DashMap;
 use kameo::{Actor, actor::ActorRef, mailbox};
 use librqbit_utp::UtpSocketUdp;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 use super::util;
 use crate::{
@@ -99,6 +100,13 @@ pub(crate) struct TorrentActor {
    /// blocks we have for each piece. Each entry is deleted when the piece is
    /// completed.
    pub(super) block_map: Arc<DashMap<usize, BitVec<usize>>>,
+
+   pub(super) start_time: Option<Instant>,
+   /// The number of peers we need to have before we start downloading, defaults
+   /// to 6.
+   pub(super) sufficient_peers: usize,
+
+   pub(super) autostart: bool,
 }
 
 impl fmt::Display for TorrentActor {
@@ -146,6 +154,36 @@ impl TorrentActor {
    /// data in it
    pub fn is_empty(&self) -> bool {
       self.bitfield.count_zeros() == self.bitfield.len()
+   }
+
+   /// Checks if the torrent is ready to autostart (via [`Self::autostart`]) and
+   /// torrenting process
+   pub async fn autostart(&mut self) {
+      if self.autostart
+         && self.state == TorrentState::Inactive
+         && self.info.is_some() // We need info dict to start
+         && self.peers.len() > self.sufficient_peers
+      {
+         self.start().await;
+      }
+   }
+
+   pub async fn start(&mut self) {
+      if self.is_full() {
+         self.state = TorrentState::Seeding;
+         info!(id = %self.info_hash(), "Torrent is now seeding");
+      } else {
+         self.state = TorrentState::Downloading;
+         info!(id = %self.info_hash(), "Torrent is now downloading");
+
+         trace!(id = %self.info_hash(), peer_count = self.peers.len(), "Requesting first piece from peers");
+
+         self.next_piece = self.bitfield.first_zero().unwrap_or_default();
+         // Request first piece from peers
+         self
+            .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
+            .await;
+      }
    }
 
    /// Checks if the torrent has all of the pieces (we've downloaded/have
@@ -372,6 +410,9 @@ impl Actor for TorrentActor {
          state: TorrentState::default(),
          next_piece: 0,
          block_map: Arc::new(DashMap::new()),
+         start_time: None,
+         sufficient_peers: 6,
+         autostart: true,
       })
    }
 }
@@ -562,7 +603,10 @@ mod tests {
 
       clear_piece_files(&piece_path).await;
 
-      actor.tell(TorrentMessage::Start).await.unwrap();
+      actor
+         .tell(TorrentMessage::SetState(TorrentState::Downloading))
+         .await
+         .unwrap();
 
       loop {
          let mut entries = fs::read_dir(&piece_path).await.unwrap();
