@@ -64,7 +64,7 @@ pub enum PieceStorageStrategy {
 
 /// The current state of the torrent, defaults to
 /// [`Inactive`](TorrentState::Inactive)
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TorrentState {
    /// Torrent is downloading new pieces actively
    ///
