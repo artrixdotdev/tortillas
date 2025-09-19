@@ -107,6 +107,9 @@ pub(crate) struct TorrentActor {
    pub(super) sufficient_peers: usize,
 
    pub(super) autostart: bool,
+
+   /// If there is already a pending start, we don't want to start a new one
+   pending_start: bool,
 }
 
 impl fmt::Display for TorrentActor {
@@ -159,13 +162,18 @@ impl TorrentActor {
    /// Checks if the torrent is ready to autostart (via [`Self::autostart`]) and
    /// torrenting process
    pub async fn autostart(&mut self) {
+      trace!("Checking if we should autostart");
+
+      self.pending_start = true;
       if self.autostart
          && self.state == TorrentState::Inactive
          && self.info.is_some() // We need info dict to start
          && self.peers.len() > self.sufficient_peers
       {
+         trace!("Attempting to autostart");
          self.start().await;
       }
+      self.pending_start = false;
    }
 
    pub async fn start(&mut self) {
@@ -413,7 +421,18 @@ impl Actor for TorrentActor {
          start_time: None,
          sufficient_peers: 6,
          autostart: true,
+         pending_start: false,
       })
+   }
+
+   async fn next(
+      &mut self, _: kameo::prelude::WeakActorRef<Self>,
+      mailbox_rx: &mut kameo::prelude::MailboxReceiver<Self>,
+   ) -> Option<mailbox::Signal<Self>> {
+      if !self.pending_start {
+         self.autostart().await;
+      }
+      mailbox_rx.recv().await
    }
 }
 
@@ -462,6 +481,11 @@ mod tests {
 
       // Blocking loop that runs until we successfully handshake with atleast 6 peers
       loop {
+         assert!(
+            actor.is_alive(),
+            "Actor is died unexpectedly due to error, exiting"
+         );
+
          let peers_count = match actor.ask(TorrentRequest::PeerCount).await.unwrap() {
             TorrentResponse::PeerCount(count) => count,
             _ => unreachable!(),
@@ -584,30 +608,30 @@ mod tests {
          PieceStorageStrategy::Disk(piece_path.clone()),
       ));
 
-      // Blocking loop that runs until we successfully handshake with atleast 6 peers
-      loop {
-         let peers_count = match actor.ask(TorrentRequest::PeerCount).await.unwrap() {
-            TorrentResponse::PeerCount(count) => count,
-            _ => unreachable!(),
-         };
-         if peers_count > 6 {
-            break;
-         } else {
-            info!(
-               current_peers_count = peers_count,
-               "Waiting for more peers...."
-            )
-         }
-         sleep(Duration::from_millis(100)).await;
-      }
-
-      clear_piece_files(&piece_path).await;
-
-      actor
-         .tell(TorrentMessage::SetState(TorrentState::Downloading))
-         .await
-         .unwrap();
-
+      //// Blocking loop that runs until we successfully handshake with atleast 6
+      //// peers
+      // loop {
+      //   let peers_count = match actor.ask(TorrentRequest::PeerCount).await.unwrap()
+      // {      TorrentResponse::PeerCount(count) => count,
+      //      _ => unreachable!(),
+      //   };
+      //   if peers_count > 6 {
+      //      break;
+      //   } else {
+      //      info!(
+      //         current_peers_count = peers_count,
+      //         "Waiting for more peers...."
+      //      )
+      //   }
+      //   sleep(Duration::from_millis(100)).await;
+      //}
+      // clear_piece_files(&piece_path).await;
+      //
+      // actor
+      //   .tell(TorrentMessage::SetState(TorrentState::Downloading))
+      //   .await
+      //   .unwrap();
+      //
       loop {
          let mut entries = fs::read_dir(&piece_path).await.unwrap();
          let mut found_piece = false;
