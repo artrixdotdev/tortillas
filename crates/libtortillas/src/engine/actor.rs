@@ -51,6 +51,11 @@ pub struct EngineActor {
 
    /// Mailbox size for each torrent instance
    pub(crate) mailbox_size: usize,
+
+   /// If we autostart torrents
+   pub(crate) autostart: Option<bool>,
+   /// How many peers we need to have before we start downloading
+   pub(crate) sufficient_peers: Option<usize>,
 }
 
 pub(crate) type EngineActorArgs = (
@@ -67,6 +72,10 @@ pub(crate) type EngineActorArgs = (
    // Defaults to 64
    //
    // If 0 is provided, the mailbox size will be unbounded
+   Option<usize>,
+   // If we autostart torrents
+   Option<bool>,
+   // How many peers we need to have before we start downloading
    Option<usize>,
 );
 
@@ -86,8 +95,16 @@ impl Actor for EngineActor {
    async fn on_start(
       args: Self::Args, actor_ref: kameo::prelude::ActorRef<Self>,
    ) -> Result<Self, Self::Error> {
-      let (tcp_addr, utp_addr, udp_addr, peer_id, default_piece_storage_strategy, mailbox_size) =
-         args;
+      let (
+         tcp_addr,
+         utp_addr,
+         udp_addr,
+         peer_id,
+         default_piece_storage_strategy,
+         mailbox_size,
+         autostart,
+         sufficient_peers,
+      ) = args;
 
       let tcp_addr = tcp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
       // Should this be port 6881?
@@ -112,6 +129,8 @@ impl Actor for EngineActor {
          actor_ref,
          default_piece_storage_strategy,
          mailbox_size: mailbox_size.unwrap_or(64),
+         autostart,
+         sufficient_peers,
       })
    }
 

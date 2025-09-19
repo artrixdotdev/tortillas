@@ -7,7 +7,7 @@ pub use actor::*;
 use bytes::Bytes;
 use kameo::actor::ActorRef;
 pub(crate) use messages::*;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::error;
 
 pub mod util;
@@ -245,7 +245,7 @@ impl Torrent {
    ///
    /// Returns an error if the message could not be delivered to the actor.
    pub async fn start(&self) -> Result<(), anyhow::Error> {
-      let msg = TorrentMessage::Start;
+      let msg = TorrentMessage::SetState(TorrentState::Downloading);
 
       self
          .actor()
@@ -262,7 +262,7 @@ impl Torrent {
    ///
    /// Panics if the message could not be sent to the actor.
    pub async fn state(&self) -> TorrentState {
-      let msg = TorrentRequest::State;
+      let msg = TorrentRequest::GetState;
 
       match self
          .actor()
@@ -270,8 +270,78 @@ impl Torrent {
          .await
          .expect("Failed to send request for state")
       {
-         TorrentResponse::State(state) => state,
+         TorrentResponse::GetState(state) => state,
          _ => unreachable!(),
       }
+   }
+
+   /// If the torrent should automatically start when `sufficient_peers` is
+   /// met.
+   ///
+   /// If this is false, you are expected to poll/wait for the torrent and
+   /// manually start it using [`poll_ready`](Self::poll_ready) and
+   /// [`start`](Self::start).
+   ///
+   /// Default: `true`
+   pub async fn set_auto_start(&self, auto: bool) {
+      let msg = TorrentMessage::SetAutoStart(auto);
+      self
+         .actor()
+         .tell(msg)
+         .await
+         .expect("Failed to set auto start");
+   }
+
+   /// Sets the number of peers we need to have before we start downloading.
+   ///
+   /// Default: `6`
+   pub async fn set_sufficient_peers(&self, peers: usize) {
+      let msg = TorrentMessage::SetSufficientPeers(peers);
+      self
+         .actor()
+         .tell(msg)
+         .await
+         .expect("Failed to set sufficient peers");
+   }
+
+   /// A blocking function that polls the torrent until it is ready to start
+   /// downloading.
+   ///
+   /// The criteria for when the torrent is ready to start is:
+   /// - We have sufficient peers (see [`Self::set_sufficient_peers`]), the
+   ///   default is `6`
+   /// - We have the info dict either from using a torrent file, or from a peer
+   ///
+   /// Required if you want to set [`Self::set_auto_start`] to `false`,
+   /// otherwise the torrent won't actually download anything.
+   ///
+   /// # Example
+   ///
+   /// ```no_run
+   /// use libtortillas::prelude::*;
+   ///
+   /// #[tokio::main]
+   /// async fn main() {
+   ///    let engine = Engine::default();
+   ///    let torrent = engine
+   ///       .add_torrent("https://example.com/file.torrent")
+   ///       .await
+   ///       .expect("Failed to add torrent");
+   ///
+   ///    torrent.set_auto_start(false).await;
+   ///    torrent.poll_ready().await.expect("Failed to poll torrent");
+   ///    torrent.start().await.expect("Failed to start torrent");
+   /// }
+   /// ```
+   pub async fn poll_ready(&self) -> Result<(), anyhow::Error> {
+      let (hook, hook_rx) = oneshot::channel();
+      let msg = TorrentMessage::ReadyHook(hook);
+      // We don't care about the response, we just want to make sure the
+      // actor is alive
+      self.actor().tell(msg).await?;
+      // This will block until the hook is called
+      hook_rx.await?;
+
+      Ok(())
    }
 }

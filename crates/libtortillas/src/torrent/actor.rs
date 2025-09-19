@@ -3,6 +3,7 @@ use std::{
    net::SocketAddr,
    path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
+   time::Instant,
 };
 
 use anyhow::ensure;
@@ -10,7 +11,8 @@ use bitvec::vec::BitVec;
 use dashmap::DashMap;
 use kameo::{Actor, actor::ActorRef, mailbox};
 use librqbit_utp::UtpSocketUdp;
-use tracing::{debug, error, info, instrument, warn};
+use tokio::sync::oneshot;
+use tracing::{debug, error, info, instrument, trace, warn};
 
 use super::util;
 use crate::{
@@ -62,8 +64,9 @@ pub enum PieceStorageStrategy {
    Disk(PathBuf),
 }
 
-/// The current state of the torrent, defaults to `Paused`
-#[derive(Debug, Default, Clone, Copy)]
+/// The current state of the torrent, defaults to
+/// [`Inactive`](TorrentState::Inactive)
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TorrentState {
    /// Torrent is downloading new pieces actively
    ///
@@ -77,6 +80,10 @@ pub enum TorrentState {
    #[default]
    Inactive,
 }
+
+/// A hook that is called when the torrent is ready to start downloading.
+/// This is used to implement [`Torrent::poll_ready`].
+pub(super) type ReadyHook = oneshot::Sender<()>;
 
 pub(crate) struct TorrentActor {
    pub(crate) peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
@@ -98,6 +105,18 @@ pub(crate) struct TorrentActor {
    /// blocks we have for each piece. Each entry is deleted when the piece is
    /// completed.
    pub(super) block_map: Arc<DashMap<usize, BitVec<usize>>>,
+
+   pub(super) start_time: Option<Instant>,
+   /// The number of peers we need to have before we start downloading, defaults
+   /// to 6.
+   pub(super) sufficient_peers: usize,
+
+   pub(super) autostart: bool,
+
+   /// If there is already a pending start, we don't want to start a new one
+   pub(super) pending_start: bool,
+
+   pub(super) ready_hook: Option<ReadyHook>,
 }
 
 impl fmt::Display for TorrentActor {
@@ -147,11 +166,64 @@ impl TorrentActor {
       self.bitfield.count_zeros() == self.bitfield.len()
    }
 
+   /// Checks if the torrent is ready to autostart (via [`Self::autostart`]) and
+   /// torrenting process
+   pub async fn autostart(&mut self) {
+      trace!("Checking if we should autostart");
+
+      self.pending_start = true;
+
+      let is_ready = self.is_ready_to_start();
+      if is_ready {
+         if self.autostart {
+            trace!("Autostarting torrent");
+            self.start().await;
+         } else {
+            // Torrent is ready, but auto-start is disabled
+            if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
+               error!(?err, "Failed to send ready hook");
+            }
+         }
+      }
+
+      self.pending_start = false;
+   }
+
+   pub async fn start(&mut self) {
+      if self.is_full() {
+         self.state = TorrentState::Seeding;
+         info!(id = %self.info_hash(), "Torrent is now seeding");
+      } else {
+         self.state = TorrentState::Downloading;
+         info!(id = %self.info_hash(), "Torrent is now downloading");
+
+         trace!(id = %self.info_hash(), peer_count = self.peers.len(), "Requesting first piece from peers");
+
+         self.next_piece = self.bitfield.first_zero().unwrap_or_default();
+         // Request first piece from peers
+         self
+            .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
+            .await;
+         self.start_time = Some(Instant::now());
+      }
+      if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
+         error!(?err, "Failed to send ready hook");
+      }
+   }
+
    /// Checks if the torrent has all of the pieces (we've downloaded/have
    /// started with the entire file) by checking if our bitfield is filled with
    /// zeroes.
    pub fn is_full(&self) -> bool {
       self.bitfield.count_ones() == self.bitfield.len()
+   }
+
+   pub fn is_ready(&self) -> bool {
+      self.info.is_some() && self.peers.len() >= self.sufficient_peers
+   }
+
+   pub fn is_ready_to_start(&self) -> bool {
+      self.is_ready() && self.state == TorrentState::Inactive
    }
 
    /// Spawns a new [`PeerActor`] for the given [`Peer`] and adds it to the
@@ -310,12 +382,23 @@ impl Actor for TorrentActor {
       UdpServer,
       Option<SocketAddr>,
       PieceStorageStrategy,
+      Option<bool>,
+      Option<usize>,
    );
 
    type Error = TorrentError;
 
    async fn on_start(args: Self::Args, us: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (peer_id, metainfo, utp_server, tracker_server, primary_addr, piece_storage) = args;
+      let (
+         peer_id,
+         metainfo,
+         utp_server,
+         tracker_server,
+         primary_addr,
+         piece_storage,
+         autostart,
+         sufficient_peers,
+      ) = args;
       let primary_addr = primary_addr.unwrap_or_else(|| {
          let addr = utp_server.bind_addr();
          info!("No primary address provided, using {}", addr);
@@ -371,7 +454,22 @@ impl Actor for TorrentActor {
          state: TorrentState::default(),
          next_piece: 0,
          block_map: Arc::new(DashMap::new()),
+         start_time: None,
+         sufficient_peers: sufficient_peers.unwrap_or(6),
+         autostart: autostart.unwrap_or(true),
+         pending_start: false,
+         ready_hook: None,
       })
+   }
+
+   async fn next(
+      &mut self, _: kameo::prelude::WeakActorRef<Self>,
+      mailbox_rx: &mut kameo::prelude::MailboxReceiver<Self>,
+   ) -> Option<mailbox::Signal<Self>> {
+      if !self.pending_start {
+         self.autostart().await;
+      }
+      mailbox_rx.recv().await
    }
 }
 
@@ -386,7 +484,7 @@ mod tests {
    use super::*;
    use crate::{
       metainfo::{MagnetUri, TorrentFile},
-      torrent::{TorrentMessage, TorrentRequest, TorrentResponse},
+      torrent::{Torrent, TorrentRequest, TorrentResponse},
    };
 
    #[tokio::test(flavor = "multi_thread")]
@@ -408,6 +506,9 @@ mod tests {
          UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
             .await
             .unwrap();
+      let sufficient_peers = 6;
+
+      let info_hash = metainfo.clone().info_hash().unwrap();
 
       let actor = TorrentActor::spawn((
          peer_id,
@@ -416,32 +517,15 @@ mod tests {
          udp_server.clone(),
          None,
          PieceStorageStrategy::default(),
+         Some(false), // We don't need to autostart because we're only checking if we have peers
+         Some(sufficient_peers),
       ));
 
-      // Blocking loop that runs until we successfully handshake with atleast 6 peers
-      loop {
-         let peers_count = match actor.ask(TorrentRequest::PeerCount).await.unwrap() {
-            TorrentResponse::PeerCount(count) => count,
-            _ => unreachable!(),
-         };
-         if peers_count > 6 {
-            break;
-         } else {
-            info!(
-               current_peers_count = peers_count,
-               "Waiting for more peers...."
-            )
-         }
-         sleep(Duration::from_millis(100)).await;
-      }
+      let torrent = Torrent::new(info_hash, actor.clone());
 
-      let peers_count = match actor.ask(TorrentRequest::PeerCount).await.unwrap() {
-         TorrentResponse::PeerCount(count) => count,
-         _ => unreachable!(),
-      };
+      assert!(torrent.poll_ready().await.is_ok());
 
       actor.stop_gracefully().await.expect("Failed to stop");
-      info!("Connected to {peers_count} peers!")
    }
 
    #[tokio::test(flavor = "multi_thread")]
@@ -475,6 +559,8 @@ mod tests {
          udp_server.clone(),
          None,
          PieceStorageStrategy::default(),
+         Some(false),
+         None,
       ));
 
       // Blocking loop that runs until we get an info dict
@@ -509,6 +595,7 @@ mod tests {
          MetaInfo::Torrent(file) => file.info.clone(),
          _ => unreachable!(),
       };
+      let info_hash = info_dict.hash().unwrap();
 
       // Clears piece files
       async fn clear_piece_files(piece_path: &PathBuf) {
@@ -540,28 +627,13 @@ mod tests {
          udp_server.clone(),
          None,
          PieceStorageStrategy::Disk(piece_path.clone()),
+         None,
+         None,
       ));
 
-      // Blocking loop that runs until we successfully handshake with atleast 6 peers
-      loop {
-         let peers_count = match actor.ask(TorrentRequest::PeerCount).await.unwrap() {
-            TorrentResponse::PeerCount(count) => count,
-            _ => unreachable!(),
-         };
-         if peers_count > 6 {
-            break;
-         } else {
-            info!(
-               current_peers_count = peers_count,
-               "Waiting for more peers...."
-            )
-         }
-         sleep(Duration::from_millis(100)).await;
-      }
+      let torrent = Torrent::new(info_hash, actor.clone());
 
-      clear_piece_files(&piece_path).await;
-
-      actor.tell(TorrentMessage::Start).await.unwrap();
+      assert!(torrent.poll_ready().await.is_ok());
 
       loop {
          let mut entries = fs::read_dir(&piece_path).await.unwrap();

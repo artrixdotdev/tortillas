@@ -15,7 +15,8 @@ use tokio::{fs, sync::mpsc};
 use tracing::{debug, error, info, trace, warn};
 
 use super::{
-   BLOCK_SIZE, OutputStrategy, PieceStorageStrategy, StreamedPiece, TorrentActor, TorrentState,
+   BLOCK_SIZE, OutputStrategy, PieceStorageStrategy, ReadyHook, StreamedPiece, TorrentActor,
+   TorrentState, util,
 };
 use crate::{
    actor_request_response,
@@ -23,7 +24,6 @@ use crate::{
    metainfo::Info,
    peer::{Peer, PeerId, PeerTell},
    protocol::stream::PeerStream,
-   torrent::util,
    tracker::Tracker,
 };
 
@@ -56,7 +56,16 @@ pub(crate) enum TorrentMessage {
 
    PieceStorage(PieceStorageStrategy),
    /// Start the torrenting process & actually start downloading pieces/seeding
-   Start,
+   SetState(TorrentState),
+
+   SetAutoStart(bool),
+
+   SetSufficientPeers(usize),
+   /// A hook that is called when the torrent is ready to start downloading.
+   /// This is used to implement [`Torrent::poll_ready`].
+   ///
+   /// Only should be used internally.
+   ReadyHook(ReadyHook),
 }
 
 impl fmt::Debug for TorrentMessage {
@@ -106,8 +115,8 @@ actor_request_response!(
    OutputStrategy(OutputStrategy)
    OutputStrategy(Option<mpsc::Receiver<StreamedPiece>>),
 
-   State
-   State(TorrentState),
+   GetState
+   GetState(TorrentState),
 );
 
 impl Message<TorrentMessage> for TorrentActor {
@@ -305,21 +314,38 @@ impl Message<TorrentMessage> for TorrentActor {
             }
             self.piece_storage = strategy;
          }
-         TorrentMessage::Start => {
-            info!(id = %self.info_hash(), "Torrent is starting...");
-            if self.is_full() {
-               self.state = TorrentState::Seeding;
-               info!(id = %self.info_hash(), "Torrent is now seeding");
+         TorrentMessage::SetState(state) => {
+            self.state = state;
+            if let TorrentState::Downloading = state {
+               self.start().await;
+            }
+         }
+         TorrentMessage::SetAutoStart(auto) => {
+            self.autostart = auto;
+            if !self.pending_start {
+               self.autostart().await;
+            }
+         }
+         TorrentMessage::SetSufficientPeers(peers) => {
+            self.sufficient_peers = peers;
+            if !self.pending_start {
+               self.autostart().await;
+            }
+         }
+         TorrentMessage::ReadyHook(hook) => {
+            // If torrent has already transitioned from Inactive state, immediately send
+            // ready signal
+            if self.state != TorrentState::Inactive {
+               let _ = hook.send(());
+               return;
+            }
+
+            let is_ready = self.is_ready_to_start();
+            if is_ready && !self.autostart {
+               let _ = hook.send(());
             } else {
-               self.state = TorrentState::Downloading;
-               info!(id = %self.info_hash(), "Torrent is now downloading");
-
-               trace!(id = %self.info_hash(), peer_count = self.peers.len(), "Requesting first piece from peers");
-
-               // Request first piece from peers
-               self
-                  .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
-                  .await;
+               self.ready_hook = Some(hook);
+               self.autostart().await;
             }
          }
       }
@@ -359,7 +385,7 @@ impl Message<TorrentRequest> for TorrentActor {
                unimplemented!()
             }
          },
-         TorrentRequest::State => TorrentResponse::State(self.state),
+         TorrentRequest::GetState => TorrentResponse::GetState(self.state),
       }
    }
 }
