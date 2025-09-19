@@ -173,10 +173,7 @@ impl TorrentActor {
 
       self.pending_start = true;
 
-      let is_ready = self.state == TorrentState::Inactive
-         && self.info.is_some()
-         && self.peers.len() > self.sufficient_peers;
-
+      let is_ready = self.is_ready_to_start();
       if is_ready {
          if self.autostart {
             trace!("Autostarting torrent");
@@ -220,6 +217,14 @@ impl TorrentActor {
    /// zeroes.
    pub fn is_full(&self) -> bool {
       self.bitfield.count_ones() == self.bitfield.len()
+   }
+
+   pub fn is_ready(&self) -> bool {
+      self.info.is_some() && self.peers.len() >= self.sufficient_peers
+   }
+
+   pub fn is_ready_to_start(&self) -> bool {
+      self.is_ready() && self.state == TorrentState::Inactive
    }
 
    /// Spawns a new [`PeerActor`] for the given [`Peer`] and adds it to the
