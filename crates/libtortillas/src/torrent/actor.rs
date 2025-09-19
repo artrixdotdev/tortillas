@@ -11,6 +11,7 @@ use bitvec::vec::BitVec;
 use dashmap::DashMap;
 use kameo::{Actor, actor::ActorRef, mailbox};
 use librqbit_utp::UtpSocketUdp;
+use tokio::sync::oneshot;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use super::util;
@@ -80,6 +81,10 @@ pub enum TorrentState {
    Inactive,
 }
 
+/// A hook that is called when the torrent is ready to start downloading.
+/// This is used to implement [`Torrent::poll_ready`].
+pub(super) type ReadyHook = oneshot::Sender<()>;
+
 pub(crate) struct TorrentActor {
    pub(crate) peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
    pub(crate) trackers: Arc<DashMap<Tracker, ActorRef<TrackerActor>>>,
@@ -110,6 +115,8 @@ pub(crate) struct TorrentActor {
 
    /// If there is already a pending start, we don't want to start a new one
    pending_start: bool,
+
+   pub(super) ready_hook: Option<ReadyHook>,
 }
 
 impl fmt::Display for TorrentActor {
@@ -192,6 +199,10 @@ impl TorrentActor {
             .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
             .await;
          self.start_time = Some(Instant::now());
+
+         if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
+            error!(?err, "Failed to send ready hook");
+         }
       }
    }
 
@@ -434,6 +445,7 @@ impl Actor for TorrentActor {
          sufficient_peers: sufficient_peers.unwrap_or(6),
          autostart: autostart.unwrap_or(true),
          pending_start: false,
+         ready_hook: None,
       })
    }
 

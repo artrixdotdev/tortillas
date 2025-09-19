@@ -7,7 +7,7 @@ pub use actor::*;
 use bytes::Bytes;
 use kameo::actor::ActorRef;
 pub(crate) use messages::*;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::error;
 
 pub mod util;
@@ -334,6 +334,14 @@ impl Torrent {
    /// }
    /// ```
    pub async fn poll_ready(&self) -> Result<(), anyhow::Error> {
-      unimplemented!()
+      let (hook, hook_rx) = oneshot::channel();
+      let msg = TorrentMessage::ReadyHook(hook);
+      // We don't care about the response, we just want to make sure the
+      // actor is alive
+      self.actor().tell(msg).await?;
+      // This will block until the hook is called
+      hook_rx.await?;
+
+      Ok(())
    }
 }

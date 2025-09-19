@@ -15,7 +15,8 @@ use tokio::{fs, sync::mpsc};
 use tracing::{debug, error, info, trace, warn};
 
 use super::{
-   BLOCK_SIZE, OutputStrategy, PieceStorageStrategy, StreamedPiece, TorrentActor, TorrentState,
+   BLOCK_SIZE, OutputStrategy, PieceStorageStrategy, ReadyHook, StreamedPiece, TorrentActor,
+   TorrentState, util,
 };
 use crate::{
    actor_request_response,
@@ -23,7 +24,6 @@ use crate::{
    metainfo::Info,
    peer::{Peer, PeerId, PeerTell},
    protocol::stream::PeerStream,
-   torrent::util,
    tracker::Tracker,
 };
 
@@ -61,6 +61,11 @@ pub(crate) enum TorrentMessage {
    SetAutoStart(bool),
 
    SetSufficientPeers(usize),
+   /// A hook that is called when the torrent is ready to start downloading.
+   /// This is used to implement [`Torrent::poll_ready`].
+   ///
+   /// Only should be used internally.
+   ReadyHook(ReadyHook),
 }
 
 impl fmt::Debug for TorrentMessage {
@@ -320,6 +325,9 @@ impl Message<TorrentMessage> for TorrentActor {
          }
          TorrentMessage::SetSufficientPeers(peers) => {
             self.sufficient_peers = peers;
+         }
+         TorrentMessage::ReadyHook(hook) => {
+            self.ready_hook = Some(hook);
          }
       }
    }
