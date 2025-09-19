@@ -172,14 +172,23 @@ impl TorrentActor {
       trace!("Checking if we should autostart");
 
       self.pending_start = true;
-      if self.autostart
-         && self.state == TorrentState::Inactive
-         && self.info.is_some() // We need info dict to start
-         && self.peers.len() > self.sufficient_peers
-      {
-         trace!("Attempting to autostart");
-         self.start().await;
+
+      let is_ready = self.state == TorrentState::Inactive
+         && self.info.is_some()
+         && self.peers.len() > self.sufficient_peers;
+
+      if is_ready {
+         if self.autostart {
+            trace!("Autostarting torrent");
+            self.start().await;
+         } else {
+            // Torrent is ready, but auto-start is disabled
+            if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
+               error!(?err, "Failed to send ready hook");
+            }
+         }
       }
+
       self.pending_start = false;
    }
 
@@ -471,7 +480,7 @@ mod tests {
    use super::*;
    use crate::{
       metainfo::{MagnetUri, TorrentFile},
-      torrent::{TorrentMessage, TorrentRequest, TorrentResponse},
+      torrent::{Torrent, TorrentRequest, TorrentResponse},
    };
 
    #[tokio::test(flavor = "multi_thread")]
@@ -495,6 +504,8 @@ mod tests {
             .unwrap();
       let sufficient_peers = 6;
 
+      let info_hash = metainfo.clone().info_hash().unwrap();
+
       let actor = TorrentActor::spawn((
          peer_id,
          metainfo,
@@ -506,35 +517,11 @@ mod tests {
          Some(sufficient_peers),
       ));
 
-      // Blocking loop that runs until we successfully handshake with atleast 6 peers
-      loop {
-         assert!(
-            actor.is_alive(),
-            "Actor is died unexpectedly due to error, exiting"
-         );
+      let torrent = Torrent::new(info_hash, actor.clone());
 
-         let peers_count = match actor.ask(TorrentRequest::PeerCount).await.unwrap() {
-            TorrentResponse::PeerCount(count) => count,
-            _ => unreachable!(),
-         };
-         if peers_count >= sufficient_peers {
-            break;
-         } else {
-            info!(
-               current_peers_count = peers_count,
-               "Waiting for more peers...."
-            )
-         }
-         sleep(Duration::from_millis(100)).await;
-      }
-
-      let peers_count = match actor.ask(TorrentRequest::PeerCount).await.unwrap() {
-         TorrentResponse::PeerCount(count) => count,
-         _ => unreachable!(),
-      };
+      assert!(torrent.poll_ready().await.is_ok());
 
       actor.stop_gracefully().await.expect("Failed to stop");
-      info!("Connected to {peers_count} peers!")
    }
 
    #[tokio::test(flavor = "multi_thread")]
@@ -604,6 +591,7 @@ mod tests {
          MetaInfo::Torrent(file) => file.info.clone(),
          _ => unreachable!(),
       };
+      let info_hash = info_dict.hash().unwrap();
 
       // Clears piece files
       async fn clear_piece_files(piece_path: &PathBuf) {
@@ -638,6 +626,10 @@ mod tests {
          None,
          None,
       ));
+
+      let torrent = Torrent::new(info_hash, actor.clone());
+
+      assert!(torrent.poll_ready().await.is_ok());
 
       loop {
          let mut entries = fs::read_dir(&piece_path).await.unwrap();
