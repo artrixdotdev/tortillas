@@ -274,4 +274,37 @@ impl Torrent {
          _ => unreachable!(),
       }
    }
+
+   /// If the torrent should automatically start when `sufficient_peers` is
+   /// met.
+   ///
+   /// If this is false, you are expected to poll/wait for the torrent and
+   /// manually start it using [`poll_ready`](Self::poll_ready) and
+   /// [`start`](Self::start).
+   ///
+   /// Default: `true`
+   pub async fn set_auto_start(&self, auto: bool) {
+      let msg = TorrentMessage::SetAutoStart(auto);
+      self
+         .actor()
+         .tell(msg)
+         .await
+         .expect("Failed to set auto start");
+   }
+
+   /// Sets the number of peers we need to have before we start downloading.
+   ///
+   /// Default: `6`
+   pub async fn set_sufficient_peers(&self, peers: usize) {
+      let msg = TorrentMessage::SetSufficientPeers(peers);
+      self
+         .actor()
+         .tell(msg)
+         .await
+         .expect("Failed to set sufficient peers");
+   }
+
+   pub async fn poll_ready(&self) -> Result<(), anyhow::Error> {
+      unimplemented!()
+   }
 }
