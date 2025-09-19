@@ -327,7 +327,13 @@ impl Message<TorrentMessage> for TorrentActor {
             self.sufficient_peers = peers;
          }
          TorrentMessage::ReadyHook(hook) => {
-            self.ready_hook = Some(hook);
+            let is_ready = self.is_ready_to_start();
+            if is_ready && !self.autostart {
+               let _ = hook.send(());
+            } else {
+               self.ready_hook = Some(hook);
+               self.autostart().await;
+            }
          }
       }
    }
