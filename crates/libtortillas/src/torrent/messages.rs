@@ -322,9 +322,15 @@ impl Message<TorrentMessage> for TorrentActor {
          }
          TorrentMessage::SetAutoStart(auto) => {
             self.autostart = auto;
+            if !self.pending_start {
+               self.autostart().await;
+            }
          }
          TorrentMessage::SetSufficientPeers(peers) => {
             self.sufficient_peers = peers;
+            if !self.pending_start {
+               self.autostart().await;
+            }
          }
          TorrentMessage::ReadyHook(hook) => {
             // If torrent has already transitioned from Inactive state, immediately send

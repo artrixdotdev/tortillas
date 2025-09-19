@@ -114,7 +114,7 @@ pub(crate) struct TorrentActor {
    pub(super) autostart: bool,
 
    /// If there is already a pending start, we don't want to start a new one
-   pending_start: bool,
+   pub(super) pending_start: bool,
 
    pub(super) ready_hook: Option<ReadyHook>,
 }
