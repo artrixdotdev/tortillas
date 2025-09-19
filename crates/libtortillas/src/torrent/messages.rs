@@ -57,6 +57,10 @@ pub(crate) enum TorrentMessage {
    PieceStorage(PieceStorageStrategy),
    /// Start the torrenting process & actually start downloading pieces/seeding
    SetState(TorrentState),
+
+   SetAutoStart(bool),
+
+   SetSufficientPeers(usize),
 }
 
 impl fmt::Debug for TorrentMessage {
@@ -310,6 +314,12 @@ impl Message<TorrentMessage> for TorrentActor {
             if let TorrentState::Downloading = state {
                self.start().await;
             }
+         }
+         TorrentMessage::SetAutoStart(auto) => {
+            self.autostart = auto;
+         }
+         TorrentMessage::SetSufficientPeers(peers) => {
+            self.sufficient_peers = peers;
          }
       }
    }
