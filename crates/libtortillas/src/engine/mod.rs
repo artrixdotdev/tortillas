@@ -114,6 +114,16 @@ impl Engine {
       ///
       /// Default: `64` when `None` is provided.
       mailbox_size: Option<usize>,
+      /// If we autostart torrents as soon as we have [`Self::sufficient_peers`]
+      /// peers connected.
+      /// Default: `true`
+      autostart: Option<bool>,
+      /// How many peers we need to have before we start downloading.
+      ///
+      /// Is ignored if [`Self::autostart`] is `false`.
+      ///
+      /// Default: `6`
+      sufficient_peers: Option<usize>,
    ) -> Self {
       let args: EngineActorArgs = (
          tcp_addr,
@@ -122,6 +132,8 @@ impl Engine {
          Some(custom_id),
          piece_storage_strategy,
          mailbox_size,
+         autostart,
+         sufficient_peers,
       );
 
       let actor = EngineActor::spawn(args);

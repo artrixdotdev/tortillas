@@ -104,6 +104,8 @@ impl Message<EngineRequest> for EngineActor {
                   self.udp_server.clone(),
                   None,
                   self.default_piece_storage_strategy.clone(),
+                  self.autostart,
+                  self.sufficient_peers,
                ),
                // if the size is 0, we use an unbounded mailbox
                match self.mailbox_size {

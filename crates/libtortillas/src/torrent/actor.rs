@@ -357,12 +357,23 @@ impl Actor for TorrentActor {
       UdpServer,
       Option<SocketAddr>,
       PieceStorageStrategy,
+      Option<bool>,
+      Option<usize>,
    );
 
    type Error = TorrentError;
 
    async fn on_start(args: Self::Args, us: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (peer_id, metainfo, utp_server, tracker_server, primary_addr, piece_storage) = args;
+      let (
+         peer_id,
+         metainfo,
+         utp_server,
+         tracker_server,
+         primary_addr,
+         piece_storage,
+         autostart,
+         sufficient_peers,
+      ) = args;
       let primary_addr = primary_addr.unwrap_or_else(|| {
          let addr = utp_server.bind_addr();
          info!("No primary address provided, using {}", addr);
@@ -419,8 +430,8 @@ impl Actor for TorrentActor {
          next_piece: 0,
          block_map: Arc::new(DashMap::new()),
          start_time: None,
-         sufficient_peers: 6,
-         autostart: true,
+         sufficient_peers: sufficient_peers.unwrap_or(6),
+         autostart: autostart.unwrap_or(true),
          pending_start: false,
       })
    }
@@ -469,6 +480,7 @@ mod tests {
          UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
             .await
             .unwrap();
+      let sufficient_peers = 6;
 
       let actor = TorrentActor::spawn((
          peer_id,
@@ -477,6 +489,8 @@ mod tests {
          udp_server.clone(),
          None,
          PieceStorageStrategy::default(),
+         Some(false), // We don't need to autostart because we're only checking if we have peers
+         Some(sufficient_peers),
       ));
 
       // Blocking loop that runs until we successfully handshake with atleast 6 peers
@@ -490,7 +504,7 @@ mod tests {
             TorrentResponse::PeerCount(count) => count,
             _ => unreachable!(),
          };
-         if peers_count > 6 {
+         if peers_count >= sufficient_peers {
             break;
          } else {
             info!(
@@ -541,6 +555,8 @@ mod tests {
          udp_server.clone(),
          None,
          PieceStorageStrategy::default(),
+         Some(false),
+         None,
       ));
 
       // Blocking loop that runs until we get an info dict
@@ -606,6 +622,8 @@ mod tests {
          udp_server.clone(),
          None,
          PieceStorageStrategy::Disk(piece_path.clone()),
+         None,
+         None,
       ));
 
       loop {
