@@ -304,6 +304,35 @@ impl Torrent {
          .expect("Failed to set sufficient peers");
    }
 
+   /// A blocking function that polls the torrent until it is ready to start
+   /// downloading.
+   ///
+   /// The criteria for when the torrent is ready to start is:
+   /// - We have sufficient peers (see [`Self::set_sufficient_peers`]), the
+   ///   default is `6`
+   /// - We have the info dict either from using a torrent file, or from a peer
+   ///
+   /// Required if you want to set [`Self::set_auto_start`] to `false`,
+   /// otherwise the torrent won't actually download anything.
+   ///
+   /// # Example
+   ///
+   /// ```no_run
+   /// use libtortillas::prelude::*;
+   ///
+   /// #[tokio::main]
+   /// async fn main() {
+   ///    let engine = Engine::default();
+   ///    let torrent = engine
+   ///       .add_torrent("https://example.com/file.torrent")
+   ///       .await
+   ///       .expect("Failed to add torrent");
+   ///
+   ///    torrent.set_auto_start(false).await;
+   ///    torrent.poll_ready().await.expect("Failed to poll torrent");
+   ///    torrent.start().await.expect("Failed to start torrent");
+   /// }
+   /// ```
    pub async fn poll_ready(&self) -> Result<(), anyhow::Error> {
       unimplemented!()
    }
