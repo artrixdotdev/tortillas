@@ -191,6 +191,7 @@ impl TorrentActor {
          self
             .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
             .await;
+         self.start_time = Some(Instant::now());
       }
    }
 
