@@ -17,7 +17,7 @@ pub trait PieceManager: Clone + Send + Sync {
    async fn pre_start(&mut self, info: Info) -> anyhow::Result<()>;
    async fn recv(&self, index: usize, data: Bytes) -> anyhow::Result<()>;
 
-   /// Maps a torrent piece index to the corresponding file segments on disk.
+   /// Maps a torrent piece index to its corresponding file segments.
    ///
    /// Each piece is a contiguous chunk of the torrent's data, but in multi-file
    /// torrents, a piece may span across multiple files. This function
@@ -25,10 +25,10 @@ pub trait PieceManager: Clone + Send + Sync {
    ///
    /// # Returns
    /// A [`Vec<(PathBuf, usize, usize)>`] where each tuple contains:
-   /// - [`PathBuf`] → the file’s path within the torrent
-   /// - [`usize`]   → the byte offset inside that file where the piece data
+   /// - [`PathBuf`] -> the file’s path within the torrent
+   /// - [`usize`]   -> the byte offset inside that file where the piece data
    ///   starts
-   /// - [`usize`]   → the number of bytes from that file that belong to the
+   /// - [`usize`]   -> the number of bytes from that file that belong to the
    ///   piece
    ///
    /// # Errors
