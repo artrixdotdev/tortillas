@@ -140,6 +140,13 @@ impl Info {
    pub fn piece_count(&self) -> usize {
       self.pieces.len()
    }
+   /// The total length of all the files in the torrent
+   pub fn total_length(&self) -> usize {
+      match &self.file {
+         InfoKeys::Single { length, .. } => *length as usize,
+         InfoKeys::Multi { files } => files.iter().map(|f| f.length).sum(),
+      }
+   }
 }
 
 #[cfg(test)]
