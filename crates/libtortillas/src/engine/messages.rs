@@ -106,6 +106,7 @@ impl Message<EngineRequest> for EngineActor {
                   self.default_piece_storage_strategy.clone(),
                   self.autostart,
                   self.sufficient_peers,
+                  self.default_base_path.clone(),
                ),
                // if the size is 0, we use an unbounded mailbox
                match self.mailbox_size {

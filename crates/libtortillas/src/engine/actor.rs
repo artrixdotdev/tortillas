@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
 use kameo::{
@@ -56,6 +56,8 @@ pub struct EngineActor {
    pub(crate) autostart: Option<bool>,
    /// How many peers we need to have before we start downloading
    pub(crate) sufficient_peers: Option<usize>,
+
+   pub(crate) default_base_path: Option<PathBuf>,
 }
 
 pub(crate) type EngineActorArgs = (
@@ -77,6 +79,8 @@ pub(crate) type EngineActorArgs = (
    Option<bool>,
    // How many peers we need to have before we start downloading
    Option<usize>,
+   // Default base path for torrents
+   Option<PathBuf>,
 );
 
 impl Actor for EngineActor {
@@ -104,6 +108,7 @@ impl Actor for EngineActor {
          mailbox_size,
          autostart,
          sufficient_peers,
+         default_base_path,
       ) = args;
 
       let tcp_addr = tcp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
@@ -131,6 +136,7 @@ impl Actor for EngineActor {
          mailbox_size: mailbox_size.unwrap_or(64),
          autostart,
          sufficient_peers,
+         default_base_path,
       })
    }
 

@@ -1,6 +1,7 @@
 use core::panic;
 use std::{
    fmt,
+   path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
 };
 
@@ -24,6 +25,7 @@ use crate::{
    metainfo::Info,
    peer::{Peer, PeerId, PeerTell},
    protocol::stream::PeerStream,
+   torrent::{PieceManagerProxy, piece_manager::PieceManager},
    tracker::Tracker,
 };
 
@@ -55,6 +57,14 @@ pub(crate) enum TorrentMessage {
    KillTracker(Tracker),
 
    PieceStorage(PieceStorageStrategy),
+
+   /// Sets the current piece manager to a custom implementation.
+   PieceManager(Box<dyn PieceManager>),
+
+   /// Sets the output path, should only be used when the [`FilePieceManager`]
+   /// is used
+   SetOutputPath(PathBuf),
+
    /// Start the torrenting process & actually start downloading pieces/seeding
    SetState(TorrentState),
 
@@ -259,6 +269,11 @@ impl Message<TorrentMessage> for TorrentActor {
                         });
                         return;
                      }
+
+                     let _ = self
+                        .piece_manager
+                        .recv(index, fs::read(path).await.unwrap().into())
+                        .await;
                   }
                   PieceStorageStrategy::InFile => {
                      unimplemented!()
@@ -314,6 +329,21 @@ impl Message<TorrentMessage> for TorrentActor {
             }
             self.piece_storage = strategy;
          }
+         TorrentMessage::PieceManager(manager) => {
+            // Intnetional panic, the program should not run if this is not the case
+            assert!(
+               matches!(self.piece_storage, PieceStorageStrategy::Disk(_)),
+               "Storage strategy **must** be set to disk before the piece manager is changed",
+            );
+
+            self.piece_manager = PieceManagerProxy::Custom(manager);
+         }
+         TorrentMessage::SetOutputPath(path) => match &mut self.piece_manager {
+            PieceManagerProxy::Default(manager) => manager.set_path(path),
+            _ => {
+               warn!(path = ?path, "Cannot set output path when using a custom piece manager; ignoring.")
+            }
+         },
          TorrentMessage::SetState(state) => {
             self.state = state;
             if let TorrentState::Downloading = state {

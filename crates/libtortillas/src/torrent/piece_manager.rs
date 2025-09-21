@@ -7,12 +7,13 @@ use tokio::{
    fs::OpenOptions,
    io::{AsyncSeekExt, AsyncWriteExt},
 };
+use tracing::{debug, trace};
 
 use crate::metainfo::{Info, InfoKeys};
 
 #[allow(unused)]
 #[async_trait]
-pub trait PieceManager: Clone + Send + Sync {
+pub trait PieceManager: Send + Sync {
    fn info(&self) -> Option<&Info>;
    async fn pre_start(&mut self, info: Info) -> anyhow::Result<()>;
    async fn recv(&self, index: usize, data: Bytes) -> anyhow::Result<()>;
@@ -101,7 +102,16 @@ pub trait PieceManager: Clone + Send + Sync {
    }
 }
 #[derive(Debug, Clone)]
-struct FilePieceManager(PathBuf, Option<Info>);
+pub(crate) struct FilePieceManager(pub Option<PathBuf>, pub Option<Info>);
+
+impl FilePieceManager {
+   pub fn set_path(&mut self, path: PathBuf) {
+      self.0 = Some(path);
+   }
+   pub fn path(&self) -> Option<&PathBuf> {
+      self.0.as_ref()
+   }
+}
 
 #[async_trait]
 impl PieceManager for FilePieceManager {
@@ -110,13 +120,15 @@ impl PieceManager for FilePieceManager {
    }
 
    async fn pre_start(&mut self, info_dict: Info) -> anyhow::Result<()> {
+      // Intentional panic because this is unintended behavior
+      assert!(self.0.is_some(), "Path must be set before pre_start");
       self.1 = Some(info_dict);
       Ok(())
    }
 
    #[allow(unused)]
    async fn recv(&self, index: usize, data: Bytes) -> anyhow::Result<()> {
-      let base_path = &self.0;
+      let base_path = &self.path().unwrap();
       let info = self.info().ok_or_else(|| anyhow::anyhow!("info not set"))?;
 
       let piece_bounds = self.piece_to_paths(index)?;
@@ -127,7 +139,7 @@ impl PieceManager for FilePieceManager {
             .write(true)
             .create(true)
             .truncate(false)
-            .open(base_path.join(path))
+            .open(base_path.join(&path))
             .await?;
 
          // Position file correctly
@@ -139,6 +151,8 @@ impl PieceManager for FilePieceManager {
             .await?;
 
          data_offset += len;
+
+         debug!(index, offset = file_offset, len, path = %path.display(), "Wrote piece to file");
       }
 
       Ok(())
@@ -166,7 +180,7 @@ mod tests {
       .unwrap() else {
          panic!("failed to parse torrent file");
       };
-      let manager = FilePieceManager(path, Some(torrent.info));
+      let manager = FilePieceManager(Some(path), Some(torrent.info));
 
       // Pick a few representative pieces
       assert!(manager.piece_to_paths(0).is_ok());
