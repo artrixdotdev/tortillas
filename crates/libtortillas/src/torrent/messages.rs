@@ -12,13 +12,10 @@ use kameo::{
    prelude::{Context, Message},
 };
 use sha1::{Digest, Sha1};
-use tokio::{fs, sync::mpsc};
+use tokio::fs;
 use tracing::{debug, error, info, trace, warn};
 
-use super::{
-   BLOCK_SIZE, OutputStrategy, PieceStorageStrategy, ReadyHook, StreamedPiece, TorrentActor,
-   TorrentState, util,
-};
+use super::{BLOCK_SIZE, PieceStorageStrategy, ReadyHook, TorrentActor, TorrentState, util};
 use crate::{
    actor_request_response,
    hashes::InfoHash,
@@ -121,9 +118,6 @@ actor_request_response!(
    /// Requests a piece from the torrent
    Request(usize, usize, usize)
    Request(usize, usize, Bytes),
-   /// Asks the Torrent Actor to use an output stream instead of writing the pieces to disk
-   OutputStrategy(OutputStrategy)
-   OutputStrategy(Option<mpsc::Receiver<StreamedPiece>>),
 
    GetState
    GetState(TorrentState),
@@ -407,14 +401,6 @@ impl Message<TorrentRequest> for TorrentActor {
          TorrentRequest::Request(_, _, _) => {
             unimplemented!()
          }
-         TorrentRequest::OutputStrategy(strategy) => match strategy {
-            OutputStrategy::Folder(_) => {
-               unimplemented!()
-            }
-            OutputStrategy::Stream => {
-               unimplemented!()
-            }
-         },
          TorrentRequest::GetState => TorrentResponse::GetState(self.state),
       }
    }

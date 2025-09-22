@@ -11,6 +11,7 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::error;
 
 pub mod util;
+pub use piece_manager::PieceManager;
 
 use crate::hashes::InfoHash;
 
@@ -33,28 +34,6 @@ pub struct StreamedPiece {
    // only in case the end developer chooses to clone this.
    /// The raw bytes of the piece
    pub data: Bytes,
-}
-
-/// The specified method for getting the pieces for a given torrent.
-///
-/// # Variants
-///
-/// - [`Self::Folder(PathBuf)`]: The specified output folder
-/// - [`Self::Stream`]: When specified, all pieces will be sent through a
-///   message channel
-#[allow(dead_code)]
-pub(super) enum OutputStrategy {
-   /// The specified output folder.
-   ///
-   /// One output strategy must be configured before starting the torrent
-   /// (either a folder or streaming). See
-   /// [`Torrent::with_output_folder`] and [`Torrent::with_output_stream`].
-   Folder(PathBuf),
-
-   /// Tells the [`TorrentActor`](crate::torrent::TorrentActor)
-   /// to send all received pieces through a message channel instead of
-   /// directly writing them to disk.
-   Stream,
 }
 
 /// A handle to a torrent managed by the engine.
@@ -157,10 +136,9 @@ impl Torrent {
    /// }
    /// ```
    pub async fn with_output_folder(&self, folder: impl Into<PathBuf>) {
-      let strategy = OutputStrategy::Folder(folder.into());
       self
          .actor()
-         .ask(TorrentRequest::OutputStrategy(strategy))
+         .ask(TorrentMessage::SetOutputPath(folder.into()))
          .await
          .expect("Failed to set output folder");
    }
@@ -221,18 +199,12 @@ impl Torrent {
    ///    });
    /// }
    /// ```
-   pub async fn with_output_stream(&self) -> mpsc::Receiver<StreamedPiece> {
-      let strategy = OutputStrategy::Stream;
-      let res = self
+   pub async fn with_output_stream<'a>(&'a self, piece_manager: impl PieceManager + 'a + 'static) {
+      self
          .actor()
-         .ask(TorrentRequest::OutputStrategy(strategy))
+         .tell(TorrentMessage::PieceManager(Box::new(piece_manager)))
          .await
          .expect("Failed to request output stream");
-
-      match res {
-         TorrentResponse::OutputStrategy(Some(receiver)) => receiver,
-         _ => unreachable!(),
-      }
    }
 
    /// Starts the torrent download and begins the download & seeding process.
