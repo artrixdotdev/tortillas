@@ -8,6 +8,7 @@ use bytes::Bytes;
 use kameo::actor::ActorRef;
 pub(crate) use messages::*;
 use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tracing::error;
 
 pub mod util;
@@ -117,6 +118,7 @@ impl Torrent {
    /// Specifies the output folder that each file will eventually be written to.
    ///
    /// This function or [`Self::with_output_stream`] is strictly required to be
+   /// This function or [`Self::with_piece_manager`] is strictly required to be
    /// set before the download begins.
    ///
    /// # Examples
@@ -200,6 +202,7 @@ impl Torrent {
    /// }
    /// ```
    pub async fn with_output_stream<'a>(&'a self, piece_manager: impl PieceManager + 'a + 'static) {
+   pub async fn with_piece_manager<'a>(&'a self, piece_manager: impl PieceManager + 'a + 'static) {
       self
          .actor()
          .tell(TorrentMessage::PieceManager(Box::new(piece_manager)))
