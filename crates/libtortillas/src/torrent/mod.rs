@@ -7,7 +7,6 @@ pub use actor::*;
 use bytes::Bytes;
 use kameo::actor::ActorRef;
 pub(crate) use messages::*;
-use tokio::sync::{mpsc, oneshot};
 use tokio::sync::oneshot;
 use tracing::error;
 
