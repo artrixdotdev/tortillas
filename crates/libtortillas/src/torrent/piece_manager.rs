@@ -44,10 +44,16 @@ pub trait PieceManager: Send + Sync {
       let piece_len = info.piece_length as usize;
       let total_len = info.total_length();
 
-      let piece_start = index * piece_len;
-      let piece_end = ((index + 1) * piece_len).min(total_len);
+      let piece_start = index
+         .checked_mul(piece_len)
+         .ok_or_else(|| anyhow::anyhow!("piece index {index} overflows usize math"))?;
+      let piece_end = (index
+         .checked_add(1)
+         .and_then(|i| i.checked_mul(piece_len))
+         .ok_or_else(|| anyhow::anyhow!("piece index {index} overflows usize math"))?)
+         .min(total_len);
+      ensure!(piece_start < total_len, "piece index {index} exceeds file lengths");
       let mut remaining = piece_end - piece_start;
-
       let mut acc = 0;
       let mut results = Vec::new();
 
