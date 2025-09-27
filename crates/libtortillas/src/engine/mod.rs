@@ -37,7 +37,7 @@
 mod actor;
 mod messages;
 
-use std::{fs, net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf};
 
 pub(crate) use actor::*;
 use bon;
