@@ -257,13 +257,13 @@ impl TorrentActor {
          error!(?err, "Failed to send ready hook");
       }
       let info = self.info.as_ref().unwrap();
-      // self
-      //   .piece_manager
-      //   // Probably not the best to clone here, but should be fine for now
-      //   .pre_start(info.clone())
-      //   .await
-      //   .expect("Failed to pre-start piece manager");
-      //
+      self
+         .piece_manager
+         // Probably not the best to clone here, but should be fine for now
+         .pre_start(info.clone())
+         .await
+         .expect("Failed to pre-start piece manager");
+
       info!(
          id = %self.info_hash(),
          piece_manager = %self.piece_manager,
@@ -683,6 +683,7 @@ mod tests {
       }
 
       let piece_path = std::env::temp_dir().join("tortillas");
+      let file_path = piece_path.join("files");
 
       let peer_id = PeerId::default();
 
@@ -701,7 +702,7 @@ mod tests {
          PieceStorageStrategy::Disk(piece_path.clone()),
          None,
          None,
-         None,
+         Some(file_path),
       ));
 
       let torrent = Torrent::new(info_hash, actor.clone());
