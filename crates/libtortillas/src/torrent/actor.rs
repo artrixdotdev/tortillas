@@ -1,5 +1,5 @@
 use std::{
-   fmt,
+   fmt::{self, Display},
    net::SocketAddr,
    path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
@@ -91,6 +91,15 @@ pub(super) type ReadyHook = oneshot::Sender<()>;
 pub(super) enum PieceManagerProxy {
    Custom(Box<dyn PieceManager>),
    Default(FilePieceManager),
+}
+
+impl Display for PieceManagerProxy {
+   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      match self {
+         Self::Custom(_) => write!(f, "Custom Piece Manager"),
+         Self::Default(_) => write!(f, "Default Piece Manager"),
+      }
+   }
 }
 
 #[allow(dead_code)]
@@ -248,12 +257,24 @@ impl TorrentActor {
          error!(?err, "Failed to send ready hook");
       }
       let info = self.info.as_ref().unwrap();
-      self
-         .piece_manager
-         // Probably not the best to clone here, but should be fine for now
-         .pre_start(info.clone())
-         .await
-         .expect("Failed to pre-start piece manager");
+      // self
+      //   .piece_manager
+      //   // Probably not the best to clone here, but should be fine for now
+      //   .pre_start(info.clone())
+      //   .await
+      //   .expect("Failed to pre-start piece manager");
+      //
+      info!(
+         id = %self.info_hash(),
+         piece_manager = %self.piece_manager,
+         storage_strategy = ?self.piece_storage,
+         peer_count = self.peers.len(),
+         tracker_count = self.trackers.len(),
+         total_pieces = info.piece_count(),
+         peer_id = %self.id,
+         state = ?self.state,
+         "Started torrenting process"
+      );
    }
 
    /// Checks if the torrent has all of the pieces (we've downloaded/have

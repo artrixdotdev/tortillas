@@ -7,7 +7,7 @@ use tokio::{
    fs::OpenOptions,
    io::{AsyncSeekExt, AsyncWriteExt},
 };
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::metainfo::{Info, InfoKeys};
 
@@ -149,8 +149,10 @@ impl PieceManager for FilePieceManager {
    }
 
    async fn pre_start(&mut self, info_dict: Info) -> anyhow::Result<()> {
+      trace!(path = %self.0.as_ref().unwrap().display(), "Pre-starting piece manager");
       // Intentional panic because this is unintended behavior
       assert!(self.0.is_some(), "Path must be set before pre_start");
+
       self.1 = Some(info_dict);
       Ok(())
    }
