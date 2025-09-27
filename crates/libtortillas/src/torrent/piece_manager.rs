@@ -63,10 +63,12 @@ pub trait PieceManager: Send + Sync {
          .and_then(|i| i.checked_mul(piece_len))
          .ok_or_else(|| anyhow::anyhow!("piece index {index} overflows usize math"))?)
       .min(total_len);
+
       ensure!(
          piece_start < total_len,
          "piece index {index} exceeds file lengths"
       );
+
       let mut remaining = piece_end - piece_start;
       let mut acc = 0;
       let mut results = Vec::new();
@@ -101,11 +103,18 @@ pub trait PieceManager: Send + Sync {
                let available_in_file = file_len - offset_in_file;
                let take_len = remaining.min(available_in_file);
 
-               results.push((
-                  PathBuf::from_iter(file.path.clone()),
-                  offset_in_file,
-                  take_len,
-               ));
+               let mut relative_path = PathBuf::new();
+
+               if file.path.first().map(|component| component.as_str()) != Some(info.name.as_str())
+               {
+                  relative_path.push(&info.name);
+               }
+
+               for component in &file.path {
+                  relative_path.push(component);
+               }
+
+               results.push((relative_path, offset_in_file, take_len));
 
                remaining -= take_len;
                acc += file_len;
