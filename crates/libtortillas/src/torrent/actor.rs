@@ -247,6 +247,13 @@ impl TorrentActor {
       if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
          error!(?err, "Failed to send ready hook");
       }
+      let info = self.info.as_ref().unwrap();
+      self
+         .piece_manager
+         // Probably not the best to clone here, but should be fine for now
+         .pre_start(info.clone())
+         .await
+         .expect("Failed to pre-start piece manager");
    }
 
    /// Checks if the torrent has all of the pieces (we've downloaded/have
