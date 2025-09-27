@@ -240,7 +240,7 @@ impl Message<TorrentMessage> for TorrentActor {
 
             // We now have the full piece
             if is_piece_complete {
-               let _ = self.block_map.remove(&index);
+               let previous_blocks = self.block_map.remove(&index);
                let cur_piece = self.next_piece;
 
                match &self.piece_storage {
@@ -264,10 +264,18 @@ impl Message<TorrentMessage> for TorrentActor {
                         return;
                      }
 
-                     let _ = self
-                        .piece_manager
-                        .recv(index, fs::read(path).await.unwrap().into())
-                        .await;
+                     let data = fs::read(&path).await.unwrap().into();
+                     if let Err(err) = self.piece_manager.recv(index, data).await {
+                        warn!(?err, index, path = %path.display(), "Piece manager rejected piece; re-requesting");
+                        if let Some((_, mut blocks)) = previous_blocks {
+                           blocks.fill(false);
+                           self.block_map.insert(index, blocks);
+                        }
+                        self
+                           .broadcast_to_peers(PeerTell::NeedPiece(index, 0, BLOCK_SIZE))
+                           .await;
+                        return;
+                     }
                   }
                   PieceStorageStrategy::InFile => {
                      unimplemented!()
