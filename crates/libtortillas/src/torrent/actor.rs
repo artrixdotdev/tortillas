@@ -93,6 +93,7 @@ pub(super) enum PieceManagerProxy {
    Default(FilePieceManager),
 }
 
+#[allow(dead_code)]
 impl PieceManagerProxy {
    pub fn is_custom(&self) -> bool {
       matches!(self, Self::Custom(_))
