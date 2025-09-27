@@ -141,11 +141,17 @@ impl PieceManager for FilePieceManager {
       let mut data_offset = 0; // Track how much of `data` we've consumed
 
       for (path, file_offset, len) in piece_bounds {
+         // Ensure parent directories exist
+         let full_path = base_path.join(&path);
+         if let Some(parent) = full_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+         }
+
          let mut file = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(false)
-            .open(base_path.join(&path))
+            .open(&full_path)
             .await?;
 
          // Position file correctly
