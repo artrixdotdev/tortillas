@@ -16,6 +16,17 @@ use crate::metainfo::{Info, InfoKeys};
 pub trait PieceManager: Send + Sync {
    fn info(&self) -> Option<&Info>;
    async fn pre_start(&mut self, info: Info) -> anyhow::Result<()>;
+   /// Receives a piece from the torrent
+   ///
+   /// To figure out which file(s) to write the piece to, use the
+   /// [`PieceManager::piece_to_paths`] function.
+   ///
+   /// # Arguments
+   /// - `index`: The index of the piece to receive
+   /// - `data`: The piece data
+   ///
+   /// # Errors
+   /// If this function return errors, the piece will be re-requested.
    async fn recv(&self, index: usize, data: Bytes) -> anyhow::Result<()>;
 
    /// Maps a torrent piece index to its corresponding file segments.
