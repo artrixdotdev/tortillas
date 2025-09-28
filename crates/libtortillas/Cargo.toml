@@ -36,7 +36,7 @@ serde_with = "^3.14"
 tokio-retry2 = { version = "^0.5", features = ["tracing"] }
 async-stream = "^0.3"
 bytes = "^1"
-kameo = "^0.17"
+kameo = "^0.18"
 dashmap = "^6.1"
 bon = "^3.7"
 
