@@ -436,7 +436,7 @@ impl Message<PeerTell> for PeerActor {
    async fn handle(&mut self, msg: PeerTell, _: &mut KameoContext<Self, Self::Reply>) {
       match msg {
          PeerTell::NeedPiece(index, begin, length) => {
-            let piece_exists = self.peer.pieces[index];
+            let piece_exists = matches!(self.peer.pieces.get(index).as_deref(), Some(true));
 
             if !piece_exists {
                trace!(

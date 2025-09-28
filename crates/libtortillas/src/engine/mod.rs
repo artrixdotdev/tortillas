@@ -37,7 +37,7 @@
 mod actor;
 mod messages;
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf};
 
 pub(crate) use actor::*;
 use bon;
@@ -124,7 +124,25 @@ impl Engine {
       ///
       /// Default: `6`
       sufficient_peers: Option<usize>,
+      /// Default base path for torrents
+      ///
+      /// Default: `std::env::current_dir()`
+      #[builder(into)]
+      output_path: Option<PathBuf>,
    ) -> Self {
+      let output_path = match output_path {
+         Some(path) => {
+            if path.is_absolute() {
+               path
+            } else {
+               std::env::current_dir()
+                  .expect("Failed to get current dir")
+                  .join(path)
+            }
+         }
+         None => std::env::current_dir().expect("Failed to get current dir"),
+      };
+
       let args: EngineActorArgs = (
          tcp_addr,
          utp_addr,
@@ -134,6 +152,7 @@ impl Engine {
          mailbox_size,
          autostart,
          sufficient_peers,
+         Some(output_path),
       );
 
       let actor = EngineActor::spawn(args);

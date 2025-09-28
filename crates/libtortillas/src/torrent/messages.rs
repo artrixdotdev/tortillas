@@ -1,6 +1,7 @@
 use core::panic;
 use std::{
    fmt,
+   path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
 };
 
@@ -11,19 +12,17 @@ use kameo::{
    prelude::{Context, Message},
 };
 use sha1::{Digest, Sha1};
-use tokio::{fs, sync::mpsc};
+use tokio::fs;
 use tracing::{debug, error, info, trace, warn};
 
-use super::{
-   BLOCK_SIZE, OutputStrategy, PieceStorageStrategy, ReadyHook, StreamedPiece, TorrentActor,
-   TorrentState, util,
-};
+use super::{BLOCK_SIZE, PieceStorageStrategy, ReadyHook, TorrentActor, TorrentState, util};
 use crate::{
    actor_request_response,
    hashes::InfoHash,
    metainfo::Info,
    peer::{Peer, PeerId, PeerTell},
    protocol::stream::PeerStream,
+   torrent::{PieceManagerProxy, piece_manager::PieceManager},
    tracker::Tracker,
 };
 
@@ -55,6 +54,14 @@ pub(crate) enum TorrentMessage {
    KillTracker(Tracker),
 
    PieceStorage(PieceStorageStrategy),
+
+   /// Sets the current piece manager to a custom implementation.
+   PieceManager(Box<dyn PieceManager>),
+
+   /// Sets the output path, should only be used when the [`FilePieceManager`]
+   /// is used
+   SetOutputPath(PathBuf),
+
    /// Start the torrenting process & actually start downloading pieces/seeding
    SetState(TorrentState),
 
@@ -111,9 +118,6 @@ actor_request_response!(
    /// Requests a piece from the torrent
    Request(usize, usize, usize)
    Request(usize, usize, Bytes),
-   /// Asks the Torrent Actor to use an output stream instead of writing the pieces to disk
-   OutputStrategy(OutputStrategy)
-   OutputStrategy(Option<mpsc::Receiver<StreamedPiece>>),
 
    GetState
    GetState(TorrentState),
@@ -236,7 +240,7 @@ impl Message<TorrentMessage> for TorrentActor {
 
             // We now have the full piece
             if is_piece_complete {
-               let _ = self.block_map.remove(&index);
+               let previous_blocks = self.block_map.remove(&index);
                let cur_piece = self.next_piece;
 
                match &self.piece_storage {
@@ -257,6 +261,19 @@ impl Message<TorrentMessage> for TorrentActor {
                               error!("Failed to delete file for piece {}", &path_clone.display());
                            });
                         });
+                        return;
+                     }
+
+                     let data = fs::read(&path).await.unwrap().into();
+                     if let Err(err) = self.piece_manager.recv(index, data).await {
+                        warn!(?err, index, path = %path.display(), "Piece manager rejected piece; re-requesting");
+                        if let Some((_, mut blocks)) = previous_blocks {
+                           blocks.fill(false);
+                           self.block_map.insert(index, blocks);
+                        }
+                        self
+                           .broadcast_to_peers(PeerTell::NeedPiece(index, 0, BLOCK_SIZE))
+                           .await;
                         return;
                      }
                   }
@@ -314,6 +331,27 @@ impl Message<TorrentMessage> for TorrentActor {
             }
             self.piece_storage = strategy;
          }
+         TorrentMessage::PieceManager(manager) => {
+            // Intnetional panic, the program should not run if this is not the case
+            assert!(
+               matches!(self.piece_storage, PieceStorageStrategy::Disk(_)),
+               "Storage strategy **must** be set to disk before the piece manager is changed",
+            );
+
+            self.piece_manager = PieceManagerProxy::Custom(manager);
+            // If we already have metadata, initialize the replacement manager now
+            if let Some(info) = self.info.clone()
+               && let Err(err) = self.piece_manager.pre_start(info).await
+            {
+               warn!(?err, "Failed to pre-start custom piece manager");
+            }
+         }
+         TorrentMessage::SetOutputPath(path) => match &mut self.piece_manager {
+            PieceManagerProxy::Default(manager) => manager.set_path(path),
+            _ => {
+               warn!(path = ?path, "Cannot set output path when using a custom piece manager; ignoring.")
+            }
+         },
          TorrentMessage::SetState(state) => {
             self.state = state;
             if let TorrentState::Downloading = state {
@@ -377,14 +415,6 @@ impl Message<TorrentRequest> for TorrentActor {
          TorrentRequest::Request(_, _, _) => {
             unimplemented!()
          }
-         TorrentRequest::OutputStrategy(strategy) => match strategy {
-            OutputStrategy::Folder(_) => {
-               unimplemented!()
-            }
-            OutputStrategy::Stream => {
-               unimplemented!()
-            }
-         },
          TorrentRequest::GetState => TorrentResponse::GetState(self.state),
       }
    }

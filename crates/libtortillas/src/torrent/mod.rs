@@ -7,10 +7,11 @@ pub use actor::*;
 use bytes::Bytes;
 use kameo::actor::ActorRef;
 pub(crate) use messages::*;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use tracing::error;
 
 pub mod util;
+pub use piece_manager::PieceManager;
 
 use crate::hashes::InfoHash;
 
@@ -33,28 +34,6 @@ pub struct StreamedPiece {
    // only in case the end developer chooses to clone this.
    /// The raw bytes of the piece
    pub data: Bytes,
-}
-
-/// The specified method for getting the pieces for a given torrent.
-///
-/// # Variants
-///
-/// - [`Self::Folder(PathBuf)`]: The specified output folder
-/// - [`Self::Stream`]: When specified, all pieces will be sent through a
-///   message channel
-#[allow(dead_code)]
-pub(super) enum OutputStrategy {
-   /// The specified output folder.
-   ///
-   /// One output strategy must be configured before starting the torrent
-   /// (either a folder or streaming). See
-   /// [`Torrent::with_output_folder`] and [`Torrent::with_output_stream`].
-   Folder(PathBuf),
-
-   /// Tells the [`TorrentActor`](crate::torrent::TorrentActor)
-   /// to send all received pieces through a message channel instead of
-   /// directly writing them to disk.
-   Stream,
 }
 
 /// A handle to a torrent managed by the engine.
@@ -137,7 +116,7 @@ impl Torrent {
 
    /// Specifies the output folder that each file will eventually be written to.
    ///
-   /// This function or [`Self::with_output_stream`] is strictly required to be
+   /// This function or [`Self::with_piece_manager`] is strictly required to be
    /// set before the download begins.
    ///
    /// # Examples
@@ -157,82 +136,108 @@ impl Torrent {
    /// }
    /// ```
    pub async fn with_output_folder(&self, folder: impl Into<PathBuf>) {
-      let strategy = OutputStrategy::Folder(folder.into());
       self
          .actor()
-         .ask(TorrentRequest::OutputStrategy(strategy))
+         .ask(TorrentMessage::SetOutputPath(folder.into()))
          .await
          .expect("Failed to set output folder");
    }
 
-   /// Configures this torrent to stream its output instead of writing it to
-   /// disk.
+   /// Attaches a custom [`PieceManager`] to this torrent.
    ///
-   /// When using this mode, all downloaded pieces are sent through a channel
-   /// rather than being persisted to the filesystem. This allows you to consume
-   /// the torrent data in real time (e.g. for streaming, playing, custom
-   /// storage backends, etc.).
+   /// A [`PieceManager`] defines how downloaded pieces are processed
+   /// (e.g., writing them to disk, streaming them into memory, or integrating
+   /// with a custom backend). By default, the torrent actor manages pieces
+   /// internally, but calling this method allows you to override
+   /// that behavior and implement your own piece-handling logic.
    ///
-   /// # Returns
+   /// # Requirements
    ///
-   /// A [`mpsc::Receiver`] that yields a [`StreamedPiece`] on each iteration as
-   /// they become available.
+   /// - You **must** first set the [`PieceStorageStrategy`] to
+   ///   [`PieceStorageStrategy::Disk`] (via [`Self::set_piece_storage`]) before
+   ///   calling this function. This is required because in order to seed, the
+   ///   torrent actor needs some constant location to read previously
+   ///   downloaded pieces from.
    ///
-   /// # Responsibilities
-   /// When using this mode, you are responsible for:
-   /// - Continuously polling the returned receiver to avoid backpressure.
-   /// - Handling piece ordering.
+   /// # Parameters
    ///
-   /// # Notes
+   /// - `piece_manager`: Any type that implements [`PieceManager`].
    ///
-   /// - Pieces sent through this channel are **not** guaranteed to be in order.
-   /// - You are **required** to use [`PieceStorageStrategy::Disk`] when using
-   ///   this mode.
+   /// # Behavior
+   ///
+   /// - All subsequent pieces for this torrent will be dispatched to the given
+   ///   `PieceManager`.
+   /// - Any previously assigned manager will be replaced.
+   /// - The `PieceManager` must remain valid for the lifetime of the torrent
+   ///   actor.
+   ///
+   /// # Panics
+   /// - If the torrent actor is dead.
+   /// - If you attempt to attach a manager after the torrent has started.
+   /// - If you attmept to attach a manager without [`PieceStorageStrategy`]
+   ///   being set to [`PieceStorageStrategy::Disk`].
    ///
    /// # Example
    ///
+   /// Creating a custom [`PieceManager`] that simply logs received pieces:
+   ///
    /// ```no_run
-   /// use libtortillas::{prelude::*, torrent::PieceStorageStrategy};
+   /// use std::path::PathBuf;
+   ///
+   /// use anyhow::Result;
+   /// use async_trait::async_trait;
+   /// use bytes::Bytes;
+   /// use libtortillas::{
+   ///    metainfo::Info,
+   ///    prelude::*,
+   ///    torrent::{PieceManager, PieceStorageStrategy},
+   /// };
+   ///
+   /// #[derive(Debug)]
+   /// struct LoggingPieceManager;
+   ///
+   /// #[async_trait]
+   /// impl PieceManager for LoggingPieceManager {
+   ///    fn info(&self) -> Option<&Info> {
+   ///       None
+   ///    }
+   ///
+   ///    async fn pre_start(&mut self, _info: Info) -> Result<()> {
+   ///       println!("Torrent started with {:?}", _info.name);
+   ///       Ok(())
+   ///    }
+   ///
+   ///    async fn recv(&self, index: usize, data: Bytes) -> Result<()> {
+   ///       println!("Received piece {index} ({} bytes)", data.len());
+   ///       Ok(())
+   ///    }
+   /// }
    ///
    /// #[tokio::main]
    /// async fn main() {
    ///    let engine = Engine::default();
+   ///
    ///    let torrent = engine
    ///       .add_torrent("https://example.com/file.torrent")
    ///       .await
-   ///       .expect("Failed to add torrent");
+   ///       .expect("failed to add torrent");
    ///
-   ///    // Required if you want to use a custom output stream
+   ///    // Required before attaching a custom manager
    ///    torrent
-   ///       .set_piece_storage(PieceStorageStrategy::Disk("path/to/output".into()))
+   ///       .set_piece_storage(PieceStorageStrategy::Disk("path/to/storage".into()))
    ///       .await;
    ///
-   ///    let mut receiver = torrent.with_output_stream().await;
-   ///
-   ///    tokio::spawn(async move {
-   ///       while let Some(piece) = receiver.recv().await {
-   ///          println!(
-   ///             "Received piece {} ({} bytes)",
-   ///             piece.index,
-   ///             piece.data.len()
-   ///          );
-   ///          // Handle piece (e.g. write to memory, forward to player, etc.)
-   ///       }
-   ///    });
+   ///    // Attach our custom piece manager
+   ///    torrent.with_piece_manager(LoggingPieceManager).await;
    /// }
    /// ```
-   pub async fn with_output_stream(&self) -> mpsc::Receiver<StreamedPiece> {
-      let strategy = OutputStrategy::Stream;
-      let res = self
+   /// ```
+   pub async fn with_piece_manager<'a>(&'a self, piece_manager: impl PieceManager + 'a + 'static) {
+      self
          .actor()
-         .ask(TorrentRequest::OutputStrategy(strategy))
+         .tell(TorrentMessage::PieceManager(Box::new(piece_manager)))
          .await
          .expect("Failed to request output stream");
-
-      match res {
-         TorrentResponse::OutputStrategy(Some(receiver)) => receiver,
-         _ => unreachable!(),
-      }
    }
 
    /// Starts the torrent download and begins the download & seeding process.

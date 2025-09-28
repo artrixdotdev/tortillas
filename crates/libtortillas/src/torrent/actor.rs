@@ -1,5 +1,5 @@
 use std::{
-   fmt,
+   fmt::{self, Display},
    net::SocketAddr,
    path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
@@ -7,7 +7,9 @@ use std::{
 };
 
 use anyhow::ensure;
+use async_trait::async_trait;
 use bitvec::vec::BitVec;
+use bytes::Bytes;
 use dashmap::DashMap;
 use kameo::{Actor, actor::ActorRef, mailbox};
 use librqbit_utp::UtpSocketUdp;
@@ -24,6 +26,7 @@ use crate::{
       messages::{Handshake, PeerMessages},
       stream::{PeerSend, PeerStream},
    },
+   torrent::piece_manager::{FilePieceManager, PieceManager},
    tracker::{Tracker, TrackerActor, udp::UdpServer},
 };
 pub const BLOCK_SIZE: usize = 16 * 1024;
@@ -85,6 +88,49 @@ pub enum TorrentState {
 /// This is used to implement [`Torrent::poll_ready`].
 pub(super) type ReadyHook = oneshot::Sender<()>;
 
+pub(super) enum PieceManagerProxy {
+   Custom(Box<dyn PieceManager>),
+   Default(FilePieceManager),
+}
+
+impl Display for PieceManagerProxy {
+   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      match self {
+         Self::Custom(_) => write!(f, "Custom Piece Manager"),
+         Self::Default(_) => write!(f, "Default Piece Manager"),
+      }
+   }
+}
+
+#[allow(dead_code)]
+impl PieceManagerProxy {
+   pub fn is_custom(&self) -> bool {
+      matches!(self, Self::Custom(_))
+   }
+}
+
+#[async_trait]
+impl PieceManager for PieceManagerProxy {
+   fn info(&self) -> Option<&Info> {
+      match self {
+         Self::Custom(manager) => manager.info(),
+         Self::Default(manager) => manager.info(),
+      }
+   }
+   async fn pre_start(&mut self, info: Info) -> anyhow::Result<()> {
+      match self {
+         Self::Custom(manager) => manager.pre_start(info).await,
+         Self::Default(manager) => manager.pre_start(info).await,
+      }
+   }
+   async fn recv(&self, index: usize, data: Bytes) -> anyhow::Result<()> {
+      match self {
+         Self::Custom(manager) => manager.recv(index, data).await,
+         Self::Default(manager) => manager.recv(index, data).await,
+      }
+   }
+}
+
 pub(crate) struct TorrentActor {
    pub(crate) peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
    pub(crate) trackers: Arc<DashMap<Tracker, ActorRef<TrackerActor>>>,
@@ -99,6 +145,7 @@ pub(crate) struct TorrentActor {
    pub(super) utp_server: Arc<UtpSocketUdp>,
    pub(super) actor_ref: ActorRef<Self>,
    pub(super) piece_storage: PieceStorageStrategy,
+   pub(super) piece_manager: PieceManagerProxy,
    pub state: TorrentState,
    pub next_piece: usize,
    /// Map of piece indices to block indices. These will be used to track which
@@ -209,6 +256,28 @@ impl TorrentActor {
       if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
          error!(?err, "Failed to send ready hook");
       }
+      let Some(info) = self.info.as_ref() else {
+         warn!(id = %self.info_hash(), "Start requested before info dict is available; deferring");
+         return;
+      };
+      self
+         .piece_manager
+         // Probably not the best to clone here, but should be fine for now
+         .pre_start(info.clone())
+         .await
+         .expect("Failed to pre-start piece manager");
+
+      info!(
+         id = %self.info_hash(),
+         piece_manager = %self.piece_manager,
+         storage_strategy = ?self.piece_storage,
+         peer_count = self.peers.len(),
+         tracker_count = self.trackers.len(),
+         total_pieces = info.piece_count(),
+         peer_id = %self.id,
+         state = ?self.state,
+         "Started torrenting process"
+      );
    }
 
    /// Checks if the torrent has all of the pieces (we've downloaded/have
@@ -384,6 +453,7 @@ impl Actor for TorrentActor {
       PieceStorageStrategy,
       Option<bool>,
       Option<usize>,
+      Option<PathBuf>,
    );
 
    type Error = TorrentError;
@@ -398,6 +468,7 @@ impl Actor for TorrentActor {
          piece_storage,
          autostart,
          sufficient_peers,
+         base_path,
       ) = args;
       let primary_addr = primary_addr.unwrap_or_else(|| {
          let addr = utp_server.bind_addr();
@@ -439,6 +510,7 @@ impl Actor for TorrentActor {
       } else {
          Arc::new(BitVec::EMPTY)
       };
+      let default_manager = FilePieceManager(base_path, info.clone());
 
       Ok(Self {
          peers: Arc::new(DashMap::new()),
@@ -459,6 +531,7 @@ impl Actor for TorrentActor {
          autostart: autostart.unwrap_or(true),
          pending_start: false,
          ready_hook: None,
+         piece_manager: PieceManagerProxy::Default(default_manager),
       })
    }
 
@@ -519,6 +592,7 @@ mod tests {
          PieceStorageStrategy::default(),
          Some(false), // We don't need to autostart because we're only checking if we have peers
          Some(sufficient_peers),
+         None,
       ));
 
       let torrent = Torrent::new(info_hash, actor.clone());
@@ -560,6 +634,7 @@ mod tests {
          None,
          PieceStorageStrategy::default(),
          Some(false),
+         None,
          None,
       ));
 
@@ -611,6 +686,7 @@ mod tests {
       }
 
       let piece_path = std::env::temp_dir().join("tortillas");
+      let file_path = piece_path.join("files");
 
       let peer_id = PeerId::default();
 
@@ -629,6 +705,7 @@ mod tests {
          PieceStorageStrategy::Disk(piece_path.clone()),
          None,
          None,
+         Some(file_path),
       ));
 
       let torrent = Torrent::new(info_hash, actor.clone());
@@ -650,7 +727,6 @@ mod tests {
                }
             }
          }
-
          if found_piece {
             break;
          }
