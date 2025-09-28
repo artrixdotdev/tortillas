@@ -22,7 +22,7 @@ use super::messages::{Handshake, PeerMessages};
 use crate::{
    errors::PeerActorError,
    hashes::InfoHash,
-   peer::{MAGIC_STRING, Peer, PeerId},
+   peer::{MAGIC_STRING, PeerId},
 };
 
 /// A very simple enum to help differentiate between streams. TcpStream and
