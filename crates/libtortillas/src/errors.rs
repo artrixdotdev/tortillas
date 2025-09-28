@@ -100,6 +100,10 @@ pub enum PeerActorError {
    #[error("Peer disconnected unexpectedly")]
    UnexpectedDisconnection,
 
+   /// Message was cancelled
+   #[error("Message cancelled")]
+   MessageCancelled,
+
    /// Metadata request failed
    #[error("Metadata request failed: {0}")]
    MetadataRequestFailed(String),

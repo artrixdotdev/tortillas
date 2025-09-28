@@ -36,6 +36,7 @@ bytes = "^1"
 kameo = "^0.18"
 dashmap = "^6.1"
 bon = "^3.7"
+tokio-util = "^0.7"
 
 [dev-dependencies]
 tracing-test = "0.2.5"
