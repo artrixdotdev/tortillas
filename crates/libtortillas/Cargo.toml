@@ -15,7 +15,6 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 atomic-time = "^0.1"
 serde_bencode = "^0.2"
 serde-querystring = "^0.3"
@@ -42,3 +41,4 @@ bon = "^3.7"
 
 [dev-dependencies]
 tracing-test = "0.2.5"
+tracing-subscriber = { workspace = true }
