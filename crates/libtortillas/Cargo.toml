@@ -15,30 +15,28 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
-atomic-time = "0.1"
-serde_bencode = "^0.2.4"
-serde-querystring = "0.3.0"
-sha1 = "0.10.6"
-hex = "0.4.3"
-reqwest = "0.12.13"
-serde_repr = "0.1.20"
-rand = "0.9.0"
-num_enum = "0.7.3"
-tokio-stream = "0.1"
-thiserror = "2.0.12"
-async-trait = "0.1.88"
-librqbit-utp = "0.6.2"
-bitvec = "1.0.1"
-futures = "0.3"
-bencode = "0.1.16"
-serde_with = "3.14.0"
-tokio-retry2 = { version = "0.5.7", features = ["tracing"] }
-async-stream = "0.3.6"
-bytes = "1"
-kameo = "0.17"
-dashmap = "6.1.0"
-bon = "3.7.1"
+atomic-time = "^0.1"
+serde_bencode = "^0.2"
+serde-querystring = "^0.3"
+sha1 = "^0.10"
+hex = "^0.4.3"
+reqwest = "^0.12"
+serde_repr = "^0.1"
+rand = "^0.9"
+num_enum = "^0.7"
+thiserror = "^2.0"
+async-trait = "^0.1"
+librqbit-utp = "^0.6"
+bitvec = "^1"
+futures = "^0.3"
+bencode = "^0.1"
+serde_with = "^3.14"
+tokio-retry2 = { version = "^0.6", features = ["tracing"] }
+bytes = "^1"
+kameo = "^0.18"
+dashmap = "^6.1"
+bon = "^3.7"
 
 [dev-dependencies]
 tracing-test = "0.2.5"
+tracing-subscriber = { workspace = true }
