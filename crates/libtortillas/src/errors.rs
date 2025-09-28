@@ -114,7 +114,7 @@ pub enum PeerActorError {
 
    /// Failed to receive data from peer
    #[error("Receive operation failed: {0}")]
-   ReceiveFailed(String),
+   ReceiveFailed(std::io::Error),
 
    /// Peer timed out due to inactivity
    #[error("Peer timeout: no activity for {seconds} seconds")]

@@ -56,7 +56,7 @@ pub trait PeerRecv: AsyncRead + Unpin {
 
       self.read_exact(&mut length_buf).await.map_err(|e| {
          error!(error = %e, "Failed to read message length from peer");
-         PeerActorError::ReceiveFailed("Failed to read message length".into())
+         PeerActorError::ReceiveFailed(e)
       })?;
 
       let length = u32::from_be_bytes(length_buf);
@@ -76,7 +76,7 @@ pub trait PeerRecv: AsyncRead + Unpin {
       let mut message_type = [0u8; 1];
       self.read_exact(&mut message_type).await.map_err(|e| {
          error!(error = %e, "Failed to read message type from peer");
-         PeerActorError::ReceiveFailed("Failed to read message type".into())
+         PeerActorError::ReceiveFailed(e)
       })?;
 
       trace!(
@@ -91,7 +91,7 @@ pub trait PeerRecv: AsyncRead + Unpin {
       let mut rest = vec![0u8; (length - 1) as usize];
       self.read_exact(&mut rest).await.map_err(|e| {
          error!(error = %e, message_length = length, "Failed to read message payload from peer");
-         PeerActorError::ReceiveFailed("Failed to read message payload".into())
+         PeerActorError::ReceiveFailed(e)
       })?;
 
       message_buf.extend_from_slice(&rest);
