@@ -256,7 +256,10 @@ impl TorrentActor {
       if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
          error!(?err, "Failed to send ready hook");
       }
-      let info = self.info.as_ref().unwrap();
+      let Some(info) = self.info.as_ref() else {
+         warn!(id = %self.info_hash(), "Start requested before info dict is available; deferring");
+         return;
+      };
       self
          .piece_manager
          // Probably not the best to clone here, but should be fine for now
