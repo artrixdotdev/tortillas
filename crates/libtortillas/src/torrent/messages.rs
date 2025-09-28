@@ -339,6 +339,12 @@ impl Message<TorrentMessage> for TorrentActor {
             );
 
             self.piece_manager = PieceManagerProxy::Custom(manager);
+            // If we already have metadata, initialize the replacement manager now
+            if let Some(info) = self.info.clone() {
+                if let Err(err) = self.piece_manager.pre_start(info).await {
+                    warn!(?err, "Failed to pre-start custom piece manager");
+                }
+            }
          }
          TorrentMessage::SetOutputPath(path) => match &mut self.piece_manager {
             PieceManagerProxy::Default(manager) => manager.set_path(path),
