@@ -33,7 +33,7 @@ bitvec = "^1"
 futures = "^0.3"
 bencode = "^0.1"
 serde_with = "^3.14"
-tokio-retry2 = { version = "^0.5", features = ["tracing"] }
+tokio-retry2 = { version = "^0.6", features = ["tracing"] }
 async-stream = "^0.3"
 bytes = "^1"
 kameo = "^0.18"
