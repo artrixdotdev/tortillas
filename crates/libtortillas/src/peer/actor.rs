@@ -279,9 +279,15 @@ impl Actor for PeerActor {
       tokio::select! {
          signal = mailbox_rx.recv() => signal,
          msg = self.stream.recv() => {
+
+            let Some(actor_ref) = actor_ref.upgrade() else {
+               error!("Failed to upgrade weak actor reference");
+               return None;
+            };
+
             Some(Signal::Message {
                message: Box::new(msg.expect("PeerStream closed")),
-               actor_ref: actor_ref.upgrade().unwrap(),
+               actor_ref,
                reply: None,
                sent_within_actor: true,
             })
