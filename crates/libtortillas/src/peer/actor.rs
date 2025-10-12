@@ -279,12 +279,18 @@ impl Actor for PeerActor {
       tokio::select! {
          signal = mailbox_rx.recv() => signal,
          msg = self.stream.recv() => {
-            Some(Signal::Message {
-               message: Box::new(msg.expect("PeerStream closed")),
-               actor_ref: actor_ref.upgrade().unwrap(),
-               reply: None,
-               sent_within_actor: true,
-            })
+             match msg {
+                 Ok(msg) => Some(Signal::Message {
+                     message: Box::new(msg),
+                     actor_ref: actor_ref.upgrade().unwrap(),
+                     reply: None,
+                     sent_within_actor: true,
+                 }),
+                 Err(e) => {
+                     error!(error = %e, "PeerStream closed");
+                    Some(Signal::Stop)
+                 }
+             }
          }
       }
    }
