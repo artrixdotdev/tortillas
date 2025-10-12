@@ -33,11 +33,11 @@ pub struct PeerState {
    download_rate: Arc<AtomicUsize>,
    /// Upload rate measured in kilobytes per second
    upload_rate: Arc<AtomicUsize>,
-   /// The remote peer's choke status
+   /// Whether we are choking the remote peer
    am_choking: Arc<AtomicBool>,
-   /// The remote peer's interest status
+   /// Whether the remote peer is interested in us
    pub(crate) peer_interested: Arc<AtomicBool>,
-   /// Our choke status
+   /// Whether the remote peer is choking us
    pub(crate) peer_choking: Arc<AtomicBool>,
    /// Our interest status
    am_interested: Arc<AtomicBool>,
