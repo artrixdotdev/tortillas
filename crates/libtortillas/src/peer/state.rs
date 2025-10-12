@@ -33,12 +33,12 @@ pub struct PeerState {
    download_rate: Arc<AtomicUsize>,
    /// Upload rate measured in kilobytes per second
    upload_rate: Arc<AtomicUsize>,
-   /// The remote peer's choke status
-   choked: Arc<AtomicBool>,
-   /// The remote peer's interest status
-   pub(crate) interested: Arc<AtomicBool>,
-   /// Our choke status
-   pub(crate) am_choked: Arc<AtomicBool>,
+   /// Whether we are choking the remote peer
+   am_choking: Arc<AtomicBool>,
+   /// Whether the remote peer is interested in us
+   pub(crate) peer_interested: Arc<AtomicBool>,
+   /// Whether the remote peer is choking us
+   pub(crate) peer_choking: Arc<AtomicBool>,
    /// Our interest status
    am_interested: Arc<AtomicBool>,
    /// The timestamp of the last time that a peer unchoked us
@@ -64,9 +64,9 @@ impl Default for PeerState {
 impl PeerState {
    pub fn new() -> Self {
       PeerState {
-         choked: Arc::new(true.into()),
-         interested: Arc::new(false.into()),
-         am_choked: Arc::new(true.into()),
+         am_choking: Arc::new(true.into()),
+         peer_interested: Arc::new(false.into()),
+         peer_choking: Arc::new(true.into()),
          am_interested: Arc::new(false.into()),
          download_rate: Arc::new(0.into()),
          upload_rate: Arc::new(0.into()),
@@ -83,18 +83,18 @@ impl PeerState {
 #[allow(dead_code)]
 impl Peer {
    pub(crate) fn set_choked(&self, is_choked: bool) {
-      self.state.choked.store(is_choked, Ordering::Release);
+      self.state.am_choking.store(is_choked, Ordering::Release);
    }
 
    pub(crate) fn set_interested(&self, is_interested: bool) {
       self
          .state
-         .interested
+         .peer_interested
          .store(is_interested, Ordering::Release);
    }
 
    pub(crate) fn set_am_choked(&self, is_choked: bool) {
-      self.state.am_choked.store(is_choked, Ordering::Release);
+      self.state.peer_choking.store(is_choked, Ordering::Release);
    }
 
    pub(crate) fn set_am_interested(&self, is_interested: bool) {
@@ -148,15 +148,15 @@ impl Peer {
    }
 
    pub(crate) fn choked(&self) -> bool {
-      self.state.choked.load(Ordering::Acquire)
+      self.state.am_choking.load(Ordering::Acquire)
    }
 
    pub(crate) fn interested(&self) -> bool {
-      self.state.interested.load(Ordering::Acquire)
+      self.state.peer_interested.load(Ordering::Acquire)
    }
 
    pub(crate) fn am_choked(&self) -> bool {
-      self.state.am_choked.load(Ordering::Acquire)
+      self.state.peer_choking.load(Ordering::Acquire)
    }
 
    pub(crate) fn am_interested(&self) -> bool {
