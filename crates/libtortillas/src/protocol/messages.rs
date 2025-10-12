@@ -397,7 +397,11 @@ impl PeerMessages {
                );
 
                let extended_message: ExtendedMessage =
-                  serde_bencode::from_bytes(&extended_message_bytes).unwrap();
+                  serde_bencode::from_bytes(&extended_message_bytes).map_err(|e| {
+                     PeerActorError::MessageParsingFailed {
+                        reason: e.to_string(),
+                     }
+                  })?;
 
                return Ok(PeerMessages::Extended(
                   extended_id,
