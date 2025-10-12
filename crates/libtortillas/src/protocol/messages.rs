@@ -203,7 +203,7 @@ impl PeerMessages {
             }
             create_message_with_id(20, &payload)
          }
-         PeerMessages::KeepAlive => Bytes::from(vec![0u8; 4]),
+         PeerMessages::KeepAlive => Bytes::from_static(&[0u8; 4]),
       })
    }
 
