@@ -377,8 +377,10 @@ impl PeerMessages {
 
                // If the peer only sent an Extended message (and no Info dict)...
                if extended_message_length == payload_no_id.len() {
-                  let extended_message: ExtendedMessage =
-                     serde_bencode::from_bytes(&payload_no_id).unwrap();
+                  let extended_message: ExtendedMessage = serde_bencode::from_bytes(&payload_no_id)
+                     .map_err(|e| PeerActorError::MessageParsingFailed {
+                        reason: e.to_string(),
+                     })?;
 
                   return Ok(PeerMessages::Extended(
                      extended_id,
