@@ -106,9 +106,3 @@ This log level should be for:
 #### `error!`
 This log level should be for:
 - A critical error that the user should know about
-
----
-
-✅ Now the **Workflow** section explicitly links to the **Pull Requests** section for merge requirements.  
-
-Would you like me to also add a **"Quick Reference Checklist"** at the bottom (like a contributor TL;DR) so new contributors can see the whole process at a glance?
