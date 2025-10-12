@@ -128,7 +128,8 @@ pub trait PeerRecv: AsyncRead + Unpin {
       PeerMessages::from_bytes(message_buf.freeze())
    }
    /// Receives a message from a peer with a cancellation support, returning
-   /// an error if the operation is cancel
+   /// Receives a message from a peer with cancellation support, returning
+   /// an error if the operation is cancelled
    async fn recv_with_cancel(
       &mut self, token: CancellationToken,
    ) -> Result<PeerMessages, PeerActorError> {
