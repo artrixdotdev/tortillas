@@ -62,6 +62,33 @@ impl PeerActor {
       }
    }
 
+   fn check_message_signal(
+      &mut self, actor_ref: WeakActorRef<Self>, signal: Result<PeerMessages, PeerActorError>,
+   ) -> Option<Signal<Self>> {
+      match signal {
+         Ok(msg) => Some(Signal::Message {
+            message: Box::new(msg),
+            actor_ref: actor_ref.upgrade()?.clone(),
+            reply: None,
+            sent_within_actor: true,
+         }),
+         Err(e) => {
+            error!(error = ?e, "Peer errored");
+            use std::io::ErrorKind::*;
+            match e {
+               PeerActorError::Io(e) | PeerActorError::ReceiveFailed(e) => {
+                  if e.kind() == UnexpectedEof || e.kind() == ConnectionReset {
+                     Some(Signal::Stop)
+                  } else {
+                     None
+                  }
+               }
+               _ => None,
+            }
+         }
+      }
+   }
+
    /// Handles an incoming extended message.
    ///
    /// This message will handle Extended handshakes as specified in [BEP
@@ -243,6 +270,7 @@ impl Actor for PeerActor {
    }
 
    /// Coerces messages from the [PeerStream] to a [Message]
+   #[instrument(skip(self, actor_ref, mailbox_rx), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
    ) -> Option<Signal<Self>> {
@@ -278,14 +306,7 @@ impl Actor for PeerActor {
 
       tokio::select! {
          signal = mailbox_rx.recv() => signal,
-         msg = self.stream.recv() => {
-            Some(Signal::Message {
-               message: Box::new(msg.expect("PeerStream closed")),
-               actor_ref: actor_ref.upgrade().unwrap(),
-               reply: None,
-               sent_within_actor: true,
-            })
-         }
+         msg = self.stream.recv() =>  self.check_message_signal(actor_ref, msg)
       }
    }
 }

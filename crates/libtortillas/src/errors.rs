@@ -100,6 +100,10 @@ pub enum PeerActorError {
    #[error("Peer disconnected unexpectedly")]
    UnexpectedDisconnection,
 
+   /// Message was cancelled
+   #[error("Message cancelled")]
+   MessageCancelled,
+
    /// Metadata request failed
    #[error("Metadata request failed: {0}")]
    MetadataRequestFailed(String),
@@ -114,7 +118,7 @@ pub enum PeerActorError {
 
    /// Failed to receive data from peer
    #[error("Receive operation failed: {0}")]
-   ReceiveFailed(String),
+   ReceiveFailed(std::io::Error),
 
    /// Peer timed out due to inactivity
    #[error("Peer timeout: no activity for {seconds} seconds")]

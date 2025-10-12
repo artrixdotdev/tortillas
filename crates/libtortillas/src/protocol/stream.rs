@@ -15,6 +15,7 @@ use tokio::{
    io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
    net::{TcpStream, tcp},
 };
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, instrument, trace};
 
 use super::messages::{Handshake, PeerMessages};
@@ -43,6 +44,23 @@ pub trait PeerSend: AsyncWrite + Unpin {
          PeerActorError::SendFailed(e.to_string())
       })
    }
+
+   /// Sends a message to a peer with a cancellation support, returning an
+   /// error if the operation is cancel
+   async fn send_with_cancel(
+      &mut self, data: PeerMessages, token: CancellationToken,
+   ) -> Result<(), PeerActorError> {
+      tokio::select! {
+         _ = token.cancelled() => {
+            trace!("Sending message to peer was cancelled");
+            return Err(PeerActorError::MessageCancelled);
+
+         },
+         result = self.send(data) => {
+            result
+         }
+      }
+   }
 }
 
 #[async_trait]
@@ -56,7 +74,7 @@ pub trait PeerRecv: AsyncRead + Unpin {
 
       self.read_exact(&mut length_buf).await.map_err(|e| {
          error!(error = %e, "Failed to read message length from peer");
-         PeerActorError::ReceiveFailed("Failed to read message length".into())
+         PeerActorError::ReceiveFailed(e)
       })?;
 
       let length = u32::from_be_bytes(length_buf);
@@ -76,7 +94,7 @@ pub trait PeerRecv: AsyncRead + Unpin {
       let mut message_type = [0u8; 1];
       self.read_exact(&mut message_type).await.map_err(|e| {
          error!(error = %e, "Failed to read message type from peer");
-         PeerActorError::ReceiveFailed("Failed to read message type".into())
+         PeerActorError::ReceiveFailed(e)
       })?;
 
       trace!(
@@ -89,10 +107,13 @@ pub trait PeerRecv: AsyncRead + Unpin {
 
       // Read the rest of the message payload
       let mut rest = vec![0u8; (length - 1) as usize];
-      self.read_exact(&mut rest).await.map_err(|e| {
-         error!(error = %e, message_length = length, "Failed to read message payload from peer");
-         PeerActorError::ReceiveFailed("Failed to read message payload".into())
-      })?;
+      self
+         .read_exact(&mut rest)
+         .await
+         .inspect_err(|e| {
+            error!(error = %e, message_length = length, "Failed to read message payload from peer");
+         })
+         .map_err(PeerActorError::ReceiveFailed)?;
 
       message_buf.extend_from_slice(&rest);
 
@@ -105,6 +126,21 @@ pub trait PeerRecv: AsyncRead + Unpin {
       );
 
       PeerMessages::from_bytes(message_buf.freeze())
+   }
+   /// Receives a message from a peer with cancellation support, returning
+   /// an error if the operation is cancelled
+   async fn recv_with_cancel(
+      &mut self, token: CancellationToken,
+   ) -> Result<PeerMessages, PeerActorError> {
+      tokio::select! {
+         _ = token.cancelled() => {
+            trace!("Receiving message from peer was cancelled");
+            return Err(PeerActorError::MessageCancelled);
+         },
+         result = self.recv() => {
+            result
+         }
+      }
    }
 }
 
