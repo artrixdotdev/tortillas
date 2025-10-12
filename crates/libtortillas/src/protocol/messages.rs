@@ -203,9 +203,7 @@ impl PeerMessages {
             }
             create_message_with_id(20, &payload)
          }
-         _ => return Err(PeerActorError::MessageParsingFailed {
-            reason: "Unknown message type".to_string()
-         }),
+         PeerMessages::KeepAlive => Bytes::from(vec![0u8; 4]),
       })
    }
 
