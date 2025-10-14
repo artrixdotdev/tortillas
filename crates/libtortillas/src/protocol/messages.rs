@@ -15,7 +15,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use num_enum::TryFromPrimitive;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tracing::{debug, error, trace};
+use tracing::{error, trace};
 
 use crate::{
    errors::PeerActorError,
@@ -463,36 +463,31 @@ impl ExtendedMessage {
 
    /// Returns true if a peer supports [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
    /// based on the m dictionary passed with the Extended handshake.
-   pub fn supports_bep_0009(&self) -> Result<u8, Error> {
+   pub fn supports_bep_0009(&self) -> Result<u8> {
       if let Some(m) = &self.supported_extensions {
          if let Some(id) = m.get("ut_metadata") {
-            debug!(extension_id = *id, "Peer supports BEP 0009");
             return Ok(*id);
          }
-         debug!("Peer does not support BEP 0009 - ut_metadata extension not found");
          bail!("Peer does not support BEP 0009");
       }
-      debug!("Peer did not send supported extensions dictionary");
       bail!("Peer did not send an m dict with the given Extended message");
    }
 
    /// Returns true if a given extended message is a request message based on [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
    /// based on the m dictionary passed with the Extended handshake.
-   pub fn is_bep_0009_request(&self) -> Result<bool, Error> {
+   pub fn is_bep_0009_request(&self) -> Result<bool> {
       if let Some(msg_type) = &self.msg_type {
          return Ok(matches!(msg_type, ExtendedMessageType::Request));
       }
-      debug!("Peer did not supply a msg_type");
       bail!("Peer did not supply a msg_type");
    }
 
    /// Returns true if a given extended message is a data message based on [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
    /// based on the m dictionary passed with the Extended handshake.
-   pub fn is_bep_0009_data(&self) -> Result<bool, Error> {
+   pub fn is_bep_0009_data(&self) -> Result<bool> {
       if let Some(msg_type) = &self.msg_type {
          return Ok(matches!(msg_type, ExtendedMessageType::Data));
       }
-      debug!("Peer did not supply a msg_type");
       bail!("Peer did not supply a msg_type");
    }
 
@@ -502,7 +497,6 @@ impl ExtendedMessage {
       if let Some(msg_type) = &self.msg_type {
          return Ok(matches!(msg_type, ExtendedMessageType::Reject));
       }
-      debug!("Peer did not supply a msg_type");
       bail!("Peer did not supply a msg_type");
    }
 }
@@ -528,8 +522,6 @@ impl Handshake {
       // We support BEP 0010
       reserved[5] = 0x10;
 
-      debug!("Creating new handshake with BEP 0010 support");
-
       Self {
          protocol: Bytes::from_static(MAGIC_STRING),
          reserved,
@@ -551,12 +543,7 @@ impl Handshake {
       bytes.put_slice(self.info_hash.as_bytes());
       bytes.put_slice(self.peer_id.id());
 
-      let result = bytes.freeze();
-      trace!(
-         handshake_len = result.len(),
-         "Serialized handshake to bytes"
-      );
-      result
+      bytes.freeze()
    }
 
    /// Deserialize a handshake from bytes
@@ -571,28 +558,17 @@ impl Handshake {
       let protocol = Bytes::copy_from_slice(&bytes[1..1 + protocol_len]);
 
       // Extract reserved bytes
-      let reserved = bytes[1 + protocol_len..1 + protocol_len + 8]
-         .try_into()
-         .map_err(|_| "failed to extract reserved bytes")?;
+      let reserved = bytes[1 + protocol_len..1 + protocol_len + 8].try_into()?;
 
       // Extract info hash
-      let info_hash_bytes = bytes[1 + protocol_len + 8..1 + protocol_len + 8 + 20]
-         .try_into()
-         .map_err(|_| "failed to extract info hash")?;
+      let info_hash_bytes = bytes[1 + protocol_len + 8..1 + protocol_len + 8 + 20].try_into()?;
       let info_hash = Arc::new(Hash::new(info_hash_bytes));
 
       // Extract peer ID
-      let peer_id_bytes: [u8; 20] = bytes[1 + protocol_len + 8 + 20..1 + protocol_len + 8 + 40]
-         .try_into()
-         .map_err(|_| "failed to extract peer ID")?;
+      let peer_id_bytes: [u8; 20] =
+         bytes[1 + protocol_len + 8 + 20..1 + protocol_len + 8 + 40].try_into()?;
 
       let peer_id = PeerId::from(peer_id_bytes);
-
-      trace!(
-          protocol = ?String::from_utf8_lossy(&protocol),
-          protocol_len,
-          "Successfully parsed handshake"
-      );
 
       Ok(Handshake {
          protocol,

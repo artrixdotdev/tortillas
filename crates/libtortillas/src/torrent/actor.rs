@@ -217,8 +217,6 @@ impl TorrentActor {
    /// torrenting process
    #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
    pub async fn autostart(&mut self) {
-      trace!("Checking if we should autostart");
-
       self.pending_start = true;
 
       let is_ready = self.is_ready_to_start();
@@ -269,7 +267,7 @@ impl TorrentActor {
          .expect("Failed to pre-start piece manager");
 
       info!(
-         id = %self.info_hash(),
+         torrent_id = %self.info_hash(),
          piece_manager = %self.piece_manager,
          storage_strategy = ?self.piece_storage,
          peer_count = self.peers.len(),
@@ -416,10 +414,10 @@ impl TorrentActor {
          tokio::spawn(async move {
             if actor.is_alive() {
                if let Err(e) = actor.tell(msg).await {
-                  warn!(error = %e, "Failed to send to peer");
+                  warn!(error = %e, peer_id = %id, "Failed to send to peer");
                }
             } else {
-               warn!("Peer actor is dead, removing from peers set");
+               trace!(peer_id = %id, "Peer actor is dead, removing from peers set");
                peers.remove(&id);
             }
          });
@@ -489,7 +487,7 @@ impl Actor for TorrentActor {
       }
 
       info!(
-         info_hash = %metainfo.info_hash().unwrap(),
+         torrent_id = %metainfo.info_hash().unwrap(),
          "Starting new torrent instance",
       );
 
@@ -511,10 +509,10 @@ impl Actor for TorrentActor {
          _ => None,
       };
       if info.is_none() {
-         debug!("No info dict found in metainfo, you're probably using a magnet uri");
+         debug!(torrent_id = %metainfo.info_hash().unwrap(), "No info dict found in metainfo, you're probably using a magnet uri");
       }
       let bitfield: Arc<BitVec<AtomicU8>> = if let Some(info) = &info {
-         debug!("Using bitfield length {}", info.piece_count());
+         debug!(torrent_id = %metainfo.info_hash().unwrap(), "Using bitfield length {}", info.piece_count());
          Arc::new(BitVec::repeat(false, info.piece_count()))
       } else {
          Arc::new(BitVec::EMPTY)
@@ -668,7 +666,7 @@ mod tests {
    async fn test_torrent_actor_piece_storage() {
       tracing_subscriber::fmt()
          .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
+         .with_env_filter("libtortillas=info,off")
          .pretty()
          .init();
       let metainfo = TorrentFile::parse(include_bytes!(

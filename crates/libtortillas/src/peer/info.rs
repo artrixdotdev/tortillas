@@ -1,6 +1,6 @@
 use anyhow::{Error, bail, ensure};
 use bytes::{Bytes, BytesMut};
-use tracing::{trace, warn};
+use tracing::warn;
 
 use crate::{hashes::InfoHash, metainfo::Info};
 
@@ -55,7 +55,6 @@ impl PeerInfo {
 
       // Put bytes into Info struct
       // The metadata should be bencoded bytes.
-      trace!("Generating info dict from metadata bytes");
       let info_dict: Info = serde_bencode::from_bytes(self.info_bytes.as_ref()).unwrap();
 
       // Validate hash of struct with given info hash
@@ -63,8 +62,6 @@ impl PeerInfo {
          real_info_hash == info_hash,
          "Inputted info_hash was not the same as generated info_hash"
       );
-
-      trace!("Info hash validation successful");
 
       Ok(info_dict)
    }
@@ -98,10 +95,7 @@ impl PeerInfo {
    /// [info_size](Self::info_size).
    pub(crate) fn have_all_bytes(&self) -> bool {
       let current_size = self.info_bytes.len();
-      trace!(
-         info_size = self.info_size,
-         current_size, "Checking metadata completeness"
-      );
+
       if self.info_size == 0 {
          return false;
       }
@@ -118,7 +112,6 @@ impl PeerInfo {
 
    /// Resets the PeerInfo struct.
    pub(crate) fn reset(&mut self) {
-      trace!("Resetting peer info metadata");
       self.info_bytes = BytesMut::new();
       self.info_size = 0;
    }

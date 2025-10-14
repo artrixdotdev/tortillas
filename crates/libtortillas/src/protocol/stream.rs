@@ -79,12 +79,9 @@ pub trait PeerRecv: AsyncRead + Unpin {
 
       let length = u32::from_be_bytes(length_buf);
 
-      trace!(message_length = length, "Received message length header");
-
       // Safety check -- BitTorrent docs do not specify if KeepAlive messages have an
       // ID (and I'm pretty sure they don't)
       if length == 0 {
-         trace!("Received KeepAlive message");
          return Ok(PeerMessages::KeepAlive);
       }
 
@@ -167,7 +164,6 @@ impl PeerStream {
       let handshake = Handshake::new(info_hash.clone(), our_id);
 
       self.write_all(&handshake.to_bytes()).await?;
-      trace!("Sent handshake to peer");
       Ok(())
    }
 
@@ -185,8 +181,9 @@ impl PeerStream {
 
       let Handshake {
          peer_id, reserved, ..
-      } = Handshake::from_bytes(&buf)
-         .map_err(|e| PeerActorError::HandshakeFailed { reason: e.into() })?;
+      } = Handshake::from_bytes(&buf).map_err(|e| PeerActorError::HandshakeFailed {
+         reason: e.to_string(),
+      })?;
 
       Ok((peer_id, reserved))
    }

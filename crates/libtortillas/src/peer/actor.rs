@@ -16,7 +16,7 @@ use kameo::{
 };
 use messages::{ExtendedMessage, ExtendedMessageType, PeerMessages};
 use stream::{PeerSend, PeerStream};
-use tracing::{debug, error, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 
 use crate::{
    errors::PeerActorError,
@@ -96,16 +96,10 @@ impl PeerActor {
    /// `Reject`.
    #[instrument(skip(self, _extended_id, extended_message, metadata), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn handle_extended_message(
-      &mut self, extended_id: u8, extended_message: Option<ExtendedMessage>,
+      &mut self, _extended_id: u8, extended_message: Option<ExtendedMessage>,
       metadata: &Option<Bytes>,
    ) {
-      trace!(extended_id, "Received extended message");
-
       if let Some(extended_message) = extended_message {
-         if let Some(size) = extended_message.metadata_size {
-            trace!(metadata_size = size, "Received metadata size from peer");
-         }
-
          // Save metadata to Peer
          if extended_message.is_bep_0009_data().unwrap_or_default()
             && let Some(metadata) = metadata
@@ -158,15 +152,11 @@ impl PeerActor {
    /// Contains the logic for requesting a piece from a peer under [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html)/[BEP 0010](https://www.bittorrent.org/beps/bep_0010.html). This function expects the exact piece to be specified -- in other words, when requesting the next piece of metadata, this function will not automatically increment the `piece` field. The caller of the function is expected to handle this.
    #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn request_metadata(&mut self, metadata_size: Option<usize>, piece: usize) {
-      trace!(metadata_size, piece, "Requesting metadata");
-
       if let Some(size) = metadata_size {
          self.peer.info.set_info_size(size);
       }
 
       if self.peer.info.info_size() > 0 && !self.peer.info.have_all_bytes() {
-         trace!(piece, "Preparing metadata request");
-
          let mut extended_message = ExtendedMessage::new();
          extended_message.piece = Some(piece);
          extended_message.msg_type = Some(ExtendedMessageType::Request);
@@ -177,16 +167,11 @@ impl PeerActor {
             None,
          );
 
-         debug!(
-            bep_0009_id = self.peer.bep_0009_id(),
-            piece, "Sending metadata request"
-         );
-
          if let Err(e) = self.stream.send(message).await {
-            error!(error = %e, piece, "Failed to send metadata request");
+            trace!(error = %e, piece, "Failed to send metadata request");
          }
       } else {
-         warn!(
+         trace!(
             info_size = self.peer.info.info_size(),
             "Peer already has all metadata bytes or info size is invalid"
          );
@@ -345,20 +330,20 @@ impl Message<PeerMessages> for PeerActor {
          }
          PeerMessages::Choke => {
             self.peer.set_am_choked(true);
-            debug!("Peer choked us");
+            trace!("Peer choked us");
          }
          PeerMessages::Unchoke => {
             self.peer.update_last_optimistic_unchoke();
             self.peer.set_am_choked(false);
-            debug!("Peer unchoked us");
+            trace!("Peer unchoked us");
          }
          PeerMessages::Interested => {
             self.peer.set_interested(true);
-            debug!("Peer is interested in our pieces");
+            trace!("Peer is interested in our pieces");
          }
          PeerMessages::NotInterested => {
             self.peer.set_interested(false);
-            debug!("Peer is not interested in our pieces");
+            trace!("Peer is not interested in our pieces");
          }
          PeerMessages::KeepAlive => {
             trace!("Received keep alive");
@@ -369,7 +354,7 @@ impl Message<PeerMessages> for PeerActor {
                .expect("Failed to send keep alive");
          }
          PeerMessages::Have(piece_index) => {
-            trace!(piece_index, "Peer has a piece");
+            trace!(piece_index, "Peer has a new piece");
             let idx = piece_index as usize;
             if idx < self.peer.pieces.len() {
                let was_set = self.peer.pieces[idx];
@@ -387,7 +372,7 @@ impl Message<PeerMessages> for PeerActor {
             }
          }
          PeerMessages::Request(index, offset, length) => {
-            trace!(
+            debug!(
                piece_index = index,
                offset, length, "Peer requested piece data"
             );
@@ -421,15 +406,13 @@ impl Message<PeerMessages> for PeerActor {
                .await;
          }
          PeerMessages::Cancel(index, offset, length) => {
-            trace!(
+            debug!(
                piece_index = index,
                offset, length, "Peer cancelled piece request"
             );
             todo!()
          }
          PeerMessages::Bitfield(bitfield) => {
-            let piece_count = bitfield.len();
-            debug!(piece_count, "Received bitfield from peer");
             self.peer.pieces = bitfield;
             self.determine_interest().await;
          }

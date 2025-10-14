@@ -189,7 +189,7 @@ impl PieceManager for FilePieceManager {
 
          data_offset += len;
 
-         debug!(index, offset = file_offset, len, path = %path.display(), "Wrote piece to file");
+         trace!(index, offset = file_offset, len, path = %path.display(), "Wrote piece block to file");
       }
 
       Ok(())
