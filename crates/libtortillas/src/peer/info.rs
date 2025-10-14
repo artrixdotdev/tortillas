@@ -1,6 +1,5 @@
-use anyhow::{Error, bail, ensure};
+use anyhow::ensure;
 use bytes::{Bytes, BytesMut};
-use tracing::warn;
 
 use crate::{hashes::InfoHash, metainfo::Info};
 
