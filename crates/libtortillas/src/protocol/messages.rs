@@ -8,7 +8,7 @@ use std::{
    },
 };
 
-use anyhow::{Error, Result, bail};
+use anyhow::{Error, Result, bail, ensure};
 use bencode::streaming::{BencodeEvent, StreamingParser};
 use bitvec::prelude::*;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -560,18 +560,12 @@ impl Handshake {
    }
 
    /// Deserialize a handshake from bytes
-   pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
-      if bytes.is_empty() {
-         return Err("handshake too short");
-      }
-
+   pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
       // First byte is protocol string length
       let protocol_len = bytes[0] as usize;
       let total_expected_len = 1 + protocol_len + 8 + 40;
 
-      if bytes.len() < total_expected_len {
-         return Err("handshake too short");
-      }
+      ensure!(bytes.len() >= total_expected_len, "handshake too short");
 
       // Extract protocol string
       let protocol = Bytes::copy_from_slice(&bytes[1..1 + protocol_len]);

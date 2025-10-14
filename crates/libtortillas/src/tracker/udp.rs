@@ -8,7 +8,7 @@ use std::{
    },
 };
 
-use anyhow::anyhow;
+use anyhow::{anyhow, bail, ensure};
 use async_trait::async_trait;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use dashmap::DashMap;
@@ -864,13 +864,10 @@ impl TrackerBase for UdpTracker {
         tracker_ready_state = ?self.ready_state,
     ))]
    async fn announce(&self) -> anyhow::Result<Vec<Peer>> {
-      if self.get_ready_state() != ReadyState::Ready {
-         error!(
-             current_state = ?self.ready_state,
-             "Tracker not ready for announce request"
-         );
-         return Err(anyhow!("Tracker not ready for announce request"));
-      };
+      ensure!(
+         self.get_ready_state() == ReadyState::Ready,
+         "Tracker not ready for announce request"
+      );
 
       self.stats.increment_announce_attempts();
 
@@ -907,17 +904,13 @@ impl TrackerBase for UdpTracker {
             seeders,
             ..
          } => {
-            if resp_tid != transaction_id {
-               error!(
-                  expected_tid = transaction_id,
-                  received_tid = resp_tid,
-                  "Transaction ID mismatch in announce response"
-               );
-               return Err(anyhow!(TrackerActorError::TransactionMismatch {
+            ensure!(
+               resp_tid == transaction_id,
+               TrackerActorError::TransactionMismatch {
                   expected: transaction_id,
                   received: resp_tid
-               }));
-            }
+               }
+            );
 
             // Update statistics
             self.stats.increment_announce_successes();

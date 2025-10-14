@@ -1,4 +1,4 @@
-use anyhow::{Error, bail};
+use anyhow::{Error, bail, ensure};
 use bytes::{Bytes, BytesMut};
 use tracing::{trace, warn};
 
@@ -36,7 +36,9 @@ impl PeerInfo {
    /// of the created Info dict is not the same as the inputted info hash, an
    /// error will be returned. If the hash is the same, the newly created
    /// Info will be returned.
-   pub(crate) async fn generate_info_from_bytes(&self, info_hash: InfoHash) -> Result<Info, Error> {
+   pub(crate) async fn generate_info_from_bytes(
+      &self, info_hash: InfoHash,
+   ) -> anyhow::Result<Info> {
       // We have to do this because sometimes info dicts have non-standard properties
       // that get discared by serde automatically, causing the hash to be
       // different.
@@ -57,8 +59,8 @@ impl PeerInfo {
       let info_dict: Info = serde_bencode::from_bytes(self.info_bytes.as_ref()).unwrap();
 
       // Validate hash of struct with given info hash
-      assert_eq!(
-         real_info_hash, info_hash,
+      ensure!(
+         real_info_hash == info_hash,
          "Inputted info_hash was not the same as generated info_hash"
       );
 
