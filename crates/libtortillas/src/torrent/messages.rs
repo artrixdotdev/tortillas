@@ -285,7 +285,7 @@ impl Message<TorrentMessage> for TorrentActor {
                self.bitfield.set_aliased(index, true);
                debug!(
                   piece_index = index,
-                  pieces_left = piece_count - index,
+                  pieces_left = piece_count.saturating_sub(index + 1),
                   "Piece is now complete"
                );
 
