@@ -20,6 +20,7 @@ use tracing::{debug, info, instrument, trace, warn};
 
 use crate::{
    errors::PeerActorError,
+   hashes::InfoHash,
    peer::Peer,
    protocol::{stream::PeerRecv, *},
    torrent::{TorrentActor, TorrentMessage, TorrentRequest, TorrentResponse},
@@ -225,15 +226,15 @@ impl PeerActor {
 }
 
 impl Actor for PeerActor {
-   type Args = (Peer, PeerStream, ActorRef<TorrentActor>);
+   type Args = (Peer, PeerStream, ActorRef<TorrentActor>, InfoHash);
    type Error = PeerActorError;
 
    /// At this point, the peer has already been handshaked with. No other
    /// messages have been sent or received from the peer.
    async fn on_start(args: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (peer, mut stream, supervisor) = args;
+      let (peer, mut stream, supervisor, info_hash) = args;
 
-      info!(peer_id = %peer.id.unwrap(), peer_addr = %stream, "Peer connected");
+      info!(peer_id = %peer.id.unwrap(),  peer_addr = %stream, torrent_id = %info_hash, "Peer connected");
       let msg = TorrentRequest::Bitfield;
       let bitfield = match supervisor.ask(msg).await.unwrap() {
          TorrentResponse::Bitfield(bitfield) => bitfield,

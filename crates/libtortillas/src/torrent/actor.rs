@@ -318,7 +318,7 @@ impl TorrentActor {
          let mut id = peer.id;
          let stream = match stream {
             Some(mut stream) => {
-               let handshake = Handshake::new(info_hash, our_id);
+               let handshake = Handshake::new(info_hash.clone(), our_id);
                if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
                   debug!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer");
                   return;
@@ -377,7 +377,10 @@ impl TorrentActor {
          // atomically prevents the `PeerActor` from being created unless there
          // is no entry for the peer id (?)
          peers.entry(id).or_insert_with(|| {
-            PeerActor::spawn_with_mailbox((peer.clone(), stream, actor_ref), mailbox::bounded(120))
+            PeerActor::spawn_with_mailbox(
+               (peer.clone(), stream, actor_ref, *info_hash),
+               mailbox::bounded(120),
+            )
          });
       });
    }
