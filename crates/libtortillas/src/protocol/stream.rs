@@ -16,7 +16,7 @@ use tokio::{
    net::{TcpStream, tcp},
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, instrument, trace};
+use tracing::{error, instrument, trace};
 
 use super::messages::{Handshake, PeerMessages};
 use crate::{

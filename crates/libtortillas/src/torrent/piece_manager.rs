@@ -7,7 +7,7 @@ use tokio::{
    fs::OpenOptions,
    io::{AsyncSeekExt, AsyncWriteExt},
 };
-use tracing::{debug, trace};
+use tracing::trace;
 
 use crate::metainfo::{Info, InfoKeys};
 
