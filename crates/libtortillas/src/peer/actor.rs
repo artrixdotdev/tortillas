@@ -52,8 +52,6 @@ impl PeerActor {
          extended_message.supported_extensions = Some(supported_extensions);
          let message = PeerMessages::Extended(extended_id, Box::new(Some(extended_message)), None);
 
-         trace!("Sending extended handshake response");
-
          self
             .stream
             .send(message)

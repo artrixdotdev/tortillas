@@ -72,10 +72,10 @@ pub trait PeerRecv: AsyncRead + Unpin {
       // PeerMessage tag
       let mut length_buf = [0u8; 4];
 
-      self.read_exact(&mut length_buf).await.map_err(|e| {
-         error!(error = %e, "Failed to read message length from peer");
-         PeerActorError::ReceiveFailed(e)
-      })?;
+      self
+         .read_exact(&mut length_buf)
+         .await
+         .map_err(PeerActorError::ReceiveFailed)?;
 
       let length = u32::from_be_bytes(length_buf);
 
@@ -97,12 +97,6 @@ pub trait PeerRecv: AsyncRead + Unpin {
          PeerActorError::ReceiveFailed(e)
       })?;
 
-      trace!(
-         message_type = message_type[0],
-         message_length = length,
-         "Received message headers, reading payload"
-      );
-
       message_buf.extend_from_slice(&message_type);
 
       // Read the rest of the message payload
@@ -110,20 +104,9 @@ pub trait PeerRecv: AsyncRead + Unpin {
       self
          .read_exact(&mut rest)
          .await
-         .inspect_err(|e| {
-            error!(error = %e, message_length = length, "Failed to read message payload from peer");
-         })
          .map_err(PeerActorError::ReceiveFailed)?;
 
       message_buf.extend_from_slice(&rest);
-
-      let full_length = message_buf.len();
-
-      trace!(
-         message_type = message_buf[4],
-         total_bytes = full_length,
-         "Successfully read complete message from peer"
-      );
 
       PeerMessages::from_bytes(message_buf.freeze())
    }
@@ -155,23 +138,23 @@ impl PeerStream {
    ///
    /// utp_socket should be None ONLY for testing, when we only wish to utilize
    /// a TcpStream.
+   #[instrument(fields(peer_addr = %peer_addr))]
    pub async fn connect(
       peer_addr: SocketAddr, utp_socket: Option<Arc<UtpSocketUdp>>,
    ) -> Result<Self, PeerActorError> {
-      trace!(peer_addr = %peer_addr, "Attempting connection to peer");
       if let Some(utp_socket) = utp_socket {
          tokio::select! {
              stream = utp_socket.connect(peer_addr) => {
-                 debug!(peer_addr = %peer_addr, protocol = "uTP", "Connected to peer");
+                 trace!(protocol = "uTP", "Connected to peer");
                  Ok(PeerStream::Utp(stream?))
              },
              stream = TcpStream::connect(peer_addr) => {
-                 debug!(peer_addr = %peer_addr, protocol = "TCP", "Connected to peer");
+                 trace!(protocol = "TCP", "Connected to peer");
                  Ok(PeerStream::Tcp(stream?))
              }
          }
       } else {
-         debug!(peer_addr = %peer_addr, protocol = "TCP", "Connecting to peer");
+         trace!(protocol = "TCP", "Connecting to peer");
          Ok(PeerStream::Tcp(TcpStream::connect(peer_addr).await?))
       }
    }
