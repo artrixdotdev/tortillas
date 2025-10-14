@@ -55,7 +55,7 @@ impl PeerInfo {
 
       // Put bytes into Info struct
       // The metadata should be bencoded bytes.
-      let info_dict: Info = serde_bencode::from_bytes(self.info_bytes.as_ref()).unwrap();
+      let info_dict: Info = serde_bencode::from_bytes(self.info_bytes.as_ref())?;
 
       // Validate hash of struct with given info hash
       ensure!(
@@ -68,21 +68,16 @@ impl PeerInfo {
 
    /// A helper function for handling any issues with appending the new bytes to
    /// the current info_bytes
-   pub(crate) fn append_to_bytes(&mut self, bytes: &[u8]) -> Result<(), Error> {
+   pub(crate) fn append_to_bytes(&mut self, bytes: &[u8]) -> anyhow::Result<()> {
       let bytes_len = bytes.len();
       let current_len = self.info_bytes.len();
       let total_len = current_len + bytes_len;
 
-      if total_len > self.info_size {
-         warn!(
-            bytes_len,
-            current_len,
-            info_size = self.info_size,
-            total_len,
-            "Metadata bytes exceed expected size"
-         );
-         bail!("The inputted bytes + pre-existing bytes were longer than the metadata size")
-      }
+      ensure!(
+         total_len <= self.info_size,
+         "The inputted bytes + pre-existing bytes were longer than the metadata size"
+      );
+
       self.info_bytes.extend_from_slice(bytes);
       Ok(())
    }
