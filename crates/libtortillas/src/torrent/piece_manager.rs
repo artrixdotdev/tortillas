@@ -149,9 +149,12 @@ impl PieceManager for FilePieceManager {
    }
 
    async fn pre_start(&mut self, info_dict: Info) -> anyhow::Result<()> {
-      trace!(path = %self.0.as_ref().unwrap().display(), "Pre-starting piece manager");
       // Intentional panic because this is unintended behavior
       assert!(self.0.is_some(), "Path must be set before pre_start");
+
+      let info_hash = info_dict.hash()?;
+
+      trace!(torrent_id = %info_hash, path = %self.0.as_ref().unwrap().display(), "Pre-starting piece manager");
 
       self.1 = Some(info_dict);
       Ok(())
