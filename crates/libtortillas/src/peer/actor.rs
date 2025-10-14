@@ -73,7 +73,7 @@ impl PeerActor {
          }),
          Err(e) => {
             use std::io::ErrorKind::*;
-            trace!(error = ?e, "Peer errored");
+            debug!(error = ?e, "Peer errored");
             match e {
                PeerActorError::Io(e) | PeerActorError::ReceiveFailed(e) => {
                   if e.kind() == UnexpectedEof || e.kind() == ConnectionReset {

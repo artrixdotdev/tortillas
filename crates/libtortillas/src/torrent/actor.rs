@@ -320,7 +320,7 @@ impl TorrentActor {
             Some(mut stream) => {
                let handshake = Handshake::new(info_hash, our_id);
                if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
-                  trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer");
+                  debug!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer");
                   return;
                }
                stream
