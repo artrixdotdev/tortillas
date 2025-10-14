@@ -126,18 +126,21 @@ actor_request_response!(
 impl Message<TorrentMessage> for TorrentActor {
    type Reply = ();
 
+   #[instrument(skip(self, message), fields(torrent_id = %self.info_hash()))]
    async fn handle(
       &mut self, message: TorrentMessage, _: &mut Context<Self, Self::Reply>,
    ) -> Self::Reply {
       trace!(message = ?message, "Received message");
       match message {
          TorrentMessage::Announce(peers) => {
+            trace!(peer_count = peers.len(), "Received announce message");
             for peer in peers {
                self.append_peer(peer, None);
             }
          }
          TorrentMessage::IncomingPeer(peer, stream) => self.append_peer(peer, Some(*stream)),
          TorrentMessage::AddPeer(peer) => {
+            trace!(peer_id = %peer.id.unwrap(), "Received add peer message");
             self.append_peer(peer, None);
          }
 
@@ -284,7 +287,11 @@ impl Message<TorrentMessage> for TorrentActor {
 
                self.next_piece += 1;
                self.bitfield.set_aliased(index, true);
-               trace!(id = %self.info_hash(), piece = index, "Piece is now complete");
+               debug!(
+                  piece_index = index,
+                  pieces_left = piece_count - index,
+                  "Piece is now complete"
+               );
 
                // Announce to peers that we have this piece
                self.broadcast_to_peers(PeerTell::Have(cur_piece)).await;

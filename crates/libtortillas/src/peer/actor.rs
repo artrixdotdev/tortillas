@@ -247,6 +247,8 @@ impl Actor for PeerActor {
    /// messages have been sent or received from the peer.
    async fn on_start(args: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
       let (peer, mut stream, supervisor) = args;
+
+      info!(peer_id = %peer.id.unwrap(), peer_addr = %stream, "Peer connected");
       let msg = TorrentRequest::Bitfield;
       let bitfield = match supervisor.ask(msg).await.unwrap() {
          TorrentResponse::Bitfield(bitfield) => bitfield,

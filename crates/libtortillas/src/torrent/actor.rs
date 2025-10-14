@@ -481,7 +481,7 @@ impl Actor for TorrentActor {
       ) = args;
       let primary_addr = primary_addr.unwrap_or_else(|| {
          let addr = utp_server.bind_addr();
-         info!("No primary address provided, using {}", addr);
+         debug!(torrent_id = %metainfo.info_hash().unwrap(), %addr, "No primary address provided, using default");
          addr
       });
       if let PieceStorageStrategy::Disk(dir) = &piece_storage {

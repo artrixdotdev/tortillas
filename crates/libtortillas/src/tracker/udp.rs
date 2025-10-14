@@ -804,10 +804,7 @@ impl UdpTracker {
             transaction_id: _,
             ..
          } => {
-            debug!(
-               connection_id = connection_id,
-               "Received connection ID from tracker"
-            );
+            info!(connection_id = connection_id, "Connected to tracker");
 
             self.set_connection_id(connection_id);
             self.set_ready_state(ReadyState::Ready);
