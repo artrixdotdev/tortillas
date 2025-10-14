@@ -666,7 +666,7 @@ mod tests {
    async fn test_torrent_actor_piece_storage() {
       tracing_subscriber::fmt()
          .with_target(true)
-         .with_env_filter("libtortillas=info,off")
+         .with_env_filter("libtortillas=trace,off")
          .pretty()
          .init();
       let metainfo = TorrentFile::parse(include_bytes!(
