@@ -97,7 +97,7 @@ impl TrackerRequest {
 
       // If the ip address is 127.0.0.1 or 0.0.0.0 just dont send it since its
       // optional
-      let ip = if addr.ip().is_loopback() | addr.ip().is_unspecified() {
+      let ip = if addr.ip().is_loopback() || addr.ip().is_unspecified() {
          None
       } else {
          Some(addr.ip())
