@@ -71,8 +71,8 @@ impl PeerActor {
             sent_within_actor: true,
          }),
          Err(e) => {
-            error!(error = ?e, "Peer errored");
             use std::io::ErrorKind::*;
+            trace!(error = ?e, "Peer errored");
             match e {
                PeerActorError::Io(e) | PeerActorError::ReceiveFailed(e) => {
                   if e.kind() == UnexpectedEof || e.kind() == ConnectionReset {
@@ -109,15 +109,12 @@ impl PeerActor {
             && let Some(metadata) = metadata
          {
             if let Err(e) = self.peer.info.append_to_bytes(metadata) {
-               warn!(error = %e, "Failed to append metadata bytes");
+               trace!(error = %e, "Failed to append metadata bytes");
             } else {
-               trace!(metadata_len = metadata.len(), "Appended metadata");
-
                // Request next piece if we don't have all the piece bytes
                if !self.peer.info.have_all_bytes() {
                   let next_piece = extended_message.piece.expect("Should always be Some") + 1;
 
-                  trace!(next_piece = next_piece, "Requesting next piece...");
                   self
                      .request_metadata(extended_message.metadata_size, next_piece)
                      .await;
@@ -147,7 +144,7 @@ impl PeerActor {
       }
 
       if self.peer.info.have_all_bytes() {
-         debug!("Peer has all info bytes, sending them to supervisor...");
+         trace!("Peer has all info bytes, sending them to supervisor...");
          self
             .supervisor
             .tell(TorrentMessage::InfoBytes(self.peer.info.info_bytes()))

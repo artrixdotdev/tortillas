@@ -321,7 +321,7 @@ impl TorrentActor {
             Some(mut stream) => {
                let handshake = Handshake::new(info_hash, our_id);
                if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
-                  error!("Failed to send handshake to peer: {}", err);
+                  trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer");
                   return;
                }
                stream
@@ -339,18 +339,26 @@ impl TorrentActor {
                               stream
                            }
                            Err(err) => {
-                              warn!(error = %err, "Failed to receive handshake from peer; exiting");
+                              trace!(
+                                 error = %err,
+                                 peer_addr = %peer.socket_addr(),
+                                 "Failed to receive handshake from peer; exiting"
+                              );
                               return;
                            }
                         },
                         Err(err) => {
-                           warn!(error = %err, "Failed to send handshake to peer; exiting");
+                           trace!(
+                              error = %err,
+                              peer_addr = %peer.socket_addr(),
+                              "Failed to send handshake to peer; exiting"
+                           );
                            return;
                         }
                      }
                   }
                   Err(err) => {
-                     warn!(error = %err, "Failed to connect to peer; exiting");
+                     trace!(error = %err, "Failed to connect to peer; exiting");
                      return;
                   }
                }

@@ -445,7 +445,7 @@ impl UdpServer {
                         {
                            if let Some(sender) = response_channels.get(&transaction_id) {
                               if let Err(e) = sender.send((size, response)) {
-                                 warn!(
+                                 trace!(
                                      transaction_id = transaction_id,
                                      error = %e,
                                      "Failed to send response to transaction channel (likely closed)"
@@ -457,7 +457,7 @@ impl UdpServer {
                                  );
                               }
                            } else {
-                              warn!(
+                              trace!(
                                  transaction_id = transaction_id,
                                  "No channel registered for transaction ID"
                               );
@@ -687,7 +687,7 @@ impl UdpTracker {
             Ok(response)
          }
          Ok(None) => {
-            warn!(
+            trace!(
                transaction_id = transaction_id,
                "Response channel closed before receiving message"
             );
@@ -697,7 +697,7 @@ impl UdpTracker {
             });
          }
          Err(_) => {
-            warn!(
+            trace!(
                 transaction_id = transaction_id,
                 elapsed = ?MESSAGE_TIMEOUT,
                 "Tracker timed out"
@@ -818,7 +818,7 @@ impl UdpTracker {
             transaction_id: _,
             ..
          } => {
-            error!(
+            trace!(
                 error_message = %message,
                 transaction_id = transaction_id,
                 "Tracker returned error for connect request"
@@ -826,8 +826,9 @@ impl UdpTracker {
             Err(TrackerActorError::TrackerError { message })
          }
          _ => {
-            error!(
+            trace!(
                 response_type = ?response,
+                transaction_id = transaction_id,
                 "Unexpected response type to connect request"
             );
             Err(TrackerActorError::InvalidResponse {
