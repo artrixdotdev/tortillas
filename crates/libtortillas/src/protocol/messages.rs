@@ -548,6 +548,8 @@ impl Handshake {
 
    /// Deserialize a handshake from bytes
    pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+      ensure!(!bytes.is_empty(), "handshake too short"); // Prevents out of bounds panic
+
       // First byte is protocol string length
       let protocol_len = bytes[0] as usize;
       let total_expected_len = 1 + protocol_len + 8 + 40;
