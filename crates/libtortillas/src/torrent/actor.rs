@@ -215,6 +215,7 @@ impl TorrentActor {
 
    /// Checks if the torrent is ready to autostart (via [`Self::autostart`]) and
    /// torrenting process
+   #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
    pub async fn autostart(&mut self) {
       trace!("Checking if we should autostart");
 
@@ -306,7 +307,7 @@ impl TorrentActor {
    /// - The handshake fails,
    /// - The peer ID matches our own, or
    /// - The peer already exists in the peer set.
-   #[instrument(skip(self, peer, stream), fields(%self, peer = ?peer.socket_addr()))]
+   #[instrument(skip(self, peer, stream), fields(%self, peer_addr = ?peer.socket_addr(), torrent_id = %self.info_hash()))]
    pub(super) fn append_peer(&self, mut peer: Peer, stream: Option<PeerStream>) {
       let info_hash = Arc::new(self.info_hash());
       let actor_ref = self.actor_ref.clone();
@@ -398,7 +399,7 @@ impl TorrentActor {
    ///
    /// Any errors from individual peers are logged, but do not stop the
    /// broadcast from continuing to other peers.
-   #[instrument(skip(self, tell), fields(msg = ?tell))]
+   #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]
    pub(super) async fn broadcast_to_peers(&self, tell: PeerTell) {
       // Snapshot actor refs to release DashMap locks before awaiting.
       let peers = self.peers.clone(); // assuming Arc<DashMap<..>>

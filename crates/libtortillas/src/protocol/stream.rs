@@ -161,15 +161,6 @@ impl PeerStream {
 
    /// Sends a handshake to a peer. Returns nothing if the handshake is sent
    /// without error.
-   #[instrument(
-        skip(self)
-        fields(
-            protocol = self.protocol(),
-            remote_addr = self.remote_addr().unwrap().to_string(),
-            info_hash = info_hash.to_string(),
-            our_id = our_id.to_string()
-        )
-    )]
    pub async fn send_handshake(
       &mut self, our_id: PeerId, info_hash: Arc<InfoHash>,
    ) -> Result<(), PeerActorError> {
@@ -183,7 +174,6 @@ impl PeerStream {
    /// Receives an incoming handshake from a peer.
    ///
    /// Will fail if the next message is not a handshake.
-   #[instrument(skip(self), fields(%self))]
    pub async fn recv_handshake(&mut self) -> Result<(PeerId, [u8; 8]), PeerActorError> {
       // Handshakes will always be 68 bytes
       //

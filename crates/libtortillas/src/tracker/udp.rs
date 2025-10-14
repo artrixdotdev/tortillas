@@ -101,7 +101,6 @@ impl TrackerRequest {
       }
    }
 
-   #[instrument(skip(self), fields(%self))]
    pub fn to_bytes(&self) -> Bytes {
       let mut buf = BytesMut::new();
 
@@ -207,7 +206,6 @@ impl TrackerResponse {
       }
    }
 
-   #[instrument(skip(bytes), fields(response_size = bytes.len()))]
    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
       if bytes.len() < 4 {
          error!(
@@ -448,6 +446,7 @@ impl UdpServer {
                                  trace!(
                                      transaction_id = transaction_id,
                                      error = %e,
+                                     tracker_addr = %tracker_addr,
                                      "Failed to send response to transaction channel (likely closed)"
                                  );
                               } else {
@@ -576,11 +575,9 @@ impl UdpTracker {
    ///
    /// Will only fail if the DNS lookup fails
    #[instrument(skip(info_hash, peer_info, server), fields(
-        uri = %uri,
-        info_hash = %info_hash,
-        peer_id = %peer_info.0,
-        port = %peer_info.1.port(),
-        server = ?server.clone().map(|s| s.local_addr())
+        tracker_uri = %uri,
+        torrent_id = %info_hash,
+        server_addr = ?server.clone().map(|s| s.local_addr())
     ))]
    pub async fn new(
       uri: String, server: Option<UdpServer>, info_hash: InfoHash, peer_info: (PeerId, SocketAddr),
@@ -714,7 +711,8 @@ impl UdpTracker {
    /// [`UdpTracker::to_retry_error`] to receive the message.
    #[instrument(skip(self, message), fields(
         tracker_uri = %self.uri,
-        connection_id = ?self.get_connection_id()
+        tracker_connection_id = ?self.get_connection_id(),
+        torrent_id = %self.info_hash,
    ))]
    async fn send_and_recv_retry(
       &self, message: &TrackerRequest, transaction_id: &TransactionId,
@@ -761,7 +759,8 @@ impl UdpTracker {
    /// > rerequest a connection ID when it has expired.
    #[instrument(skip(self, message), fields(
         tracker_uri = %self.uri,
-        connection_id = ?self.get_connection_id()
+        tracker_connection_id = ?self.get_connection_id(),
+        torrent_id = %self.info_hash,
     ))]
    async fn send_and_wait(&self, message: TrackerRequest) -> Result<TrackerResponse> {
       let transaction_id = message.transaction_id();
@@ -787,7 +786,8 @@ impl UdpTracker {
 
    #[instrument(skip(self), fields(
         tracker_uri = %self.uri,
-        connection_id = ?self.get_connection_id()
+        tracker_connection_id = ?self.get_connection_id(),
+        torrent_id = %self.info_hash,
     ))]
    async fn connect(&self) -> Result<ConnectionId> {
       let transaction_id: TransactionId = rand::random();
@@ -862,8 +862,9 @@ impl TrackerBase for UdpTracker {
    /// for the tracker.
    #[instrument(skip(self), fields(
         tracker_uri = %self.uri,
-        ready_state = ?self.ready_state,
-        connection_id = ?self.get_connection_id()
+        tracker_connection_id = ?self.get_connection_id(),
+        torrent_id = %self.info_hash,
+        tracker_ready_state = ?self.ready_state,
     ))]
    async fn announce(&self) -> anyhow::Result<Vec<Peer>> {
       if self.get_ready_state() != ReadyState::Ready {

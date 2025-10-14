@@ -131,8 +131,8 @@ pub struct HttpTracker {
 
 impl HttpTracker {
    #[instrument(skip(info_hash, peer_id), fields(
-        uri = %uri,
-        info_hash = %info_hash,
+        tracker_uri = %uri,
+        torrent_id = %info_hash,
         peer_tracker_addr = ?peer_tracker_addr
     ))]
    pub fn new(

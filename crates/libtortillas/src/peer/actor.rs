@@ -60,6 +60,7 @@ impl PeerActor {
       }
    }
 
+   #[instrument(skip(self, actor_ref, signal), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    fn check_message_signal(
       &mut self, actor_ref: WeakActorRef<Self>, signal: Result<PeerMessages, PeerActorError>,
    ) -> Option<Signal<Self>> {
@@ -93,6 +94,7 @@ impl PeerActor {
    /// 0010](https://www.bittorrent.org/beps/bep_0010.html), and the 3 extension messages as specified
    /// in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html), with the exception of
    /// `Reject`.
+   #[instrument(skip(self, _extended_id, extended_message, metadata), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn handle_extended_message(
       &mut self, extended_id: u8, extended_message: Option<ExtendedMessage>,
       metadata: &Option<Bytes>,
@@ -154,7 +156,7 @@ impl PeerActor {
    }
 
    /// Contains the logic for requesting a piece from a peer under [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html)/[BEP 0010](https://www.bittorrent.org/beps/bep_0010.html). This function expects the exact piece to be specified -- in other words, when requesting the next piece of metadata, this function will not automatically increment the `piece` field. The caller of the function is expected to handle this.
-   #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn request_metadata(&mut self, metadata_size: Option<usize>, piece: usize) {
       trace!(metadata_size, piece, "Requesting metadata");
 
@@ -193,7 +195,7 @@ impl PeerActor {
 
    /// Checks if the peer has any bits in the bitfield that we don't have, and
    /// sends an interested message if so.
-   #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn determine_interest(&mut self) {
       let msg = TorrentRequest::Bitfield;
 
@@ -265,7 +267,7 @@ impl Actor for PeerActor {
    }
 
    /// Coerces messages from the [PeerStream] to a [Message]
-   #[instrument(skip(self, actor_ref, mailbox_rx), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self, actor_ref, mailbox_rx), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
    ) -> Option<Signal<Self>> {
@@ -309,7 +311,7 @@ impl Actor for PeerActor {
 impl Message<PeerMessages> for PeerActor {
    type Reply = ();
 
-   #[instrument(skip(self, msg), fields(addr = %self.stream, id = %self.peer.id.unwrap(), message = %msg))]
+   #[instrument(skip(self, msg), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap(), message = %msg))]
    async fn handle(
       &mut self, msg: PeerMessages, _: &mut KameoContext<Self, Self::Reply>,
    ) -> Self::Reply {
@@ -448,7 +450,7 @@ pub(crate) enum PeerTell {
 impl Message<PeerTell> for PeerActor {
    type Reply = ();
 
-   #[instrument(skip(self), fields(addr = %self.stream, id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn handle(&mut self, msg: PeerTell, _: &mut KameoContext<Self, Self::Reply>) {
       match msg {
          PeerTell::NeedPiece(index, begin, length) => {
