@@ -133,7 +133,7 @@ impl HttpTracker {
    #[instrument(skip(info_hash, peer_id), fields(
         tracker_uri = %uri,
         torrent_id = %info_hash,
-        peer_tracker_addr = ?peer_tracker_addr
+        peer_addr = ?peer_tracker_addr
     ))]
    pub fn new(
       uri: String, info_hash: InfoHash, peer_id: Option<PeerId>,
@@ -148,8 +148,6 @@ impl HttpTracker {
 
       debug!(
           peer_id = %peer_id,
-          tracker_uri = %uri,
-          peer_addr = format!("{}:{}", params.ip.unwrap_or(Ipv4Addr::UNSPECIFIED.into()), params.port),
           "Created HTTP tracker instance"
       );
       let params = Arc::new(RwLock::new(params));
@@ -183,6 +181,11 @@ impl TrackerBase for HttpTracker {
       Ok(())
    }
 
+   #[instrument(skip(self), fields(
+        tracker_uri = %self.uri,
+        peer_id = %self.peer_id,
+        torrent_id = %self.info_hash,
+    ))]
    async fn announce(&self) -> Result<Vec<Peer>> {
       // Update statistics
       self.stats.increment_announce_attempts();
@@ -198,30 +201,15 @@ impl TrackerBase for HttpTracker {
 
       let uri = format!("{}?{}", self.uri, &uri_params);
 
-      trace!(request_uri = %uri, "Sending HTTP request to tracker");
-
       // HTTP request phase
       let request_start = Instant::now();
 
-      let response = reqwest::get(&uri).await.map_err(|e| {
-         error!(
-             error = %e,
-             request_uri = %uri,
-             "HTTP request to tracker failed"
-         );
-         TrackerActorError::Http(e)
-      })?;
-
-      let status = response.status();
-      trace!(
-         status_code = status.as_u16(),
-         "Received HTTP response from tracker"
-      );
-
-      let response_bytes = response.bytes().await.map_err(|e| {
-         error!(error = %e, "Failed to read tracker response body");
-         TrackerActorError::Http(e)
-      })?;
+      let response_bytes = reqwest::get(&uri)
+         .await
+         .map_err(TrackerActorError::Http)?
+         .bytes()
+         .await
+         .map_err(TrackerActorError::Http)?;
 
       let request_duration = request_start.elapsed();
 
@@ -229,14 +217,8 @@ impl TrackerBase for HttpTracker {
       self.stats.increment_bytes_received(response_bytes.len());
 
       // Response parsing phase
-      let response: TrackerResponse = serde_bencode::from_bytes(&response_bytes).map_err(|e| {
-         error!(
-             error = %e,
-             response_size = response_bytes.len(),
-             "Failed to decode bencode response"
-         );
-         TrackerActorError::BencodeDecoding(e)
-      })?;
+      let response: TrackerResponse =
+         serde_bencode::from_bytes(&response_bytes).map_err(TrackerActorError::BencodeDecoding)?;
 
       self.stats.increment_announce_successes();
       self
@@ -284,7 +266,6 @@ impl TrackerBase for HttpTracker {
    }
 }
 
-#[instrument(skip(t), fields(hash_length = t.len()))]
 fn urlencode(t: &[u8; 20]) -> String {
    let mut encoded = String::with_capacity(3 * t.len());
 
@@ -336,7 +317,7 @@ impl<'de> Visitor<'de> for PeerVisitor {
 
       for (i, chunk) in bytes.chunks(PEER_SIZE).enumerate() {
          if chunk.len() != PEER_SIZE {
-            warn!(
+            trace!(
                chunk_index = i,
                chunk_size = chunk.len(),
                expected_size = PEER_SIZE,
@@ -406,7 +387,6 @@ impl<'de> Visitor<'de> for PeerVisitor {
 }
 
 /// Serde related code. Reference their documentation: <https://serde.rs/impl-deserialize.html>
-#[instrument(skip(deserializer))]
 fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<Peer>, D::Error>
 where
    D: serde::Deserializer<'de>,
