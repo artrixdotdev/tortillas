@@ -138,10 +138,7 @@ impl Message<TorrentMessage> for TorrentActor {
             }
          }
          TorrentMessage::IncomingPeer(peer, stream) => self.append_peer(peer, Some(*stream)),
-         TorrentMessage::AddPeer(peer) => {
-            trace!(peer_id = %peer.id.unwrap(), "Received add peer message");
-            self.append_peer(peer, None);
-         }
+         TorrentMessage::AddPeer(peer) => self.append_peer(peer, None),
 
          TorrentMessage::InfoBytes(bytes) => {
             if self.info.is_some() {
