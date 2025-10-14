@@ -816,7 +816,7 @@ impl TrackerBase for UdpTracker {
         tracker_uri = %self.uri,
         tracker_connection_id = ?self.get_connection_id(),
         torrent_id = %self.info_hash,
-        tracker_ready_state = ?self.ready_state,
+        tracker_ready_state = ?self.get_ready_state(),
     ))]
    async fn announce(&self) -> anyhow::Result<Vec<Peer>> {
       ensure!(
