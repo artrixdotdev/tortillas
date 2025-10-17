@@ -7,13 +7,17 @@ pub use actor::*;
 use bytes::Bytes;
 use kameo::actor::ActorRef;
 pub(crate) use messages::*;
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::error;
 
 pub mod util;
 pub use piece_manager::PieceManager;
 
-use crate::hashes::InfoHash;
+use crate::{
+   hashes::InfoHash,
+   prelude::{Info, MetaInfo},
+};
 
 /// A piece that we have received from a peer. [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html)
 /// describes the piece message. One more field is added in this struct: that
@@ -349,4 +353,16 @@ impl Torrent {
 
       Ok(())
    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TorrentExport {
+   info_hash: InfoHash,
+   state: TorrentState,
+   auto_start: bool,
+   sufficient_peers: usize,
+   output_path: Option<PathBuf>,
+   metainfo: MetaInfo,
+   piece_storage: PieceStorageStrategy,
+   info_dict: Option<Info>,
 }

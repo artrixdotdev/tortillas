@@ -43,13 +43,14 @@ pub(crate) use actor::*;
 use bon;
 use kameo::{Actor, actor::ActorRef};
 pub(crate) use messages::*;
+use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::{
    errors::EngineError,
    metainfo::{MetaInfo, TorrentFile},
    peer::PeerId,
-   torrent::{PieceStorageStrategy, Torrent},
+   torrent::{PieceStorageStrategy, Torrent, TorrentExport},
 };
 
 /// The main entry point for managing torrents.
@@ -270,4 +271,9 @@ impl Default for Engine {
    fn default() -> Self {
       Self::builder().build()
    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EngineExport {
+   torrents: Vec<TorrentExport>,
 }
