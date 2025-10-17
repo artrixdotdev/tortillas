@@ -13,6 +13,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use kameo::{Actor, actor::ActorRef, mailbox};
 use librqbit_utp::UtpSocketUdp;
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -50,7 +51,8 @@ pub const BLOCK_SIZE: usize = 16 * 1024;
 ///   need to be retrieved later on for future seeding. It is also useful for:
 ///   - HTTP Streaming or when the file itself is never actually written to disk
 ///   - Supporting non-standard output backends
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(tag = "strategy", content = "piece_output_path")]
 pub enum PieceStorageStrategy {
    /// Reference pieces directly from the downloaded files themselves.
    ///
@@ -69,7 +71,18 @@ pub enum PieceStorageStrategy {
 
 /// The current state of the torrent, defaults to
 /// [`Inactive`](TorrentState::Inactive)
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+   Debug,
+   Default,
+   Clone,
+   Copy,
+   PartialEq,
+   Eq,
+   PartialOrd,
+   Ord,
+   Serialize,
+   Deserialize
+)]
 pub enum TorrentState {
    /// Torrent is downloading new pieces actively
    ///

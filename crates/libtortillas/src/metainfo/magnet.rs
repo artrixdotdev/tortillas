@@ -1,5 +1,5 @@
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_querystring;
 
 use crate::{
@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// Magnet URI Spec: <https://en.wikipedia.org/wiki/Magnet_URI_scheme> or <https://www.bittorrent.org/beps/bep_0053.html>
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MagnetUri {
    /// use `Self::info_hash` to get the info hash as a `Hash` struct.
    #[serde(rename(deserialize = "xt"))]

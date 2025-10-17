@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 mod file;
 mod magnet;
 
@@ -8,7 +8,7 @@ pub use magnet::*;
 use crate::{hashes::InfoHash, tracker::Tracker};
 
 /// Always utilize MetaInfo instead of directly using TorrentFile or MagnetUri
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum MetaInfo {
    Torrent(TorrentFile),
    MagnetUri(MagnetUri),
