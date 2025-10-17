@@ -16,7 +16,7 @@ use tokio::{
    net::{TcpStream, tcp},
 };
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, instrument, trace};
+use tracing::{error, instrument, trace};
 
 use super::messages::{Handshake, PeerMessages};
 use crate::{
@@ -72,19 +72,16 @@ pub trait PeerRecv: AsyncRead + Unpin {
       // PeerMessage tag
       let mut length_buf = [0u8; 4];
 
-      self.read_exact(&mut length_buf).await.map_err(|e| {
-         error!(error = %e, "Failed to read message length from peer");
-         PeerActorError::ReceiveFailed(e)
-      })?;
+      self
+         .read_exact(&mut length_buf)
+         .await
+         .map_err(PeerActorError::ReceiveFailed)?;
 
       let length = u32::from_be_bytes(length_buf);
-
-      trace!(message_length = length, "Received message length header");
 
       // Safety check -- BitTorrent docs do not specify if KeepAlive messages have an
       // ID (and I'm pretty sure they don't)
       if length == 0 {
-         trace!("Received KeepAlive message");
          return Ok(PeerMessages::KeepAlive);
       }
 
@@ -97,12 +94,6 @@ pub trait PeerRecv: AsyncRead + Unpin {
          PeerActorError::ReceiveFailed(e)
       })?;
 
-      trace!(
-         message_type = message_type[0],
-         message_length = length,
-         "Received message headers, reading payload"
-      );
-
       message_buf.extend_from_slice(&message_type);
 
       // Read the rest of the message payload
@@ -110,20 +101,9 @@ pub trait PeerRecv: AsyncRead + Unpin {
       self
          .read_exact(&mut rest)
          .await
-         .inspect_err(|e| {
-            error!(error = %e, message_length = length, "Failed to read message payload from peer");
-         })
          .map_err(PeerActorError::ReceiveFailed)?;
 
       message_buf.extend_from_slice(&rest);
-
-      let full_length = message_buf.len();
-
-      trace!(
-         message_type = message_buf[4],
-         total_bytes = full_length,
-         "Successfully read complete message from peer"
-      );
 
       PeerMessages::from_bytes(message_buf.freeze())
    }
@@ -155,52 +135,41 @@ impl PeerStream {
    ///
    /// utp_socket should be None ONLY for testing, when we only wish to utilize
    /// a TcpStream.
+   #[instrument(fields(peer_addr = %peer_addr))]
    pub async fn connect(
       peer_addr: SocketAddr, utp_socket: Option<Arc<UtpSocketUdp>>,
    ) -> Result<Self, PeerActorError> {
-      trace!(peer_addr = %peer_addr, "Attempting connection to peer");
       if let Some(utp_socket) = utp_socket {
          tokio::select! {
              stream = utp_socket.connect(peer_addr) => {
-                 debug!(peer_addr = %peer_addr, protocol = "uTP", "Connected to peer");
+                 trace!(protocol = "uTP", "Connected to peer");
                  Ok(PeerStream::Utp(stream?))
              },
              stream = TcpStream::connect(peer_addr) => {
-                 debug!(peer_addr = %peer_addr, protocol = "TCP", "Connected to peer");
+                 trace!(protocol = "TCP", "Connected to peer");
                  Ok(PeerStream::Tcp(stream?))
              }
          }
       } else {
-         debug!(peer_addr = %peer_addr, protocol = "TCP", "Connecting to peer");
+         trace!(protocol = "TCP", "Connecting to peer");
          Ok(PeerStream::Tcp(TcpStream::connect(peer_addr).await?))
       }
    }
 
    /// Sends a handshake to a peer. Returns nothing if the handshake is sent
    /// without error.
-   #[instrument(
-        skip(self)
-        fields(
-            protocol = self.protocol(),
-            remote_addr = self.remote_addr().unwrap().to_string(),
-            info_hash = info_hash.to_string(),
-            our_id = our_id.to_string()
-        )
-    )]
    pub async fn send_handshake(
       &mut self, our_id: PeerId, info_hash: Arc<InfoHash>,
    ) -> Result<(), PeerActorError> {
       let handshake = Handshake::new(info_hash.clone(), our_id);
 
       self.write_all(&handshake.to_bytes()).await?;
-      trace!("Sent handshake to peer");
       Ok(())
    }
 
    /// Receives an incoming handshake from a peer.
    ///
    /// Will fail if the next message is not a handshake.
-   #[instrument(skip(self), fields(%self))]
    pub async fn recv_handshake(&mut self) -> Result<(PeerId, [u8; 8]), PeerActorError> {
       // Handshakes will always be 68 bytes
       //
@@ -212,8 +181,9 @@ impl PeerStream {
 
       let Handshake {
          peer_id, reserved, ..
-      } = Handshake::from_bytes(&buf)
-         .map_err(|e| PeerActorError::HandshakeFailed { reason: e.into() })?;
+      } = Handshake::from_bytes(&buf).map_err(|e| PeerActorError::HandshakeFailed {
+         reason: e.to_string(),
+      })?;
 
       Ok((peer_id, reserved))
    }

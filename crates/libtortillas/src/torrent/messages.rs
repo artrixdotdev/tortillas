@@ -13,7 +13,7 @@ use kameo::{
 };
 use sha1::{Digest, Sha1};
 use tokio::fs;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, instrument, trace, warn};
 
 use super::{BLOCK_SIZE, PieceStorageStrategy, ReadyHook, TorrentActor, TorrentState, util};
 use crate::{
@@ -126,24 +126,23 @@ actor_request_response!(
 impl Message<TorrentMessage> for TorrentActor {
    type Reply = ();
 
+   #[instrument(skip(self, message), fields(torrent_id = %self.info_hash()))]
    async fn handle(
       &mut self, message: TorrentMessage, _: &mut Context<Self, Self::Reply>,
    ) -> Self::Reply {
-      trace!(message = ?message, "Received message");
       match message {
          TorrentMessage::Announce(peers) => {
+            trace!(peer_count = peers.len(), "Received announce message");
             for peer in peers {
                self.append_peer(peer, None);
             }
          }
          TorrentMessage::IncomingPeer(peer, stream) => self.append_peer(peer, Some(*stream)),
-         TorrentMessage::AddPeer(peer) => {
-            self.append_peer(peer, None);
-         }
+         TorrentMessage::AddPeer(peer) => self.append_peer(peer, None),
 
          TorrentMessage::InfoBytes(bytes) => {
             if self.info.is_some() {
-               debug!(
+               trace!(
                   dict = %String::from_utf8_lossy(&bytes),
                   "Received info dict when we already have one"
                );
@@ -200,7 +199,7 @@ impl Message<TorrentMessage> for TorrentActor {
                   .broadcast_to_peers(PeerTell::CancelPiece(index, offset, block.len()))
                   .await;
                if block_map[block_index] {
-                  warn!("Received duplicate piece block");
+                  trace!("Received duplicate piece block");
                   return;
                }
             } else {
@@ -284,7 +283,11 @@ impl Message<TorrentMessage> for TorrentActor {
 
                self.next_piece += 1;
                self.bitfield.set_aliased(index, true);
-               trace!(id = %self.info_hash(), piece = index, "Piece is now complete");
+               debug!(
+                  piece_index = index,
+                  pieces_left = piece_count.saturating_sub(index + 1),
+                  "Piece is now complete"
+               );
 
                // Announce to peers that we have this piece
                self.broadcast_to_peers(PeerTell::Have(cur_piece)).await;
@@ -318,7 +321,7 @@ impl Message<TorrentMessage> for TorrentActor {
                self
                   .broadcast_to_peers(PeerTell::NeedPiece(index, offset, next_block_len))
                   .await;
-               trace!(id = %self.info_hash(), piece = index, "Requested next block");
+               trace!(piece = index, "Requested next block");
             };
          }
          TorrentMessage::PieceStorage(strategy) => {

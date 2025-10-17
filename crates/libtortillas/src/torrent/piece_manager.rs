@@ -7,7 +7,7 @@ use tokio::{
    fs::OpenOptions,
    io::{AsyncSeekExt, AsyncWriteExt},
 };
-use tracing::{debug, trace};
+use tracing::trace;
 
 use crate::metainfo::{Info, InfoKeys};
 
@@ -149,9 +149,12 @@ impl PieceManager for FilePieceManager {
    }
 
    async fn pre_start(&mut self, info_dict: Info) -> anyhow::Result<()> {
-      trace!(path = %self.0.as_ref().unwrap().display(), "Pre-starting piece manager");
       // Intentional panic because this is unintended behavior
       assert!(self.0.is_some(), "Path must be set before pre_start");
+
+      let info_hash = info_dict.hash()?;
+
+      trace!(torrent_id = %info_hash, path = %self.0.as_ref().unwrap().display(), "Pre-starting piece manager");
 
       self.1 = Some(info_dict);
       Ok(())
@@ -189,7 +192,7 @@ impl PieceManager for FilePieceManager {
 
          data_offset += len;
 
-         debug!(index, offset = file_offset, len, path = %path.display(), "Wrote piece to file");
+         trace!(index, offset = file_offset, len, path = %path.display(), "Wrote piece block to file");
       }
 
       Ok(())

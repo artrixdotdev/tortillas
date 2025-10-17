@@ -215,9 +215,8 @@ impl TorrentActor {
 
    /// Checks if the torrent is ready to autostart (via [`Self::autostart`]) and
    /// torrenting process
+   #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
    pub async fn autostart(&mut self) {
-      trace!("Checking if we should autostart");
-
       self.pending_start = true;
 
       let is_ready = self.is_ready_to_start();
@@ -268,7 +267,7 @@ impl TorrentActor {
          .expect("Failed to pre-start piece manager");
 
       info!(
-         id = %self.info_hash(),
+         torrent_id = %self.info_hash(),
          piece_manager = %self.piece_manager,
          storage_strategy = ?self.piece_storage,
          peer_count = self.peers.len(),
@@ -306,7 +305,7 @@ impl TorrentActor {
    /// - The handshake fails,
    /// - The peer ID matches our own, or
    /// - The peer already exists in the peer set.
-   #[instrument(skip(self, peer, stream), fields(%self, peer = ?peer.socket_addr()))]
+   #[instrument(skip(self, peer, stream), fields(%self, peer_addr = ?peer.socket_addr(), torrent_id = %self.info_hash()))]
    pub(super) fn append_peer(&self, mut peer: Peer, stream: Option<PeerStream>) {
       let info_hash = Arc::new(self.info_hash());
       let actor_ref = self.actor_ref.clone();
@@ -319,9 +318,9 @@ impl TorrentActor {
          let mut id = peer.id;
          let stream = match stream {
             Some(mut stream) => {
-               let handshake = Handshake::new(info_hash, our_id);
+               let handshake = Handshake::new(info_hash.clone(), our_id);
                if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
-                  error!("Failed to send handshake to peer: {}", err);
+                  debug!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer");
                   return;
                }
                stream
@@ -339,18 +338,26 @@ impl TorrentActor {
                               stream
                            }
                            Err(err) => {
-                              warn!(error = %err, "Failed to receive handshake from peer; exiting");
+                              trace!(
+                                 error = %err,
+                                 peer_addr = %peer.socket_addr(),
+                                 "Failed to receive handshake from peer; exiting"
+                              );
                               return;
                            }
                         },
                         Err(err) => {
-                           warn!(error = %err, "Failed to send handshake to peer; exiting");
+                           trace!(
+                              error = %err,
+                              peer_addr = %peer.socket_addr(),
+                              "Failed to send handshake to peer; exiting"
+                           );
                            return;
                         }
                      }
                   }
                   Err(err) => {
-                     warn!(error = %err, "Failed to connect to peer; exiting");
+                     trace!(error = %err, "Failed to connect to peer; exiting");
                      return;
                   }
                }
@@ -370,7 +377,10 @@ impl TorrentActor {
          // atomically prevents the `PeerActor` from being created unless there
          // is no entry for the peer id (?)
          peers.entry(id).or_insert_with(|| {
-            PeerActor::spawn_with_mailbox((peer.clone(), stream, actor_ref), mailbox::bounded(120))
+            PeerActor::spawn_with_mailbox(
+               (peer.clone(), stream, actor_ref, *info_hash),
+               mailbox::bounded(120),
+            )
          });
       });
    }
@@ -390,7 +400,7 @@ impl TorrentActor {
    ///
    /// Any errors from individual peers are logged, but do not stop the
    /// broadcast from continuing to other peers.
-   #[instrument(skip(self, tell), fields(msg = ?tell))]
+   #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]
    pub(super) async fn broadcast_to_peers(&self, tell: PeerTell) {
       // Snapshot actor refs to release DashMap locks before awaiting.
       let peers = self.peers.clone(); // assuming Arc<DashMap<..>>
@@ -407,10 +417,10 @@ impl TorrentActor {
          tokio::spawn(async move {
             if actor.is_alive() {
                if let Err(e) = actor.tell(msg).await {
-                  warn!(error = %e, "Failed to send to peer");
+                  warn!(error = %e, peer_id = %id, "Failed to send to peer");
                }
             } else {
-               warn!("Peer actor is dead, removing from peers set");
+               trace!(peer_id = %id, "Peer actor is dead, removing from peers set");
                peers.remove(&id);
             }
          });
@@ -472,7 +482,7 @@ impl Actor for TorrentActor {
       ) = args;
       let primary_addr = primary_addr.unwrap_or_else(|| {
          let addr = utp_server.bind_addr();
-         info!("No primary address provided, using {}", addr);
+         debug!(torrent_id = %metainfo.info_hash().unwrap(), %addr, "No primary address provided, using default");
          addr
       });
       if let PieceStorageStrategy::Disk(dir) = &piece_storage {
@@ -480,7 +490,7 @@ impl Actor for TorrentActor {
       }
 
       info!(
-         info_hash = %metainfo.info_hash().unwrap(),
+         torrent_id = %metainfo.info_hash().unwrap(),
          "Starting new torrent instance",
       );
 
@@ -502,10 +512,10 @@ impl Actor for TorrentActor {
          _ => None,
       };
       if info.is_none() {
-         debug!("No info dict found in metainfo, you're probably using a magnet uri");
+         debug!(torrent_id = %metainfo.info_hash().unwrap(), "No info dict found in metainfo, you're probably using a magnet uri");
       }
       let bitfield: Arc<BitVec<AtomicU8>> = if let Some(info) = &info {
-         debug!("Using bitfield length {}", info.piece_count());
+         debug!(torrent_id = %metainfo.info_hash().unwrap(), "Using bitfield length {}", info.piece_count());
          Arc::new(BitVec::repeat(false, info.piece_count()))
       } else {
          Arc::new(BitVec::EMPTY)

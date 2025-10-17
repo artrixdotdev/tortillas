@@ -8,14 +8,14 @@ use std::{
    },
 };
 
-use anyhow::{Error, Result, bail};
+use anyhow::{Error, Result, bail, ensure};
 use bencode::streaming::{BencodeEvent, StreamingParser};
 use bitvec::prelude::*;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use num_enum::TryFromPrimitive;
 use serde::{Deserialize, Serialize};
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tracing::{debug, error, trace};
+use tracing::{error, trace};
 
 use crate::{
    errors::PeerActorError,
@@ -213,13 +213,9 @@ impl PeerMessages {
       // Check if it's a handshake (handshakes don't have length prefix)
       if bytes_len >= 68 && bytes[0] as usize == MAGIC_STRING.len() && &bytes[1..20] == MAGIC_STRING
       {
-         trace!(bytes_len, "Parsing handshake message");
          return Ok(PeerMessages::Handshake(
-            Handshake::from_bytes(&bytes).map_err(|e| {
-               error!(error = %e, "Failed to parse handshake");
-               PeerActorError::HandshakeFailed {
-                  reason: e.to_string(),
-               }
+            Handshake::from_bytes(&bytes).map_err(|e| PeerActorError::HandshakeFailed {
+               reason: e.to_string(),
             })?,
          ));
       }
@@ -237,11 +233,6 @@ impl PeerMessages {
 
       // Check if we have enough bytes for the full message
       if bytes_len < 4 + length {
-         trace!(
-            bytes_len,
-            expected_len = 4 + length,
-            "Message too short for declared length"
-         );
          return Err(PeerActorError::MessageTooShort {
             expected: 4 + length,
             received: bytes_len,
@@ -250,13 +241,11 @@ impl PeerMessages {
 
       // Empty message (keep-alive)
       if length == 0 {
-         trace!("Received keep-alive message");
          return Ok(PeerMessages::KeepAlive);
       }
 
       // Regular message with ID
       if length < 1 {
-         trace!(length, "Message length too short for message ID");
          return Err(PeerActorError::InvalidMessagePayload {
             message_type: "Unknown".to_string(),
          });
@@ -265,12 +254,6 @@ impl PeerMessages {
       let id = bytes.get_u8();
       let payload = bytes.split_to(length - 1);
 
-      trace!(
-         message_id = id,
-         payload_len = payload.len(),
-         "Parsing peer message"
-      );
-
       match id {
          0 => Ok(PeerMessages::Choke),
          1 => Ok(PeerMessages::Unchoke),
@@ -278,49 +261,30 @@ impl PeerMessages {
          3 => Ok(PeerMessages::NotInterested),
          4 => {
             if payload.len() != 4 {
-               trace!(
-                  payload_len = payload.len(),
-                  "Invalid Have message payload length"
-               );
                return Err(PeerActorError::InvalidMessagePayload {
                   message_type: "Have".to_string(),
                });
             }
             let mut payload_buf = payload;
             let index = payload_buf.get_u32();
-            trace!(piece_index = index, "Received Have message");
             Ok(PeerMessages::Have(index))
          }
          5 => {
-            trace!(bitfield_len = payload.len(), "Received Bitfield message");
-
             let bitvec: BitVec<AtomicU8> = payload.into_iter().map(AtomicU8::new).collect();
 
             Ok(PeerMessages::Bitfield(Arc::new(bitvec)))
          }
          6 => {
             if payload.len() != 12 {
-               trace!(
-                  payload_len = payload.len(),
-                  "Invalid Request message payload length"
-               );
                return Err(PeerActorError::InvalidMessagePayload {
                   message_type: "Request".to_string(),
                });
             }
             let (index, begin, length) = parse_triplet(&payload)?;
-            trace!(
-               piece_index = index,
-               begin, length, "Received Request message"
-            );
             Ok(PeerMessages::Request(index, begin, length))
          }
          7 => {
             if payload.len() < 8 {
-               trace!(
-                  payload_len = payload.len(),
-                  "Invalid Piece message payload length"
-               );
                return Err(PeerActorError::InvalidMessagePayload {
                   message_type: "Piece".to_string(),
                });
@@ -329,49 +293,25 @@ impl PeerMessages {
             let index = payload_buf.get_u32();
             let begin = payload_buf.get_u32();
             let data = payload_buf;
-            trace!(
-               piece_index = index,
-               begin,
-               data_len = data.len(),
-               "Received Piece message"
-            );
+
             Ok(PeerMessages::Piece(index, begin, data))
          }
          8 => {
             if payload.len() != 12 {
-               trace!(
-                  payload_len = payload.len(),
-                  "Invalid Cancel message payload length"
-               );
                return Err(PeerActorError::InvalidMessagePayload {
                   message_type: "Cancel".to_string(),
                });
             }
             let (index, begin, length) = parse_triplet(&payload)?;
-            trace!(
-               piece_index = index,
-               begin, length, "Received Cancel message"
-            );
             Ok(PeerMessages::Cancel(index, begin, length))
          }
          20 => {
             let mut payload_buf = payload;
             let extended_id = payload_buf.get_u8();
-            trace!(
-               extended_id,
-               payload_len = payload_buf.len(),
-               "Parsing Extended message"
-            );
 
             if !payload_buf.is_empty() {
                let payload_no_id = payload_buf;
                let extended_message_length = get_extended_message_length(&payload_no_id);
-
-               trace!(
-                  extended_message_length,
-                  payload_no_id_len = payload_no_id.len(),
-                  "Calculated extended message length"
-               );
 
                // If the peer only sent an Extended message (and no Info dict)...
                if extended_message_length == payload_no_id.len() {
@@ -390,12 +330,6 @@ impl PeerMessages {
                let extended_message_bytes = payload_no_id.slice(..extended_message_length);
                let metadata_bytes = payload_no_id.slice(extended_message_length..);
 
-               trace!(
-                  extended_message_len = extended_message_bytes.len(),
-                  metadata_len = metadata_bytes.len(),
-                  "Split extended message and metadata"
-               );
-
                let extended_message: ExtendedMessage =
                   serde_bencode::from_bytes(&extended_message_bytes).map_err(|e| {
                      PeerActorError::MessageParsingFailed {
@@ -411,12 +345,9 @@ impl PeerMessages {
             }
             Ok(PeerMessages::Extended(extended_id, Box::new(None), None))
          }
-         _ => {
-            trace!(unknown_id = id, "Received unknown message type");
-            Err(PeerActorError::MessageParsingFailed {
-               reason: "Unknown message type".to_string(),
-            })
-         }
+         _ => Err(PeerActorError::MessageParsingFailed {
+            reason: "Unknown message type".to_string(),
+         }),
       }
    }
 }
@@ -532,36 +463,31 @@ impl ExtendedMessage {
 
    /// Returns true if a peer supports [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
    /// based on the m dictionary passed with the Extended handshake.
-   pub fn supports_bep_0009(&self) -> Result<u8, Error> {
+   pub fn supports_bep_0009(&self) -> Result<u8> {
       if let Some(m) = &self.supported_extensions {
          if let Some(id) = m.get("ut_metadata") {
-            debug!(extension_id = *id, "Peer supports BEP 0009");
             return Ok(*id);
          }
-         debug!("Peer does not support BEP 0009 - ut_metadata extension not found");
          bail!("Peer does not support BEP 0009");
       }
-      debug!("Peer did not send supported extensions dictionary");
       bail!("Peer did not send an m dict with the given Extended message");
    }
 
    /// Returns true if a given extended message is a request message based on [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
    /// based on the m dictionary passed with the Extended handshake.
-   pub fn is_bep_0009_request(&self) -> Result<bool, Error> {
+   pub fn is_bep_0009_request(&self) -> Result<bool> {
       if let Some(msg_type) = &self.msg_type {
          return Ok(matches!(msg_type, ExtendedMessageType::Request));
       }
-      debug!("Peer did not supply a msg_type");
       bail!("Peer did not supply a msg_type");
    }
 
    /// Returns true if a given extended message is a data message based on [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html),
    /// based on the m dictionary passed with the Extended handshake.
-   pub fn is_bep_0009_data(&self) -> Result<bool, Error> {
+   pub fn is_bep_0009_data(&self) -> Result<bool> {
       if let Some(msg_type) = &self.msg_type {
          return Ok(matches!(msg_type, ExtendedMessageType::Data));
       }
-      debug!("Peer did not supply a msg_type");
       bail!("Peer did not supply a msg_type");
    }
 
@@ -571,7 +497,6 @@ impl ExtendedMessage {
       if let Some(msg_type) = &self.msg_type {
          return Ok(matches!(msg_type, ExtendedMessageType::Reject));
       }
-      debug!("Peer did not supply a msg_type");
       bail!("Peer did not supply a msg_type");
    }
 }
@@ -597,8 +522,6 @@ impl Handshake {
       // We support BEP 0010
       reserved[5] = 0x10;
 
-      debug!("Creating new handshake with BEP 0010 support");
-
       Self {
          protocol: Bytes::from_static(MAGIC_STRING),
          reserved,
@@ -620,54 +543,34 @@ impl Handshake {
       bytes.put_slice(self.info_hash.as_bytes());
       bytes.put_slice(self.peer_id.id());
 
-      let result = bytes.freeze();
-      trace!(
-         handshake_len = result.len(),
-         "Serialized handshake to bytes"
-      );
-      result
+      bytes.freeze()
    }
 
    /// Deserialize a handshake from bytes
-   pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
-      if bytes.is_empty() {
-         return Err("handshake too short");
-      }
+   pub fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+      ensure!(!bytes.is_empty(), "handshake too short"); // Prevents out of bounds panic
 
       // First byte is protocol string length
       let protocol_len = bytes[0] as usize;
       let total_expected_len = 1 + protocol_len + 8 + 40;
 
-      if bytes.len() < total_expected_len {
-         return Err("handshake too short");
-      }
+      ensure!(bytes.len() >= total_expected_len, "handshake too short");
 
       // Extract protocol string
       let protocol = Bytes::copy_from_slice(&bytes[1..1 + protocol_len]);
 
       // Extract reserved bytes
-      let reserved = bytes[1 + protocol_len..1 + protocol_len + 8]
-         .try_into()
-         .map_err(|_| "failed to extract reserved bytes")?;
+      let reserved = bytes[1 + protocol_len..1 + protocol_len + 8].try_into()?;
 
       // Extract info hash
-      let info_hash_bytes = bytes[1 + protocol_len + 8..1 + protocol_len + 8 + 20]
-         .try_into()
-         .map_err(|_| "failed to extract info hash")?;
+      let info_hash_bytes = bytes[1 + protocol_len + 8..1 + protocol_len + 8 + 20].try_into()?;
       let info_hash = Arc::new(Hash::new(info_hash_bytes));
 
       // Extract peer ID
-      let peer_id_bytes: [u8; 20] = bytes[1 + protocol_len + 8 + 20..1 + protocol_len + 8 + 40]
-         .try_into()
-         .map_err(|_| "failed to extract peer ID")?;
+      let peer_id_bytes: [u8; 20] =
+         bytes[1 + protocol_len + 8 + 20..1 + protocol_len + 8 + 40].try_into()?;
 
       let peer_id = PeerId::from(peer_id_bytes);
-
-      trace!(
-          protocol = ?String::from_utf8_lossy(&protocol),
-          protocol_len,
-          "Successfully parsed handshake"
-      );
 
       Ok(Handshake {
          protocol,
@@ -720,19 +623,16 @@ fn get_extended_message_length(payload: &Bytes) -> usize {
 
    // Loop through payload until we reach the end of the first dictionariy (the
    // Extended message).
-   trace!("Parsing bencode to find extended message length");
    for event in streaming {
       match event {
          BencodeEvent::DictStart => {
             // d
             extended_message_length += 1;
-            trace!("Found dictionary start");
             stack.push(event.clone());
          }
          BencodeEvent::DictEnd => {
             // e
             extended_message_length += 1;
-            trace!("Found dictionary end");
             stack.pop();
             if stack.is_empty() {
                break;
@@ -742,37 +642,24 @@ fn get_extended_message_length(payload: &Bytes) -> usize {
             // i + num value + e
             let inserted_length = val.to_string().len() + 2;
             extended_message_length += inserted_length;
-            trace!(value = val, inserted_length, "Found number value");
          }
          BencodeEvent::ByteStringValue(vec) => {
             // len + : + len of value
             let value_len = vec.len();
             extended_message_length += value_len.to_string().len() + 1 + vec.len();
-            trace!(
-                value_len = vec.len(),
-                value = ?String::from_utf8_lossy(&vec),
-                "Found byte string value"
-            );
          }
          BencodeEvent::ListStart => {
             // l
             extended_message_length += 1;
-            trace!("Found list start");
          }
          BencodeEvent::ListEnd => {
             // e
             extended_message_length += 1;
-            trace!("Found list end");
          }
          BencodeEvent::DictKey(vec) => {
             // len + : + len of value
             let value_len = vec.len();
             extended_message_length += value_len.to_string().len() + 1 + vec.len();
-            trace!(
-                key_len = vec.len(),
-                key = ?String::from_utf8_lossy(&vec),
-                "Found dictionary key"
-            );
          }
          BencodeEvent::ParseError(e) => {
             error!(error = ?e, "Bencode parse error while finding extended message length");
@@ -781,10 +668,6 @@ fn get_extended_message_length(payload: &Bytes) -> usize {
       };
    }
 
-   trace!(
-      final_length = extended_message_length,
-      "Calculated final extended message length"
-   );
    extended_message_length
 }
 
