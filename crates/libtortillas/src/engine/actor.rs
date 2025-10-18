@@ -132,15 +132,17 @@ impl Actor for EngineActor {
    async fn on_start(
       args: Self::Args, actor_ref: kameo::prelude::ActorRef<Self>,
    ) -> Result<Self, Self::Error> {
-      let tcp_addr = args.tcp_addr;
-      let utp_addr = args.utp_addr;
-      let udp_addr = args.udp_addr;
-      let peer_id = args.peer_id;
-      let default_piece_storage_strategy = args.piece_storage_strategy;
-      let mailbox_size = args.mailbox_size;
-      let autostart = args.autostart;
-      let sufficient_peers = args.sufficient_peers;
-      let default_base_path = args.default_base_path;
+      let EngineActorArgs {
+         tcp_addr,
+         utp_addr,
+         udp_addr,
+         peer_id,
+         piece_storage_strategy,
+         mailbox_size,
+         autostart,
+         sufficient_peers,
+         default_base_path,
+      } = args;
 
       let tcp_addr = tcp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
       // Should this be port 6881?
