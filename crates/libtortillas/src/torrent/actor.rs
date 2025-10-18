@@ -453,23 +453,67 @@ impl TorrentActor {
    }
 }
 
+/// Configuration arguments for creating a [`TorrentActor`].
+///
+/// This struct provides a well-documented way to configure the torrent actor
+/// instead of using an unlabeled tuple. All fields are optional with sensible
+/// defaults where appropriate.
+#[derive(Debug, Clone)]
+pub struct TorrentActorArgs {
+   /// Peer ID for this torrent instance.
+   ///
+   /// This should typically match the engine's peer ID.
+   pub peer_id: PeerId,
+
+   /// Meta information for the torrent (either from a .torrent file or magnet
+   /// URI).
+   ///
+   /// This contains all the necessary information to start downloading/seeding.
+   pub metainfo: MetaInfo,
+
+   /// uTP server for peer connections.
+   ///
+   /// This is used to establish uTP connections with peers.
+   pub utp_server: Arc<UtpSocketUdp>,
+
+   /// UDP server for tracker communication.
+   ///
+   /// This is used to communicate with UDP trackers.
+   pub tracker_server: UdpServer,
+
+   /// Primary address for this torrent instance.
+   ///
+   /// If not provided, defaults to the uTP server's bind address.
+   pub primary_addr: Option<SocketAddr>,
+
+   /// Strategy for storing torrent pieces.
+   ///
+   /// This determines how pieces are stored and accessed for this torrent.
+   pub piece_storage: PieceStorageStrategy,
+
+   /// Whether to automatically start this torrent when it becomes ready.
+   ///
+   /// If not provided, defaults to `true`.
+   pub autostart: Option<bool>,
+
+   /// Minimum number of peers required before starting download.
+   ///
+   /// If not provided, defaults to 6.
+   pub sufficient_peers: Option<usize>,
+
+   /// Base path for torrent downloads.
+   ///
+   /// If not provided, torrents will use their own default paths.
+   pub base_path: Option<PathBuf>,
+}
+
 impl Actor for TorrentActor {
-   type Args = (
-      PeerId,
-      MetaInfo,
-      Arc<UtpSocketUdp>,
-      UdpServer,
-      Option<SocketAddr>,
-      PieceStorageStrategy,
-      Option<bool>,
-      Option<usize>,
-      Option<PathBuf>,
-   );
+   type Args = TorrentActorArgs;
 
    type Error = TorrentError;
 
    async fn on_start(args: Self::Args, us: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (
+      let TorrentActorArgs {
          peer_id,
          metainfo,
          utp_server,
@@ -479,7 +523,8 @@ impl Actor for TorrentActor {
          autostart,
          sufficient_peers,
          base_path,
-      ) = args;
+      } = args;
+
       let primary_addr = primary_addr.unwrap_or_else(|| {
          let addr = utp_server.bind_addr();
          debug!(torrent_id = %metainfo.info_hash().unwrap(), %addr, "No primary address provided, using default");
@@ -593,17 +638,18 @@ mod tests {
 
       let info_hash = metainfo.clone().info_hash().unwrap();
 
-      let actor = TorrentActor::spawn((
+      let actor = TorrentActor::spawn(TorrentActorArgs {
          peer_id,
          metainfo,
          utp_server,
-         udp_server.clone(),
-         None,
-         PieceStorageStrategy::default(),
-         Some(false), // We don't need to autostart because we're only checking if we have peers
-         Some(sufficient_peers),
-         None,
-      ));
+         tracker_server: udp_server.clone(),
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::default(),
+         autostart: Some(false), /* We don't need to autostart because we're only checking if we
+                                  * have peers */
+         sufficient_peers: Some(sufficient_peers),
+         base_path: None,
+      });
 
       let torrent = Torrent::new(info_hash, actor.clone());
 
@@ -636,17 +682,17 @@ mod tests {
             .await
             .unwrap();
 
-      let actor = TorrentActor::spawn((
+      let actor = TorrentActor::spawn(TorrentActorArgs {
          peer_id,
          metainfo,
          utp_server,
-         udp_server.clone(),
-         None,
-         PieceStorageStrategy::default(),
-         Some(false),
-         None,
-         None,
-      ));
+         tracker_server: udp_server.clone(),
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::default(),
+         autostart: Some(false),
+         sufficient_peers: None,
+         base_path: None,
+      });
 
       // Blocking loop that runs until we get an info dict
       loop {
@@ -706,17 +752,17 @@ mod tests {
             .await
             .unwrap();
 
-      let actor = TorrentActor::spawn((
+      let actor = TorrentActor::spawn(TorrentActorArgs {
          peer_id,
          metainfo,
          utp_server,
-         udp_server.clone(),
-         None,
-         PieceStorageStrategy::Disk(piece_path.clone()),
-         None,
-         None,
-         Some(file_path),
-      ));
+         tracker_server: udp_server.clone(),
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::Disk(piece_path.clone()),
+         autostart: None,
+         sufficient_peers: None,
+         base_path: Some(file_path),
+      });
 
       let torrent = Torrent::new(info_hash, actor.clone());
 

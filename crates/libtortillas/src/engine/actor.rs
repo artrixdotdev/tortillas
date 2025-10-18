@@ -60,28 +60,75 @@ pub struct EngineActor {
    pub(crate) default_base_path: Option<PathBuf>,
 }
 
-pub(crate) type EngineActorArgs = (
-   // TCP Addr
-   Option<SocketAddr>,
-   // uTP Addr
-   Option<SocketAddr>,
-   // UDP Addr
-   Option<SocketAddr>,
-   Option<PeerId>,
-   // Strategy for storing pieces of the torrent.
-   PieceStorageStrategy,
-   // Mailbox size for each torrent instance
-   // Defaults to 64
-   //
-   // If 0 is provided, the mailbox size will be unbounded
-   Option<usize>,
-   // If we autostart torrents
-   Option<bool>,
-   // How many peers we need to have before we start downloading
-   Option<usize>,
-   // Default base path for torrents
-   Option<PathBuf>,
-);
+/// Configuration arguments for creating an [`EngineActor`].
+///
+/// This struct provides a well-documented way to configure the engine actor
+/// instead of using an unlabeled tuple. All fields are optional with sensible
+/// defaults.
+#[derive(Debug, Clone)]
+pub struct EngineActorArgs {
+   /// TCP socket address for incoming peer connections.
+   /// 
+   /// If not provided, defaults to `0.0.0.0:0` (all interfaces, dynamic port).
+   pub tcp_addr: Option<SocketAddr>,
+   
+   /// uTP socket address for incoming peer connections.
+   /// 
+   /// If not provided, defaults to `0.0.0.0:0` (all interfaces, dynamic port).
+   pub utp_addr: Option<SocketAddr>,
+   
+   /// UDP socket address for tracker communication.
+   /// 
+   /// If not provided, defaults to `0.0.0.0:0` (all interfaces, dynamic port).
+   pub udp_addr: Option<SocketAddr>,
+   
+   /// Peer ID for this client instance.
+   /// 
+   /// If not provided, a new peer ID will be generated using [`PeerId::default()`].
+   pub peer_id: Option<PeerId>,
+   
+   /// Default strategy for storing torrent pieces.
+   /// 
+   /// This determines how pieces are stored and accessed for all torrents
+   /// managed by this engine.
+   pub piece_storage_strategy: PieceStorageStrategy,
+   
+   /// Mailbox size for each torrent instance.
+   /// 
+   /// Defaults to 64 if not provided. If set to 0, the mailbox will be unbounded.
+   pub mailbox_size: Option<usize>,
+   
+   /// Whether to automatically start torrents when they become ready.
+   /// 
+   /// If not provided, defaults to `None` (use engine-level default).
+   pub autostart: Option<bool>,
+   
+   /// Minimum number of peers required before starting download.
+   /// 
+   /// If not provided, defaults to `None` (use engine-level default).
+   pub sufficient_peers: Option<usize>,
+   
+   /// Default base path for torrent downloads.
+   /// 
+   /// If not provided, torrents will use their own default paths.
+   pub default_base_path: Option<PathBuf>,
+}
+
+impl Default for EngineActorArgs {
+   fn default() -> Self {
+      Self {
+         tcp_addr: None,
+         utp_addr: None,
+         udp_addr: None,
+         peer_id: None,
+         piece_storage_strategy: PieceStorageStrategy::default(),
+         mailbox_size: None,
+         autostart: None,
+         sufficient_peers: None,
+         default_base_path: None,
+      }
+   }
+}
 
 impl Actor for EngineActor {
    /// TCP socket address for incoming peers, uTP socket address for incoming
@@ -99,17 +146,15 @@ impl Actor for EngineActor {
    async fn on_start(
       args: Self::Args, actor_ref: kameo::prelude::ActorRef<Self>,
    ) -> Result<Self, Self::Error> {
-      let (
-         tcp_addr,
-         utp_addr,
-         udp_addr,
-         peer_id,
-         default_piece_storage_strategy,
-         mailbox_size,
-         autostart,
-         sufficient_peers,
-         default_base_path,
-      ) = args;
+      let tcp_addr = args.tcp_addr;
+      let utp_addr = args.utp_addr;
+      let udp_addr = args.udp_addr;
+      let peer_id = args.peer_id;
+      let default_piece_storage_strategy = args.piece_storage_strategy;
+      let mailbox_size = args.mailbox_size;
+      let autostart = args.autostart;
+      let sufficient_peers = args.sufficient_peers;
+      let default_base_path = args.default_base_path;
 
       let tcp_addr = tcp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
       // Should this be port 6881?
