@@ -165,7 +165,7 @@ impl Actor for EngineActor {
          torrents: Arc::new(DashMap::new()),
          peer_id,
          actor_ref,
-         default_piece_storage_strategy,
+         default_piece_storage_strategy: piece_storage_strategy,
          mailbox_size: mailbox_size.unwrap_or(64),
          autostart,
          sufficient_peers,
