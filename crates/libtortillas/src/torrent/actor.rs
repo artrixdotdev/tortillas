@@ -456,8 +456,8 @@ impl TorrentActor {
 /// Configuration arguments for creating a [`TorrentActor`].
 ///
 /// This struct provides a well-documented way to configure the torrent actor
-/// instead of using an unlabeled tuple. All fields are optional with sensible
-/// defaults where appropriate.
+/// instead of using an unlabeled tuple. Some fields are required; optional
+/// fields have sensible defaults.
 #[derive(Debug, Clone)]
 pub struct TorrentActorArgs {
    /// Peer ID for this torrent instance.
