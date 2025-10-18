@@ -65,69 +65,55 @@ pub struct EngineActor {
 /// This struct provides a well-documented way to configure the engine actor
 /// instead of using an unlabeled tuple. All fields are optional with sensible
 /// defaults.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct EngineActorArgs {
    /// TCP socket address for incoming peer connections.
-   /// 
+   ///
    /// If not provided, defaults to `0.0.0.0:0` (all interfaces, dynamic port).
    pub tcp_addr: Option<SocketAddr>,
-   
+
    /// uTP socket address for incoming peer connections.
-   /// 
+   ///
    /// If not provided, defaults to `0.0.0.0:0` (all interfaces, dynamic port).
    pub utp_addr: Option<SocketAddr>,
-   
+
    /// UDP socket address for tracker communication.
-   /// 
+   ///
    /// If not provided, defaults to `0.0.0.0:0` (all interfaces, dynamic port).
    pub udp_addr: Option<SocketAddr>,
-   
+
    /// Peer ID for this client instance.
-   /// 
-   /// If not provided, a new peer ID will be generated using [`PeerId::default()`].
+   ///
+   /// If not provided, a new peer ID will be generated using
+   /// [`PeerId::default()`].
    pub peer_id: Option<PeerId>,
-   
+
    /// Default strategy for storing torrent pieces.
-   /// 
+   ///
    /// This determines how pieces are stored and accessed for all torrents
    /// managed by this engine.
    pub piece_storage_strategy: PieceStorageStrategy,
-   
+
    /// Mailbox size for each torrent instance.
-   /// 
-   /// Defaults to 64 if not provided. If set to 0, the mailbox will be unbounded.
+   ///
+   /// Defaults to 64 if not provided. If set to 0, the mailbox will be
+   /// unbounded.
    pub mailbox_size: Option<usize>,
-   
+
    /// Whether to automatically start torrents when they become ready.
-   /// 
+   ///
    /// If not provided, defaults to `None` (use engine-level default).
    pub autostart: Option<bool>,
-   
+
    /// Minimum number of peers required before starting download.
-   /// 
+   ///
    /// If not provided, defaults to `None` (use engine-level default).
    pub sufficient_peers: Option<usize>,
-   
+
    /// Default base path for torrent downloads.
-   /// 
+   ///
    /// If not provided, torrents will use their own default paths.
    pub default_base_path: Option<PathBuf>,
-}
-
-impl Default for EngineActorArgs {
-   fn default() -> Self {
-      Self {
-         tcp_addr: None,
-         utp_addr: None,
-         udp_addr: None,
-         peer_id: None,
-         piece_storage_strategy: PieceStorageStrategy::default(),
-         mailbox_size: None,
-         autostart: None,
-         sufficient_peers: None,
-         default_base_path: None,
-      }
-   }
 }
 
 impl Actor for EngineActor {
