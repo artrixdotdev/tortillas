@@ -14,7 +14,7 @@ use crate::{
       messages::PeerMessages,
       stream::{PeerRecv, PeerStream},
    },
-   torrent::{TorrentActor, TorrentMessage, TorrentState},
+   torrent::{TorrentActor, TorrentActorArgs, TorrentMessage, TorrentState},
 };
 
 pub(crate) enum EngineMessage {
@@ -97,17 +97,17 @@ impl Message<EngineRequest> for EngineActor {
             }
 
             let torrent_ref = TorrentActor::spawn_in_thread_with_mailbox(
-               (
-                  self.peer_id,
-                  *metainfo,
-                  self.utp_socket.clone(),
-                  self.udp_server.clone(),
-                  None,
-                  self.default_piece_storage_strategy.clone(),
-                  self.autostart,
-                  self.sufficient_peers,
-                  self.default_base_path.clone(),
-               ),
+               TorrentActorArgs {
+                  peer_id: self.peer_id,
+                  metainfo: *metainfo,
+                  utp_server: self.utp_socket.clone(),
+                  tracker_server: self.udp_server.clone(),
+                  primary_addr: None,
+                  piece_storage: self.default_piece_storage_strategy.clone(),
+                  autostart: self.autostart,
+                  sufficient_peers: self.sufficient_peers,
+                  base_path: self.default_base_path.clone(),
+               },
                // if the size is 0, we use an unbounded mailbox
                match self.mailbox_size {
                   0 => {

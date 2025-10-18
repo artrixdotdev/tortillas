@@ -143,17 +143,17 @@ impl Engine {
          None => std::env::current_dir().expect("Failed to get current dir"),
       };
 
-      let args: EngineActorArgs = (
+      let args = EngineActorArgs {
          tcp_addr,
          utp_addr,
          udp_addr,
-         Some(custom_id),
+         peer_id: Some(custom_id),
          piece_storage_strategy,
          mailbox_size,
          autostart,
          sufficient_peers,
-         Some(output_path),
-      );
+         default_base_path: Some(output_path),
+      };
 
       let actor = EngineActor::spawn(args);
 
