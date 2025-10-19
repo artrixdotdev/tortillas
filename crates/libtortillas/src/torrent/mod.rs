@@ -1,9 +1,10 @@
 mod actor;
 mod messages;
 mod piece_manager;
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::atomic::AtomicU8};
 
 pub use actor::*;
+use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::actor::ActorRef;
 pub(crate) use messages::*;
@@ -365,4 +366,5 @@ pub struct TorrentExport {
    metainfo: MetaInfo,
    piece_storage: PieceStorageStrategy,
    info_dict: Option<Info>,
+   bitfield: BitVec<AtomicU8>,
 }
