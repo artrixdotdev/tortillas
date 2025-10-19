@@ -285,6 +285,29 @@ impl Torrent {
       }
    }
 
+   /// Returns a [`TorrentExport`] containing information about the torrent.
+   ///
+   /// The torrent export is a snapshot of the torrent's state at the time of
+   /// the request, this can be used to resume a torrent later on without having
+   /// to redownload pieces and/or seeding.
+   ///
+   /// # Panics
+   ///
+   /// Panics if the message could not be sent to the actor.
+   pub async fn export(&self) -> TorrentExport {
+      let msg = TorrentRequest::Export;
+
+      match self
+         .actor()
+         .ask(msg)
+         .await
+         .expect("Failed to send request for state")
+      {
+         TorrentResponse::Export(export) => *export,
+         _ => unreachable!(),
+      }
+   }
+
    /// If the torrent should automatically start when `sufficient_peers` is
    /// met.
    ///

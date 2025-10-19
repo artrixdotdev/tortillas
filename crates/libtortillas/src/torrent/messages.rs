@@ -15,7 +15,9 @@ use sha1::{Digest, Sha1};
 use tokio::fs;
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use super::{BLOCK_SIZE, PieceStorageStrategy, ReadyHook, TorrentActor, TorrentState, util};
+use super::{
+   BLOCK_SIZE, PieceStorageStrategy, ReadyHook, TorrentActor, TorrentExport, TorrentState, util,
+};
 use crate::{
    actor_request_response,
    hashes::InfoHash,
@@ -121,6 +123,9 @@ actor_request_response!(
 
    GetState
    GetState(TorrentState),
+
+   Export
+   Export(Box<TorrentExport>),
 );
 
 impl Message<TorrentMessage> for TorrentActor {
@@ -419,6 +424,7 @@ impl Message<TorrentRequest> for TorrentActor {
             unimplemented!()
          }
          TorrentRequest::GetState => TorrentResponse::GetState(self.state),
+         TorrentRequest::Export => TorrentResponse::Export(Box::new(self.export())),
       }
    }
 }

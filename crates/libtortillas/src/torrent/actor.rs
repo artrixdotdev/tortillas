@@ -27,7 +27,10 @@ use crate::{
       messages::{Handshake, PeerMessages},
       stream::{PeerSend, PeerStream},
    },
-   torrent::piece_manager::{FilePieceManager, PieceManager},
+   torrent::{
+      TorrentExport,
+      piece_manager::{FilePieceManager, PieceManager},
+   },
    tracker::{Tracker, TrackerActor, udp::UdpServer},
 };
 pub const BLOCK_SIZE: usize = 16 * 1024;
@@ -290,6 +293,23 @@ impl TorrentActor {
          state = ?self.state,
          "Started torrenting process"
       );
+   }
+
+   pub fn export(&self) -> TorrentExport {
+      TorrentExport {
+         info_hash: self.info_hash(),
+         state: self.state,
+         auto_start: self.autostart,
+         sufficient_peers: self.sufficient_peers,
+         output_path: match &self.piece_manager {
+            PieceManagerProxy::Default(manager) => manager.path().cloned(),
+            _ => None,
+         },
+         metainfo: self.metainfo.clone(),
+         piece_storage: self.piece_storage.clone(),
+         info_dict: self.info_dict().cloned(),
+         bitfield: (*self.bitfield).clone(),
+      }
    }
 
    /// Checks if the torrent has all of the pieces (we've downloaded/have
