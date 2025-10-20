@@ -826,4 +826,60 @@ mod tests {
       actor.stop_gracefully().await.unwrap();
       clear_piece_files(&piece_path).await;
    }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn test_torrent_export() {
+      tracing_subscriber::fmt()
+         .with_target(true)
+         .with_env_filter("libtortillas=trace,off")
+         .pretty()
+         .init();
+
+      // Test with a magnet URI, since magnet URIs don't come with an info dict
+      let path = std::env::current_dir()
+         .unwrap()
+         .join("tests/magneturis/big-buck-bunny.txt");
+      let contents = tokio::fs::read_to_string(path).await.unwrap();
+
+      let metainfo = MagnetUri::parse(contents).unwrap();
+      let info_hash = metainfo.info_hash().unwrap();
+
+      let peer_id = PeerId::default();
+
+      let udp_server = UdpServer::new(None).await;
+      let utp_server =
+         UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
+            .await
+            .unwrap();
+      let piece_path = std::env::temp_dir().join("tortillas");
+      let file_path = piece_path.join("files");
+
+      let actor = TorrentActor::spawn(TorrentActorArgs {
+         peer_id,
+         metainfo,
+         utp_server,
+         tracker_server: udp_server.clone(),
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::Disk(piece_path.clone()),
+         autostart: None,
+         sufficient_peers: None,
+         base_path: Some(file_path),
+      });
+
+      let torrent = Torrent::new(info_hash, actor.clone());
+
+      assert!(torrent.poll_ready().await.is_ok());
+
+      torrent.start().await.unwrap();
+
+      sleep(Duration::from_millis(1000)).await; // Sleep for a second
+
+      let export = torrent.export().await;
+
+      assert_eq!(export.info_hash, info_hash);
+      assert!(
+         export.info_dict.is_some(),
+         "Torrent shouldn't have started without info dict"
+      );
+   }
 }
