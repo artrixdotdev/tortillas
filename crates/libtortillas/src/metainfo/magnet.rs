@@ -1,5 +1,5 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
 use serde_querystring;
 
 use crate::{
@@ -88,6 +88,14 @@ impl MagnetUri {
 
       Hash::from_hex(hex_part)
          .map_err(|e| anyhow::anyhow!("Failed to parse info_hash from hex: {}", e))
+   }
+
+   pub fn deserialize<'de, D>(deserializer: D) -> Result<Self, D::Error>
+   where
+      D: Deserializer<'de>,
+   {
+      let uri = String::deserialize(deserializer)?;
+      Self::try_from(uri).map_err(de::Error::custom)
    }
 }
 
