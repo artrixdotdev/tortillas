@@ -265,6 +265,20 @@ impl Engine {
          .await
          .expect("Failed to start all torrents");
    }
+
+   /// Exports the current state of the engine.
+   /// See [`Torrent::export`] for more information.
+   pub async fn export(&self) -> EngineExport {
+      match self
+         .actor()
+         .ask(EngineRequest::Export)
+         .await
+         .expect("Failed to get torrents")
+      {
+         EngineResponse::Export(export) => export,
+         _ => unreachable!(),
+      }
+   }
 }
 
 impl Default for Engine {
