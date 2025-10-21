@@ -147,6 +147,8 @@ impl PieceManager for PieceManagerProxy {
    }
 }
 
+pub type BlockMap = DashMap<usize, BitVec<usize>>;
+
 pub(crate) struct TorrentActor {
    pub(crate) peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
    pub(crate) trackers: Arc<DashMap<Tracker, ActorRef<TrackerActor>>>,
@@ -167,7 +169,7 @@ pub(crate) struct TorrentActor {
    /// Map of piece indices to block indices. These will be used to track which
    /// blocks we have for each piece. Each entry is deleted when the piece is
    /// completed.
-   pub(super) block_map: Arc<DashMap<usize, BitVec<usize>>>,
+   pub(super) block_map: Arc<BlockMap>,
 
    pub(super) start_time: Option<Instant>,
    /// The number of peers we need to have before we start downloading, defaults
@@ -309,6 +311,7 @@ impl TorrentActor {
          piece_storage: self.piece_storage.clone(),
          info_dict: self.info_dict().cloned(),
          bitfield: (*self.bitfield).clone(),
+         block_map: (*self.block_map).clone(),
       }
    }
 

@@ -390,4 +390,5 @@ pub struct TorrentExport {
    piece_storage: PieceStorageStrategy,
    info_dict: Option<Info>,
    bitfield: BitVec<AtomicU8>,
+   block_map: BlockMap,
 }
