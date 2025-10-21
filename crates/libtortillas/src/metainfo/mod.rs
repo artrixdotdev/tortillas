@@ -9,6 +9,7 @@ use crate::{hashes::InfoHash, tracker::Tracker};
 
 /// Always utilize MetaInfo instead of directly using TorrentFile or MagnetUri
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
 pub enum MetaInfo {
    Torrent(TorrentFile),
    MagnetUri(#[serde(deserialize_with = "MagnetUri::deserialize")] MagnetUri),
