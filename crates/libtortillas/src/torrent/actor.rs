@@ -881,5 +881,16 @@ mod tests {
          export.info_dict.is_some(),
          "Torrent shouldn't have started without info dict"
       );
+
+      // Test serialization
+      use serde_json::{from_str, to_string};
+      let export = to_string(&export).unwrap();
+      trace!("Export: {}", export);
+      let export: TorrentExport = from_str(&export).unwrap();
+      assert_eq!(export.info_hash, info_hash);
+      assert!(
+         export.info_dict.is_some(),
+         "Torrent shouldn't have started without info dict"
+      );
    }
 }
