@@ -44,16 +44,35 @@ pub struct MagnetUri {
 
    #[serde(rename = "x.pe")]
    pub peer: Option<String>,
+
+   #[serde(skip)]
+   uri: String,
+}
+
+impl Serialize for MagnetUri {
+   fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+   where
+      S: serde::Serializer,
+   {
+      serializer.serialize_str(&self.uri)
+   }
+}
+
+impl TryFrom<String> for MagnetUri {
+   type Error = anyhow::Error;
+   fn try_from(uri: String) -> Result<Self, Self::Error> {
+      let qs = uri.split('?').next_back().unwrap(); // Turns magnet:?xt=... into xt=...
+      let mut magnet: Self =
+         serde_querystring::from_str(qs, serde_querystring::ParseMode::Duplicate)?;
+
+      magnet.uri = uri;
+      Ok(magnet)
+   }
 }
 
 impl MagnetUri {
    pub fn parse(uri: String) -> Result<MetaInfo> {
-      let qs = uri.split('?').next_back().unwrap(); // Turns magnet:?xt=... into xt=...
-      // Parse the modified query string
-      Ok(MetaInfo::MagnetUri(serde_querystring::from_str(
-         qs,
-         serde_querystring::ParseMode::Duplicate,
-      )?))
+      Ok(MetaInfo::MagnetUri(MagnetUri::try_from(uri)?))
    }
 
    pub fn announce_list(&self) -> Vec<Tracker> {
