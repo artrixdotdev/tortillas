@@ -1,10 +1,11 @@
+use futures::future::join_all;
 use kameo::{
    Actor, Reply, mailbox,
    prelude::{ActorRef, Context, Message},
 };
 use tracing::{error, warn};
 
-use super::EngineActor;
+use super::{EngineActor, EngineExport};
 use crate::{
    actor_request_response,
    errors::EngineError,
@@ -14,7 +15,9 @@ use crate::{
       messages::PeerMessages,
       stream::{PeerRecv, PeerStream},
    },
-   torrent::{TorrentActor, TorrentActorArgs, TorrentMessage, TorrentState},
+   torrent::{
+      TorrentActor, TorrentActorArgs, TorrentMessage, TorrentRequest, TorrentResponse, TorrentState,
+   },
 };
 
 pub(crate) enum EngineMessage {
@@ -31,6 +34,9 @@ actor_request_response!(
    pub(crate) EngineResponse #[derive(Reply)],
    /// Creates a new [Torrent] actor.
    Torrent(Box<MetaInfo>) Torrent(ActorRef<TorrentActor>),
+
+   /// Exports the current state of the engine.
+   Export Export(EngineExport),
 
 );
 
@@ -72,7 +78,6 @@ impl Message<EngineMessage> for EngineActor {
       };
    }
 }
-
 impl Message<EngineRequest> for EngineActor {
    type Reply = Result<EngineResponse, EngineError>;
 
@@ -108,7 +113,6 @@ impl Message<EngineRequest> for EngineActor {
                   sufficient_peers: self.sufficient_peers,
                   base_path: self.default_base_path.clone(),
                },
-               // if the size is 0, we use an unbounded mailbox
                match self.mailbox_size {
                   0 => {
                      warn!(
@@ -125,6 +129,30 @@ impl Message<EngineRequest> for EngineActor {
 
             self.torrents.insert(info_hash, torrent_ref.clone());
             Ok(EngineResponse::Torrent(torrent_ref))
+         }
+         EngineRequest::Export => {
+            // Concurrently collect all torrent exports
+            let futures = self
+               .torrents
+               .iter()
+               .map(|torrent| {
+                  let torrent = torrent.clone();
+                  async move {
+                     match torrent
+                        .ask(TorrentRequest::Export)
+                        .await
+                        .expect("Failed to get torrent export")
+                     {
+                        TorrentResponse::Export(export) => *export,
+                        _ => unreachable!(),
+                     }
+                  }
+               })
+               .collect::<Vec<_>>();
+
+            let torrents = join_all(futures).await;
+
+            Ok(EngineResponse::Export(EngineExport { torrents }))
          }
       }
    }
