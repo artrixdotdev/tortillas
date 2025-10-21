@@ -9,40 +9,40 @@ use crate::{
 };
 
 /// Magnet URI Spec: <https://en.wikipedia.org/wiki/Magnet_URI_scheme> or <https://www.bittorrent.org/beps/bep_0053.html>
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct MagnetUri {
    /// use `Self::info_hash` to get the info hash as a `Hash` struct.
-   #[serde(rename(deserialize = "xt"))]
+   #[serde(rename = "xt")]
    info_hash: String,
 
-   #[serde(rename(deserialize = "dn"))]
+   #[serde(rename = "dn")]
    pub name: String,
 
-   #[serde(rename(deserialize = "xl"))]
+   #[serde(rename = "xl")]
    pub length: Option<u32>,
 
-   #[serde(rename(deserialize = "tr"))]
+   #[serde(rename = "tr")]
    pub announce_list: Option<Vec<Tracker>>,
 
-   #[serde(rename(deserialize = "ws"), default)]
+   #[serde(rename = "ws", default)]
    pub web_seed: Vec<String>,
 
-   #[serde(rename(deserialize = "as"))]
+   #[serde(rename = "as")]
    pub source: Option<String>,
 
-   #[serde(rename(deserialize = "xs"))]
+   #[serde(rename = "xs")]
    pub exact_source: Option<String>,
 
-   #[serde(rename(deserialize = "kt"))]
+   #[serde(rename = "kt")]
    pub keywords: Option<Vec<String>>,
 
-   #[serde(rename(deserialize = "mt"))]
+   #[serde(rename = "mt")]
    pub manifest_topic: Option<String>,
 
-   #[serde(rename(deserialize = "so"))]
+   #[serde(rename = "so")]
    pub select_only: Option<Vec<String>>,
 
-   #[serde(rename(deserialize = "x.pe"))]
+   #[serde(rename = "x.pe")]
    pub peer: Option<String>,
 }
 
