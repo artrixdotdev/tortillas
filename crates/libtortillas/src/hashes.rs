@@ -201,13 +201,13 @@ impl<const N: usize> Serialize for Hash<N> {
    where
       S: Serializer,
    {
-      serializer.serialize_bytes(&self.0)
+      serializer.serialize_bytes(self.as_bytes())
    }
 }
 
 struct HashVisitor<const N: usize>;
 
-impl<const N: usize> Visitor<'_> for HashVisitor<N> {
+impl<'de, const N: usize> Visitor<'de> for HashVisitor<N> {
    type Value = Hash<N>;
 
    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -226,6 +226,36 @@ impl<const N: usize> Visitor<'_> for HashVisitor<N> {
             N,
             v.len(),
          )))
+      }
+   }
+   fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
+   where
+      E: de::Error,
+   {
+      if v.len() == N {
+         Ok(Hash(v.try_into().unwrap()))
+      } else {
+         Err(E::custom(format!(
+            "Expected length is {}, found {}",
+            N,
+            v.len(),
+         )))
+      }
+   }
+
+   fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+   where
+      A: de::SeqAccess<'de>,
+   {
+      let mut seq = seq;
+      let mut bytes = Vec::with_capacity(N);
+      while let Some(byte) = seq.next_element()? {
+         bytes.push(byte);
+      }
+      if bytes.len() == N {
+         Ok(Hash(bytes.try_into().unwrap()))
+      } else {
+         Err(de::Error::invalid_length(bytes.len(), &self))
       }
    }
 }
@@ -420,7 +450,7 @@ impl<const N: usize> HashVecVisitor<N> {
    }
 }
 
-impl<const N: usize> Visitor<'_> for HashVecVisitor<N> {
+impl<'de, const N: usize> Visitor<'de> for HashVecVisitor<N> {
    type Value = HashVec<N>;
 
    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -448,6 +478,30 @@ impl<const N: usize> Visitor<'_> for HashVecVisitor<N> {
          ));
       }
       Ok(HashVec(vec))
+   }
+   fn visit_seq<A>(self, seq: A) -> Result<Self::Value, A::Error>
+   where
+      A: de::SeqAccess<'de>,
+   {
+      let mut seq = seq;
+      let mut hashes = HashVec::<N>::new();
+      let mut bytes = Vec::new();
+      while let Some(byte) = seq.next_element()? {
+         bytes.push(byte);
+      }
+
+      if bytes.len().is_multiple_of(N) {
+         for chunk in bytes.chunks(N) {
+            hashes.push(Hash(
+               chunk
+                  .try_into()
+                  .unwrap_or_else(|_| panic!("guaranteed to be length {N}")),
+            ));
+         }
+         Ok(hashes)
+      } else {
+         Err(de::Error::invalid_length(bytes.len(), &self))
+      }
    }
 }
 
