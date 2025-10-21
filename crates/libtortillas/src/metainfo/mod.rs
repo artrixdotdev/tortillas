@@ -11,7 +11,7 @@ use crate::{hashes::InfoHash, tracker::Tracker};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub enum MetaInfo {
    Torrent(TorrentFile),
-   MagnetUri(MagnetUri),
+   MagnetUri(#[serde(deserialize_with = "MagnetUri::deserialize")] MagnetUri),
 }
 
 impl MetaInfo {
