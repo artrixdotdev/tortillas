@@ -34,7 +34,7 @@ serde_with = "^3.14"
 tokio-retry2 = { version = "^0.6", features = ["tracing"] }
 bytes = "^1"
 kameo = "^0.18"
-dashmap = "^6.1"
+dashmap = { version = "^5.4", features = ["serde"] }
 bon = "^3.7"
 tokio-util = "^0.7"
 
