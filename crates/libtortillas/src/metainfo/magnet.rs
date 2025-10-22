@@ -61,7 +61,11 @@ impl Serialize for MagnetUri {
 impl TryFrom<String> for MagnetUri {
    type Error = anyhow::Error;
    fn try_from(uri: String) -> Result<Self, Self::Error> {
-      let qs = uri.split('?').next_back().unwrap(); // Turns magnet:?xt=... into xt=...
+      let qs = uri
+         .split('?')
+         .nth(1)
+         .ok_or_else(|| anyhow::anyhow!("Invalid magnet URI"))?;
+
       let mut magnet: Self =
          serde_querystring::from_str(qs, serde_querystring::ParseMode::Duplicate)?;
 
