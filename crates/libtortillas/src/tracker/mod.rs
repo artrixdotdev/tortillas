@@ -57,6 +57,7 @@ pub mod udp;
 /// let peers: Vec<Peer> = tracker.announce();
 /// ```
 #[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize)]
+#[serde(untagged)]
 pub enum Tracker {
    /// HTTP Spec
    /// <https://www.bittorrent.org/beps/bep_0003.html>
