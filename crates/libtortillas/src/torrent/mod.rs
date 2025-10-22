@@ -381,14 +381,14 @@ impl Torrent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TorrentExport {
-   info_hash: InfoHash,
-   state: TorrentState,
-   auto_start: bool,
-   sufficient_peers: usize,
-   output_path: Option<PathBuf>,
-   metainfo: MetaInfo,
-   piece_storage: PieceStorageStrategy,
-   info_dict: Option<Info>,
-   bitfield: BitVec<AtomicU8>,
-   block_map: BlockMap,
+   pub info_hash: InfoHash,
+   pub state: TorrentState,
+   pub auto_start: bool,
+   pub sufficient_peers: usize,
+   pub output_path: Option<PathBuf>,
+   pub metainfo: MetaInfo,
+   pub piece_storage: PieceStorageStrategy,
+   pub info_dict: Option<Info>,
+   pub bitfield: BitVec<AtomicU8>,
+   pub block_map: BlockMap,
 }

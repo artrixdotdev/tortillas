@@ -289,5 +289,5 @@ impl Default for Engine {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineExport {
-   torrents: Vec<TorrentExport>,
+   pub torrents: Vec<TorrentExport>,
 }
