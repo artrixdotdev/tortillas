@@ -837,15 +837,19 @@ mod tests {
          .with_env_filter("libtortillas=trace,off")
          .pretty()
          .init();
+      let metainfo = TorrentFile::parse(include_bytes!(
+         "../../tests/torrents/big-buck-bunny.torrent"
+      ))
+      .unwrap();
+      let info_dict = match &metainfo {
+         MetaInfo::Torrent(file) => file.info.clone(),
+         _ => unreachable!(),
+      };
 
-      // Test with a magnet URI, since magnet URIs don't come with an info dict
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/big-buck-bunny.txt");
-      let contents = tokio::fs::read_to_string(path).await.unwrap();
+      let info_hash = info_dict.hash().unwrap();
 
-      let metainfo = MagnetUri::parse(contents).unwrap();
-      let info_hash = metainfo.info_hash().unwrap();
+      let piece_path = std::env::temp_dir().join("tortillas");
+      let file_path = piece_path.join("files");
 
       let peer_id = PeerId::default();
 
@@ -854,8 +858,6 @@ mod tests {
          UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
             .await
             .unwrap();
-      let piece_path = std::env::temp_dir().join("tortillas");
-      let file_path = piece_path.join("files");
 
       let actor = TorrentActor::spawn(TorrentActorArgs {
          peer_id,
@@ -873,9 +875,17 @@ mod tests {
 
       assert!(torrent.poll_ready().await.is_ok());
 
-      torrent.start().await.unwrap();
-
-      sleep(Duration::from_millis(1000)).await; // Sleep for a second
+      loop {
+         let bitfield = match actor.ask(TorrentRequest::Bitfield).await.unwrap() {
+            TorrentResponse::Bitfield(bitfield) => bitfield,
+            _ => unreachable!(),
+         };
+         // Wait until we have at least 2 pieces
+         if bitfield.count_ones() > 2 {
+            break;
+         }
+         sleep(Duration::from_millis(100)).await;
+      }
 
       let export = torrent.export().await;
 
@@ -887,13 +897,24 @@ mod tests {
 
       // Test serialization
       use serde_json::{from_str, to_string};
-      let export = to_string(&export).unwrap();
-      trace!("Export: {}", export);
-      let export: TorrentExport = from_str(&export).unwrap();
-      assert_eq!(export.info_hash, info_hash);
+
+      let export_str = to_string(&export).unwrap();
+
+      let from_export: TorrentExport = from_str(&export_str).unwrap();
+      assert_eq!(export.info_hash, from_export.info_hash);
+      assert_eq!(export.state, from_export.state);
+      assert_eq!(export.auto_start, from_export.auto_start);
+      assert_eq!(export.sufficient_peers, from_export.sufficient_peers);
+      assert_eq!(export.output_path, from_export.output_path);
+      assert_eq!(export.bitfield, from_export.bitfield);
+
       assert!(
          export.info_dict.is_some(),
          "Torrent shouldn't have started without info dict"
       );
+
+      trace!("Export: {export_str}");
+
+      actor.stop_gracefully().await.unwrap();
    }
 }
