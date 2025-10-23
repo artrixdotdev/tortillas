@@ -13,6 +13,7 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use kameo::{Actor, actor::ActorRef, mailbox};
 use librqbit_utp::UtpSocketUdp;
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -26,7 +27,10 @@ use crate::{
       messages::{Handshake, PeerMessages},
       stream::{PeerSend, PeerStream},
    },
-   torrent::piece_manager::{FilePieceManager, PieceManager},
+   torrent::{
+      TorrentExport,
+      piece_manager::{FilePieceManager, PieceManager},
+   },
    tracker::{Tracker, TrackerActor, udp::UdpServer},
 };
 pub const BLOCK_SIZE: usize = 16 * 1024;
@@ -50,7 +54,8 @@ pub const BLOCK_SIZE: usize = 16 * 1024;
 ///   need to be retrieved later on for future seeding. It is also useful for:
 ///   - HTTP Streaming or when the file itself is never actually written to disk
 ///   - Supporting non-standard output backends
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(tag = "strategy", content = "piece_output_path")]
 pub enum PieceStorageStrategy {
    /// Reference pieces directly from the downloaded files themselves.
    ///
@@ -69,7 +74,18 @@ pub enum PieceStorageStrategy {
 
 /// The current state of the torrent, defaults to
 /// [`Inactive`](TorrentState::Inactive)
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+   Debug,
+   Default,
+   Clone,
+   Copy,
+   PartialEq,
+   Eq,
+   PartialOrd,
+   Ord,
+   Serialize,
+   Deserialize
+)]
 pub enum TorrentState {
    /// Torrent is downloading new pieces actively
    ///
@@ -131,6 +147,8 @@ impl PieceManager for PieceManagerProxy {
    }
 }
 
+pub type BlockMap = DashMap<usize, BitVec<usize>>;
+
 pub(crate) struct TorrentActor {
    pub(crate) peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
    pub(crate) trackers: Arc<DashMap<Tracker, ActorRef<TrackerActor>>>,
@@ -151,7 +169,7 @@ pub(crate) struct TorrentActor {
    /// Map of piece indices to block indices. These will be used to track which
    /// blocks we have for each piece. Each entry is deleted when the piece is
    /// completed.
-   pub(super) block_map: Arc<DashMap<usize, BitVec<usize>>>,
+   pub(super) block_map: Arc<BlockMap>,
 
    pub(super) start_time: Option<Instant>,
    /// The number of peers we need to have before we start downloading, defaults
@@ -277,6 +295,24 @@ impl TorrentActor {
          state = ?self.state,
          "Started torrenting process"
       );
+   }
+
+   pub fn export(&self) -> TorrentExport {
+      TorrentExport {
+         info_hash: self.info_hash(),
+         state: self.state,
+         auto_start: self.autostart,
+         sufficient_peers: self.sufficient_peers,
+         output_path: match &self.piece_manager {
+            PieceManagerProxy::Default(manager) => manager.path().cloned(),
+            _ => None,
+         },
+         metainfo: self.metainfo.clone(),
+         piece_storage: self.piece_storage.clone(),
+         info_dict: self.info_dict().cloned(),
+         bitfield: (*self.bitfield).clone(),
+         block_map: (*self.block_map).clone(),
+      }
    }
 
    /// Checks if the torrent has all of the pieces (we've downloaded/have
@@ -792,5 +828,93 @@ mod tests {
 
       actor.stop_gracefully().await.unwrap();
       clear_piece_files(&piece_path).await;
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn test_torrent_export() {
+      tracing_subscriber::fmt()
+         .with_target(true)
+         .with_env_filter("libtortillas=trace,off")
+         .pretty()
+         .init();
+      let metainfo = TorrentFile::parse(include_bytes!(
+         "../../tests/torrents/big-buck-bunny.torrent"
+      ))
+      .unwrap();
+      let info_dict = match &metainfo {
+         MetaInfo::Torrent(file) => file.info.clone(),
+         _ => unreachable!(),
+      };
+
+      let info_hash = info_dict.hash().unwrap();
+
+      let piece_path = std::env::temp_dir().join("tortillas");
+      let file_path = piece_path.join("files");
+
+      let peer_id = PeerId::default();
+
+      let udp_server = UdpServer::new(None).await;
+      let utp_server =
+         UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
+            .await
+            .unwrap();
+
+      let actor = TorrentActor::spawn(TorrentActorArgs {
+         peer_id,
+         metainfo,
+         utp_server,
+         tracker_server: udp_server.clone(),
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::Disk(piece_path.clone()),
+         autostart: None,
+         sufficient_peers: None,
+         base_path: Some(file_path),
+      });
+
+      let torrent = Torrent::new(info_hash, actor.clone());
+
+      assert!(torrent.poll_ready().await.is_ok());
+
+      loop {
+         let bitfield = match actor.ask(TorrentRequest::Bitfield).await.unwrap() {
+            TorrentResponse::Bitfield(bitfield) => bitfield,
+            _ => unreachable!(),
+         };
+         // Wait until we have at least 2 pieces
+         if bitfield.count_ones() > 2 {
+            break;
+         }
+         sleep(Duration::from_millis(100)).await;
+      }
+
+      let export = torrent.export().await;
+
+      assert_eq!(export.info_hash, info_hash);
+      assert!(
+         export.info_dict.is_some(),
+         "Torrent shouldn't have started without info dict"
+      );
+
+      // Test serialization
+      use serde_json::{from_str, to_string};
+
+      let export_str = to_string(&export).unwrap();
+
+      let from_export: TorrentExport = from_str(&export_str).unwrap();
+      assert_eq!(export.info_hash, from_export.info_hash);
+      assert_eq!(export.state, from_export.state);
+      assert_eq!(export.auto_start, from_export.auto_start);
+      assert_eq!(export.sufficient_peers, from_export.sufficient_peers);
+      assert_eq!(export.output_path, from_export.output_path);
+      assert_eq!(export.bitfield, from_export.bitfield);
+
+      assert!(
+         export.info_dict.is_some(),
+         "Torrent shouldn't have started without info dict"
+      );
+
+      trace!("Export: {export_str}");
+
+      actor.stop_gracefully().await.unwrap();
    }
 }

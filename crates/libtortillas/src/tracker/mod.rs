@@ -20,7 +20,7 @@ use kameo::{
 };
 use num_enum::TryFromPrimitive;
 use serde::{
-   Deserialize,
+   Deserialize, Serialize,
    de::{self, Visitor},
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
@@ -56,7 +56,8 @@ pub mod udp;
 ///
 /// let peers: Vec<Peer> = tracker.announce();
 /// ```
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Hash, Serialize)]
+#[serde(untagged)]
 pub enum Tracker {
    /// HTTP Spec
    /// <https://www.bittorrent.org/beps/bep_0003.html>

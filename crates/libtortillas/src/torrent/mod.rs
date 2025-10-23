@@ -1,19 +1,24 @@
 mod actor;
 mod messages;
 mod piece_manager;
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::atomic::AtomicU8};
 
 pub use actor::*;
+use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::actor::ActorRef;
 pub(crate) use messages::*;
+use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use tracing::error;
 
 pub mod util;
 pub use piece_manager::PieceManager;
 
-use crate::hashes::InfoHash;
+use crate::{
+   hashes::InfoHash,
+   prelude::{Info, MetaInfo},
+};
 
 /// A piece that we have received from a peer. [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html)
 /// describes the piece message. One more field is added in this struct: that
@@ -280,6 +285,29 @@ impl Torrent {
       }
    }
 
+   /// Returns a [`TorrentExport`] containing information about the torrent.
+   ///
+   /// The torrent export is a snapshot of the torrent's state at the time of
+   /// the request, this can be used to resume a torrent later on without having
+   /// to redownload pieces and/or seeding.
+   ///
+   /// # Panics
+   ///
+   /// Panics if the message could not be sent to the actor.
+   pub async fn export(&self) -> TorrentExport {
+      let msg = TorrentRequest::Export;
+
+      match self
+         .actor()
+         .ask(msg)
+         .await
+         .expect("Failed to send request for state")
+      {
+         TorrentResponse::Export(export) => *export,
+         _ => unreachable!(),
+      }
+   }
+
    /// If the torrent should automatically start when `sufficient_peers` is
    /// met.
    ///
@@ -349,4 +377,18 @@ impl Torrent {
 
       Ok(())
    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TorrentExport {
+   pub info_hash: InfoHash,
+   pub state: TorrentState,
+   pub auto_start: bool,
+   pub sufficient_peers: usize,
+   pub output_path: Option<PathBuf>,
+   pub metainfo: MetaInfo,
+   pub piece_storage: PieceStorageStrategy,
+   pub info_dict: Option<Info>,
+   pub bitfield: BitVec<AtomicU8>,
+   pub block_map: BlockMap,
 }

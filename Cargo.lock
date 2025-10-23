@@ -131,6 +131,7 @@ checksum = "1bc2832c24239b0141d5674bb9174f9d68a8b5b3f2753311927c172ca46f7e9c"
 dependencies = [
  "funty",
  "radium",
+ "serde",
  "tap",
  "wyz",
 ]
@@ -303,6 +304,7 @@ dependencies = [
  "lock_api",
  "once_cell",
  "parking_lot_core",
+ "serde",
 ]
 
 [[package]]
@@ -1117,6 +1119,7 @@ dependencies = [
  "serde",
  "serde-querystring",
  "serde_bencode",
+ "serde_json",
  "serde_repr",
  "serde_with",
  "sha1",
