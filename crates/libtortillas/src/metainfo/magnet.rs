@@ -19,7 +19,7 @@ pub struct MagnetUri {
    pub name: String,
 
    #[serde(rename = "xl")]
-   pub length: Option<u32>,
+   pub length: Option<usize>,
 
    #[serde(rename = "tr")]
    pub announce_list: Option<Vec<Tracker>>,
@@ -27,11 +27,11 @@ pub struct MagnetUri {
    #[serde(rename = "ws", default)]
    pub web_seed: Vec<String>,
 
-   #[serde(rename = "as")]
-   pub source: Option<String>,
+   #[serde(rename = "as", default)]
+   pub source: Vec<String>,
 
-   #[serde(rename = "xs")]
-   pub exact_source: Option<String>,
+   #[serde(rename = "xs", default)]
+   pub exact_source: Vec<String>,
 
    #[serde(rename = "kt")]
    pub keywords: Option<Vec<String>>,
@@ -42,8 +42,8 @@ pub struct MagnetUri {
    #[serde(rename = "so")]
    pub select_only: Option<Vec<String>>,
 
-   #[serde(rename = "x.pe")]
-   pub peer: Option<String>,
+   #[serde(rename = "x.pe", default)]
+   pub peer: Vec<String>,
 
    #[serde(skip)]
    uri: String,
