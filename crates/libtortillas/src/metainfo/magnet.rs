@@ -19,7 +19,7 @@ pub struct MagnetUri {
    pub name: String,
 
    #[serde(rename = "xl")]
-   pub length: Option<u32>,
+   pub length: Option<usize>,
 
    #[serde(rename = "tr")]
    pub announce_list: Option<Vec<Tracker>>,
@@ -27,11 +27,11 @@ pub struct MagnetUri {
    #[serde(rename = "ws", default)]
    pub web_seed: Vec<String>,
 
-   #[serde(rename = "as")]
-   pub source: Option<String>,
+   #[serde(rename = "as", default)]
+   pub source: Vec<String>,
 
-   #[serde(rename = "xs")]
-   pub exact_source: Option<String>,
+   #[serde(rename = "xs", default)]
+   pub exact_source: Vec<String>,
 
    #[serde(rename = "kt")]
    pub keywords: Option<Vec<String>>,
@@ -42,8 +42,8 @@ pub struct MagnetUri {
    #[serde(rename = "so")]
    pub select_only: Option<Vec<String>>,
 
-   #[serde(rename = "x.pe")]
-   pub peer: Option<String>,
+   #[serde(rename = "x.pe", default)]
+   pub peer: Vec<String>,
 
    #[serde(skip)]
    uri: String,
@@ -126,5 +126,16 @@ mod tests {
          }
          _ => panic!("Expected Torrent"),
       }
+   }
+
+   #[tokio::test]
+   #[traced_test]
+   async fn test_parse_magnet_uri_multi_valued_params() {
+      let uri = "magnet:?xt=urn:btih:xyz&as=seed1&as=seed2&xs=exact1&xs=exact2&x.pe=peer1&x.pe=peer2&dn=name";
+      let magnet = MagnetUri::try_from(uri.to_string()).unwrap();
+
+      assert_eq!(magnet.source.len(), 2);
+      assert_eq!(magnet.exact_source.len(), 2);
+      assert_eq!(magnet.peer.len(), 2);
    }
 }
