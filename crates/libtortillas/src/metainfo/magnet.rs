@@ -127,4 +127,15 @@ mod tests {
          _ => panic!("Expected Torrent"),
       }
    }
+
+   #[tokio::test]
+   #[traced_test]
+   async fn test_parse_magnet_uri_multi_valued_params() {
+      let uri = "magnet:?xt=urn:btih:xyz&as=seed1&as=seed2&xs=exact1&xs=exact2&x.pe=peer1&x.pe=peer2&dn=name";
+      let magnet = MagnetUri::try_from(uri.to_string()).unwrap();
+
+      assert_eq!(magnet.source.len(), 2);
+      assert_eq!(magnet.exact_source.len(), 2);
+      assert_eq!(magnet.peer.len(), 2);
+   }
 }
