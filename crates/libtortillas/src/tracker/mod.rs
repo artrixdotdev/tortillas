@@ -280,17 +280,13 @@ impl Actor for TrackerActor {
       })
    }
    async fn on_stop(
-      &mut self, _: WeakActorRef<Self>, reason: ActorStopReason,
+      &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
    ) -> Result<(), Self::Error> {
-      match reason {
-         ActorStopReason::Killed | ActorStopReason::Normal => {
-            // We don't care if the tracker stops successfully or not
-            let _ = timeout(Duration::from_secs(5), self.tracker.stop())
-               .await
-               .inspect_err(|e| warn!(e = %e.to_string(), "Tracker stop timed out"));
-         }
-         _ => {}
-      }
+      // We don't care if the tracker stops successfully or not
+      let _ = timeout(Duration::from_secs(5), self.tracker.stop())
+         .await
+         .inspect_err(|e| warn!(e = %e.to_string(), "Tracker stop timed out"));
+
       Ok(())
    }
 
