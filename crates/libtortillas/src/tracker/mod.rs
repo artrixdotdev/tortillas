@@ -14,7 +14,8 @@ use atomic_time::{AtomicInstant, AtomicOptionInstant};
 use http::HttpTracker;
 use kameo::{
    Actor,
-   actor::ActorRef,
+   actor::{ActorRef, WeakActorRef},
+   error::ActorStopReason,
    mailbox::Signal,
    prelude::{Context, Message},
 };
@@ -25,7 +26,7 @@ use serde::{
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::time::{Instant, Interval, interval};
-use tracing::error;
+use tracing::{debug, error, instrument, trace};
 use udp::UdpTracker;
 
 use crate::{
@@ -143,6 +144,9 @@ pub trait TrackerBase: Send + Sync {
 
    /// Gets the announce interval.
    fn interval(&self) -> usize;
+
+   /// Stops the tracker and removes it from the tracker's list of peers.
+   async fn stop(&self) -> Result<()>;
 }
 
 /// Enum for the different tracker variants that implement [TrackerBase] rather
@@ -173,6 +177,13 @@ impl TrackerBase for TrackerInstance {
       match self {
          TrackerInstance::Udp(tracker) => tracker.update(update).await,
          TrackerInstance::Http(tracker) => tracker.update(update).await,
+      }
+   }
+
+   async fn stop(&self) -> Result<()> {
+      match self {
+         TrackerInstance::Udp(tracker) => tracker.stop().await,
+         TrackerInstance::Http(tracker) => tracker.stop().await,
       }
    }
 
@@ -267,6 +278,17 @@ impl Actor for TrackerActor {
          supervisor,
          interval: interval(Duration::from_secs(30)),
       })
+   }
+   async fn on_stop(
+      &mut self, _: WeakActorRef<Self>, reason: ActorStopReason,
+   ) -> Result<(), Self::Error> {
+      match reason {
+         ActorStopReason::Killed | ActorStopReason::Normal => {
+            self.tracker.stop().await?;
+            Ok(())
+         }
+         _ => Ok(()),
+      }
    }
 
    async fn next(

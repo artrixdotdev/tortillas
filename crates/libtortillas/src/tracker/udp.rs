@@ -929,6 +929,26 @@ impl TrackerBase for UdpTracker {
    fn interval(&self) -> usize {
       self.interval.load(Ordering::Acquire) as usize
    }
+   #[instrument(skip(self), fields(
+        tracker_uri = %self.uri,
+        tracker_connection_id = ?self.get_connection_id(),
+        torrent_id = %self.info_hash,
+        tracker_ready_state = ?self.get_ready_state(),
+    ))]
+   async fn stop(&self) -> anyhow::Result<()> {
+      ensure!(
+         self.get_ready_state() == ReadyState::Ready,
+         "Tracker not ready for a stop request"
+      );
+
+      {
+         self.announce_params.write().await.event = Event::Stopped;
+      }
+      let _ = self.announce().await?; // Discard the response since we don't need it
+
+      debug!("Stopped tracker");
+      Ok(())
+   }
 }
 
 #[cfg(test)]

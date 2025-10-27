@@ -264,6 +264,20 @@ impl TrackerBase for HttpTracker {
    fn interval(&self) -> usize {
       self.interval()
    }
+   #[instrument(skip(self), fields(
+        tracker_uri = %self.uri,
+        peer_id = %self.peer_id,
+        torrent_id = %self.info_hash,
+    ))]
+   async fn stop(&self) -> Result<()> {
+      {
+         self.params.write().await.event = Event::Stopped;
+      }
+      self.announce().await?;
+
+      debug!("Stopped tracker");
+      Ok(())
+   }
 }
 
 fn urlencode(t: &[u8; 20]) -> String {
