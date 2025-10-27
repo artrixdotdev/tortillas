@@ -25,8 +25,8 @@ use serde::{
    de::{self, Visitor},
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tokio::time::{Instant, Interval, interval};
-use tracing::error;
+use tokio::time::{Instant, Interval, interval, timeout};
+use tracing::{error, warn};
 use udp::UdpTracker;
 
 use crate::{
@@ -284,11 +284,14 @@ impl Actor for TrackerActor {
    ) -> Result<(), Self::Error> {
       match reason {
          ActorStopReason::Killed | ActorStopReason::Normal => {
-            self.tracker.stop().await?;
-            Ok(())
+            // We don't care if the tracker stops successfully or not
+            let _ = timeout(Duration::from_secs(5), self.tracker.stop())
+               .await
+               .inspect_err(|e| warn!(e = %e.to_string(), "Tracker stop timed out"));
          }
-         _ => Ok(()),
+         _ => {}
       }
+      Ok(())
    }
 
    async fn next(
