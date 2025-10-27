@@ -26,7 +26,7 @@ use serde::{
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::time::{Instant, Interval, interval};
-use tracing::{debug, error, instrument, trace};
+use tracing::error;
 use udp::UdpTracker;
 
 use crate::{
