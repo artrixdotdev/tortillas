@@ -15,7 +15,10 @@ use serde::{
    de::{self, Visitor},
 };
 use serde_with::serde_as;
-use tokio::{sync::RwLock, time::Instant};
+use tokio::{
+   sync::RwLock,
+   time::{Instant, timeout},
+};
 use tracing::{debug, error, instrument, trace, warn};
 
 /// See https://www.bittorrent.org/beps/bep_0003.html
@@ -274,7 +277,7 @@ impl TrackerBase for HttpTracker {
          self.params.write().await.event = Event::Stopped;
       }
       // Best‑effort, bounded final announce
-      match tokio::time::timeout(std::time::Duration::from_secs(3), self.announce()).await {
+      match timeout(std::time::Duration::from_secs(3), self.announce()).await {
          Ok(Ok(_)) => debug!("Stopped tracker"),
          Ok(Err(e)) => debug!(error = %e, "Stop announce failed; ignoring"),
          Err(_) => debug!("Stop announce timed out; ignoring"),
