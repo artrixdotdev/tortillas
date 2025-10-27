@@ -273,9 +273,12 @@ impl TrackerBase for HttpTracker {
       {
          self.params.write().await.event = Event::Stopped;
       }
-      self.announce().await?;
-
-      debug!("Stopped tracker");
+      // Best‑effort, bounded final announce
+      match tokio::time::timeout(std::time::Duration::from_secs(3), self.announce()).await {
+         Ok(Ok(_)) => debug!("Stopped tracker"),
+         Ok(Err(e)) => debug!(error = %e, "Stop announce failed; ignoring"),
+         Err(_) => debug!("Stop announce timed out; ignoring"),
+      }
       Ok(())
    }
 }
