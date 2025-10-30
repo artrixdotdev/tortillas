@@ -262,7 +262,7 @@ impl TrackerBase for HttpTracker {
    }
 
    fn interval(&self) -> usize {
-      self.interval()
+      self.interval.load(Ordering::Acquire)
    }
 }
 
