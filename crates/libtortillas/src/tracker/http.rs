@@ -80,9 +80,12 @@ impl TrackerRequest {
       if let Some(left) = self.left {
          params.push(format!("left={left}"));
       }
-      let event_str = format!("{:?}", self.event).to_lowercase(); // Hack to get the string representation of the enum
 
-      params.push(format!("event={event_str}"));
+      // Don't include event if it's empty
+      if self.event != Event::Empty {
+         params.push(format!("event={:?}", self.event).to_lowercase());
+      }
+
       params.push(format!("compact={}", self.compact.unwrap_or(true) as u8));
 
       params.join("&")
