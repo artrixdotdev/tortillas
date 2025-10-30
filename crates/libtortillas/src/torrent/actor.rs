@@ -31,7 +31,7 @@ use crate::{
       TorrentExport,
       piece_manager::{FilePieceManager, PieceManager},
    },
-   tracker::{Tracker, TrackerActor, udp::UdpServer},
+   tracker::{Tracker, TrackerActor, TrackerUpdate, udp::UdpServer},
 };
 pub const BLOCK_SIZE: usize = 16 * 1024;
 
@@ -462,6 +462,32 @@ impl TorrentActor {
          });
       }
       // Returns immediately, without waiting for any peer responses
+   }
+
+   #[instrument(skip(self, message), fields(torrent_id = %self.info_hash()))]
+   pub(super) async fn update_trackers(&self, message: TrackerUpdate) {
+      let trackers = self.trackers.clone();
+
+      let actor_refs: Vec<(Tracker, ActorRef<TrackerActor>)> = trackers
+         .iter()
+         .map(|entry| (entry.key().clone(), entry.value().clone()))
+         .collect();
+
+      for (uri, actor) in actor_refs {
+         let msg = message.clone();
+         let trackers = trackers.clone();
+
+         tokio::spawn(async move {
+            if actor.is_alive() {
+               if let Err(e) = actor.tell(msg).await {
+                  warn!(error = %e, tracker_uri = ?uri, "Failed to send to tracker");
+               }
+            } else {
+               trace!(tracker_uri = ?uri, "Tracker actor is dead, removing from trackers set");
+               trackers.remove(&uri);
+            }
+         });
+      }
    }
    /// Gets the path to a piece file based on the index. Only should be used
    /// when the piece storage strategy is [`Disk`](PieceStorageStrategy::Disk),

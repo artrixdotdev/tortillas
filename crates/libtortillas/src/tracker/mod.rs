@@ -347,6 +347,7 @@ impl Message<TrackerMessage> for TrackerActor {
 }
 
 /// Updates the tracker's announce fields
+#[derive(Debug, Clone)]
 pub enum TrackerUpdate {
    /// The amount of data uploaded, in bytes
    Uploaded(usize),
