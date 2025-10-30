@@ -384,8 +384,8 @@ impl Message<TrackerUpdate> for TrackerActor {
 )]
 #[repr(u32)]
 pub enum Event {
-   Empty = 0,
    #[default]
+   Empty = 0,
    Started = 1,
    Completed = 2,
    Stopped = 3,
