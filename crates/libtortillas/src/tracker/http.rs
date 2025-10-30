@@ -265,7 +265,7 @@ impl TrackerBase for HttpTracker {
    }
 
    fn interval(&self) -> usize {
-      self.interval()
+      self.interval.load(Ordering::Acquire)
    }
    #[instrument(skip(self), fields(
         tracker_uri = %self.uri,
