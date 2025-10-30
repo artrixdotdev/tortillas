@@ -31,7 +31,7 @@ use crate::{
       TorrentExport,
       piece_manager::{FilePieceManager, PieceManager},
    },
-   tracker::{Tracker, TrackerActor, TrackerUpdate, udp::UdpServer},
+   tracker::{Event, Tracker, TrackerActor, TrackerUpdate, udp::UdpServer},
 };
 pub const BLOCK_SIZE: usize = 16 * 1024;
 
@@ -257,6 +257,9 @@ impl TorrentActor {
       if self.is_full() {
          self.state = TorrentState::Seeding;
          info!(id = %self.info_hash(), "Torrent is now seeding");
+         self
+            .update_trackers(TrackerUpdate::Event(Event::Completed))
+            .await;
       } else {
          self.state = TorrentState::Downloading;
          info!(id = %self.info_hash(), "Torrent is now downloading");
@@ -264,19 +267,28 @@ impl TorrentActor {
          trace!(id = %self.info_hash(), peer_count = self.peers.len(), "Requesting first piece from peers");
 
          self.next_piece = self.bitfield.first_zero().unwrap_or_default();
+         // Announce that we have started
+         self
+            .update_trackers(TrackerUpdate::Event(Event::Started))
+            .await;
+
          // Request first piece from peers
          self
             .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
             .await;
          self.start_time = Some(Instant::now());
       }
+      // Send ready hook
       if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
          error!(?err, "Failed to send ready hook");
       }
+
       let Some(info) = self.info.as_ref() else {
          warn!(id = %self.info_hash(), "Start requested before info dict is available; deferring");
          return;
       };
+
+      // Start piece manager
       self
          .piece_manager
          // Probably not the best to clone here, but should be fine for now
