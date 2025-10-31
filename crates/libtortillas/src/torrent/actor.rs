@@ -476,6 +476,8 @@ impl TorrentActor {
       // Returns immediately, without waiting for any peer responses
    }
 
+   /// Broadcasts a [`TrackerUpdate`] to all trackers concurrently. similar to
+   /// [`Self::broadcast_to_peers`], but for trackers.
    #[instrument(skip(self, message), fields(torrent_id = %self.info_hash()))]
    pub(super) async fn update_trackers(&self, message: TrackerUpdate) {
       let trackers = self.trackers.clone();
