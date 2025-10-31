@@ -31,7 +31,7 @@ use crate::{
       TorrentExport,
       piece_manager::{FilePieceManager, PieceManager},
    },
-   tracker::{Event, Tracker, TrackerActor, TrackerUpdate, udp::UdpServer},
+   tracker::{Event, Tracker, TrackerActor, TrackerMessage, TrackerUpdate, udp::UdpServer},
 };
 pub const BLOCK_SIZE: usize = 16 * 1024;
 
@@ -272,6 +272,16 @@ impl TorrentActor {
             .update_trackers(TrackerUpdate::Event(Event::Started))
             .await;
 
+         // Force announce
+         self.broadcast_to_trackers(TrackerMessage::Announce).await;
+
+         // Now apperently we're supposed to set our event back to "empty" for the next
+         // announce (done via the interval), no clue why, just the way it's
+         // specified in the spec.
+         self
+            .update_trackers(TrackerUpdate::Event(Event::Empty))
+            .await;
+
          // Request first piece from peers
          self
             .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
@@ -503,6 +513,7 @@ impl TorrentActor {
          });
       }
    }
+
    pub(super) async fn broadcast_to_trackers(&self, message: TrackerMessage) {
       let trackers = self.trackers.clone();
 
