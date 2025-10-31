@@ -503,6 +503,30 @@ impl TorrentActor {
          });
       }
    }
+   pub(super) async fn broadcast_to_trackers(&self, message: TrackerMessage) {
+      let trackers = self.trackers.clone();
+
+      let actor_refs: Vec<(Tracker, ActorRef<TrackerActor>)> = trackers
+         .iter()
+         .map(|entry| (entry.key().clone(), entry.value().clone()))
+         .collect();
+
+      for (uri, actor) in actor_refs {
+         let trackers = trackers.clone();
+
+         tokio::spawn(async move {
+            if actor.is_alive() {
+               if let Err(e) = actor.tell(message).await {
+                  warn!(error = %e, tracker_uri = ?uri, "Failed to send to tracker");
+               }
+            } else {
+               trace!(tracker_uri = ?uri, "Tracker actor is dead, removing from trackers set");
+               trackers.remove(&uri);
+            }
+         });
+      }
+   }
+
    /// Gets the path to a piece file based on the index. Only should be used
    /// when the piece storage strategy is [`Disk`](PieceStorageStrategy::Disk),
    /// this function will panic otherwise.
