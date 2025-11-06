@@ -11,11 +11,7 @@ use async_trait::async_trait;
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use dashmap::DashMap;
-use kameo::{
-   Actor,
-   actor::ActorRef,
-   mailbox,
-};
+use kameo::{Actor, actor::ActorRef, mailbox};
 use librqbit_utp::UtpSocketUdp;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
