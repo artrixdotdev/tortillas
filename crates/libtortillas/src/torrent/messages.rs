@@ -25,7 +25,7 @@ use crate::{
    peer::{Peer, PeerId, PeerTell},
    protocol::stream::PeerStream,
    torrent::{PieceManagerProxy, piece_manager::PieceManager},
-   tracker::Tracker,
+   tracker::{Event, Tracker, TrackerMessage, TrackerUpdate},
 };
 
 /// For incoming from outside sources (e.g Peers, Trackers and Engine)
@@ -196,6 +196,8 @@ impl Message<TorrentMessage> for TorrentActor {
                .info_dict()
                .expect("Can't receive piece without info dict");
 
+            let total_length = info_dict.total_length();
+
             let block_index = offset / BLOCK_SIZE;
             let piece_count = info_dict.piece_count();
 
@@ -296,6 +298,14 @@ impl Message<TorrentMessage> for TorrentActor {
 
                // Announce to peers that we have this piece
                self.broadcast_to_peers(PeerTell::Have(cur_piece)).await;
+
+               if let Some(total_downloaded) = self.total_bytes_downloaded() {
+                  let total_bytes_left = total_length - total_downloaded;
+                  self
+                     .update_trackers(TrackerUpdate::Left(total_bytes_left))
+                     .await;
+               }
+
                if self.next_piece >= piece_count - 1 {
                   // Handle end of torrenting process
                   self.state = TorrentState::Seeding;
