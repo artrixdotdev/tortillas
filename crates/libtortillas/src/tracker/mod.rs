@@ -14,7 +14,7 @@ use atomic_time::{AtomicInstant, AtomicOptionInstant};
 use http::HttpTracker;
 use kameo::{
    Actor,
-   actor::{ActorRef, WeakActorRef},
+   actor::{ActorId, ActorRef, WeakActorRef},
    error::ActorStopReason,
    mailbox::Signal,
    prelude::{Context, Message},
@@ -26,7 +26,7 @@ use serde::{
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::time::{Instant, Interval, interval, timeout};
-use tracing::{error, warn};
+use tracing::{error, info, trace, warn};
 use udp::UdpTracker;
 
 use crate::{
@@ -291,21 +291,19 @@ impl Actor for TrackerActor {
    }
 
    async fn next(
-      &mut self, _: kameo::prelude::WeakActorRef<Self>,
+      &mut self, actor_ref: kameo::prelude::WeakActorRef<Self>,
       mailbox_rx: &mut kameo::prelude::MailboxReceiver<Self>,
    ) -> Option<Signal<Self>> {
       tokio::select! {
          signal = mailbox_rx.recv() => signal,
          // Waits for the next interval to tick
          _ = self.interval.tick() => {
-            if let Ok(peers) = self.tracker.announce().await {
-               let _ = self.supervisor.tell(TorrentMessage::Announce(peers)).await;
-            }
-            let duration = Duration::from_secs(self.tracker.interval() as u64);
-            self.interval = interval(duration);
-
-            None
-         }
+            let msg = TrackerMessage::Announce;
+            Some(Signal::Message{ message: Box::new(msg),
+            actor_ref: actor_ref.upgrade()?.clone(),
+            reply: None,
+            sent_within_actor: true,
+         })}
       }
    }
 }
