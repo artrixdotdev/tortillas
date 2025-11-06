@@ -14,7 +14,7 @@ use atomic_time::{AtomicInstant, AtomicOptionInstant};
 use http::HttpTracker;
 use kameo::{
    Actor,
-   actor::{ActorId, ActorRef, WeakActorRef},
+   actor::{ActorRef, WeakActorRef},
    error::ActorStopReason,
    mailbox::Signal,
    prelude::{Context, Message},
@@ -26,7 +26,7 @@ use serde::{
 };
 use serde_repr::{Deserialize_repr, Serialize_repr};
 use tokio::time::{Instant, Interval, interval, timeout};
-use tracing::{error, info, trace, warn};
+use tracing::{error, warn};
 use udp::UdpTracker;
 
 use crate::{
