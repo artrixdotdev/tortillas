@@ -319,6 +319,21 @@ impl TorrentActor {
       );
    }
 
+   /// Calculates the total number of bytes downloaded by the torrent. Returns
+   /// None if the info dict is not present.
+   pub fn total_bytes_downloaded(&self) -> Option<usize> {
+      let completed_pieces = self.bitfield.count_ones();
+      let piece_size = self.info_dict().map(|info| info.piece_length)? as usize;
+
+      let mut total_bytes = completed_pieces * piece_size;
+
+      for block in self.block_map.iter() {
+         total_bytes += BLOCK_SIZE * block.count_ones();
+      }
+
+      Some(total_bytes)
+   }
+
    pub fn export(&self) -> TorrentExport {
       TorrentExport {
          info_hash: self.info_hash(),
