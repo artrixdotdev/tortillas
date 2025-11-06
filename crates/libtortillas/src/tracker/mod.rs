@@ -334,6 +334,12 @@ impl Message<TrackerMessage> for TrackerActor {
                Ok(peers) => {
                   if let Err(e) = self.supervisor.tell(TorrentMessage::Announce(peers)).await {
                      error!("Failed to send announce to supervisor: {}", e);
+                  } else {
+                     self.interval = interval(Duration::from_secs(self.tracker.interval() as u64));
+                     // Tick because when starting a new interval, it will tick immediately and
+                     // cause a never ending loop, adding this doesn't add any delay and fixes that
+                     // issue
+                     self.interval.tick().await;
                   }
                }
                Err(e) => {
