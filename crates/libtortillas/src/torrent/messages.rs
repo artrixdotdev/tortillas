@@ -309,6 +309,13 @@ impl Message<TorrentMessage> for TorrentActor {
                if self.next_piece >= piece_count - 1 {
                   // Handle end of torrenting process
                   self.state = TorrentState::Seeding;
+
+                  // Announce to trackers that we have completed the torrent
+                  self
+                     .update_trackers(TrackerUpdate::Event(Event::Completed))
+                     .await;
+                  self.broadcast_to_trackers(TrackerMessage::Announce).await;
+
                   info!("Torrenting process completed, switching to seeding mode");
                } else {
                   self
