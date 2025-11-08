@@ -291,27 +291,26 @@ impl Actor for TrackerActor {
    }
 
    async fn next(
-      &mut self, _: kameo::prelude::WeakActorRef<Self>,
+      &mut self, actor_ref: kameo::prelude::WeakActorRef<Self>,
       mailbox_rx: &mut kameo::prelude::MailboxReceiver<Self>,
    ) -> Option<Signal<Self>> {
       tokio::select! {
          signal = mailbox_rx.recv() => signal,
          // Waits for the next interval to tick
          _ = self.interval.tick() => {
-            if let Ok(peers) = self.tracker.announce().await {
-               let _ = self.supervisor.tell(TorrentMessage::Announce(peers)).await;
-            }
-            let duration = Duration::from_secs(self.tracker.interval() as u64);
-            self.interval = interval(duration);
-
-            None
-         }
+            let msg = TrackerMessage::Announce;
+            Some(Signal::Message{ message: Box::new(msg),
+            actor_ref: actor_ref.upgrade()?.clone(),
+            reply: None,
+            sent_within_actor: true,
+         })}
       }
    }
 }
 
 /// A message from an outside source.
 #[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) enum TrackerMessage {
    /// Forces the tracker to make an announce request. By default, announce
    /// requests are made on an interval.
@@ -333,6 +332,15 @@ impl Message<TrackerMessage> for TrackerActor {
                Ok(peers) => {
                   if let Err(e) = self.supervisor.tell(TorrentMessage::Announce(peers)).await {
                      error!("Failed to send announce to supervisor: {}", e);
+                  } else {
+                     // Ensure we don't have a delay of 0
+                     let delay = self.tracker.interval().max(1) as u64;
+
+                     self.interval = interval(Duration::from_secs(delay));
+                     // Tick because when starting a new interval, it will tick immediately and
+                     // cause a never ending loop, adding this doesn't add any delay and fixes that
+                     // issue
+                     self.interval.tick().await;
                   }
                }
                Err(e) => {
@@ -347,6 +355,7 @@ impl Message<TrackerMessage> for TrackerActor {
 }
 
 /// Updates the tracker's announce fields
+#[derive(Debug, Clone)]
 pub enum TrackerUpdate {
    /// The amount of data uploaded, in bytes
    Uploaded(usize),
@@ -383,8 +392,8 @@ impl Message<TrackerUpdate> for TrackerActor {
 )]
 #[repr(u32)]
 pub enum Event {
-   Empty = 0,
    #[default]
+   Empty = 0,
    Started = 1,
    Completed = 2,
    Stopped = 3,

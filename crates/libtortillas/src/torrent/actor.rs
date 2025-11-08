@@ -31,7 +31,7 @@ use crate::{
       TorrentExport,
       piece_manager::{FilePieceManager, PieceManager},
    },
-   tracker::{Tracker, TrackerActor, udp::UdpServer},
+   tracker::{Event, Tracker, TrackerActor, TrackerMessage, TrackerUpdate, udp::UdpServer},
 };
 pub const BLOCK_SIZE: usize = 16 * 1024;
 
@@ -257,6 +257,9 @@ impl TorrentActor {
       if self.is_full() {
          self.state = TorrentState::Seeding;
          info!(id = %self.info_hash(), "Torrent is now seeding");
+         self
+            .update_trackers(TrackerUpdate::Event(Event::Completed))
+            .await;
       } else {
          self.state = TorrentState::Downloading;
          info!(id = %self.info_hash(), "Torrent is now downloading");
@@ -264,19 +267,38 @@ impl TorrentActor {
          trace!(id = %self.info_hash(), peer_count = self.peers.len(), "Requesting first piece from peers");
 
          self.next_piece = self.bitfield.first_zero().unwrap_or_default();
+         // Announce that we have started
+         self
+            .update_trackers(TrackerUpdate::Event(Event::Started))
+            .await;
+
+         // Force announce
+         self.broadcast_to_trackers(TrackerMessage::Announce).await;
+
+         // Now apperently we're supposed to set our event back to "empty" for the next
+         // announce (done via the interval), no clue why, just the way it's
+         // specified in the spec.
+         self
+            .update_trackers(TrackerUpdate::Event(Event::Empty))
+            .await;
+
          // Request first piece from peers
          self
             .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
             .await;
          self.start_time = Some(Instant::now());
       }
+      // Send ready hook
       if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
          error!(?err, "Failed to send ready hook");
       }
+
       let Some(info) = self.info.as_ref() else {
          warn!(id = %self.info_hash(), "Start requested before info dict is available; deferring");
          return;
       };
+
+      // Start piece manager
       self
          .piece_manager
          // Probably not the best to clone here, but should be fine for now
@@ -297,6 +319,60 @@ impl TorrentActor {
       );
    }
 
+   /// Calculates the total number of bytes downloaded by the torrent. Returns
+   /// None if the info dict is not present.
+   pub fn total_bytes_downloaded(&self) -> Option<usize> {
+      let info = self.info_dict()?;
+      let total_length = info.total_length();
+      let piece_length = info.piece_length as usize;
+
+      let num_pieces = self.bitfield.len();
+      let mut total_bytes = 0usize;
+
+      // Calculate the size of the last piece
+      let last_piece_len = if total_length % piece_length == 0 {
+         piece_length
+      } else {
+         total_length % piece_length
+      };
+
+      // Sum bytes from completed pieces
+      for piece_idx in 0..num_pieces {
+         if self.bitfield[piece_idx] {
+            let piece_size = if piece_idx == num_pieces - 1 {
+               last_piece_len
+            } else {
+               piece_length
+            };
+            total_bytes = total_bytes.saturating_add(piece_size);
+         }
+      }
+
+      // Sum bytes from incomplete pieces via block_map
+      for (piece_idx, block) in self.block_map.iter().enumerate() {
+         if piece_idx < num_pieces && !self.bitfield[piece_idx] {
+            let piece_size = if piece_idx == num_pieces - 1 {
+               last_piece_len
+            } else {
+               piece_length
+            };
+
+            let mut piece_offset = 0usize;
+            for block_idx in 0..block.len() {
+               if block[block_idx] {
+                  let block_size = (piece_size - piece_offset).min(BLOCK_SIZE);
+                  total_bytes = total_bytes.saturating_add(block_size);
+                  piece_offset = piece_offset.saturating_add(block_size);
+               } else {
+                  piece_offset =
+                     piece_offset.saturating_add(BLOCK_SIZE.min(piece_size - piece_offset));
+               }
+            }
+         }
+      }
+
+      Some(total_bytes)
+   }
    pub fn export(&self) -> TorrentExport {
       TorrentExport {
          info_hash: self.info_hash(),
@@ -463,6 +539,59 @@ impl TorrentActor {
       }
       // Returns immediately, without waiting for any peer responses
    }
+
+   /// Broadcasts a [`TrackerUpdate`] to all trackers concurrently. similar to
+   /// [`Self::broadcast_to_peers`], but for trackers.
+   #[instrument(skip(self, message), fields(torrent_id = %self.info_hash()))]
+   pub(super) async fn update_trackers(&self, message: TrackerUpdate) {
+      let trackers = self.trackers.clone();
+
+      let actor_refs: Vec<(Tracker, ActorRef<TrackerActor>)> = trackers
+         .iter()
+         .map(|entry| (entry.key().clone(), entry.value().clone()))
+         .collect();
+
+      for (uri, actor) in actor_refs {
+         let msg = message.clone();
+         let trackers = trackers.clone();
+
+         tokio::spawn(async move {
+            if actor.is_alive() {
+               if let Err(e) = actor.tell(msg).await {
+                  warn!(error = %e, tracker_uri = ?uri, "Failed to send to tracker");
+               }
+            } else {
+               trace!(tracker_uri = ?uri, "Tracker actor is dead, removing from trackers set");
+               trackers.remove(&uri);
+            }
+         });
+      }
+   }
+
+   pub(super) async fn broadcast_to_trackers(&self, message: TrackerMessage) {
+      let trackers = self.trackers.clone();
+
+      let actor_refs: Vec<(Tracker, ActorRef<TrackerActor>)> = trackers
+         .iter()
+         .map(|entry| (entry.key().clone(), entry.value().clone()))
+         .collect();
+
+      for (uri, actor) in actor_refs {
+         let trackers = trackers.clone();
+
+         tokio::spawn(async move {
+            if actor.is_alive() {
+               if let Err(e) = actor.tell(message).await {
+                  warn!(error = %e, tracker_uri = ?uri, "Failed to send to tracker");
+               }
+            } else {
+               trace!(tracker_uri = ?uri, "Tracker actor is dead, removing from trackers set");
+               trackers.remove(&uri);
+            }
+         });
+      }
+   }
+
    /// Gets the path to a piece file based on the index. Only should be used
    /// when the piece storage strategy is [`Disk`](PieceStorageStrategy::Disk),
    /// this function will panic otherwise.
