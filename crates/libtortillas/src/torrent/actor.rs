@@ -322,18 +322,57 @@ impl TorrentActor {
    /// Calculates the total number of bytes downloaded by the torrent. Returns
    /// None if the info dict is not present.
    pub fn total_bytes_downloaded(&self) -> Option<usize> {
-      let completed_pieces = self.bitfield.count_ones();
-      let piece_size = self.info_dict().map(|info| info.piece_length)? as usize;
+      let info = self.info_dict()?;
+      let total_length = info.total_length();
+      let piece_length = info.piece_length as usize;
 
-      let mut total_bytes = completed_pieces * piece_size;
+      let num_pieces = self.bitfield.len();
+      let mut total_bytes = 0usize;
 
-      for block in self.block_map.iter() {
-         total_bytes += BLOCK_SIZE * block.count_ones();
+      // Calculate the size of the last piece
+      let last_piece_len = if total_length % piece_length == 0 {
+         piece_length
+      } else {
+         total_length % piece_length
+      };
+
+      // Sum bytes from completed pieces
+      for piece_idx in 0..num_pieces {
+         if self.bitfield[piece_idx] {
+            let piece_size = if piece_idx == num_pieces - 1 {
+               last_piece_len
+            } else {
+               piece_length
+            };
+            total_bytes = total_bytes.saturating_add(piece_size);
+         }
+      }
+
+      // Sum bytes from incomplete pieces via block_map
+      for (piece_idx, block) in self.block_map.iter().enumerate() {
+         if piece_idx < num_pieces && !self.bitfield[piece_idx] {
+            let piece_size = if piece_idx == num_pieces - 1 {
+               last_piece_len
+            } else {
+               piece_length
+            };
+
+            let mut piece_offset = 0usize;
+            for block_idx in 0..block.len() {
+               if block[block_idx] {
+                  let block_size = (piece_size - piece_offset).min(BLOCK_SIZE);
+                  total_bytes = total_bytes.saturating_add(block_size);
+                  piece_offset = piece_offset.saturating_add(block_size);
+               } else {
+                  piece_offset =
+                     piece_offset.saturating_add(BLOCK_SIZE.min(piece_size - piece_offset));
+               }
+            }
+         }
       }
 
       Some(total_bytes)
    }
-
    pub fn export(&self) -> TorrentExport {
       TorrentExport {
          info_hash: self.info_hash(),
