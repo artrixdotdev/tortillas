@@ -13,7 +13,7 @@ use crate::{
    tracker::Tracker,
 };
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TorrentFile {
    /// The primary announce URI for the torrent.
    pub announce: Tracker,
@@ -139,6 +139,13 @@ impl Info {
 
    pub fn piece_count(&self) -> usize {
       self.pieces.len()
+   }
+   /// The total length of all the files in the torrent
+   pub fn total_length(&self) -> usize {
+      match &self.file {
+         InfoKeys::Single { length, .. } => *length as usize,
+         InfoKeys::Multi { files } => files.iter().map(|f| f.length).sum(),
+      }
    }
 }
 

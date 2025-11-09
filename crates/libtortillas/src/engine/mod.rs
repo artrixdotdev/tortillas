@@ -37,19 +37,20 @@
 mod actor;
 mod messages;
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf};
 
 pub(crate) use actor::*;
 use bon;
 use kameo::{Actor, actor::ActorRef};
 pub(crate) use messages::*;
+use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::{
    errors::EngineError,
    metainfo::{MetaInfo, TorrentFile},
    peer::PeerId,
-   torrent::{PieceStorageStrategy, Torrent},
+   torrent::{PieceStorageStrategy, Torrent, TorrentExport},
 };
 
 /// The main entry point for managing torrents.
@@ -100,14 +101,60 @@ impl Engine {
       /// Strategy for storing pieces of the torrent.
       #[builder(default)]
       piece_storage_strategy: PieceStorageStrategy,
+      /// The mailbox size for each torrent instance.
+      ///
+      /// In simple terms, this is the number of messages that each torrent
+      /// instance can have in queue.
+      ///
+      /// If `Some(0)` is provided, the mailbox will be unbounded (no limit).
+      /// If `None` is provided, a sensible default is used.
+      ///
+      /// Higher values increase memory usage but reduce sender backpressure
+      /// when the mailbox is busy, which can improve throughput. Lower values
+      /// do the inverse.
+      ///
+      /// Default: `64` when `None` is provided.
+      mailbox_size: Option<usize>,
+      /// If we autostart torrents as soon as we have [`Self::sufficient_peers`]
+      /// peers connected.
+      /// Default: `true`
+      autostart: Option<bool>,
+      /// How many peers we need to have before we start downloading.
+      ///
+      /// Is ignored if [`Self::autostart`] is `false`.
+      ///
+      /// Default: `6`
+      sufficient_peers: Option<usize>,
+      /// Default base path for torrents
+      ///
+      /// Default: `std::env::current_dir()`
+      #[builder(into)]
+      output_path: Option<PathBuf>,
    ) -> Self {
-      let args: EngineActorArgs = (
+      let output_path = match output_path {
+         Some(path) => {
+            if path.is_absolute() {
+               path
+            } else {
+               std::env::current_dir()
+                  .expect("Failed to get current dir")
+                  .join(path)
+            }
+         }
+         None => std::env::current_dir().expect("Failed to get current dir"),
+      };
+
+      let args = EngineActorArgs {
          tcp_addr,
          utp_addr,
          udp_addr,
-         Some(custom_id),
+         peer_id: Some(custom_id),
          piece_storage_strategy,
-      );
+         mailbox_size,
+         autostart,
+         sufficient_peers,
+         default_base_path: Some(output_path),
+      };
 
       let actor = EngineActor::spawn(args);
 
@@ -218,10 +265,29 @@ impl Engine {
          .await
          .expect("Failed to start all torrents");
    }
+
+   /// Exports the current state of the engine.
+   /// See [`Torrent::export`] for more information.
+   pub async fn export(&self) -> EngineExport {
+      match self
+         .actor()
+         .ask(EngineRequest::Export)
+         .await
+         .expect("Failed to get torrents")
+      {
+         EngineResponse::Export(export) => export,
+         _ => unreachable!(),
+      }
+   }
 }
 
 impl Default for Engine {
    fn default() -> Self {
       Self::builder().build()
    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EngineExport {
+   pub torrents: Vec<TorrentExport>,
 }

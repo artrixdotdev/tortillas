@@ -3,8 +3,6 @@ use std::sync::{
    atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
-use tracing::trace;
-
 use super::Peer;
 
 /// A helper struct to determine what BEPs a given peer supports.
@@ -59,7 +57,6 @@ impl Peer {
    pub(crate) async fn determine_supported(&mut self) {
       if self.reserved[5] == 0x10 {
          self.set_bep_0010(true);
-         trace!("Peer supports BEP 0010 (extended messages)");
       }
    }
 }

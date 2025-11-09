@@ -1,66 +1,68 @@
 name: ✅ Checks
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+   # No long run pushes on main since it will be called by the release workflow
+   # push:
+   #   branches: [ "main" ]
+   pull_request:
+      branches: ["main"]
+   workflow_call:
 
 env:
-  CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-C target-cpu=native"
-  CARGO_INCREMENTAL: 0
-  RUST_BACKTRACE: 1
+   CARGO_TERM_COLOR: always
+   RUSTFLAGS: "-C target-cpu=native"
+   CARGO_INCREMENTAL: 0
+   RUST_BACKTRACE: 1
 
 jobs:
-  build_and_test:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
+   build_and_test:
+      runs-on: ubuntu-latest
+      steps:
+         - name: 📥 Checkout code
+           uses: actions/checkout@v4
 
-      - name: 🦀 Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: clippy, rustfmt
+         - name: 🦀 Install Rust toolchain
+           uses: dtolnay/rust-toolchain@nightly
+           with:
+              components: clippy, rustfmt
 
-      - name: 💾 Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "build-cache"
+         - name: 💾 Rust Cache
+           uses: Swatinem/rust-cache@v2
+           with:
+              shared-key: "build-cache"
 
-      - name: 🔨 Build
-        run: cargo build --verbose
+         - name: 🔨 Build
+           run: cargo build --verbose
 
-      - name: Install latest nextest release
-        uses: taiki-e/install-action@nextest
+         - name: Install latest nextest release
+           uses: taiki-e/install-action@nextest
 
-      - name: 🧪 Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: nextest
-          args: run --nocapture --no-fail-fast
+         - name: 🧪 Run tests
+           uses: actions-rs/cargo@v1
+           with:
+              command: nextest
+              args: run --nocapture --no-fail-fast
 
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 📥 Checkout code
-        uses: actions/checkout@v4
+   lint:
+      runs-on: ubuntu-latest
+      steps:
+         - name: 📥 Checkout code
+           uses: actions/checkout@v4
 
-      - name: 🦀 Install Rust toolchain
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: clippy, rustfmt
+         - name: 🦀 Install Rust toolchain
+           uses: dtolnay/rust-toolchain@nightly
+           with:
+              components: clippy, rustfmt
 
-      - name: 💾 Rust Cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "lint-cache"
+         - name: 💾 Rust Cache
+           uses: Swatinem/rust-cache@v2
+           with:
+              shared-key: "lint-cache"
 
-      - name: 🔍 Run linter
-        run: cargo clippy --all-targets --all-features -- -D warnings
+         - name: 🔍 Run linter
+           run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: 💅 Run format checker
-        run: cargo fmt --check
-        
-      - name: 📖 Run doc linter
-        run: cargo doc --no-deps --document-private-items
+         - name: 💅 Run format checker
+           run: cargo fmt --check
+
+         - name: 📖 Run doc linter
+           run: cargo doc --no-deps --document-private-items

@@ -31,9 +31,10 @@ pub async fn create_empty_file(path: impl AsRef<Path>, length: usize) -> anyhow:
       let zero = File::open("/dev/zero").await?;
       let mut limited = zero.take(length as u64);
 
-      if copy(&mut limited, &mut out).await? != length as u64 {
-         return Err(anyhow::anyhow!("Failed to copy exact number of bytes"));
-      }
+      ensure!(
+         copy(&mut limited, &mut out).await? == length as u64,
+         "Failed to copy exact number of bytes"
+      );
    } else {
       let chunk = [0u8; 8192]; // 8 KB zero buffer
 

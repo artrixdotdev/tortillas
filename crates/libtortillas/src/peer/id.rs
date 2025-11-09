@@ -60,7 +60,7 @@ macro_rules! define_clients {
          format: $format:expr
       }
    ),* $(,)?) => {
-      #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+      #[derive(Copy, Clone, PartialEq, Eq, Hash)]
       pub enum PeerId {
          $($variant(Id),)*
          Unknown(Id),
@@ -356,7 +356,7 @@ define_clients! {
 
 impl Default for PeerId {
    /// Creates a new [PeerId] for the tortillas client using the
-   /// [Azureus](PeerIdFormat::Azureus) format
+   /// [Azureus](PeerIdFormat::Azureus) format.
    fn default() -> Self {
       // Fill entire array with random alphanumeric bytes
       let mut id = [0u8; 20];
@@ -370,18 +370,20 @@ impl Default for PeerId {
       id[0] = b'-';
       id[1..3].copy_from_slice(b"TO");
 
-      let version = String::from(VERSION);
-      let version = version.replace(".", "");
-      let version = if version.len() < 4 {
-         version + "0"
-      } else {
-         version
-      };
-      let version = version.as_bytes();
-
-      let version_end = std::cmp::min(3 + version.len(), 20);
-      id[3..version_end].copy_from_slice(&version[..version_end - 3]);
-      id[version_end] = b'-';
+      // Extract digits only from version, ignoring prerelease/commit metadata
+      // Extract core VERSION (before any non-digit/dot), keep only digits,
+      // then pad/truncate to exactly 4 digits for Azureus "-XX####-".
+      let core = VERSION
+         .split(|c: char| !c.is_ascii_digit() && c != '.')
+         .next()
+         .unwrap_or("0");
+      let mut digits: String = core.chars().filter(|c| c.is_ascii_digit()).collect();
+      while digits.len() < 4 {
+         digits.push('0');
+      }
+      let digits4 = &digits[..4];
+      id[3..7].copy_from_slice(digits4.as_bytes());
+      id[7] = b'-';
 
       Self::Tortillas(id)
    }
@@ -407,16 +409,21 @@ impl From<Hash<20>> for PeerId {
 impl fmt::Display for PeerId {
    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
       if let Some(version) = self.version() {
-         write!(
-            f,
-            "{} {} ({})",
-            self.client_name(),
-            version,
-            hex::encode(self.id())
-         )
+         write!(f, "{} {}", self.client_name(), version)
       } else {
-         write!(f, "{} ({})", self.client_name(), hex::encode(self.id()))
+         write!(f, "{}", self.client_name())
       }
+   }
+}
+
+impl fmt::Debug for PeerId {
+   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+      write!(
+         f,
+         "{} ({})",
+         self.client_name(),
+         String::from_utf8_lossy(self.id())
+      )
    }
 }
 
@@ -444,14 +451,27 @@ mod tests {
    #[test]
    fn test_parse_tortillas_peer_id() {
       let peer = PeerId::new();
-      let correct_version = if VERSION.len() <= 5 {
-         VERSION.to_owned() + "0"
-      } else {
-         VERSION.to_owned()
-      };
+      // Derive expected Azureus "A.B.CD" exactly like PeerId::default
+      let core = VERSION
+         .split(|c: char| !c.is_ascii_digit() && c != '.')
+         .next()
+         .unwrap_or("0");
+      let mut digits: String = core.chars().filter(|c| c.is_ascii_digit()).collect();
+      while digits.len() < 4 {
+         digits.push('0');
+      }
+      let b = digits.as_bytes();
+      let correct_version = format!(
+         "{}.{}.{}{}",
+         b[0] as char, b[1] as char, b[2] as char, b[3] as char
+      );
 
       assert_eq!(peer.client_name(), "Tortillas");
       assert_eq!(peer.version(), Some(correct_version));
+
+      assert_eq!(peer.as_bytes()[0], b'-');
+      assert_eq!(&peer.as_bytes()[1..3], b"TO");
+      assert_eq!(peer.as_bytes()[7], b'-');
    }
    #[test]
    fn test_parse_webtorrent_peer_id() {

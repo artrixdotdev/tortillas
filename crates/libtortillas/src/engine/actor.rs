@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
 use kameo::{
@@ -48,19 +48,73 @@ pub struct EngineActor {
    pub(crate) actor_ref: ActorRef<EngineActor>,
 
    pub(crate) default_piece_storage_strategy: PieceStorageStrategy,
+
+   /// Mailbox size for each torrent instance
+   pub(crate) mailbox_size: usize,
+
+   /// If we autostart torrents
+   pub(crate) autostart: Option<bool>,
+   /// How many peers we need to have before we start downloading
+   pub(crate) sufficient_peers: Option<usize>,
+
+   pub(crate) default_base_path: Option<PathBuf>,
 }
 
-pub(crate) type EngineActorArgs = (
-   // TCP Addr
-   Option<SocketAddr>,
-   // uTP Addr
-   Option<SocketAddr>,
-   // UDP Addr
-   Option<SocketAddr>,
-   Option<PeerId>,
-   // Strategy for storing pieces of the torrent.
-   PieceStorageStrategy,
-);
+/// Configuration arguments for creating an [`EngineActor`].
+///
+/// This struct provides a well-documented way to configure the engine actor
+/// instead of using an unlabeled tuple. All fields are optional with sensible
+/// defaults.
+#[derive(Debug, Clone, Default)]
+pub struct EngineActorArgs {
+   /// TCP socket address for incoming peer connections.
+   ///
+   /// If not provided, defaults to `0.0.0.0:0` (all interfaces, dynamic port).
+   pub tcp_addr: Option<SocketAddr>,
+
+   /// uTP socket address for incoming peer connections.
+   ///
+   /// If not provided, defaults to `0.0.0.0:0` (all interfaces, dynamic port).
+   pub utp_addr: Option<SocketAddr>,
+
+   /// UDP socket address for tracker communication.
+   ///
+   /// If not provided, defaults to `0.0.0.0:0` (all interfaces, dynamic port).
+   pub udp_addr: Option<SocketAddr>,
+
+   /// Peer ID for this client instance.
+   ///
+   /// If not provided, a new peer ID will be generated using
+   /// [`PeerId::default()`].
+   pub peer_id: Option<PeerId>,
+
+   /// Default strategy for storing torrent pieces.
+   ///
+   /// This determines how pieces are stored and accessed for all torrents
+   /// managed by this engine.
+   pub piece_storage_strategy: PieceStorageStrategy,
+
+   /// Mailbox size for each torrent instance.
+   ///
+   /// Defaults to 64 if not provided. If set to 0, the mailbox will be
+   /// unbounded.
+   pub mailbox_size: Option<usize>,
+
+   /// Whether to automatically start torrents when they become ready.
+   ///
+   /// If not provided, defaults to `None` (use engine-level default).
+   pub autostart: Option<bool>,
+
+   /// Minimum number of peers required before starting download.
+   ///
+   /// If not provided, defaults to `None` (use engine-level default).
+   pub sufficient_peers: Option<usize>,
+
+   /// Default base path for torrent downloads.
+   ///
+   /// If not provided, torrents will use their own default paths.
+   pub default_base_path: Option<PathBuf>,
+}
 
 impl Actor for EngineActor {
    /// TCP socket address for incoming peers, uTP socket address for incoming
@@ -78,7 +132,17 @@ impl Actor for EngineActor {
    async fn on_start(
       args: Self::Args, actor_ref: kameo::prelude::ActorRef<Self>,
    ) -> Result<Self, Self::Error> {
-      let (tcp_addr, utp_addr, udp_addr, peer_id, default_piece_storage_strategy) = args;
+      let EngineActorArgs {
+         tcp_addr,
+         utp_addr,
+         udp_addr,
+         peer_id,
+         piece_storage_strategy,
+         mailbox_size,
+         autostart,
+         sufficient_peers,
+         default_base_path,
+      } = args;
 
       let tcp_addr = tcp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
       // Should this be port 6881?
@@ -101,7 +165,11 @@ impl Actor for EngineActor {
          torrents: Arc::new(DashMap::new()),
          peer_id,
          actor_ref,
-         default_piece_storage_strategy,
+         default_piece_storage_strategy: piece_storage_strategy,
+         mailbox_size: mailbox_size.unwrap_or(64),
+         autostart,
+         sufficient_peers,
+         default_base_path,
       })
    }
 
