@@ -181,9 +181,15 @@ impl Actor for EngineActor {
          peer_stream = self.tcp_socket.accept() => match peer_stream {
             Ok((stream, _)) => {
                let peer_stream = Box::new(PeerStream::Tcp(stream));
+
+               let Some(actor_ref) = actor_ref.upgrade() else {
+                  error!("Failed to upgrade weak actor reference");
+                  return None;
+               };
+
                Some(Signal::Message {
                   message: Box::new(EngineMessage::IncomingPeer(peer_stream)),
-                  actor_ref: actor_ref.upgrade().unwrap(),
+                  actor_ref,
                   reply: None,
                   sent_within_actor: true,
                })
@@ -196,9 +202,15 @@ impl Actor for EngineActor {
          peer_stream = self.utp_socket.accept() => match peer_stream {
             Ok(stream) => {
                let peer_stream = Box::new(PeerStream::Utp(stream));
+
+               let Some(actor_ref) = actor_ref.upgrade() else {
+                  error!("Failed to upgrade weak actor reference");
+                  return None;
+               };
+
                Some(Signal::Message {
                   message: Box::new(EngineMessage::IncomingPeer(peer_stream)),
-                  actor_ref: actor_ref.upgrade().unwrap(),
+                  actor_ref,
                   reply: None,
                   sent_within_actor: true,
                })
