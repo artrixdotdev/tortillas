@@ -257,11 +257,11 @@ impl PeerActor {
       }
 
       let queued_block_requests = self.pending_block_requests.len();
-      let mut completed = Vec::with_capacity(queued_block_requests);
+      let mut completed = 0usize;
 
       for request in self.pending_block_requests.iter() {
          let (index, begin, length) = *request;
-         if let Ok(()) = self
+         if self
             .stream
             .send(PeerMessages::Request(
                index as u32,
@@ -269,19 +269,14 @@ impl PeerActor {
                length as u32,
             ))
             .await
+            .is_ok()
          {
-            completed.push((index, begin, length));
+            completed += 1;
          }
       }
-      for (index, begin, length) in &completed {
-         self
-            .pending_block_requests
-            .remove(&(*index, *begin, *length));
-      }
-
       trace!(
          amount = queued_block_requests,
-         amount_succussful = completed.len(),
+         amount_succussful = completed,
          "Flushed queued block requests to peer"
       );
    }
