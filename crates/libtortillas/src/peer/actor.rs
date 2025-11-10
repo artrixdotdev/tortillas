@@ -27,6 +27,8 @@ use crate::{
    torrent::{TorrentActor, TorrentMessage, TorrentRequest, TorrentResponse},
 };
 
+const MAX_PENDING_MESSAGES: usize = 8;
+
 const PEER_KEEPALIVE_TIMEOUT: u64 = 10;
 const PEER_DISCONNECT_TIMEOUT: u64 = 20;
 
@@ -285,6 +287,32 @@ impl PeerActor {
       );
    }
 
+   /// Send a message to the peer. Checks if the peer is choked, and if so,
+   /// queues the message in [`self.pending_message_requests`]. This function
+   /// will NOT queue request messages since they have their own queue of
+   /// sorts.
+   ///
+   /// Unless you're doing something like a `KeepAlive` message or a piece
+   /// request, you should use this function over [`Self::stream.send`].
+   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+   async fn send_message(&mut self, msg: PeerMessages) -> Result<(), PeerActorError> {
+      if self.peer.am_choked() {
+         // Only push the message if it's not a request
+         if matches!(msg, PeerMessages::Request(..)) {
+            return Ok(());
+         }
+         if self.pending_message_requests.len() >= MAX_PENDING_MESSAGES {
+            self.pending_message_requests.pop_back();
+         }
+
+         self.pending_message_requests.push_front(msg);
+         trace!("Peer is choked, queueing message");
+
+         return Ok(());
+      }
+
+      self.stream.send(msg).await
+   }
 }
 
 impl Actor for PeerActor {
