@@ -390,6 +390,10 @@ impl Message<PeerMessages> for PeerActor {
          PeerMessages::Unchoke => {
             self.peer.update_last_optimistic_unchoke();
             self.peer.set_am_choked(false);
+
+            // Send all pending messages
+            self.flush_queue().await;
+            self.flush_block_requests().await;
             trace!("Peer unchoked us");
          }
          PeerMessages::Interested => {
