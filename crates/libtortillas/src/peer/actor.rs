@@ -504,15 +504,17 @@ impl Message<PeerTell> for PeerActor {
                return;
             }
 
-            self
-               .stream
-               .send(PeerMessages::Request(
-                  index as u32,
-                  begin as u32,
-                  length as u32,
-               ))
-               .await
-               .expect("Failed to send piece request");
+            if !self.peer.am_choked() {
+               self
+                  .stream
+                  .send(PeerMessages::Request(
+                     index as u32,
+                     begin as u32,
+                     length as u32,
+                  ))
+                  .await
+                  .expect("Failed to send piece request");
+            }
             self.pending_block_requests.insert((index, begin, length));
             trace!(piece_index = index, "Sent piece request to peer");
          }
