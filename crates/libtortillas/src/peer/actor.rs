@@ -39,6 +39,7 @@ pub(crate) struct PeerActor {
    supervisor: ActorRef<TorrentActor>,
 
    pending_block_requests: Arc<DashSet<(usize, usize, usize)>>,
+   pending_message_requests: Vec<PeerMessages>,
 }
 
 impl PeerActor {
@@ -223,6 +224,25 @@ impl PeerActor {
 
       self.peer.set_am_interested(has_interesting_pieces);
    }
+
+   /// Sends all queued messages to the peer. This sends synchronously, and will
+   /// not return until each message has been sent. This is because most of
+   /// the time we want the messages to be sent in their original order.
+   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+   async fn flush_queue(&mut self) {
+      let queued_messages = self.pending_message_requests.len();
+
+      while let Some(msg) = self.pending_message_requests.pop() {
+         self
+            .stream
+            .send(msg)
+            .await
+            .expect("Failed to send message to peer");
+      }
+
+      trace!(amount = queued_messages, "Flushed queued messages to peer");
+   }
+
 }
 
 impl Actor for PeerActor {
@@ -251,6 +271,7 @@ impl Actor for PeerActor {
          stream,
          supervisor,
          pending_block_requests: Arc::new(DashSet::new()),
+         pending_message_requests: Vec::with_capacity(MAX_PENDING_MESSAGES),
       })
    }
 
