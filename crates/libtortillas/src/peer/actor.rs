@@ -1,5 +1,4 @@
 use std::{
-   collections::HashMap,
    collections::{HashMap, VecDeque},
    sync::{Arc, atomic::AtomicU8},
    time::Instant,
@@ -172,7 +171,7 @@ impl PeerActor {
             None,
          );
 
-         if let Err(e) = self.stream.send(message).await {
+         if let Err(e) = self.send_message(message).await {
             trace!(error = %e, piece, "Failed to send metadata request");
          }
       } else {
@@ -582,14 +581,13 @@ impl Message<PeerTell> for PeerActor {
          }
          PeerTell::HaveInfoDict(bitfield) => {
             self
-               .stream
-               .send(PeerMessages::Bitfield(bitfield))
+               .send_message(PeerMessages::Bitfield(bitfield))
                .await
                .expect("Failed to send bitfield");
             trace!("Sent bitfield to peer");
          }
          PeerTell::Have(piece) => {
-            if let Err(e) = self.stream.send(PeerMessages::Have(piece as u32)).await {
+            if let Err(e) = self.send_message(PeerMessages::Have(piece as u32)).await {
                trace!(piece_num = piece, error = %e, "Failed to send Have message to peer");
             }
          }
