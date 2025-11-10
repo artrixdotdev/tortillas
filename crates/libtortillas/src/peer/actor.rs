@@ -1,5 +1,6 @@
 use std::{
    collections::HashMap,
+   collections::{HashMap, VecDeque},
    sync::{Arc, atomic::AtomicU8},
    time::Instant,
 };
@@ -39,7 +40,7 @@ pub(crate) struct PeerActor {
    supervisor: ActorRef<TorrentActor>,
 
    pending_block_requests: Arc<DashSet<(usize, usize, usize)>>,
-   pending_message_requests: Vec<PeerMessages>,
+   pending_message_requests: VecDeque<PeerMessages>,
 }
 
 impl PeerActor {
@@ -232,7 +233,7 @@ impl PeerActor {
    async fn flush_queue(&mut self) {
       let queued_messages = self.pending_message_requests.len();
 
-      while let Some(msg) = self.pending_message_requests.pop() {
+      while let Some(msg) = self.pending_message_requests.pop_back() {
          self
             .stream
             .send(msg)
@@ -304,7 +305,7 @@ impl Actor for PeerActor {
          stream,
          supervisor,
          pending_block_requests: Arc::new(DashSet::new()),
-         pending_message_requests: Vec::with_capacity(MAX_PENDING_MESSAGES),
+         pending_message_requests: VecDeque::with_capacity(MAX_PENDING_MESSAGES),
       })
    }
 
