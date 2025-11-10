@@ -243,6 +243,39 @@ impl PeerActor {
       trace!(amount = queued_messages, "Flushed queued messages to peer");
    }
 
+   /// Flushes/resends all pending block requests to the peer.
+   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+   async fn flush_block_requests(&mut self) {
+      let queued_block_requests = self.pending_block_requests.len();
+      let mut completed = Vec::with_capacity(queued_block_requests);
+
+      for request in self.pending_block_requests.iter() {
+         let (index, begin, length) = *request;
+         if let Ok(()) = self
+            .stream
+            .send(PeerMessages::Request(
+               index as u32,
+               begin as u32,
+               length as u32,
+            ))
+            .await
+         {
+            completed.push((index, begin, length));
+         }
+      }
+      for (index, begin, length) in &completed {
+         self
+            .pending_block_requests
+            .remove(&(*index, *begin, *length));
+      }
+
+      trace!(
+         amount = queued_block_requests,
+         amount_succussful = completed.len(),
+         "Flushed queued block requests to peer"
+      );
+   }
+
 }
 
 impl Actor for PeerActor {
