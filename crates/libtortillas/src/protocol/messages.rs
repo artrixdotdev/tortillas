@@ -1,3 +1,4 @@
+use core::hash;
 use std::{
    collections::HashMap,
    fmt::Display,
@@ -23,7 +24,7 @@ use crate::{
    peer::{MAGIC_STRING, PeerId},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[repr(u8)]
 /// Represents messages exchanged between peers in the BitTorrent protocol.
 ///
@@ -366,7 +367,8 @@ impl PeerMessages {
    PartialEq,
    Eq,
    Deserialize_repr,
-   TryFromPrimitive
+   TryFromPrimitive,
+   Hash
 )]
 #[repr(u8)]
 pub enum ExtendedMessageType {
@@ -456,6 +458,30 @@ pub struct ExtendedMessage {
    pub total_size: Option<usize>,
 }
 
+impl hash::Hash for ExtendedMessage {
+   fn hash<H: hash::Hasher>(&self, state: &mut H) {
+      if let Some(extensions) = &self.supported_extensions {
+         let mut pairs: Vec<_> = extensions.iter().collect();
+         pairs.sort_by_key(|i| i.0);
+
+         pairs.hash(state);
+      }
+
+      self.local_port.hash(state);
+      self.version.hash(state);
+      self.your_ip.hash(state);
+      self.ipv6.hash(state);
+      self.ipv4.hash(state);
+      self.outstanding_requests.hash(state);
+      self.metadata_size.hash(state);
+      if let Some(msg_type) = &self.msg_type {
+         msg_type.hash(state);
+      }
+      self.piece.hash(state);
+      self.total_size.hash(state);
+   }
+}
+
 impl ExtendedMessage {
    pub fn new() -> Self {
       Self::default()
@@ -502,7 +528,7 @@ impl ExtendedMessage {
 }
 
 /// BitTorrent Handshake message structure
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Handshake {
    /// Protocol identifier (typically "BitTorrent protocol")
    pub protocol: Bytes,
