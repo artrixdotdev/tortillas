@@ -231,6 +231,10 @@ impl PeerActor {
    /// the time we want the messages to be sent in their original order.
    #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn flush_queue(&mut self) {
+      if self.pending_message_requests.is_empty() {
+         return;
+      }
+
       let queued_messages = self.pending_message_requests.len();
 
       while let Some(msg) = self.pending_message_requests.pop_back() {
@@ -247,6 +251,10 @@ impl PeerActor {
    /// Flushes/resends all pending block requests to the peer.
    #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn flush_block_requests(&mut self) {
+      if self.pending_block_requests.is_empty() {
+         return;
+      }
+
       let queued_block_requests = self.pending_block_requests.len();
       let mut completed = Vec::with_capacity(queued_block_requests);
 
