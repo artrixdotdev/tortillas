@@ -261,14 +261,15 @@ impl TorrentActor {
       let block_index = offset / BLOCK_SIZE;
 
       if self.is_duplicate_block(index, block_index) {
-         self
-            .broadcast_to_peers(PeerTell::CancelPiece(index, offset, block.len()))
-            .await;
          trace!("Received duplicate piece block");
          return;
       }
 
       self.initialize_and_mark_block(index, block_index);
+
+      self
+         .broadcast_to_peers(PeerTell::CancelPiece(index, offset, block.len()))
+         .await;
 
       self.write_block_to_storage(index, offset, block).await;
 
