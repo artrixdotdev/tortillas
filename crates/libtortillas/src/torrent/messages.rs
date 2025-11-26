@@ -194,7 +194,25 @@ impl Message<TorrentMessage> for TorrentActor {
                warn!("Received kill tracker message for unknown tracker");
             }
          }
+         // If we're in the downloading state, send a piece request to the peer
+         // that just connected
+         TorrentMessage::PeerReady(id) => {
+            if let Some(actor) = self.peers.get(&id)
+               && actor.is_alive()
+               && self.state == TorrentState::Downloading
+               && self.is_ready()
+            {
+               let (piece_idx, block_offset, block_length) =
+                  self.next_block_coordinates(self.next_piece);
+               actor
+                  .tell(PeerTell::NeedPiece(piece_idx, block_offset, block_length))
+                  .await
+                  .expect("Failed to send piece request to peer");
+               trace!(peer_id = %id, piece_idx, block_offset, block_length, "Requested piece form new peer");
             } else {
+               warn!("Received peer ready message for unknown peer");
+            }
+         }
          TorrentMessage::IncomingPiece(index, offset, block) => {
             self.incoming_piece(index, offset, block).await
          }
