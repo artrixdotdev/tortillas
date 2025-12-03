@@ -258,7 +258,22 @@ impl TorrentActor {
    /// all blocks for a piece are received, it triggers piece completion
    /// logic.
    pub async fn incoming_piece(&mut self, index: usize, offset: usize, block: Bytes) {
+      let info_dict = match &self.info {
+         Some(info) => info,
+         None => {
+            warn!("Received piece block before info dict was available");
+            return;
+         }
+      };
+
+      let piece_length = info_dict.piece_length as usize;
+      let expected_blocks = piece_length.div_ceil(BLOCK_SIZE);
+
       let block_index = offset / BLOCK_SIZE;
+      if block_index >= expected_blocks {
+         warn!("Received piece block with invalid offset");
+         return;
+      }
 
       if self.is_duplicate_block(index, block_index) {
          trace!("Received duplicate piece block");
