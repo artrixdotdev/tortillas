@@ -210,7 +210,7 @@ impl Message<TorrentMessage> for TorrentActor {
                   .expect("Failed to send piece request to peer");
                trace!(peer_id = %id, piece_idx, block_offset, block_length, "Requested piece form new peer");
             } else {
-               warn!("Received peer ready message for unknown peer");
+               trace!(peer_id = %id, state = ?self.state, ready = self.is_ready(), "Ignoring PeerReady: peer unknown, dead, or torrent not in download state");
             }
          }
          TorrentMessage::IncomingPiece(index, offset, block) => {
