@@ -361,6 +361,7 @@ impl TorrentActor {
 
       self.next_piece += 1;
       self.bitfield.set_aliased(index, true);
+
       debug!(
          piece_index = index,
          pieces_left = piece_count.saturating_sub(index + 1),
@@ -376,7 +377,7 @@ impl TorrentActor {
             .await;
       }
 
-      if self.next_piece >= piece_count - 1 {
+      if self.next_piece >= piece_count {
          self.state = TorrentState::Seeding;
          self
             .update_trackers(TrackerUpdate::Event(Event::Completed))
