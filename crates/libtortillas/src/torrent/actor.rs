@@ -478,7 +478,7 @@ impl TorrentActor {
       self
          .block_map
          .get(&index)
-         .map(|block_map| block_map[block_index])
+         .and_then(|block_map| block_map.get(block_index).as_deref().copied())
          .unwrap_or(false)
    }
 
