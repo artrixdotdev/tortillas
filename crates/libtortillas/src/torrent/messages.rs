@@ -14,9 +14,7 @@ use kameo::{
 use sha1::{Digest, Sha1};
 use tracing::{info, instrument, trace, warn};
 
-use super::{
-   PieceStorageStrategy, ReadyHook, TorrentActor, TorrentExport, TorrentState, util,
-};
+use super::{PieceStorageStrategy, ReadyHook, TorrentActor, TorrentExport, TorrentState, util};
 use crate::{
    actor_request_response,
    hashes::InfoHash,
@@ -207,7 +205,7 @@ impl Message<TorrentMessage> for TorrentActor {
                   .tell(PeerTell::NeedPiece(piece_idx, block_offset, block_length))
                   .await
                   .expect("Failed to send piece request to peer");
-               trace!(peer_id = %id, piece_idx, block_offset, block_length, "Requested piece form new peer");
+               trace!(peer_id = %id, piece_idx, block_offset, block_length, "Requested piece from new peer");
             } else {
                trace!(peer_id = %id, state = ?self.state, ready = self.is_ready(), "Ignoring PeerReady: peer unknown, dead, or torrent not in download state");
             }
