@@ -12,11 +12,10 @@ use kameo::{
    prelude::{Context, Message},
 };
 use sha1::{Digest, Sha1};
-use tokio::fs;
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{info, instrument, trace, warn};
 
 use super::{
-   BLOCK_SIZE, PieceStorageStrategy, ReadyHook, TorrentActor, TorrentExport, TorrentState, util,
+   PieceStorageStrategy, ReadyHook, TorrentActor, TorrentExport, TorrentState, util,
 };
 use crate::{
    actor_request_response,
@@ -25,7 +24,7 @@ use crate::{
    peer::{Peer, PeerId, PeerTell},
    protocol::stream::PeerStream,
    torrent::{PieceManagerProxy, piece_manager::PieceManager},
-   tracker::{Event, Tracker, TrackerMessage, TrackerUpdate},
+   tracker::Tracker,
 };
 
 /// For incoming from outside sources (e.g Peers, Trackers and Engine)
