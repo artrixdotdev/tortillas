@@ -330,6 +330,11 @@ impl Actor for PeerActor {
          stream.send(PeerMessages::Bitfield(bitfield)).await?;
       }
 
+      supervisor
+         .tell(TorrentMessage::PeerReady(peer.id.unwrap()))
+         .await
+         .map_err(|e| PeerActorError::SupervisorCommunicationFailed(e.to_string()))?;
+
       Ok(Self {
          peer,
          stream,
