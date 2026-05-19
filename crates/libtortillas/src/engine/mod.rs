@@ -41,7 +41,7 @@ use std::{net::SocketAddr, path::PathBuf};
 
 pub(crate) use actor::*;
 use bon;
-use kameo::{Actor, actor::ActorRef};
+use kameo::actor::{ActorRef, Spawn};
 pub(crate) use messages::*;
 use serde::{Deserialize, Serialize};
 use tracing::error;

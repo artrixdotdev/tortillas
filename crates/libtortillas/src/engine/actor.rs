@@ -175,8 +175,8 @@ impl Actor for EngineActor {
 
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
-   ) -> Option<Signal<Self>> {
-      tokio::select! {
+   ) -> Result<Option<Signal<Self>>, Self::Error> {
+      Ok(tokio::select! {
          signal = mailbox_rx.recv() => signal,
          peer_stream = self.tcp_socket.accept() => match peer_stream {
             Ok((stream, _)) => {
@@ -184,15 +184,17 @@ impl Actor for EngineActor {
 
                let Some(actor_ref) = actor_ref.upgrade() else {
                   error!("Failed to upgrade weak actor reference");
-                  return None;
+                  return Ok(None);
                };
 
                Some(Signal::Message {
                   message: Box::new(EngineMessage::IncomingPeer(peer_stream)),
                   actor_ref,
-                  reply: None,
-                  sent_within_actor: true,
-               })
+                   reply: None,
+                   sent_within_actor: true,
+                   message_name: "EngineMessage",
+                   caller_span: tracing::Span::current(),
+                })
             }
             Err(err) => {
                error!("Failed to accept incoming peer: {}", err);
@@ -205,21 +207,23 @@ impl Actor for EngineActor {
 
                let Some(actor_ref) = actor_ref.upgrade() else {
                   error!("Failed to upgrade weak actor reference");
-                  return None;
+                  return Ok(None);
                };
 
                Some(Signal::Message {
                   message: Box::new(EngineMessage::IncomingPeer(peer_stream)),
                   actor_ref,
-                  reply: None,
-                  sent_within_actor: true,
-               })
+                   reply: None,
+                   sent_within_actor: true,
+                   message_name: "EngineMessage",
+                   caller_span: tracing::Span::current(),
+                })
             }
             Err(err) => {
                error!("Failed to accept incoming peer: {}", err);
                None
             }
          },
-      }
+      })
    }
 }

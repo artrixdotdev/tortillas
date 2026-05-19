@@ -1,6 +1,8 @@
 use futures::future::join_all;
 use kameo::{
-   Actor, Reply, mailbox,
+   Reply,
+   actor::Spawn,
+   mailbox,
    prelude::{ActorRef, Context, Message},
 };
 use tracing::{error, warn};
@@ -101,7 +103,7 @@ impl Message<EngineRequest> for EngineActor {
                return Err(EngineError::TorrentAlreadyExists(info_hash));
             }
 
-            let torrent_ref = TorrentActor::spawn_in_thread_with_mailbox(
+            let torrent_ref = TorrentActor::spawn_with_mailbox(
                TorrentActorArgs {
                   peer_id: self.peer_id,
                   metainfo: *metainfo,

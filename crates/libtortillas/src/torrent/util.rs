@@ -1,5 +1,5 @@
 use std::{
-   io::SeekFrom,
+   io::{Read, SeekFrom},
    path::{Path, PathBuf},
 };
 
@@ -98,7 +98,14 @@ pub async fn validate_piece_file(
    let piece_file_hash = spawn_blocking(move || -> anyhow::Result<Hash<20>> {
       let mut hasher = Sha1::new();
       let mut file = std::fs::File::open(&path)?;
-      std::io::copy(&mut file, &mut hasher)?;
+      let mut buffer = [0; 8192];
+      loop {
+         let bytes_read = file.read(&mut buffer)?;
+         if bytes_read == 0 {
+            break;
+         }
+         hasher.update(&buffer[..bytes_read]);
+      }
       let hash = hasher.finalize();
       Ok(Hash::from_bytes(hash.into()))
    })

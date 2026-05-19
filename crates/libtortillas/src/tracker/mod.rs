@@ -293,18 +293,23 @@ impl Actor for TrackerActor {
    async fn next(
       &mut self, actor_ref: kameo::prelude::WeakActorRef<Self>,
       mailbox_rx: &mut kameo::prelude::MailboxReceiver<Self>,
-   ) -> Option<Signal<Self>> {
-      tokio::select! {
+   ) -> Result<Option<Signal<Self>>, Self::Error> {
+      Ok(tokio::select! {
          signal = mailbox_rx.recv() => signal,
          // Waits for the next interval to tick
          _ = self.interval.tick() => {
-            let msg = TrackerMessage::Announce;
-            Some(Signal::Message{ message: Box::new(msg),
-            actor_ref: actor_ref.upgrade()?.clone(),
-            reply: None,
-            sent_within_actor: true,
-         })}
-      }
+            let Some(actor_ref) = actor_ref.upgrade() else {
+               return Ok(None);
+            };
+             let msg = TrackerMessage::Announce;
+             Some(Signal::Message{ message: Box::new(msg),
+             actor_ref,
+             reply: None,
+             sent_within_actor: true,
+             message_name: "TrackerMessage",
+             caller_span: tracing::Span::current(),
+          })}
+      })
    }
 }
 

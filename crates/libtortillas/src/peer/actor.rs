@@ -74,6 +74,8 @@ impl PeerActor {
             actor_ref: actor_ref.upgrade()?.clone(),
             reply: None,
             sent_within_actor: true,
+            message_name: "PeerMessages",
+            caller_span: tracing::Span::current(),
          }),
          Err(e) => {
             use std::io::ErrorKind::*;
@@ -348,7 +350,7 @@ impl Actor for PeerActor {
    #[instrument(skip(self, actor_ref, mailbox_rx), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
-   ) -> Option<Signal<Self>> {
+   ) -> Result<Option<Signal<Self>>, Self::Error> {
       // Disconnects the peer by killing the actor if a message has not been received
       // within the last 15 seconds, *only after* sending a KeepAlive message when a
       // message has not been received with the last 10 seconds.
@@ -379,10 +381,10 @@ impl Actor for PeerActor {
          // ourselves.
       }
 
-      tokio::select! {
+      Ok(tokio::select! {
          signal = mailbox_rx.recv() => signal,
          msg = self.stream.recv() =>  self.check_message_signal(actor_ref, msg)
-      }
+      })
    }
 }
 
