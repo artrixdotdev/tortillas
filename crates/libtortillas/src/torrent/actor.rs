@@ -1017,21 +1017,20 @@ mod tests {
    use super::*;
    use crate::{
       metainfo::MetaInfo,
-      test_support,
+      testing,
       torrent::{Torrent, TorrentRequest, TorrentResponse},
    };
 
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
    async fn torrent_actor_when_public_torrent_is_available_then_reaches_ready_state() {
-      test_support::init_tracing();
-      let metainfo =
-         test_support::read_torrent_fixture(test_support::BIG_BUCK_BUNNY_TORRENT_FILE).await;
+      testing::init_tracing();
+      let metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
 
-      let peer_id = test_support::peer_id();
+      let peer_id = testing::peer_id();
 
-      let udp_server = test_support::udp_server().await;
-      let utp_server = UtpSocket::new_udp(test_support::ephemeral_socket_addr())
+      let udp_server = testing::udp_server().await;
+      let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
          .await
          .unwrap();
       let sufficient_peers = 6;
@@ -1061,14 +1060,13 @@ mod tests {
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
    async fn torrent_actor_when_public_magnet_uri_is_available_then_retrieves_info_dict() {
-      test_support::init_tracing();
-      let metainfo =
-         test_support::read_magnet_fixture(test_support::BIG_BUCK_BUNNY_MAGNET_FILE).await;
+      testing::init_tracing();
+      let metainfo = testing::read_magnet_fixture(testing::BIG_BUCK_BUNNY_MAGNET_FILE).await;
 
-      let peer_id = test_support::peer_id();
+      let peer_id = testing::peer_id();
 
-      let udp_server = test_support::udp_server().await;
-      let utp_server = UtpSocket::new_udp(test_support::ephemeral_socket_addr())
+      let udp_server = testing::udp_server().await;
+      let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
          .await
          .unwrap();
 
@@ -1104,9 +1102,8 @@ mod tests {
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
    async fn torrent_actor_when_public_torrent_is_available_then_writes_piece_storage() {
-      test_support::init_tracing();
-      let metainfo =
-         test_support::read_torrent_fixture(test_support::BIG_BUCK_BUNNY_TORRENT_FILE).await;
+      testing::init_tracing();
+      let metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
       let info_dict = match &metainfo {
          MetaInfo::Torrent(file) => file.info.clone(),
          _ => unreachable!(),
@@ -1126,13 +1123,13 @@ mod tests {
          }
       }
 
-      let piece_path = test_support::torrent_temp_path();
+      let piece_path = testing::torrent_temp_path();
       let file_path = piece_path.join("files");
 
-      let peer_id = test_support::peer_id();
+      let peer_id = testing::peer_id();
 
-      let udp_server = test_support::udp_server().await;
-      let utp_server = UtpSocket::new_udp(test_support::ephemeral_socket_addr())
+      let udp_server = testing::udp_server().await;
+      let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
          .await
          .unwrap();
 
@@ -1181,9 +1178,8 @@ mod tests {
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
    async fn torrent_actor_when_public_torrent_is_available_then_exports_progress() {
-      test_support::init_tracing();
-      let metainfo =
-         test_support::read_torrent_fixture(test_support::BIG_BUCK_BUNNY_TORRENT_FILE).await;
+      testing::init_tracing();
+      let metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
       let info_dict = match &metainfo {
          MetaInfo::Torrent(file) => file.info.clone(),
          _ => unreachable!(),
@@ -1191,13 +1187,13 @@ mod tests {
 
       let info_hash = info_dict.hash().unwrap();
 
-      let piece_path = test_support::torrent_temp_path();
+      let piece_path = testing::torrent_temp_path();
       let file_path = piece_path.join("files");
 
-      let peer_id = test_support::peer_id();
+      let peer_id = testing::peer_id();
 
-      let udp_server = test_support::udp_server().await;
-      let utp_server = UtpSocket::new_udp(test_support::ephemeral_socket_addr())
+      let udp_server = testing::udp_server().await;
+      let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
          .await
          .unwrap();
 

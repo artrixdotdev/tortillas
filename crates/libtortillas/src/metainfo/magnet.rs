@@ -109,7 +109,7 @@ mod tests {
    use tracing_test::traced_test;
 
    use super::*;
-   use crate::test_support::{BIG_BUCK_BUNNY_NAME, big_buck_bunny_magnet};
+   use crate::testing::{BIG_BUCK_BUNNY_NAME, big_buck_bunny_magnet};
 
    #[tokio::test]
    #[traced_test]

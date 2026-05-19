@@ -202,18 +202,18 @@ impl PieceManager for FilePieceManager {
 #[cfg(test)]
 mod tests {
    use super::*;
-   use crate::{prelude::MetaInfo, test_support};
+   use crate::{prelude::MetaInfo, testing};
 
    #[tokio::test]
    async fn file_piece_manager_when_mapping_first_piece_then_returns_expected_file() {
-      test_support::init_tracing();
+      testing::init_tracing();
 
       let MetaInfo::Torrent(torrent) =
-         test_support::read_torrent_fixture(test_support::BIG_BUCK_BUNNY_TORRENT_FILE).await
+         testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await
       else {
          panic!("failed to parse torrent file");
       };
-      let manager = FilePieceManager(Some(test_support::fixture_path("")), Some(torrent.info));
+      let manager = FilePieceManager(Some(testing::fixture_path("")), Some(torrent.info));
 
       // Pick a few representative pieces
       assert!(manager.piece_to_paths(0).is_ok());

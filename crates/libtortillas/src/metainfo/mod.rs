@@ -62,7 +62,7 @@ mod tests {
 
    use super::*;
    use crate::{
-      test_support::{
+      testing::{
          BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_TORRENT_FILE, big_buck_bunny_magnet,
          read_torrent_fixture,
       },

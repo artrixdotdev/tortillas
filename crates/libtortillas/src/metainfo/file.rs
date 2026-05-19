@@ -154,18 +154,17 @@ mod tests {
    use tracing_test::traced_test;
 
    use super::*;
+   use crate::testing;
 
    #[tokio::test]
    #[traced_test]
    async fn torrent_file_when_fixture_is_valid_then_parses_name() {
-      let metainfo = crate::test_support::read_torrent_fixture(
-         crate::test_support::BIG_BUCK_BUNNY_TORRENT_FILE,
-      )
-      .await;
+      let metainfo =
+         testing::read_torrent_fixture(crate::testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
 
       match metainfo {
          MetaInfo::Torrent(torrent) => {
-            assert_eq!(torrent.info.name, crate::test_support::BIG_BUCK_BUNNY_NAME);
+            assert_eq!(torrent.info.name, crate::testing::BIG_BUCK_BUNNY_NAME);
          }
          _ => panic!("Expected Torrent"),
       }

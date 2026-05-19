@@ -426,7 +426,7 @@ mod tests {
    use crate::{
       metainfo::MetaInfo,
       peer::PeerId,
-      test_support::{
+      testing::{
          KNOPPIX_TORRENT_FILE, init_tracing, random_port, read_torrent_fixture, udp_server,
       },
       tracker::TrackerBase,

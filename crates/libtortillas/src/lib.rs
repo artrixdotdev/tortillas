@@ -9,7 +9,7 @@ pub mod tracker;
 pub(crate) mod util;
 
 #[cfg(test)]
-pub(crate) mod test_support {
+pub(crate) mod testing {
    use std::{net::SocketAddr, path::PathBuf, str::FromStr};
 
    use rand::random_range;

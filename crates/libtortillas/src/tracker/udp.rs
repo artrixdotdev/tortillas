@@ -959,7 +959,7 @@ mod tests {
    use super::*;
    use crate::{
       metainfo::MetaInfo,
-      test_support::{
+      testing::{
          BIG_BUCK_BUNNY_MAGNET_FILE, init_tracing, random_port, random_socket_addr,
          read_magnet_fixture, udp_server,
       },
