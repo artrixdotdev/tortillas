@@ -461,11 +461,11 @@ mod tests {
 
    #[tokio::test]
    async fn test_http_tracker_instance_trait() {
-      tracing_subscriber::fmt()
+      let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
          .pretty()
-         .init();
+         .try_init();
 
       let path = std::env::current_dir()
          .unwrap()

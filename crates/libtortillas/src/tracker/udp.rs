@@ -960,11 +960,11 @@ mod tests {
 
    #[tokio::test]
    async fn test_stream_with_udp_peers() {
-      tracing_subscriber::fmt()
+      let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
          .pretty()
-         .init();
+         .try_init();
 
       let path = std::env::current_dir()
          .unwrap()
@@ -1009,11 +1009,11 @@ mod tests {
          .unwrap()
          .join("tests/magneturis/big-buck-bunny.txt");
 
-      tracing_subscriber::fmt()
+      let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
          .pretty()
-         .init();
+         .try_init();
 
       let contents = tokio::fs::read_to_string(&path).await.unwrap();
       let metainfo = MagnetUri::parse(contents).unwrap();
