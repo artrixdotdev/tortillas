@@ -109,13 +109,12 @@ mod tests {
    use tracing_test::traced_test;
 
    use super::*;
+   use crate::test_support::BIG_BUCK_BUNNY_MAGNET;
 
    #[tokio::test]
    #[traced_test]
    async fn magnet_uri_when_uri_is_valid_then_parses_display_name() {
-      let metainfo =
-         MagnetUri::parse(include_str!("../../tests/magneturis/big-buck-bunny.txt").to_string())
-            .unwrap();
+      let metainfo = MagnetUri::parse(BIG_BUCK_BUNNY_MAGNET.to_string()).unwrap();
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {

@@ -1016,22 +1016,17 @@ mod tests {
 
    use super::*;
    use crate::{
-      metainfo::{MagnetUri, TorrentFile},
+      metainfo::MetaInfo,
+      test_support,
       torrent::{Torrent, TorrentRequest, TorrentResponse},
    };
 
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
    async fn torrent_actor_when_public_torrent_is_available_then_reaches_ready_state() {
-      let _ = tracing_subscriber::fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .try_init();
-      let metainfo = TorrentFile::parse(include_bytes!(
-         "../../tests/torrents/big-buck-bunny.torrent"
-      ))
-      .unwrap();
+      test_support::init_tracing();
+      let metainfo =
+         test_support::read_torrent_fixture(test_support::BIG_BUCK_BUNNY_TORRENT_FILE).await;
 
       let peer_id = PeerId::default();
 
@@ -1067,18 +1062,9 @@ mod tests {
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
    async fn torrent_actor_when_public_magnet_uri_is_available_then_retrieves_info_dict() {
-      let _ = tracing_subscriber::fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .try_init();
-
-      // Test with a magnet URI, since magnet URIs don't come with an info dict
-      let path =
-         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/magneturis/big-buck-bunny.txt");
-      let contents = tokio::fs::read_to_string(path).await.unwrap();
-
-      let metainfo = MagnetUri::parse(contents).unwrap();
+      test_support::init_tracing();
+      let metainfo =
+         test_support::read_magnet_fixture(test_support::BIG_BUCK_BUNNY_MAGNET_FILE).await;
 
       let peer_id = PeerId::default();
 
@@ -1120,15 +1106,9 @@ mod tests {
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
    async fn torrent_actor_when_public_torrent_is_available_then_writes_piece_storage() {
-      let _ = tracing_subscriber::fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .try_init();
-      let metainfo = TorrentFile::parse(include_bytes!(
-         "../../tests/torrents/big-buck-bunny.torrent"
-      ))
-      .unwrap();
+      test_support::init_tracing();
+      let metainfo =
+         test_support::read_torrent_fixture(test_support::BIG_BUCK_BUNNY_TORRENT_FILE).await;
       let info_dict = match &metainfo {
          MetaInfo::Torrent(file) => file.info.clone(),
          _ => unreachable!(),
@@ -1204,15 +1184,9 @@ mod tests {
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
    async fn torrent_actor_when_public_torrent_is_available_then_exports_progress() {
-      let _ = tracing_subscriber::fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .try_init();
-      let metainfo = TorrentFile::parse(include_bytes!(
-         "../../tests/torrents/big-buck-bunny.torrent"
-      ))
-      .unwrap();
+      test_support::init_tracing();
+      let metainfo =
+         test_support::read_torrent_fixture(test_support::BIG_BUCK_BUNNY_TORRENT_FILE).await;
       let info_dict = match &metainfo {
          MetaInfo::Torrent(file) => file.info.clone(),
          _ => unreachable!(),

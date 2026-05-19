@@ -959,24 +959,18 @@ mod tests {
    use rand::random_range;
 
    use super::*;
-   use crate::metainfo::{MagnetUri, MetaInfo};
+   use crate::{
+      metainfo::MetaInfo,
+      test_support::{BIG_BUCK_BUNNY_MAGNET_FILE, init_tracing, read_magnet_fixture},
+   };
 
    const EXTERNAL_TRACKER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
 
    #[tokio::test]
    #[ignore = "external-network test: reaches public UDP trackers"]
    async fn udp_tracker_when_public_magnet_tracker_is_available_then_returns_ipv4_peer() {
-      let _ = tracing_subscriber::fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .try_init();
-
-      let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-         .join("tests/magneturis/big-buck-bunny.txt");
-
-      let contents = tokio::fs::read_to_string(&path).await.unwrap();
-      let metainfo = MagnetUri::parse(contents).unwrap();
+      init_tracing();
+      let metainfo = read_magnet_fixture(BIG_BUCK_BUNNY_MAGNET_FILE).await;
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
@@ -1061,17 +1055,8 @@ mod tests {
    #[ignore = "external-network test: reaches public UDP trackers"]
    //#[traced_test]
    async fn udp_tracker_when_public_trackers_share_socket_then_returns_peers() {
-      let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-         .join("tests/magneturis/big-buck-bunny.txt");
-
-      let _ = tracing_subscriber::fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .try_init();
-
-      let contents = tokio::fs::read_to_string(&path).await.unwrap();
-      let metainfo = MagnetUri::parse(contents).unwrap();
+      init_tracing();
+      let metainfo = read_magnet_fixture(BIG_BUCK_BUNNY_MAGNET_FILE).await;
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {

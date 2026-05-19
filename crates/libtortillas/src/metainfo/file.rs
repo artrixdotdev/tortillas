@@ -158,10 +158,10 @@ mod tests {
    #[tokio::test]
    #[traced_test]
    async fn torrent_file_when_fixture_is_valid_then_parses_name() {
-      let metainfo = TorrentFile::parse(include_bytes!(
-         "../../tests/torrents/big-buck-bunny.torrent"
-      ))
-      .unwrap();
+      let metainfo = crate::test_support::read_torrent_fixture(
+         crate::test_support::BIG_BUCK_BUNNY_TORRENT_FILE,
+      )
+      .await;
 
       match metainfo {
          MetaInfo::Torrent(torrent) => {

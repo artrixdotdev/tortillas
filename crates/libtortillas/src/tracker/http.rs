@@ -425,8 +425,9 @@ mod tests {
 
    use super::HttpTracker;
    use crate::{
-      metainfo::{MetaInfo, TorrentFile},
+      metainfo::MetaInfo,
       peer::PeerId,
+      test_support::{KNOPPIX_TORRENT_FILE, init_tracing, read_torrent_fixture},
       tracker::{TrackerBase, udp::UdpServer},
    };
 
@@ -434,10 +435,7 @@ mod tests {
    #[ignore = "external-network test: reaches public HTTP trackers"]
    #[traced_test]
    async fn http_tracker_when_public_tracker_is_available_then_returns_ipv4_peer() {
-      let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-         .join("tests/torrents/KNOPPIX_V9.1DVD-2021-01-25-EN.torrent");
-
-      let metainfo = TorrentFile::read(path).await.unwrap();
+      let metainfo = read_torrent_fixture(KNOPPIX_TORRENT_FILE).await;
 
       match metainfo {
          MetaInfo::Torrent(file) => {
@@ -462,17 +460,8 @@ mod tests {
    #[tokio::test]
    #[ignore = "external-network test: reaches public HTTP trackers"]
    async fn http_tracker_instance_when_public_tracker_is_available_then_returns_peers() {
-      let _ = tracing_subscriber::fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .try_init();
-
-      let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-         .join("tests/torrents/KNOPPIX_V9.1DVD-2021-01-25-EN.torrent");
-
-      let contents = tokio::fs::read(&path).await.unwrap();
-      let metainfo = TorrentFile::parse(&contents).unwrap();
+      init_tracing();
+      let metainfo = read_torrent_fixture(KNOPPIX_TORRENT_FILE).await;
 
       match metainfo {
          MetaInfo::Torrent(torrent) => {
