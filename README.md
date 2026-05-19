@@ -45,6 +45,21 @@ Tests that intentionally exercise public BitTorrent infrastructure are marked `#
 cargo nextest run --workspace --run-ignored only
 ```
 
+Test names use this convention:
+
+```text
+subject_when_condition_then_expected_result
+```
+
+Examples:
+
+```text
+magnet_uri_when_query_is_missing_then_returns_error
+peer_stream_when_handshake_is_valid_then_returns_peer_id
+```
+
+Keep tests focused on one behavior, prefer deterministic fixtures with `include_str!` or `include_bytes!`, and avoid public network access unless the test is explicitly ignored.
+
 ## 📦 Installation
 ### Tortillas
 Tortillas is the frontend TUI (Text User Interface) application (what most people want)
