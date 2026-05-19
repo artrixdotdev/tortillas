@@ -357,7 +357,9 @@ pub fn validate_handshake(
 
 #[cfg(test)]
 mod tests {
-   use tokio::net::TcpListener;
+   use std::time::Duration;
+
+   use tokio::{net::TcpListener, time::timeout};
    use tracing_test::traced_test;
 
    use super::*;
@@ -374,7 +376,7 @@ mod tests {
 
       // Spawn client that sends handshake
       let client_info_hash = info_hash.clone();
-      tokio::spawn(async move {
+      let client = tokio::spawn(async move {
          let mut stream = PeerStream::Tcp(TcpStream::connect(addr).await.unwrap());
 
          stream
@@ -384,10 +386,17 @@ mod tests {
       });
 
       // Server side
-      let (stream, _) = listener.accept().await.unwrap();
+      let (stream, _) = timeout(Duration::from_secs(1), listener.accept())
+         .await
+         .expect("client should connect before timeout")
+         .unwrap();
       let mut peer_stream = PeerStream::Tcp(stream);
 
-      let (incoming_id, _) = peer_stream.recv_handshake().await.unwrap();
+      let (incoming_id, _) = timeout(Duration::from_secs(1), peer_stream.recv_handshake())
+         .await
+         .expect("handshake should arrive before timeout")
+         .unwrap();
+      client.await.expect("client task should not panic");
 
       assert_eq!(incoming_id, client_id);
    }
