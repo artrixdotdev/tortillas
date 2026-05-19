@@ -1008,7 +1008,7 @@ impl Actor for TorrentActor {
 
 #[cfg(test)]
 mod tests {
-   use std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
+   use std::{path::PathBuf, time::Duration};
 
    use librqbit_utp::UtpSocket;
    use tokio::{fs, time::sleep};
@@ -1028,13 +1028,12 @@ mod tests {
       let metainfo =
          test_support::read_torrent_fixture(test_support::BIG_BUCK_BUNNY_TORRENT_FILE).await;
 
-      let peer_id = PeerId::default();
+      let peer_id = test_support::peer_id();
 
-      let udp_server = UdpServer::new(None).await;
-      let utp_server =
-         UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
-            .await
-            .unwrap();
+      let udp_server = test_support::udp_server().await;
+      let utp_server = UtpSocket::new_udp(test_support::ephemeral_socket_addr())
+         .await
+         .unwrap();
       let sufficient_peers = 6;
 
       let info_hash = metainfo.clone().info_hash().unwrap();
@@ -1066,13 +1065,12 @@ mod tests {
       let metainfo =
          test_support::read_magnet_fixture(test_support::BIG_BUCK_BUNNY_MAGNET_FILE).await;
 
-      let peer_id = PeerId::default();
+      let peer_id = test_support::peer_id();
 
-      let udp_server = UdpServer::new(None).await;
-      let utp_server =
-         UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
-            .await
-            .unwrap();
+      let udp_server = test_support::udp_server().await;
+      let utp_server = UtpSocket::new_udp(test_support::ephemeral_socket_addr())
+         .await
+         .unwrap();
 
       let actor = TorrentActor::spawn(TorrentActorArgs {
          peer_id,
@@ -1128,16 +1126,15 @@ mod tests {
          }
       }
 
-      let piece_path = std::env::temp_dir().join("tortillas");
+      let piece_path = test_support::torrent_temp_path();
       let file_path = piece_path.join("files");
 
-      let peer_id = PeerId::default();
+      let peer_id = test_support::peer_id();
 
-      let udp_server = UdpServer::new(None).await;
-      let utp_server =
-         UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
-            .await
-            .unwrap();
+      let udp_server = test_support::udp_server().await;
+      let utp_server = UtpSocket::new_udp(test_support::ephemeral_socket_addr())
+         .await
+         .unwrap();
 
       let actor = TorrentActor::spawn(TorrentActorArgs {
          peer_id,
@@ -1194,16 +1191,15 @@ mod tests {
 
       let info_hash = info_dict.hash().unwrap();
 
-      let piece_path = std::env::temp_dir().join("tortillas");
+      let piece_path = test_support::torrent_temp_path();
       let file_path = piece_path.join("files");
 
-      let peer_id = PeerId::default();
+      let peer_id = test_support::peer_id();
 
-      let udp_server = UdpServer::new(None).await;
-      let utp_server =
-         UtpSocket::new_udp(SocketAddr::from_str("0.0.0.0:0").expect("Failed to parse"))
-            .await
-            .unwrap();
+      let udp_server = test_support::udp_server().await;
+      let utp_server = UtpSocket::new_udp(test_support::ephemeral_socket_addr())
+         .await
+         .unwrap();
 
       let actor = TorrentActor::spawn(TorrentActorArgs {
          peer_id,

@@ -956,12 +956,13 @@ impl TrackerBase for UdpTracker {
 
 #[cfg(test)]
 mod tests {
-   use rand::random_range;
-
    use super::*;
    use crate::{
       metainfo::MetaInfo,
-      test_support::{BIG_BUCK_BUNNY_MAGNET_FILE, init_tracing, read_magnet_fixture},
+      test_support::{
+         BIG_BUCK_BUNNY_MAGNET_FILE, init_tracing, random_port, random_socket_addr,
+         read_magnet_fixture, udp_server,
+      },
    };
 
    const EXTERNAL_TRACKER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
@@ -976,8 +977,7 @@ mod tests {
          MetaInfo::MagnetUri(magnet) => {
             let info_hash = magnet.info_hash().expect("Missing info hash");
             let announce_list = magnet.announce_list.expect("Missing announce list");
-            let port: u16 = random_range(1024..65535);
-            let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
+            let socket_addr = random_socket_addr();
             let udp_announce_list = announce_list
                .iter()
                .filter(|tracker| tracker.uri().starts_with("udp://"));
@@ -1067,7 +1067,7 @@ mod tests {
             let mut trackers = Vec::new();
             let mut tracker_urls = Vec::new();
 
-            let udp_server = UdpServer::new(None).await;
+            let udp_server = udp_server().await;
             let peer_id = PeerId::new();
 
             // Use multiple tracker URLs from the announce list (or duplicate the same one)
@@ -1075,7 +1075,7 @@ mod tests {
                .iter()
                .filter(|t| t.uri().starts_with("udp://"))
             {
-               let port: u16 = random_range(1024..65535);
+               let port = random_port();
 
                let tracker = announce_url
                   .to_instance(info_hash, peer_id, port, udp_server.clone())

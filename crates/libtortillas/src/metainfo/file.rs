@@ -165,7 +165,7 @@ mod tests {
 
       match metainfo {
          MetaInfo::Torrent(torrent) => {
-            assert_eq!(torrent.info.name, "Big Buck Bunny");
+            assert_eq!(torrent.info.name, crate::test_support::BIG_BUCK_BUNNY_NAME);
          }
          _ => panic!("Expected Torrent"),
       }

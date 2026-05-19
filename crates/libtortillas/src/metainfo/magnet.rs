@@ -109,16 +109,16 @@ mod tests {
    use tracing_test::traced_test;
 
    use super::*;
-   use crate::test_support::BIG_BUCK_BUNNY_MAGNET;
+   use crate::test_support::{BIG_BUCK_BUNNY_NAME, big_buck_bunny_magnet};
 
    #[tokio::test]
    #[traced_test]
    async fn magnet_uri_when_uri_is_valid_then_parses_display_name() {
-      let metainfo = MagnetUri::parse(BIG_BUCK_BUNNY_MAGNET.to_string()).unwrap();
+      let metainfo = big_buck_bunny_magnet();
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
-            assert_eq!(magnet.name, "Big Buck Bunny");
+            assert_eq!(magnet.name, BIG_BUCK_BUNNY_NAME);
          }
          _ => panic!("Expected Torrent"),
       }

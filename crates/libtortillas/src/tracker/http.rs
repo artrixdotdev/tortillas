@@ -420,15 +420,16 @@ where
 #[cfg(test)]
 mod tests {
 
-   use rand::random_range;
    use tracing_test::traced_test;
 
    use super::HttpTracker;
    use crate::{
       metainfo::MetaInfo,
       peer::PeerId,
-      test_support::{KNOPPIX_TORRENT_FILE, init_tracing, read_torrent_fixture},
-      tracker::{TrackerBase, udp::UdpServer},
+      test_support::{
+         KNOPPIX_TORRENT_FILE, init_tracing, random_port, read_torrent_fixture, udp_server,
+      },
+      tracker::TrackerBase,
    };
 
    #[tokio::test]
@@ -472,9 +473,9 @@ mod tests {
                .find(|t| t.uri().starts_with("http://"))
                .expect("No UDP tracker found in announce list");
 
-            let port: u16 = random_range(1024..65535);
+            let port = random_port();
             let peer_id = PeerId::new();
-            let server = UdpServer::new(None).await;
+            let server = udp_server().await;
 
             let tracker = announce_url
                .to_instance(info_hash, peer_id, port, server)
