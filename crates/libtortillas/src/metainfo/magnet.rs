@@ -113,12 +113,9 @@ mod tests {
    #[tokio::test]
    #[traced_test]
    async fn test_parse_magnet_uri() {
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/big-buck-bunny.txt");
-      let contents = tokio::fs::read_to_string(path).await.unwrap();
-
-      let metainfo = MagnetUri::parse(contents).unwrap();
+      let metainfo =
+         MagnetUri::parse(include_str!("../../tests/magneturis/big-buck-bunny.txt").to_string())
+            .unwrap();
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
@@ -137,5 +134,6 @@ mod tests {
       assert_eq!(magnet.source.len(), 2);
       assert_eq!(magnet.exact_source.len(), 2);
       assert_eq!(magnet.peer.len(), 2);
+      assert_eq!(magnet.name, "name");
    }
 }

@@ -158,11 +158,10 @@ mod tests {
    #[tokio::test]
    #[traced_test]
    async fn test_parse_file() {
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/torrents/big-buck-bunny.torrent");
-
-      let metainfo = TorrentFile::read(path).await.unwrap();
+      let metainfo = TorrentFile::parse(include_bytes!(
+         "../../tests/torrents/big-buck-bunny.torrent"
+      ))
+      .unwrap();
 
       match metainfo {
          MetaInfo::Torrent(torrent) => {

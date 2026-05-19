@@ -63,50 +63,37 @@ mod tests {
    use super::*;
    use crate::tracker::Tracker;
 
+   const BIG_BUCK_BUNNY_MAGNET: &str = include_str!("../../tests/magneturis/big-buck-bunny.txt");
+   const BIG_BUCK_BUNNY_INFO_HASH: &str = "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c";
+
    #[tokio::test]
    #[traced_test]
    async fn test_info_hash_with_magneturi() {
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/big-buck-bunny.txt");
-      let contents = tokio::fs::read_to_string(path).await.unwrap();
-
-      let metainfo = MagnetUri::parse(contents).unwrap();
+      let metainfo = MagnetUri::parse(BIG_BUCK_BUNNY_MAGNET.to_string()).unwrap();
 
       let info_hash = metainfo.info_hash().unwrap();
-      assert_eq!(
-         info_hash.to_hex(),
-         "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
-      );
+      assert_eq!(info_hash.to_hex(), BIG_BUCK_BUNNY_INFO_HASH);
    }
 
    #[tokio::test]
    #[traced_test]
    async fn test_info_hash_with_torrent() {
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/torrents/big-buck-bunny.torrent");
-      let file = TorrentFile::read(path).await.unwrap();
+      let file = TorrentFile::parse(include_bytes!(
+         "../../tests/torrents/big-buck-bunny.torrent"
+      ))
+      .unwrap();
 
       let info_hash = file.info_hash().unwrap();
-      assert_eq!(
-         info_hash.to_hex(),
-         "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c"
-      );
+      assert_eq!(info_hash.to_hex(), BIG_BUCK_BUNNY_INFO_HASH);
    }
 
    #[tokio::test]
    #[traced_test]
    async fn test_announce_uri() {
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/big-buck-bunny.txt");
-      let contents = tokio::fs::read_to_string(path).await.unwrap();
-
-      let metainfo = MagnetUri::parse(contents).unwrap();
+      let metainfo = MagnetUri::parse(BIG_BUCK_BUNNY_MAGNET.to_string()).unwrap();
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
-            matches!(magnet.announce_list.unwrap()[0], Tracker::Udp(_))
+            assert!(matches!(magnet.announce_list.unwrap()[0], Tracker::Udp(_)))
          }
          _ => panic!("Expected MagnetUri"),
       };
@@ -115,18 +102,13 @@ mod tests {
    #[tokio::test]
    #[traced_test]
    async fn test_compare_magnet_and_torrent_info_hash() {
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/big-buck-bunny.txt");
-      let contents = tokio::fs::read_to_string(path).await.unwrap();
-
-      let metainfo = MagnetUri::parse(contents).unwrap();
+      let metainfo = MagnetUri::parse(BIG_BUCK_BUNNY_MAGNET.to_string()).unwrap();
       let info_hash = metainfo.info_hash().unwrap();
 
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/torrents/big-buck-bunny.torrent");
-      let file = TorrentFile::read(path).await.unwrap();
+      let file = TorrentFile::parse(include_bytes!(
+         "../../tests/torrents/big-buck-bunny.torrent"
+      ))
+      .unwrap();
 
       let torrent_info_hash = file.info_hash().unwrap();
 
