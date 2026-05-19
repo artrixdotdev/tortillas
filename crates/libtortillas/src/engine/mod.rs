@@ -13,6 +13,9 @@
 //!   (remote `.torrent` files, local files, or magnet URIs).
 //! - Each torrent is represented by a [`Torrent`] handle, which can be used to
 //!   interact with the torrent session.
+//! - Frontends can render from [`EngineSnapshot`] and
+//!   [`crate::torrent::TorrentSnapshot`] without depending on actor messages or
+//!   actor references.
 //!
 //! ## Example
 //!
@@ -20,17 +23,15 @@
 //! use libtortillas::prelude::*;
 //!
 //! #[tokio::main]
-//! async fn main() {
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //!    // Create a new engine listening on default addresses
 //!    let engine = Engine::default();
 //!
 //!    // Add a torrent from a magnet URI
-//!    let torrent = engine
-//!       .add_torrent("magnet:?xt=urn:btih:...")
-//!       .await
-//!       .expect("Failed to add torrent");
+//!    let torrent = engine.add_torrent("magnet:?xt=urn:btih:...").await?;
 //!
-//!    println!("Started torrenting: {}", torrent.key());
+//!    println!("Added torrent: {}", torrent.key());
+//!    Ok(())
 //! }
 //! ```
 
@@ -259,6 +260,10 @@ impl Engine {
    }
    /// Starts all torrents managed by the engine.
    /// See [`Torrent::start`] for more information.
+   ///
+   /// # Errors
+   ///
+   /// Returns an error if the engine actor cannot be reached.
    pub async fn start_all(&self) -> Result<(), EngineError> {
       self
          .actor()
@@ -269,6 +274,10 @@ impl Engine {
 
    /// Exports the current state of the engine.
    /// See [`Torrent::export`] for more information.
+   ///
+   /// # Errors
+   ///
+   /// Returns an error if the engine actor cannot be reached.
    pub async fn export(&self) -> Result<EngineExport, EngineError> {
       let response = self
          .actor()
@@ -283,6 +292,10 @@ impl Engine {
    }
 
    /// Returns a compact, frontend-friendly view of all managed torrents.
+   ///
+   /// This is the preferred read API for frontends. It intentionally returns
+   /// immutable render state instead of exposing actor references or internal
+   /// message types.
    pub async fn snapshot(&self) -> Result<EngineSnapshot, EngineError> {
       self.export().await.map(EngineSnapshot::from)
    }

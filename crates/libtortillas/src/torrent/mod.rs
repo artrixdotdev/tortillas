@@ -44,11 +44,14 @@ pub struct StreamedPiece {
 
 /// A handle to a torrent managed by the engine.
 ///
-/// This struct acts as the primary interface for controlling and configuring
-/// a torrent after it has been added to the [`Engine`](crate::engine::Engine).
+/// This struct acts as the primary interface for controlling, configuring, and
+/// reading render state for a torrent after it has been added to the
+/// [`Engine`](crate::engine::Engine).
 ///
-/// Internally, it wraps around our Actor model using [kameo](https://github.com/tqwewe/kameo) which
-/// performs the actual torrent logic.
+/// Internally, it wraps around the actor model using
+/// [kameo](https://github.com/tqwewe/kameo). Frontends should use the methods
+/// on this handle, especially [`Self::snapshot`], instead of depending on actor
+/// references or internal message types.
 ///
 /// # Examples
 ///
@@ -56,7 +59,7 @@ pub struct StreamedPiece {
 /// use libtortillas::prelude::*;
 ///
 /// #[tokio::main]
-/// async fn main() {
+/// async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///    let engine = Engine::default();
 ///    let torrent = engine
 ///       .add_torrent("https://example.com/file.torrent")
@@ -64,10 +67,11 @@ pub struct StreamedPiece {
 ///       .expect("Failed to add torrent");
 ///
 ///    // Configure output
-///    torrent.with_output_folder("downloads/").await;
+///    torrent.with_output_folder("downloads/").await?;
 ///
 ///    // Start downloading
-///    torrent.start().await;
+///    torrent.start().await?;
+///    Ok(())
 /// }
 /// ```
 #[allow(dead_code)]
@@ -107,11 +111,9 @@ impl Torrent {
    ///
    /// If using [PieceStorageStrategy::Disk], the path *must* be set.
    ///
-   /// # Panics
+   /// # Errors
    ///
-   /// Panics if:
-   /// - The message could not be sent to the actor.
-   /// - The torrent isn't in a [`TorrentState::Inactive`] state.
+   /// Returns an error if the torrent actor cannot be reached.
    pub async fn set_piece_storage(
       &self, piece_storage: PieceStorageStrategy,
    ) -> Result<(), TorrentError> {
@@ -136,7 +138,7 @@ impl Torrent {
    /// use libtortillas::prelude::*;
    ///
    /// #[tokio::main]
-   /// async fn main() {
+   /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
    ///    let engine = Engine::default();
    ///    let torrent = engine
    ///       .add_torrent("https://example.com/file.torrent")
@@ -185,11 +187,10 @@ impl Torrent {
    /// - The `PieceManager` must remain valid for the lifetime of the torrent
    ///   actor.
    ///
-   /// # Panics
-   /// - If the torrent actor is dead.
-   /// - If you attempt to attach a manager after the torrent has started.
-   /// - If you attmept to attach a manager without [`PieceStorageStrategy`]
-   ///   being set to [`PieceStorageStrategy::Disk`].
+   /// # Errors
+   ///
+   /// Returns an error if the torrent actor cannot be reached. The actor still
+   /// enforces torrent lifecycle invariants internally.
    ///
    /// # Example
    ///
@@ -239,12 +240,12 @@ impl Torrent {
    ///    // Required before attaching a custom manager
    ///    torrent
    ///       .set_piece_storage(PieceStorageStrategy::Disk("path/to/storage".into()))
-   ///       .await;
+   ///       .await?;
    ///
    ///    // Attach our custom piece manager
-   ///    torrent.with_piece_manager(LoggingPieceManager).await;
+   ///    torrent.with_piece_manager(LoggingPieceManager).await?;
+   ///    Ok(())
    /// }
-   /// ```
    /// ```
    pub async fn with_piece_manager<'a>(
       &'a self, piece_manager: impl PieceManager + 'a + 'static,
@@ -286,9 +287,9 @@ impl Torrent {
 
    /// Returns the current state of the torrent. See [`TorrentState`]
    ///
-   /// # Panics
+   /// # Errors
    ///
-   /// Panics if the message could not be sent to the actor.
+   /// Returns an error if the torrent actor cannot be reached.
    pub async fn state(&self) -> Result<TorrentState, TorrentError> {
       let msg = TorrentRequest::GetState;
 
@@ -311,9 +312,9 @@ impl Torrent {
    /// the request, this can be used to resume a torrent later on without having
    /// to redownload pieces and/or seeding.
    ///
-   /// # Panics
+   /// # Errors
    ///
-   /// Panics if the message could not be sent to the actor.
+   /// Returns an error if the torrent actor cannot be reached.
    pub async fn export(&self) -> Result<TorrentExport, TorrentError> {
       let msg = TorrentRequest::Export;
 

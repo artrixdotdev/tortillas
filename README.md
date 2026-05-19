@@ -33,6 +33,38 @@ We use [Nextest](https://nexte.st/) for running tests. To run tests locally, you
 # See: https://nexte.st/docs/installation/pre-built-binaries/
 ```
 
+## Library API
+
+`libtortillas` exposes high-level `Engine` and `Torrent` handles for frontend
+applications. These handles keep the actor runtime behind the public API, so a
+TUI, GUI, or service can use normal async methods and render from snapshots
+without depending on actor internals.
+
+```rust,no_run
+use libtortillas::prelude::*;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+   let engine = Engine::builder()
+      .output_path("downloads")
+      .autostart(false)
+      .build();
+
+   let torrent = engine.add_torrent("magnet:?xt=urn:btih:...").await?;
+   torrent.poll_ready().await?;
+   torrent.start().await?;
+
+   let snapshot = torrent.snapshot().await?;
+   println!("{}: {:.1}%", snapshot.info_hash, snapshot.progress * 100.0);
+
+   Ok(())
+}
+```
+
+For UI rendering, prefer `Engine::snapshot` and `Torrent::snapshot` over direct
+actor state. The snapshots are serializable, compact, and designed to remain a
+stable frontend contract as the internal actor model evolves.
+
 ## 📦 Installation
 ### Tortillas
 Tortillas is the frontend TUI (Text User Interface) application (what most people want)
