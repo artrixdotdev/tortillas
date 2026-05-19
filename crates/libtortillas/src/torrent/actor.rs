@@ -1176,83 +1176,118 @@ mod tests {
    }
 
    #[tokio::test(flavor = "multi_thread")]
-   #[ignore = "external-network test: reaches public trackers and peers"]
-   async fn torrent_actor_when_public_torrent_is_available_then_exports_progress() {
+   async fn torrent_actor_when_pieces_are_marked_complete_then_exports_progress_correctly() {
       testing::init_tracing();
       let metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
       let info_dict = match &metainfo {
          MetaInfo::Torrent(file) => file.info.clone(),
          _ => unreachable!(),
       };
-
       let info_hash = info_dict.hash().unwrap();
 
       let piece_path = testing::torrent_temp_path();
       let file_path = piece_path.join("files");
 
       let peer_id = testing::peer_id();
-
       let udp_server = testing::udp_server().await;
       let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
          .await
          .unwrap();
 
-      let actor = TorrentActor::spawn(TorrentActorArgs {
+      // Spawn the actor first so we get an ActorRef, then immediately stop it
+      // and reconstruct state for direct export testing.
+      let actor_ref = TorrentActor::spawn(TorrentActorArgs {
          peer_id,
-         metainfo,
-         utp_server,
+         metainfo: metainfo.clone(),
+         utp_server: utp_server.clone(),
          tracker_server: udp_server.clone(),
          primary_addr: None,
          piece_storage: PieceStorageStrategy::Disk(piece_path.clone()),
-         autostart: None,
-         sufficient_peers: None,
-         base_path: Some(file_path),
+         autostart: Some(false),
+         sufficient_peers: Some(usize::MAX),
+         base_path: Some(file_path.clone()),
       });
 
-      let torrent = Torrent::new(info_hash, actor.clone());
-
-      assert!(torrent.poll_ready().await.is_ok());
-
-      loop {
-         let bitfield = match actor.ask(TorrentRequest::Bitfield).await.unwrap() {
-            TorrentResponse::Bitfield(bitfield) => bitfield,
-            _ => unreachable!(),
-         };
-         // Wait until we have at least 2 pieces
-         if bitfield.count_ones() > 2 {
-            break;
-         }
-         sleep(Duration::from_millis(100)).await;
+      // Build the bitfield with fake completed pieces
+      let piece_count = info_dict.piece_count();
+      let bitfield: BitVec<AtomicU8> = BitVec::repeat(false, piece_count);
+      let fake_completed: usize = 3;
+      for i in 0..fake_completed {
+         bitfield.set_aliased(i, true);
       }
 
-      let export = torrent.export().await;
+      // Build a fake block map with one partial piece
+      let block_map: BlockMap = DashMap::new();
+      let partial_piece_index = fake_completed; // next piece
+      let total_blocks = (info_dict.piece_length as usize).div_ceil(BLOCK_SIZE);
+      let mut blocks = BitVec::<usize>::repeat(false, total_blocks);
+      let partial_blocks_received = 2;
+      for i in 0..partial_blocks_received {
+         blocks.set(i, true);
+      }
+      block_map.insert(partial_piece_index, blocks);
 
+      // Construct the actor manually for export testing
+      let test_actor = TorrentActor {
+         peers: Arc::new(DashMap::new()),
+         trackers: Arc::new(DashMap::new()),
+         bitfield: Arc::new(bitfield),
+         id: peer_id,
+         info: Some(info_dict.clone()),
+         metainfo: metainfo.clone(),
+         tracker_server: udp_server.clone(),
+         utp_server,
+         actor_ref: actor_ref.clone(),
+         piece_storage: PieceStorageStrategy::Disk(piece_path.clone()),
+         piece_manager: PieceManagerProxy::Default(FilePieceManager(
+            Some(file_path),
+            Some(info_dict.clone()),
+         )),
+         state: TorrentState::Inactive,
+         next_piece: fake_completed,
+         block_map: Arc::new(block_map),
+         start_time: None,
+         sufficient_peers: 6,
+         autostart: false,
+         pending_start: false,
+         ready_hook: None,
+      };
+
+      let export = test_actor.export();
+
+      // Verify export contents
       assert_eq!(export.info_hash, info_hash);
-      assert!(
-         export.info_dict.is_some(),
-         "Torrent shouldn't have started without info dict"
-      );
+      assert_eq!(export.state, TorrentState::Inactive);
+      assert!(!export.auto_start);
+      assert_eq!(export.sufficient_peers, 6);
+      assert!(export.info_dict.is_some(), "Info dict should be present");
+      assert_eq!(export.bitfield.count_ones(), fake_completed);
+      assert_eq!(export.bitfield.len(), piece_count);
+      assert_eq!(export.block_map.len(), 1);
 
-      // Test serialization
+      let partial_entry = export.block_map.get(&partial_piece_index).unwrap();
+      assert_eq!(partial_entry.count_ones(), partial_blocks_received);
+
+      match &export.piece_storage {
+         PieceStorageStrategy::Disk(p) => assert_eq!(p, &piece_path),
+         _ => panic!("Expected Disk storage strategy"),
+      }
+
+      // Test serialization round-trip
       use serde_json::{from_str, to_string};
-
       let export_str = to_string(&export).unwrap();
-
       let from_export: TorrentExport = from_str(&export_str).unwrap();
+
       assert_eq!(export.info_hash, from_export.info_hash);
       assert_eq!(export.state, from_export.state);
       assert_eq!(export.auto_start, from_export.auto_start);
       assert_eq!(export.sufficient_peers, from_export.sufficient_peers);
       assert_eq!(export.output_path, from_export.output_path);
       assert_eq!(export.bitfield, from_export.bitfield);
-
-      assert!(
-         export.info_dict.is_some(),
-         "Torrent shouldn't have started without info dict"
-      );
+      assert_eq!(export.block_map.len(), from_export.block_map.len());
 
       trace!("Export: {export_str}");
 
-      actor.stop_gracefully().await.unwrap();
+      actor_ref.stop_gracefully().await.unwrap();
    }
 }
