@@ -49,13 +49,15 @@ const MIN_CONNECT_RESPONSE_SIZE: usize = 16;
 const MIN_ANNOUNCE_RESPONSE_SIZE: usize = 20;
 /// Minimum error response size, in bytes
 const MIN_ERROR_RESPONSE_SIZE: usize = 8;
-/// The maximum amount of time a connect message can take to response
+/// The maximum amount of time a connect message can take to respond.
 /// This hard-caps the retries regardless of [MESSAGE_TIMEOUT]
-const CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
 /// The size of each peer returned from a tracker, in bytes
 const PEER_SIZE: usize = 6;
-/// The maximum amount of time a message can take to response
-const MESSAGE_TIMEOUT: Duration = Duration::from_millis(300);
+/// The maximum amount of time a tracker message can take to respond before the
+/// request is retried. Public UDP trackers often respond slower than a local
+/// LAN round-trip, so this must not be tuned like an in-process test timeout.
+const MESSAGE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Tracker request variants with binary layouts.
 #[derive(Debug)]
@@ -645,7 +647,9 @@ impl UdpTracker {
                "Response channel closed before receiving message"
             );
             return Err(RetryError::Transient {
-               err: TrackerActorError::RequestTimeout { seconds: 15 },
+               err: TrackerActorError::RequestTimeout {
+                  seconds: MESSAGE_TIMEOUT.as_secs(),
+               },
                retry_after: None,
             });
          }
@@ -656,7 +660,9 @@ impl UdpTracker {
                 "Tracker timed out"
             );
             return Err(RetryError::Transient {
-               err: TrackerActorError::RequestTimeout { seconds: 15 },
+               err: TrackerActorError::RequestTimeout {
+                  seconds: MESSAGE_TIMEOUT.as_secs(),
+               },
                retry_after: None,
             });
          }
@@ -755,7 +761,9 @@ impl UdpTracker {
       let request = TrackerRequest::Connect(MAGIC_CONSTANT, Action::Connect, transaction_id);
       let response = timeout(CONNECTION_TIMEOUT, self.send_and_wait(request)).await;
 
-      let response = response.map_err(|_| TrackerActorError::RequestTimeout { seconds: 15 })??;
+      let response = response.map_err(|_| TrackerActorError::RequestTimeout {
+         seconds: CONNECTION_TIMEOUT.as_secs(),
+      })??;
 
       match response {
          TrackerResponse::Connect { connection_id, .. } => {
@@ -954,6 +962,8 @@ mod tests {
    use super::*;
    use crate::metainfo::{MagnetUri, MetaInfo};
 
+   const EXTERNAL_TRACKER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
+
    #[tokio::test]
    #[ignore = "external-network test: reaches public UDP trackers"]
    async fn udp_tracker_when_public_magnet_tracker_is_available_then_returns_ipv4_peer() {
@@ -973,21 +983,71 @@ mod tests {
          MetaInfo::MagnetUri(magnet) => {
             let info_hash = magnet.info_hash().expect("Missing info hash");
             let announce_list = magnet.announce_list.expect("Missing announce list");
-            let uri = announce_list[0].uri();
             let port: u16 = random_range(1024..65535);
             let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
+            let udp_announce_list = announce_list
+               .iter()
+               .filter(|tracker| tracker.uri().starts_with("udp://"));
 
-            let tracker = UdpTracker::new(uri, None, info_hash, (PeerId::new(), socket_addr))
+            let mut last_error = None;
+            let mut peers = Vec::new();
+            for announce_url in udp_announce_list {
+               let uri = announce_url.uri();
+               let tracker = match UdpTracker::new(
+                  uri,
+                  None,
+                  info_hash,
+                  (PeerId::new(), socket_addr),
+               )
                .await
-               .unwrap();
+               {
+                  Ok(tracker) => tracker,
+                  Err(err) => {
+                     warn!(tracker_uri = %announce_url.uri(), error = %err, "Skipping UDP tracker after initialization error");
+                     last_error = Some(err.to_string());
+                     continue;
+                  }
+               };
 
-            tracker
-               .initialize()
-               .await
-               .expect("Failed to connect to UDP tracker");
+               match timeout(EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, tracker.initialize()).await {
+                  Ok(Ok(())) => {}
+                  Ok(Err(err)) => {
+                     warn!(tracker_uri = %announce_url.uri(), error = %err, "Skipping UDP tracker after connect error");
+                     last_error = Some(err.to_string());
+                     continue;
+                  }
+                  Err(_) => {
+                     warn!(tracker_uri = %announce_url.uri(), timeout = ?EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, "Skipping UDP tracker after connect timeout");
+                     last_error = Some("connect timeout".to_string());
+                     continue;
+                  }
+               }
 
-            // Spawn a task to re-fetch the latest list of peers at a given interval
-            let peers = tracker.announce().await.expect("Failed to announce");
+               match timeout(EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, tracker.announce()).await {
+                  Ok(Ok(found_peers)) if !found_peers.is_empty() => {
+                     peers = found_peers;
+                     break;
+                  }
+                  Ok(Ok(_)) => {
+                     warn!(tracker_uri = %announce_url.uri(), "Skipping UDP tracker with empty peer response");
+                     last_error = Some("empty peer response".to_string());
+                  }
+                  Ok(Err(err)) => {
+                     warn!(tracker_uri = %announce_url.uri(), error = %err, "Skipping UDP tracker after announce error");
+                     last_error = Some(err.to_string());
+                  }
+                  Err(_) => {
+                     warn!(tracker_uri = %announce_url.uri(), timeout = ?EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, "Skipping UDP tracker after announce timeout");
+                     last_error = Some("announce timeout".to_string());
+                  }
+               }
+            }
+
+            assert!(
+               !peers.is_empty(),
+               "expected at least one public UDP tracker to return peers; last error: {:?}",
+               last_error
+            );
 
             let peer = &peers[0];
             assert!(peer.ip.is_ipv4());
@@ -1038,11 +1098,17 @@ mod tests {
                   .await;
 
                if let Ok(tracker) = tracker {
-                  if tracker.initialize().await.is_ok() {
-                     trackers.push(tracker);
-                     tracker_urls.push(announce_url.uri().clone());
-                  } else {
-                     error!("There was an error creating the tracker");
+                  match timeout(EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, tracker.initialize()).await {
+                     Ok(Ok(())) => {
+                        trackers.push(tracker);
+                        tracker_urls.push(announce_url.uri().clone());
+                     }
+                     Ok(Err(err)) => {
+                        warn!(tracker_uri = %announce_url.uri(), error = %err, "Skipping UDP tracker after connect error");
+                     }
+                     Err(_) => {
+                        warn!(tracker_uri = %announce_url.uri(), timeout = ?EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, "Skipping UDP tracker after connect timeout");
+                     }
                   }
                }
             }
@@ -1057,7 +1123,8 @@ mod tests {
 
                   let mut peers = vec![];
 
-                  if let Ok(res) = timeout(Duration::from_secs(1), tracker.announce()).await
+                  if let Ok(res) =
+                     timeout(EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, tracker.announce()).await
                      && let Ok(wrapped_peers) = res
                   {
                      peers.extend(wrapped_peers);
