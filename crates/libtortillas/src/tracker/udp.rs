@@ -956,7 +956,7 @@ mod tests {
 
    #[tokio::test]
    #[ignore = "external-network test: reaches public UDP trackers"]
-   async fn test_stream_with_udp_peers() {
+   async fn udp_tracker_when_public_magnet_tracker_is_available_then_returns_ipv4_peer() {
       let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
@@ -1001,7 +1001,7 @@ mod tests {
    #[tokio::test]
    #[ignore = "external-network test: reaches public UDP trackers"]
    //#[traced_test]
-   async fn test_multiple_trackers_single_udp_server() {
+   async fn udp_tracker_when_public_trackers_share_socket_then_returns_peers() {
       let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
          .join("tests/magneturis/big-buck-bunny.txt");
 

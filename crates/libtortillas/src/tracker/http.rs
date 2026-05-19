@@ -433,7 +433,7 @@ mod tests {
    #[tokio::test]
    #[ignore = "external-network test: reaches public HTTP trackers"]
    #[traced_test]
-   async fn test_get_peers_with_http_tracker() {
+   async fn http_tracker_when_public_tracker_is_available_then_returns_ipv4_peer() {
       let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
          .join("tests/torrents/KNOPPIX_V9.1DVD-2021-01-25-EN.torrent");
 
@@ -461,7 +461,7 @@ mod tests {
 
    #[tokio::test]
    #[ignore = "external-network test: reaches public HTTP trackers"]
-   async fn test_http_tracker_instance_trait() {
+   async fn http_tracker_instance_when_public_tracker_is_available_then_returns_peers() {
       let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")

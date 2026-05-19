@@ -68,7 +68,7 @@ mod tests {
 
    #[tokio::test]
    #[traced_test]
-   async fn test_info_hash_with_magneturi() {
+   async fn metainfo_when_source_is_magnet_uri_then_returns_expected_info_hash() {
       let metainfo = MagnetUri::parse(BIG_BUCK_BUNNY_MAGNET.to_string()).unwrap();
 
       let info_hash = metainfo.info_hash().unwrap();
@@ -77,7 +77,7 @@ mod tests {
 
    #[tokio::test]
    #[traced_test]
-   async fn test_info_hash_with_torrent() {
+   async fn metainfo_when_source_is_torrent_file_then_returns_expected_info_hash() {
       let file = TorrentFile::parse(include_bytes!(
          "../../tests/torrents/big-buck-bunny.torrent"
       ))
@@ -89,7 +89,7 @@ mod tests {
 
    #[tokio::test]
    #[traced_test]
-   async fn test_announce_uri() {
+   async fn metainfo_when_source_is_magnet_uri_then_parses_udp_announce() {
       let metainfo = MagnetUri::parse(BIG_BUCK_BUNNY_MAGNET.to_string()).unwrap();
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
@@ -101,7 +101,7 @@ mod tests {
 
    #[tokio::test]
    #[traced_test]
-   async fn test_compare_magnet_and_torrent_info_hash() {
+   async fn metainfo_when_magnet_and_torrent_match_then_share_info_hash() {
       let metainfo = MagnetUri::parse(BIG_BUCK_BUNNY_MAGNET.to_string()).unwrap();
       let info_hash = metainfo.info_hash().unwrap();
 

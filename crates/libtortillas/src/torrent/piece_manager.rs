@@ -204,7 +204,7 @@ mod tests {
    use super::*;
    use crate::prelude::{MetaInfo, TorrentFile};
    #[tokio::test]
-   async fn test_piece_paths() {
+   async fn file_piece_manager_when_mapping_first_piece_then_returns_expected_file() {
       let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")

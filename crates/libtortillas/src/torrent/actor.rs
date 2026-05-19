@@ -1022,7 +1022,7 @@ mod tests {
 
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
-   async fn test_torrent_actor() {
+   async fn torrent_actor_when_public_torrent_is_available_then_reaches_ready_state() {
       let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
@@ -1066,7 +1066,7 @@ mod tests {
 
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
-   async fn test_info_dict_retrieval() {
+   async fn torrent_actor_when_public_magnet_uri_is_available_then_retrieves_info_dict() {
       let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
@@ -1119,7 +1119,7 @@ mod tests {
 
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
-   async fn test_torrent_actor_piece_storage() {
+   async fn torrent_actor_when_public_torrent_is_available_then_writes_piece_storage() {
       let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
@@ -1203,7 +1203,7 @@ mod tests {
 
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
-   async fn test_torrent_export() {
+   async fn torrent_actor_when_public_torrent_is_available_then_exports_progress() {
       let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")

@@ -441,7 +441,7 @@ mod tests {
    use super::*;
 
    #[test]
-   fn test_parse_known_peer_id_formats() {
+   fn peer_id_when_client_format_is_known_then_returns_client_metadata() {
       let cases = [
          (
             *b"-UT1234-abcdefghijkn",
@@ -487,7 +487,7 @@ mod tests {
    }
 
    #[test]
-   fn test_parse_tortillas_peer_id() {
+   fn peer_id_when_generated_for_tortillas_then_uses_azureus_layout() {
       let peer = PeerId::new();
       // Derive expected Azureus "A.B.CD" exactly like PeerId::default
       let core = VERSION
@@ -512,7 +512,7 @@ mod tests {
       assert_eq!(peer.as_bytes()[7], b'-');
    }
    #[test]
-   fn test_parse_unknown_peer_id() {
+   fn peer_id_when_prefix_is_unknown_then_returns_unknown_client() {
       let id = *b"sdfsfdsfabcdefghijkl";
       let peer = PeerId::from(id);
       assert_eq!(peer.client_name(), "Unknown");
@@ -520,7 +520,7 @@ mod tests {
    }
 
    #[test]
-   fn test_client_info_access() {
+   fn peer_id_when_client_info_is_requested_then_returns_prefix_and_format() {
       let peer = PeerId::from(*b"-UT1234-abcdefghijkn");
       let info = peer.client_info();
 

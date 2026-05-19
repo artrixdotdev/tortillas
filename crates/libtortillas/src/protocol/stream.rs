@@ -367,7 +367,7 @@ mod tests {
 
    #[tokio::test]
    #[traced_test]
-   async fn test_peer_stream_receive_handshake_success() {
+   async fn peer_stream_when_handshake_is_valid_then_returns_peer_id() {
       let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
       let addr = listener.local_addr().unwrap();
 
