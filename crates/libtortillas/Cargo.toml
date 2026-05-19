@@ -15,30 +15,30 @@ serde = { workspace = true }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-atomic-time = "^0.1"
+atomic-time = "^0.2"
 serde_bencode = "^0.2"
 serde-querystring = "^0.3"
-sha1 = "^0.10"
+sha1 = "^0.11"
 hex = "^0.4.3"
-reqwest = "^0.12"
+reqwest = "^0.13"
 serde_repr = "^0.1"
-rand = "^0.9"
+rand = "^0.10"
 num_enum = "^0.7"
 thiserror = "^2.0"
 async-trait = "^0.1"
-librqbit-utp = "^0.6"
+librqbit-utp = "^0.7"
 bitvec = { version = "^1.0", features = ["serde", "alloc", "atomic"] }
 futures = "^0.3"
 bencode = "^0.1"
-serde_with = "^3.14"
-tokio-retry2 = { version = "^0.6", features = ["tracing"] }
+serde_with = "^3.20"
+tokio-retry2 = { version = "^0.9", features = ["tracing"] }
 bytes = "^1"
-kameo = "^0.18"
+kameo = "^0.20"
 dashmap = { version = "^6", features = ["serde"] }
-bon = "^3.7"
+bon = "^3.9"
 tokio-util = "^0.7"
 
 [dev-dependencies]
-tracing-test = "0.2.5"
+tracing-test = "0.2.6"
 tracing-subscriber = { workspace = true }
 serde_json = "^1"

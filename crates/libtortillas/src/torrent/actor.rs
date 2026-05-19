@@ -11,7 +11,11 @@ use async_trait::async_trait;
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use dashmap::DashMap;
-use kameo::{Actor, actor::ActorRef, mailbox};
+use kameo::{
+   Actor,
+   actor::{ActorRef, Spawn},
+   mailbox,
+};
 use librqbit_utp::UtpSocketUdp;
 use serde::{Deserialize, Serialize};
 use tokio::{fs, sync::oneshot};
@@ -994,11 +998,11 @@ impl Actor for TorrentActor {
    async fn next(
       &mut self, _: kameo::prelude::WeakActorRef<Self>,
       mailbox_rx: &mut kameo::prelude::MailboxReceiver<Self>,
-   ) -> Option<mailbox::Signal<Self>> {
+   ) -> Result<Option<mailbox::Signal<Self>>, Self::Error> {
       if !self.pending_start {
          self.autostart().await;
       }
-      mailbox_rx.recv().await
+      Ok(mailbox_rx.recv().await)
    }
 }
 

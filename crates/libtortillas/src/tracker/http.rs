@@ -205,7 +205,7 @@ impl TrackerBase for HttpTracker {
       let uri_params =
          format!("{params_encoded}&info_hash={info_hash_encoded}&peer_id={peer_id_encoded}");
 
-      let uri = format!("{}?{}", self.uri, &uri_params);
+      let uri = format!("{}?{}", self.uri, uri_params);
 
       // HTTP request phase
       let request_start = Instant::now();

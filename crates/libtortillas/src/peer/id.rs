@@ -1,6 +1,6 @@
 use std::{fmt, str::FromStr};
 
-use rand::{Rng, distr::Alphanumeric};
+use rand::{RngExt, distr::Alphanumeric};
 
 use crate::hashes::Hash;
 

@@ -730,10 +730,14 @@ impl UdpTracker {
          .max_delay_millis(3840 * 1000)
          .take(8);
 
+      fn log_retry(err: &TrackerActorError, elapsed: Duration) {
+         tracing::warn!(error = ?err, elapsed = ?elapsed, "Tracker message failed, retrying...");
+      }
+
       let response = Retry::spawn_notify(
          retry_strategy,
          || self.send_and_recv_retry(&message, &transaction_id),
-         |e, el| tracing::warn!(error = ?e, elapsed = ?el, "Tracker message failed, retrying...", ),
+         log_retry,
       )
       .await?;
 
@@ -754,22 +758,14 @@ impl UdpTracker {
       let response = response.map_err(|_| TrackerActorError::RequestTimeout { seconds: 15 })??;
 
       match response {
-         TrackerResponse::Connect {
-            connection_id,
-            transaction_id: _,
-            ..
-         } => {
+         TrackerResponse::Connect { connection_id, .. } => {
             info!(connection_id = connection_id, "Connected to tracker");
 
             self.set_connection_id(connection_id);
             self.set_ready_state(ReadyState::Ready);
             Ok(connection_id)
          }
-         TrackerResponse::Error {
-            message,
-            transaction_id: _,
-            ..
-         } => {
+         TrackerResponse::Error { message, .. } => {
             trace!(
                 error_message = %message,
                 transaction_id = transaction_id,
