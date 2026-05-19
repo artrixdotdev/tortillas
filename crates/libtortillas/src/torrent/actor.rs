@@ -1252,7 +1252,7 @@ mod tests {
          sleep(Duration::from_millis(100)).await;
       }
 
-      let export = torrent.export().await;
+      let export = torrent.export().await.unwrap();
 
       assert_eq!(export.info_hash, info_hash);
       assert!(

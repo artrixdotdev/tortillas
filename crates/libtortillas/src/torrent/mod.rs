@@ -16,6 +16,7 @@ pub mod util;
 pub use piece_manager::PieceManager;
 
 use crate::{
+   errors::TorrentError,
    hashes::InfoHash,
    prelude::{Info, MetaInfo},
 };
@@ -111,12 +112,17 @@ impl Torrent {
    /// Panics if:
    /// - The message could not be sent to the actor.
    /// - The torrent isn't in a [`TorrentState::Inactive`] state.
-   pub async fn set_piece_storage(&self, piece_storage: PieceStorageStrategy) {
+   pub async fn set_piece_storage(
+      &self, piece_storage: PieceStorageStrategy,
+   ) -> Result<(), TorrentError> {
       self
          .actor()
          .tell(TorrentMessage::PieceStorage(piece_storage))
          .await
-         .expect("Failed to set piece storage");
+         .map_err(|err| TorrentError::ActorCommunicationFailed {
+            actor_type: "TorrentActor".to_string(),
+            reason: err.to_string(),
+         })
    }
 
    /// Specifies the output folder that each file will eventually be written to.
@@ -140,12 +146,15 @@ impl Torrent {
    ///    torrent.with_output_folder("~/awesome-folder/").await;
    /// }
    /// ```
-   pub async fn with_output_folder(&self, folder: impl Into<PathBuf>) {
+   pub async fn with_output_folder(&self, folder: impl Into<PathBuf>) -> Result<(), TorrentError> {
       self
          .actor()
-         .ask(TorrentMessage::SetOutputPath(folder.into()))
+         .tell(TorrentMessage::SetOutputPath(folder.into()))
          .await
-         .expect("Failed to set output folder");
+         .map_err(|err| TorrentError::ActorCommunicationFailed {
+            actor_type: "TorrentActor".to_string(),
+            reason: err.to_string(),
+         })
    }
 
    /// Attaches a custom [`PieceManager`] to this torrent.
@@ -237,12 +246,17 @@ impl Torrent {
    /// }
    /// ```
    /// ```
-   pub async fn with_piece_manager<'a>(&'a self, piece_manager: impl PieceManager + 'a + 'static) {
+   pub async fn with_piece_manager<'a>(
+      &'a self, piece_manager: impl PieceManager + 'a + 'static,
+   ) -> Result<(), TorrentError> {
       self
          .actor()
          .tell(TorrentMessage::PieceManager(Box::new(piece_manager)))
          .await
-         .expect("Failed to request output stream");
+         .map_err(|err| TorrentError::ActorCommunicationFailed {
+            actor_type: "TorrentActor".to_string(),
+            reason: err.to_string(),
+         })
    }
 
    /// Starts the torrent download and begins the download & seeding process.
@@ -254,14 +268,18 @@ impl Torrent {
    /// # Errors
    ///
    /// Returns an error if the message could not be delivered to the actor.
-   pub async fn start(&self) -> Result<(), anyhow::Error> {
+   pub async fn start(&self) -> Result<(), TorrentError> {
       let msg = TorrentMessage::SetState(TorrentState::Downloading);
 
       self
          .actor()
          .tell(msg)
          .await
-         .inspect_err(|e| error!(error = %e, "Failed to start torrent"))?;
+         .inspect_err(|e| error!(error = %e, "Failed to start torrent"))
+         .map_err(|err| TorrentError::ActorCommunicationFailed {
+            actor_type: "TorrentActor".to_string(),
+            reason: err.to_string(),
+         })?;
 
       Ok(())
    }
@@ -271,16 +289,18 @@ impl Torrent {
    /// # Panics
    ///
    /// Panics if the message could not be sent to the actor.
-   pub async fn state(&self) -> TorrentState {
+   pub async fn state(&self) -> Result<TorrentState, TorrentError> {
       let msg = TorrentRequest::GetState;
 
       match self
          .actor()
          .ask(msg)
          .await
-         .expect("Failed to send request for state")
-      {
-         TorrentResponse::GetState(state) => state,
+         .map_err(|err| TorrentError::ActorCommunicationFailed {
+            actor_type: "TorrentActor".to_string(),
+            reason: err.to_string(),
+         })? {
+         TorrentResponse::GetState(state) => Ok(state),
          _ => unreachable!(),
       }
    }
@@ -294,18 +314,28 @@ impl Torrent {
    /// # Panics
    ///
    /// Panics if the message could not be sent to the actor.
-   pub async fn export(&self) -> TorrentExport {
+   pub async fn export(&self) -> Result<TorrentExport, TorrentError> {
       let msg = TorrentRequest::Export;
 
       match self
          .actor()
          .ask(msg)
          .await
-         .expect("Failed to send request for state")
-      {
-         TorrentResponse::Export(export) => *export,
+         .map_err(|err| TorrentError::ActorCommunicationFailed {
+            actor_type: "TorrentActor".to_string(),
+            reason: err.to_string(),
+         })? {
+         TorrentResponse::Export(export) => Ok(*export),
          _ => unreachable!(),
       }
+   }
+
+   /// Returns a compact, UI-friendly view of the torrent.
+   ///
+   /// Snapshots are intended for frontends that need render state without
+   /// coupling themselves to actor messages or internal storage structures.
+   pub async fn snapshot(&self) -> Result<TorrentSnapshot, TorrentError> {
+      self.export().await.map(TorrentSnapshot::from)
    }
 
    /// If the torrent should automatically start when `sufficient_peers` is
@@ -316,25 +346,31 @@ impl Torrent {
    /// [`start`](Self::start).
    ///
    /// Default: `true`
-   pub async fn set_auto_start(&self, auto: bool) {
+   pub async fn set_auto_start(&self, auto: bool) -> Result<(), TorrentError> {
       let msg = TorrentMessage::SetAutoStart(auto);
       self
          .actor()
          .tell(msg)
          .await
-         .expect("Failed to set auto start");
+         .map_err(|err| TorrentError::ActorCommunicationFailed {
+            actor_type: "TorrentActor".to_string(),
+            reason: err.to_string(),
+         })
    }
 
    /// Sets the number of peers we need to have before we start downloading.
    ///
    /// Default: `6`
-   pub async fn set_sufficient_peers(&self, peers: usize) {
+   pub async fn set_sufficient_peers(&self, peers: usize) -> Result<(), TorrentError> {
       let msg = TorrentMessage::SetSufficientPeers(peers);
       self
          .actor()
          .tell(msg)
          .await
-         .expect("Failed to set sufficient peers");
+         .map_err(|err| TorrentError::ActorCommunicationFailed {
+            actor_type: "TorrentActor".to_string(),
+            reason: err.to_string(),
+         })
    }
 
    /// A blocking function that polls the torrent until it is ready to start
@@ -366,16 +402,70 @@ impl Torrent {
    ///    torrent.start().await.expect("Failed to start torrent");
    /// }
    /// ```
-   pub async fn poll_ready(&self) -> Result<(), anyhow::Error> {
+   pub async fn poll_ready(&self) -> Result<(), TorrentError> {
       let (hook, hook_rx) = oneshot::channel();
       let msg = TorrentMessage::ReadyHook(hook);
       // We don't care about the response, we just want to make sure the
       // actor is alive
-      self.actor().tell(msg).await?;
+      self
+         .actor()
+         .tell(msg)
+         .await
+         .map_err(|err| TorrentError::ActorCommunicationFailed {
+            actor_type: "TorrentActor".to_string(),
+            reason: err.to_string(),
+         })?;
       // This will block until the hook is called
-      hook_rx.await?;
+      hook_rx
+         .await
+         .map_err(|err| TorrentError::ActorCommunicationFailed {
+            actor_type: "TorrentActor".to_string(),
+            reason: err.to_string(),
+         })?;
 
       Ok(())
+   }
+}
+
+/// A small, serializable torrent view for UI rendering and API consumers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TorrentSnapshot {
+   pub info_hash: InfoHash,
+   pub name: Option<String>,
+   pub state: TorrentState,
+   pub progress: f32,
+   pub completed_pieces: usize,
+   pub total_pieces: usize,
+   pub total_bytes: Option<usize>,
+   pub auto_start: bool,
+   pub sufficient_peers: usize,
+   pub output_path: Option<PathBuf>,
+}
+
+impl From<TorrentExport> for TorrentSnapshot {
+   fn from(export: TorrentExport) -> Self {
+      let completed_pieces = export.bitfield.count_ones();
+      let total_pieces = export.bitfield.len();
+      let progress = if total_pieces == 0 {
+         0.0
+      } else {
+         completed_pieces as f32 / total_pieces as f32
+      };
+      let name = export.info_dict.as_ref().map(|info| info.name.clone());
+      let total_bytes = export.info_dict.as_ref().map(Info::total_length);
+
+      Self {
+         info_hash: export.info_hash,
+         name,
+         state: export.state,
+         progress,
+         completed_pieces,
+         total_pieces,
+         total_bytes,
+         auto_start: export.auto_start,
+         sufficient_peers: export.sufficient_peers,
+         output_path: export.output_path,
+      }
    }
 }
 
@@ -391,4 +481,50 @@ pub struct TorrentExport {
    pub info_dict: Option<Info>,
    pub bitfield: BitVec<AtomicU8>,
    pub block_map: BlockMap,
+}
+
+#[cfg(test)]
+mod tests {
+   use bitvec::vec::BitVec;
+
+   use super::*;
+   use crate::metainfo::TorrentFile;
+
+   #[test]
+   fn torrent_snapshot_summarizes_export() {
+      let MetaInfo::Torrent(metainfo) = TorrentFile::parse(include_bytes!(
+         "../../tests/torrents/big-buck-bunny.torrent"
+      ))
+      .unwrap() else {
+         panic!("expected torrent metainfo");
+      };
+      let info_hash = metainfo.info.hash().unwrap();
+      let info = metainfo.info.clone();
+      let mut bitfield = BitVec::repeat(false, info.piece_count());
+      bitfield.set(0, true);
+      bitfield.set(1, true);
+
+      let export = TorrentExport {
+         info_hash,
+         state: TorrentState::Inactive,
+         auto_start: true,
+         sufficient_peers: 6,
+         output_path: Some("downloads".into()),
+         metainfo: MetaInfo::Torrent(metainfo),
+         piece_storage: PieceStorageStrategy::InFile,
+         info_dict: Some(info.clone()),
+         bitfield,
+         block_map: BlockMap::new(),
+      };
+
+      let snapshot = TorrentSnapshot::from(export);
+
+      assert_eq!(snapshot.info_hash, info_hash);
+      assert_eq!(snapshot.name, Some(info.name.clone()));
+      assert_eq!(snapshot.completed_pieces, 2);
+      assert_eq!(snapshot.total_pieces, info.piece_count());
+      assert_eq!(snapshot.total_bytes, Some(info.total_length()));
+      assert!(snapshot.progress > 0.0);
+      assert!(snapshot.progress < 1.0);
+   }
 }

@@ -239,14 +239,15 @@ impl Engine {
          })?
       };
 
-      let info_hash = metainfo.info_hash().expect("Failed to fetch info hash");
+      let info_hash = metainfo.info_hash()?;
 
-      let torrent_ref = match self
+      let response = self
          .actor()
          .ask(EngineRequest::Torrent(Box::new(metainfo)))
          .await
-         .expect("Failed to add torrent")
-      {
+         .map_err(|err| EngineError::Other(anyhow::anyhow!(err.to_string())))?;
+
+      let torrent_ref = match response {
          EngineResponse::Torrent(torrent_ref) => torrent_ref,
          #[allow(unreachable_patterns)]
          _ => unreachable!(),
@@ -258,26 +259,32 @@ impl Engine {
    }
    /// Starts all torrents managed by the engine.
    /// See [`Torrent::start`] for more information.
-   pub async fn start_all(&self) {
+   pub async fn start_all(&self) -> Result<(), EngineError> {
       self
          .actor()
          .tell(EngineMessage::StartAll)
          .await
-         .expect("Failed to start all torrents");
+         .map_err(|err| EngineError::Other(anyhow::anyhow!(err.to_string())))
    }
 
    /// Exports the current state of the engine.
    /// See [`Torrent::export`] for more information.
-   pub async fn export(&self) -> EngineExport {
-      match self
+   pub async fn export(&self) -> Result<EngineExport, EngineError> {
+      let response = self
          .actor()
          .ask(EngineRequest::Export)
          .await
-         .expect("Failed to get torrents")
-      {
-         EngineResponse::Export(export) => export,
+         .map_err(|err| EngineError::Other(anyhow::anyhow!(err.to_string())))?;
+
+      match response {
+         EngineResponse::Export(export) => Ok(export),
          _ => unreachable!(),
       }
+   }
+
+   /// Returns a compact, frontend-friendly view of all managed torrents.
+   pub async fn snapshot(&self) -> Result<EngineSnapshot, EngineError> {
+      self.export().await.map(EngineSnapshot::from)
    }
 }
 
@@ -290,4 +297,18 @@ impl Default for Engine {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineExport {
    pub torrents: Vec<TorrentExport>,
+}
+
+/// A small, serializable engine view for rendering frontends.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EngineSnapshot {
+   pub torrents: Vec<crate::torrent::TorrentSnapshot>,
+}
+
+impl From<EngineExport> for EngineSnapshot {
+   fn from(export: EngineExport) -> Self {
+      Self {
+         torrents: export.torrents.into_iter().map(Into::into).collect(),
+      }
+   }
 }
