@@ -136,4 +136,19 @@ mod tests {
       assert_eq!(magnet.peer.len(), 2);
       assert_eq!(magnet.name, "name");
    }
+
+   #[test]
+   fn magnet_uri_when_query_is_missing_then_returns_error() {
+      let error = MagnetUri::try_from("magnet:".to_string()).unwrap_err();
+
+      assert!(error.to_string().contains("Invalid magnet URI"));
+   }
+
+   #[test]
+   fn magnet_uri_when_info_hash_is_invalid_then_returns_error() {
+      let magnet = MagnetUri::try_from("magnet:?xt=urn:btih:not-hex&dn=name".to_string())
+         .expect("magnet query should parse before info hash validation");
+
+      assert!(magnet.info_hash().is_err());
+   }
 }

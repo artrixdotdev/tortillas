@@ -363,7 +363,7 @@ mod tests {
    use tracing_test::traced_test;
 
    use super::*;
-   use crate::hashes::Hash;
+   use crate::{errors::PeerActorError, hashes::Hash, protocol::messages::Handshake};
 
    #[tokio::test]
    #[traced_test]
@@ -399,5 +399,39 @@ mod tests {
       client.await.expect("client task should not panic");
 
       assert_eq!(incoming_id, client_id);
+   }
+
+   #[test]
+   fn validate_handshake_when_protocol_is_invalid_then_returns_magic_mismatch() {
+      let info_hash = Arc::new(Hash::new([1u8; 20]));
+      let mut handshake = Handshake::new(info_hash.clone(), PeerId::new());
+      handshake.protocol = "not bittorrent".into();
+
+      let error =
+         validate_handshake(&handshake, "127.0.0.1:6881".parse().unwrap(), info_hash).unwrap_err();
+
+      assert!(matches!(
+         error,
+         PeerActorError::HandshakeMagicMismatch { .. }
+      ));
+   }
+
+   #[test]
+   fn validate_handshake_when_info_hash_differs_then_returns_info_hash_mismatch() {
+      let expected_info_hash = Arc::new(Hash::new([1u8; 20]));
+      let received_info_hash = Arc::new(Hash::new([2u8; 20]));
+      let handshake = Handshake::new(received_info_hash, PeerId::new());
+
+      let error = validate_handshake(
+         &handshake,
+         "127.0.0.1:6881".parse().unwrap(),
+         expected_info_hash,
+      )
+      .unwrap_err();
+
+      assert!(matches!(
+         error,
+         PeerActorError::HandshakeInfoHashMismatch { .. }
+      ));
    }
 }
