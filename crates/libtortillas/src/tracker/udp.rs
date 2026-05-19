@@ -955,15 +955,15 @@ mod tests {
    use crate::metainfo::{MagnetUri, MetaInfo};
 
    #[tokio::test]
+   #[ignore = "external-network test: reaches public UDP trackers"]
    async fn test_stream_with_udp_peers() {
-      tracing_subscriber::fmt()
+      let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
          .pretty()
-         .init();
+         .try_init();
 
-      let path = std::env::current_dir()
-         .unwrap()
+      let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
          .join("tests/magneturis/big-buck-bunny.txt");
 
       let contents = tokio::fs::read_to_string(&path).await.unwrap();
@@ -999,17 +999,17 @@ mod tests {
    }
 
    #[tokio::test]
+   #[ignore = "external-network test: reaches public UDP trackers"]
    //#[traced_test]
    async fn test_multiple_trackers_single_udp_server() {
-      let path = std::env::current_dir()
-         .unwrap()
+      let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
          .join("tests/magneturis/big-buck-bunny.txt");
 
-      tracing_subscriber::fmt()
+      let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
          .pretty()
-         .init();
+         .try_init();
 
       let contents = tokio::fs::read_to_string(&path).await.unwrap();
       let metainfo = MagnetUri::parse(contents).unwrap();

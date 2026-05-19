@@ -1008,7 +1008,7 @@ impl Actor for TorrentActor {
 
 #[cfg(test)]
 mod tests {
-   use std::{net::SocketAddr, str::FromStr, time::Duration};
+   use std::{net::SocketAddr, path::PathBuf, str::FromStr, time::Duration};
 
    use librqbit_utp::UtpSocket;
    use tokio::{fs, time::sleep};
@@ -1021,12 +1021,13 @@ mod tests {
    };
 
    #[tokio::test(flavor = "multi_thread")]
+   #[ignore = "external-network test: reaches public trackers and peers"]
    async fn test_torrent_actor() {
-      tracing_subscriber::fmt()
+      let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
          .pretty()
-         .init();
+         .try_init();
       let metainfo = TorrentFile::parse(include_bytes!(
          "../../tests/torrents/big-buck-bunny.torrent"
       ))
@@ -1064,17 +1065,17 @@ mod tests {
    }
 
    #[tokio::test(flavor = "multi_thread")]
+   #[ignore = "external-network test: reaches public trackers and peers"]
    async fn test_info_dict_retrieval() {
-      tracing_subscriber::fmt()
+      let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
          .pretty()
-         .init();
+         .try_init();
 
       // Test with a magnet URI, since magnet URIs don't come with an info dict
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/big-buck-bunny.txt");
+      let path =
+         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/magneturis/big-buck-bunny.txt");
       let contents = tokio::fs::read_to_string(path).await.unwrap();
 
       let metainfo = MagnetUri::parse(contents).unwrap();
@@ -1117,12 +1118,13 @@ mod tests {
    }
 
    #[tokio::test(flavor = "multi_thread")]
+   #[ignore = "external-network test: reaches public trackers and peers"]
    async fn test_torrent_actor_piece_storage() {
-      tracing_subscriber::fmt()
+      let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
          .pretty()
-         .init();
+         .try_init();
       let metainfo = TorrentFile::parse(include_bytes!(
          "../../tests/torrents/big-buck-bunny.torrent"
       ))
@@ -1200,12 +1202,13 @@ mod tests {
    }
 
    #[tokio::test(flavor = "multi_thread")]
+   #[ignore = "external-network test: reaches public trackers and peers"]
    async fn test_torrent_export() {
-      tracing_subscriber::fmt()
+      let _ = tracing_subscriber::fmt()
          .with_target(true)
          .with_env_filter("libtortillas=trace,off")
          .pretty()
-         .init();
+         .try_init();
       let metainfo = TorrentFile::parse(include_bytes!(
          "../../tests/torrents/big-buck-bunny.torrent"
       ))
