@@ -756,7 +756,6 @@ impl UdpTracker {
       match response {
          TrackerResponse::Connect {
             connection_id,
-            transaction_id: _,
             ..
          } => {
             info!(connection_id = connection_id, "Connected to tracker");
@@ -767,7 +766,6 @@ impl UdpTracker {
          }
          TrackerResponse::Error {
             message,
-            transaction_id: _,
             ..
          } => {
             trace!(
