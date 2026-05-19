@@ -51,13 +51,11 @@ const MIN_ANNOUNCE_RESPONSE_SIZE: usize = 20;
 const MIN_ERROR_RESPONSE_SIZE: usize = 8;
 /// The maximum amount of time a connect message can take to respond.
 /// This hard-caps the retries regardless of [MESSAGE_TIMEOUT]
-const CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
 /// The size of each peer returned from a tracker, in bytes
 const PEER_SIZE: usize = 6;
-/// The maximum amount of time a tracker message can take to respond before the
-/// request is retried. Public UDP trackers often respond slower than a local
-/// LAN round-trip, so this must not be tuned like an in-process test timeout.
-const MESSAGE_TIMEOUT: Duration = Duration::from_secs(3);
+/// The maximum amount of time a message can take to respond.
+const MESSAGE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// Tracker request variants with binary layouts.
 #[derive(Debug)]
@@ -612,18 +610,10 @@ impl UdpTracker {
         tracker_uri = %self.uri,
         connection_id = ?self.get_connection_id()
    ))]
-   async fn to_retry_error(
+   async fn recv_registered_response(
       &self, transaction_id: &TransactionId,
+      response_rx: &mut mpsc::UnboundedReceiver<ServerMessage>,
    ) -> anyhow::Result<TrackerResponse, RetryError<TrackerActorError>> {
-      // Create a channel to receive the response
-      let (response_tx, mut response_rx) = mpsc::unbounded_channel();
-
-      // Register this transaction ID with the message receiver
-      self
-         .server
-         .register_transaction(*transaction_id, response_tx)
-         .await;
-
       // Create a timeout for the response
       let timeout_result = timeout(MESSAGE_TIMEOUT, response_rx.recv()).await;
 
@@ -637,8 +627,6 @@ impl UdpTracker {
             self.stats.set_last_interaction();
             self.stats.increment_bytes_received(size);
 
-            // Unregister the transaction ID
-            self.server.unregister_transaction(transaction_id).await;
             Ok(response)
          }
          Ok(None) => {
@@ -648,7 +636,7 @@ impl UdpTracker {
             );
             return Err(RetryError::Transient {
                err: TrackerActorError::RequestTimeout {
-                  seconds: MESSAGE_TIMEOUT.as_secs(),
+                  seconds: MESSAGE_TIMEOUT.as_secs().max(1),
                },
                retry_after: None,
             });
@@ -661,7 +649,7 @@ impl UdpTracker {
             );
             return Err(RetryError::Transient {
                err: TrackerActorError::RequestTimeout {
-                  seconds: MESSAGE_TIMEOUT.as_secs(),
+                  seconds: MESSAGE_TIMEOUT.as_secs().max(1),
                },
                retry_after: None,
             });
@@ -669,8 +657,8 @@ impl UdpTracker {
       }
    }
 
-   /// Uses [`UdpServer::send_message`] to send a message and
-   /// [`UdpTracker::to_retry_error`] to receive the message.
+   /// Registers a transaction listener, sends a message, and waits for the
+   /// matching response on the shared UDP socket.
    #[instrument(skip(self, message), fields(
         tracker_uri = %self.uri,
         tracker_connection_id = ?self.get_connection_id(),
@@ -680,13 +668,21 @@ impl UdpTracker {
       &self, message: &TrackerRequest, transaction_id: &TransactionId,
    ) -> anyhow::Result<TrackerResponse, RetryError<TrackerActorError>> {
       let message_bytes = message.to_bytes();
+      let (response_tx, mut response_rx) = mpsc::unbounded_channel();
 
-      // Send the message through the shared message receiver
       self
          .server
-         .send_message(&message_bytes, self.addr)
-         .await
-         .map_err(RetryError::Permanent)?;
+         .register_transaction(*transaction_id, response_tx)
+         .await;
+
+      // Send the message through the shared message receiver
+      let send_result = self.server.send_message(&message_bytes, self.addr).await;
+
+      if let Err(err) = send_result {
+         self.server.unregister_transaction(transaction_id).await;
+         return Err(RetryError::Permanent(err));
+      }
+
       self.stats.increment_bytes_sent(message_bytes.len());
 
       trace!(
@@ -695,8 +691,11 @@ impl UdpTracker {
           "Sent message to tracker"
       );
 
-      // Try to receive response
-      self.to_retry_error(transaction_id).await
+      let response = self
+         .recv_registered_response(transaction_id, &mut response_rx)
+         .await;
+      self.server.unregister_transaction(transaction_id).await;
+      response
    }
 
    /// Sends a message with exponential backoff to a tracker. The following
@@ -762,7 +761,7 @@ impl UdpTracker {
       let response = timeout(CONNECTION_TIMEOUT, self.send_and_wait(request)).await;
 
       let response = response.map_err(|_| TrackerActorError::RequestTimeout {
-         seconds: CONNECTION_TIMEOUT.as_secs(),
+         seconds: CONNECTION_TIMEOUT.as_secs().max(1),
       })??;
 
       match response {
