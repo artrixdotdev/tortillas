@@ -754,20 +754,14 @@ impl UdpTracker {
       let response = response.map_err(|_| TrackerActorError::RequestTimeout { seconds: 15 })??;
 
       match response {
-         TrackerResponse::Connect {
-            connection_id,
-            ..
-         } => {
+         TrackerResponse::Connect { connection_id, .. } => {
             info!(connection_id = connection_id, "Connected to tracker");
 
             self.set_connection_id(connection_id);
             self.set_ready_state(ReadyState::Ready);
             Ok(connection_id)
          }
-         TrackerResponse::Error {
-            message,
-            ..
-         } => {
+         TrackerResponse::Error { message, .. } => {
             trace!(
                 error_message = %message,
                 transaction_id = transaction_id,
