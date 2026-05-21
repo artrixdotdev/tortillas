@@ -70,7 +70,11 @@ pub(crate) mod testing {
    }
 
    pub(crate) fn torrent_temp_path() -> PathBuf {
-      std::env::temp_dir().join("tortillas")
+      std::env::temp_dir().join(format!(
+         "tortillas-{}-{}",
+         std::process::id(),
+         rand::random::<u64>()
+      ))
    }
 
    pub(crate) fn peer_id() -> PeerId {
