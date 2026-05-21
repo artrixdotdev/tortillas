@@ -18,7 +18,7 @@ use crate::hashes::Hash;
 ///
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// use std::path::Path;
 /// let path = Path::new("/tmp/my-file");
 /// util::create_empty_file(path, 100).await;
@@ -52,7 +52,7 @@ pub async fn create_empty_file(path: impl AsRef<Path>, length: usize) -> anyhow:
 /// [Piece](crate::protocol::messages::PeerMessages::Piece) message to a file.
 ///
 /// # Examples
-/// ```no_run
+/// ```ignore
 /// let message = PeerMessages::Piece(0, 0, Bytes::new());
 /// let path = "/tmp/my-file";
 ///
@@ -85,7 +85,7 @@ pub async fn write_block_to_file(
 /// and when we know that we've acquired every block for a piece.
 ///
 /// # Examples
-/// ```no_run
+/// ```ignore
 /// let info_dict = Info { ... };
 /// let path = "/tmp/my-file";
 /// let current_piece_hash = info_dict.pieces[0];

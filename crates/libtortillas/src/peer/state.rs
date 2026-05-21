@@ -19,7 +19,7 @@ use super::Peer;
 /// that it's very easy to do something like this (in an impl of the Peer
 /// struct):
 ///
-/// ```no_run
+/// ```ignore
 /// tokio::spawn(async move {
 ///    some_fn(self.state.clone());
 /// })

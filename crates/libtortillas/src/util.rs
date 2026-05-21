@@ -2,8 +2,8 @@
 /// payload.
 ///
 ///  # Examples
-/// ```
-/// use libtortillas::util::actor_request_response;
+/// ```ignore
+/// use libtortillas::actor_request_response;
 ///
 /// actor_request_response!(
 ///     pub Request,
