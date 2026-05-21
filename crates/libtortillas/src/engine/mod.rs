@@ -65,17 +65,19 @@ use crate::{
 ///
 /// # Example
 /// ```no_run
+/// use std::net::SocketAddr;
+///
 /// use libtortillas::prelude::*;
 /// // Create an engine with no explicit addresses
 /// let engine = Engine::builder()
 ///    // Optionally provide addresses for our sockets to listen on
-///    .tcp_addr("127.0.0.1:6881".parse().unwrap())
-///    .utp_addr("127.0.0.1:6882".parse().unwrap())
-///    .udp_addr("127.0.0.1:6883".parse().unwrap())
+///    .tcp_addr("127.0.0.1:6881".parse::<SocketAddr>().unwrap())
+///    .utp_addr("127.0.0.1:6882".parse::<SocketAddr>().unwrap())
+///    .udp_addr("127.0.0.1:6883".parse::<SocketAddr>().unwrap())
 ///    .build();
 /// ```
 /// Or with all default settings
-/// ```
+/// ```no_run
 /// use libtortillas::prelude::*;
 /// let engine = Engine::default();
 /// ```
@@ -239,14 +241,15 @@ impl Engine {
          })?
       };
 
-      let info_hash = metainfo.info_hash().expect("Failed to fetch info hash");
+      let info_hash = metainfo.info_hash()?;
 
-      let torrent_ref = match self
+      let response = self
          .actor()
          .ask(EngineRequest::Torrent(Box::new(metainfo)))
          .await
-         .expect("Failed to add torrent")
-      {
+         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+
+      let torrent_ref = match response {
          EngineResponse::Torrent(torrent_ref) => torrent_ref,
          #[allow(unreachable_patterns)]
          _ => unreachable!(),
@@ -258,24 +261,26 @@ impl Engine {
    }
    /// Starts all torrents managed by the engine.
    /// See [`Torrent::start`] for more information.
-   pub async fn start_all(&self) {
+   pub async fn start_all(&self) -> Result<(), EngineError> {
       self
          .actor()
          .tell(EngineMessage::StartAll)
          .await
-         .expect("Failed to start all torrents");
+         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+      Ok(())
    }
 
    /// Exports the current state of the engine.
    /// See [`Torrent::export`] for more information.
-   pub async fn export(&self) -> EngineExport {
-      match self
+   pub async fn export(&self) -> Result<EngineExport, EngineError> {
+      let response = self
          .actor()
          .ask(EngineRequest::Export)
          .await
-         .expect("Failed to get torrents")
-      {
-         EngineResponse::Export(export) => export,
+         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+
+      match response {
+         EngineResponse::Export(export) => Ok(export),
          _ => unreachable!(),
       }
    }
