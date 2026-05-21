@@ -109,20 +109,16 @@ mod tests {
    use tracing_test::traced_test;
 
    use super::*;
+   use crate::testing::{BIG_BUCK_BUNNY_NAME, big_buck_bunny_magnet};
 
    #[tokio::test]
    #[traced_test]
-   async fn test_parse_magnet_uri() {
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/big-buck-bunny.txt");
-      let contents = tokio::fs::read_to_string(path).await.unwrap();
-
-      let metainfo = MagnetUri::parse(contents).unwrap();
+   async fn magnet_uri_when_uri_is_valid_then_parses_display_name() {
+      let metainfo = big_buck_bunny_magnet();
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
-            assert_eq!(magnet.name, "Big Buck Bunny");
+            assert_eq!(magnet.name, BIG_BUCK_BUNNY_NAME);
          }
          _ => panic!("Expected Torrent"),
       }
@@ -130,12 +126,28 @@ mod tests {
 
    #[tokio::test]
    #[traced_test]
-   async fn test_parse_magnet_uri_multi_valued_params() {
+   async fn magnet_uri_when_params_are_repeated_then_preserves_all_values() {
       let uri = "magnet:?xt=urn:btih:xyz&as=seed1&as=seed2&xs=exact1&xs=exact2&x.pe=peer1&x.pe=peer2&dn=name";
       let magnet = MagnetUri::try_from(uri.to_string()).unwrap();
 
       assert_eq!(magnet.source.len(), 2);
       assert_eq!(magnet.exact_source.len(), 2);
       assert_eq!(magnet.peer.len(), 2);
+      assert_eq!(magnet.name, "name");
+   }
+
+   #[test]
+   fn magnet_uri_when_query_is_missing_then_returns_error() {
+      let error = MagnetUri::try_from("magnet:".to_string()).unwrap_err();
+
+      assert!(error.to_string().contains("Invalid magnet URI"));
+   }
+
+   #[test]
+   fn magnet_uri_when_info_hash_is_invalid_then_returns_error() {
+      let magnet = MagnetUri::try_from("magnet:?xt=urn:btih:not-hex&dn=name".to_string())
+         .expect("magnet query should parse before info hash validation");
+
+      assert!(magnet.info_hash().is_err());
    }
 }

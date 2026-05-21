@@ -49,12 +49,12 @@ const MIN_CONNECT_RESPONSE_SIZE: usize = 16;
 const MIN_ANNOUNCE_RESPONSE_SIZE: usize = 20;
 /// Minimum error response size, in bytes
 const MIN_ERROR_RESPONSE_SIZE: usize = 8;
-/// The maximum amount of time a connect message can take to response
+/// The maximum amount of time a connect message can take to respond.
 /// This hard-caps the retries regardless of [MESSAGE_TIMEOUT]
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
 /// The size of each peer returned from a tracker, in bytes
 const PEER_SIZE: usize = 6;
-/// The maximum amount of time a message can take to response
+/// The maximum amount of time a message can take to respond.
 const MESSAGE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// Tracker request variants with binary layouts.
@@ -610,18 +610,10 @@ impl UdpTracker {
         tracker_uri = %self.uri,
         connection_id = ?self.get_connection_id()
    ))]
-   async fn to_retry_error(
+   async fn recv_registered_response(
       &self, transaction_id: &TransactionId,
+      response_rx: &mut mpsc::UnboundedReceiver<ServerMessage>,
    ) -> anyhow::Result<TrackerResponse, RetryError<TrackerActorError>> {
-      // Create a channel to receive the response
-      let (response_tx, mut response_rx) = mpsc::unbounded_channel();
-
-      // Register this transaction ID with the message receiver
-      self
-         .server
-         .register_transaction(*transaction_id, response_tx)
-         .await;
-
       // Create a timeout for the response
       let timeout_result = timeout(MESSAGE_TIMEOUT, response_rx.recv()).await;
 
@@ -635,8 +627,6 @@ impl UdpTracker {
             self.stats.set_last_interaction();
             self.stats.increment_bytes_received(size);
 
-            // Unregister the transaction ID
-            self.server.unregister_transaction(transaction_id).await;
             Ok(response)
          }
          Ok(None) => {
@@ -645,7 +635,9 @@ impl UdpTracker {
                "Response channel closed before receiving message"
             );
             return Err(RetryError::Transient {
-               err: TrackerActorError::RequestTimeout { seconds: 15 },
+               err: TrackerActorError::RequestTimeout {
+                  seconds: MESSAGE_TIMEOUT.as_secs().max(1),
+               },
                retry_after: None,
             });
          }
@@ -656,15 +648,17 @@ impl UdpTracker {
                 "Tracker timed out"
             );
             return Err(RetryError::Transient {
-               err: TrackerActorError::RequestTimeout { seconds: 15 },
+               err: TrackerActorError::RequestTimeout {
+                  seconds: MESSAGE_TIMEOUT.as_secs().max(1),
+               },
                retry_after: None,
             });
          }
       }
    }
 
-   /// Uses [`UdpServer::send_message`] to send a message and
-   /// [`UdpTracker::to_retry_error`] to receive the message.
+   /// Registers a transaction listener, sends a message, and waits for the
+   /// matching response on the shared UDP socket.
    #[instrument(skip(self, message), fields(
         tracker_uri = %self.uri,
         tracker_connection_id = ?self.get_connection_id(),
@@ -674,13 +668,21 @@ impl UdpTracker {
       &self, message: &TrackerRequest, transaction_id: &TransactionId,
    ) -> anyhow::Result<TrackerResponse, RetryError<TrackerActorError>> {
       let message_bytes = message.to_bytes();
+      let (response_tx, mut response_rx) = mpsc::unbounded_channel();
 
-      // Send the message through the shared message receiver
       self
          .server
-         .send_message(&message_bytes, self.addr)
-         .await
-         .map_err(RetryError::Permanent)?;
+         .register_transaction(*transaction_id, response_tx)
+         .await;
+
+      // Send the message through the shared message receiver
+      let send_result = self.server.send_message(&message_bytes, self.addr).await;
+
+      if let Err(err) = send_result {
+         self.server.unregister_transaction(transaction_id).await;
+         return Err(RetryError::Permanent(err));
+      }
+
       self.stats.increment_bytes_sent(message_bytes.len());
 
       trace!(
@@ -689,8 +691,11 @@ impl UdpTracker {
           "Sent message to tracker"
       );
 
-      // Try to receive response
-      self.to_retry_error(transaction_id).await
+      let response = self
+         .recv_registered_response(transaction_id, &mut response_rx)
+         .await;
+      self.server.unregister_transaction(transaction_id).await;
+      response
    }
 
    /// Sends a message with exponential backoff to a tracker. The following
@@ -755,7 +760,9 @@ impl UdpTracker {
       let request = TrackerRequest::Connect(MAGIC_CONSTANT, Action::Connect, transaction_id);
       let response = timeout(CONNECTION_TIMEOUT, self.send_and_wait(request)).await;
 
-      let response = response.map_err(|_| TrackerActorError::RequestTimeout { seconds: 15 })??;
+      let response = response.map_err(|_| TrackerActorError::RequestTimeout {
+         seconds: CONNECTION_TIMEOUT.as_secs().max(1),
+      })??;
 
       match response {
          TrackerResponse::Connect { connection_id, .. } => {
@@ -949,45 +956,91 @@ impl TrackerBase for UdpTracker {
 
 #[cfg(test)]
 mod tests {
-   use rand::random_range;
-
    use super::*;
-   use crate::metainfo::{MagnetUri, MetaInfo};
+   use crate::{
+      metainfo::MetaInfo,
+      testing::{
+         BIG_BUCK_BUNNY_MAGNET_FILE, init_tracing, random_port, random_socket_addr,
+         read_magnet_fixture, udp_server,
+      },
+   };
+
+   const EXTERNAL_TRACKER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
 
    #[tokio::test]
-   async fn test_stream_with_udp_peers() {
-      tracing_subscriber::fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .init();
-
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/big-buck-bunny.txt");
-
-      let contents = tokio::fs::read_to_string(&path).await.unwrap();
-      let metainfo = MagnetUri::parse(contents).unwrap();
+   #[ignore = "external-network test: reaches public UDP trackers"]
+   async fn udp_tracker_when_public_magnet_tracker_is_available_then_returns_ipv4_peer() {
+      init_tracing();
+      let metainfo = read_magnet_fixture(BIG_BUCK_BUNNY_MAGNET_FILE).await;
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
             let info_hash = magnet.info_hash().expect("Missing info hash");
             let announce_list = magnet.announce_list.expect("Missing announce list");
-            let uri = announce_list[0].uri();
-            let port: u16 = random_range(1024..65535);
-            let socket_addr = SocketAddr::from_str(&format!("0.0.0.0:{}", port)).unwrap();
+            let socket_addr = random_socket_addr();
+            let udp_announce_list = announce_list
+               .iter()
+               .filter(|tracker| tracker.uri().starts_with("udp://"));
 
-            let tracker = UdpTracker::new(uri, None, info_hash, (PeerId::new(), socket_addr))
+            let mut last_error = None;
+            let mut peers = Vec::new();
+            for announce_url in udp_announce_list {
+               let uri = announce_url.uri();
+               let tracker = match UdpTracker::new(
+                  uri,
+                  None,
+                  info_hash,
+                  (PeerId::new(), socket_addr),
+               )
                .await
-               .unwrap();
+               {
+                  Ok(tracker) => tracker,
+                  Err(err) => {
+                     warn!(tracker_uri = %announce_url.uri(), error = %err, "Skipping UDP tracker after initialization error");
+                     last_error = Some(err.to_string());
+                     continue;
+                  }
+               };
 
-            tracker
-               .initialize()
-               .await
-               .expect("Failed to connect to UDP tracker");
+               match timeout(EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, tracker.initialize()).await {
+                  Ok(Ok(())) => {}
+                  Ok(Err(err)) => {
+                     warn!(tracker_uri = %announce_url.uri(), error = %err, "Skipping UDP tracker after connect error");
+                     last_error = Some(err.to_string());
+                     continue;
+                  }
+                  Err(_) => {
+                     warn!(tracker_uri = %announce_url.uri(), timeout = ?EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, "Skipping UDP tracker after connect timeout");
+                     last_error = Some("connect timeout".to_string());
+                     continue;
+                  }
+               }
 
-            // Spawn a task to re-fetch the latest list of peers at a given interval
-            let peers = tracker.announce().await.expect("Failed to announce");
+               match timeout(EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, tracker.announce()).await {
+                  Ok(Ok(found_peers)) if !found_peers.is_empty() => {
+                     peers = found_peers;
+                     break;
+                  }
+                  Ok(Ok(_)) => {
+                     warn!(tracker_uri = %announce_url.uri(), "Skipping UDP tracker with empty peer response");
+                     last_error = Some("empty peer response".to_string());
+                  }
+                  Ok(Err(err)) => {
+                     warn!(tracker_uri = %announce_url.uri(), error = %err, "Skipping UDP tracker after announce error");
+                     last_error = Some(err.to_string());
+                  }
+                  Err(_) => {
+                     warn!(tracker_uri = %announce_url.uri(), timeout = ?EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, "Skipping UDP tracker after announce timeout");
+                     last_error = Some("announce timeout".to_string());
+                  }
+               }
+            }
+
+            assert!(
+               !peers.is_empty(),
+               "expected at least one public UDP tracker to return peers; last error: {:?}",
+               last_error
+            );
 
             let peer = &peers[0];
             assert!(peer.ip.is_ipv4());
@@ -999,20 +1052,11 @@ mod tests {
    }
 
    #[tokio::test]
+   #[ignore = "external-network test: reaches public UDP trackers"]
    //#[traced_test]
-   async fn test_multiple_trackers_single_udp_server() {
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/magneturis/big-buck-bunny.txt");
-
-      tracing_subscriber::fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .init();
-
-      let contents = tokio::fs::read_to_string(&path).await.unwrap();
-      let metainfo = MagnetUri::parse(contents).unwrap();
+   async fn udp_tracker_when_public_trackers_share_socket_then_returns_peers() {
+      init_tracing();
+      let metainfo = read_magnet_fixture(BIG_BUCK_BUNNY_MAGNET_FILE).await;
 
       match metainfo {
          MetaInfo::MagnetUri(magnet) => {
@@ -1023,7 +1067,7 @@ mod tests {
             let mut trackers = Vec::new();
             let mut tracker_urls = Vec::new();
 
-            let udp_server = UdpServer::new(None).await;
+            let udp_server = udp_server().await;
             let peer_id = PeerId::new();
 
             // Use multiple tracker URLs from the announce list (or duplicate the same one)
@@ -1031,18 +1075,24 @@ mod tests {
                .iter()
                .filter(|t| t.uri().starts_with("udp://"))
             {
-               let port: u16 = random_range(1024..65535);
+               let port = random_port();
 
                let tracker = announce_url
                   .to_instance(info_hash, peer_id, port, udp_server.clone())
                   .await;
 
                if let Ok(tracker) = tracker {
-                  if tracker.initialize().await.is_ok() {
-                     trackers.push(tracker);
-                     tracker_urls.push(announce_url.uri().clone());
-                  } else {
-                     error!("There was an error creating the tracker");
+                  match timeout(EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, tracker.initialize()).await {
+                     Ok(Ok(())) => {
+                        trackers.push(tracker);
+                        tracker_urls.push(announce_url.uri().clone());
+                     }
+                     Ok(Err(err)) => {
+                        warn!(tracker_uri = %announce_url.uri(), error = %err, "Skipping UDP tracker after connect error");
+                     }
+                     Err(_) => {
+                        warn!(tracker_uri = %announce_url.uri(), timeout = ?EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, "Skipping UDP tracker after connect timeout");
+                     }
                   }
                }
             }
@@ -1057,7 +1107,8 @@ mod tests {
 
                   let mut peers = vec![];
 
-                  if let Ok(res) = timeout(Duration::from_secs(1), tracker.announce()).await
+                  if let Ok(res) =
+                     timeout(EXTERNAL_TRACKER_ATTEMPT_TIMEOUT, tracker.announce()).await
                      && let Ok(wrapped_peers) = res
                   {
                      peers.extend(wrapped_peers);

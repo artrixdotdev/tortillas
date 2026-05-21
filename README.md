@@ -33,6 +33,33 @@ We use [Nextest](https://nexte.st/) for running tests. To run tests locally, you
 # See: https://nexte.st/docs/installation/pre-built-binaries/
 ```
 
+The default suite should be deterministic and must not depend on public trackers, public peers, or mutable internet state:
+
+```bash
+cargo nextest run --workspace
+```
+
+Tests that intentionally exercise public BitTorrent infrastructure are marked `#[ignore]` and should only be run explicitly:
+
+```bash
+cargo nextest run --workspace --run-ignored only
+```
+
+Test names use this convention:
+
+```text
+subject_when_condition_then_expected_result
+```
+
+Examples:
+
+```text
+magnet_uri_when_query_is_missing_then_returns_error
+peer_stream_when_handshake_is_valid_then_returns_peer_id
+```
+
+Keep tests focused on one behavior, prefer deterministic fixtures with `include_str!` or `include_bytes!`, and avoid public network access unless the test is explicitly ignored.
+
 ## 📦 Installation
 ### Tortillas
 Tortillas is the frontend TUI (Text User Interface) application (what most people want)

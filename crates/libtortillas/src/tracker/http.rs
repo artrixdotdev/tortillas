@@ -420,24 +420,23 @@ where
 #[cfg(test)]
 mod tests {
 
-   use rand::random_range;
    use tracing_test::traced_test;
 
    use super::HttpTracker;
    use crate::{
-      metainfo::{MetaInfo, TorrentFile},
+      metainfo::MetaInfo,
       peer::PeerId,
-      tracker::{TrackerBase, udp::UdpServer},
+      testing::{
+         KNOPPIX_TORRENT_FILE, init_tracing, random_port, read_torrent_fixture, udp_server,
+      },
+      tracker::TrackerBase,
    };
 
    #[tokio::test]
+   #[ignore = "external-network test: reaches public HTTP trackers"]
    #[traced_test]
-   async fn test_get_peers_with_http_tracker() {
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/torrents/KNOPPIX_V9.1DVD-2021-01-25-EN.torrent");
-
-      let metainfo = TorrentFile::read(path).await.unwrap();
+   async fn http_tracker_when_public_tracker_is_available_then_returns_ipv4_peer() {
+      let metainfo = read_torrent_fixture(KNOPPIX_TORRENT_FILE).await;
 
       match metainfo {
          MetaInfo::Torrent(file) => {
@@ -460,19 +459,10 @@ mod tests {
    }
 
    #[tokio::test]
-   async fn test_http_tracker_instance_trait() {
-      tracing_subscriber::fmt()
-         .with_target(true)
-         .with_env_filter("libtortillas=trace,off")
-         .pretty()
-         .init();
-
-      let path = std::env::current_dir()
-         .unwrap()
-         .join("tests/torrents/KNOPPIX_V9.1DVD-2021-01-25-EN.torrent");
-
-      let contents = tokio::fs::read(&path).await.unwrap();
-      let metainfo = TorrentFile::parse(&contents).unwrap();
+   #[ignore = "external-network test: reaches public HTTP trackers"]
+   async fn http_tracker_instance_when_public_tracker_is_available_then_returns_peers() {
+      init_tracing();
+      let metainfo = read_torrent_fixture(KNOPPIX_TORRENT_FILE).await;
 
       match metainfo {
          MetaInfo::Torrent(torrent) => {
@@ -483,9 +473,9 @@ mod tests {
                .find(|t| t.uri().starts_with("http://"))
                .expect("No UDP tracker found in announce list");
 
-            let port: u16 = random_range(1024..65535);
+            let port = random_port();
             let peer_id = PeerId::new();
-            let server = UdpServer::new(None).await;
+            let server = udp_server().await;
 
             let tracker = announce_url
                .to_instance(info_hash, peer_id, port, server)

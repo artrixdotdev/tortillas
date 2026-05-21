@@ -441,15 +441,59 @@ mod tests {
    use super::*;
 
    #[test]
-   fn test_parse_azureus_style_peer_id() {
-      let id = *b"-UT1234-abcdefghijkn";
-      let peer = PeerId::from(id);
-      assert_eq!(peer.client_name(), "µTorrent");
-      assert_eq!(peer.version(), Some("1.2.34".to_string()));
+   fn peer_id_when_client_format_is_known_then_returns_client_metadata() {
+      let cases = [
+         (
+            *b"-UT1234-abcdefghijkn",
+            "µTorrent",
+            Some("1.2.34"),
+            b"UT" as &[u8],
+            PeerIdFormat::Azureus,
+         ),
+         (
+            *b"-WW1234-abcdefghijkn",
+            "WebTorrent",
+            Some("1.2.34"),
+            b"WW" as &[u8],
+            PeerIdFormat::Azureus,
+         ),
+         (
+            *b"T58B-----abcdefghijk",
+            "BitTornado",
+            Some("58B"),
+            b"T" as &[u8],
+            PeerIdFormat::Shadow,
+         ),
+         (
+            *b"M4-3-6--abcdefghijkl",
+            "Mainline BitTorrent",
+            Some("4.3.6"),
+            b"M" as &[u8],
+            PeerIdFormat::Mainline,
+         ),
+         (
+            *b"exbc\x01\x02abcdefghijklmn",
+            "BitComet (legacy)",
+            Some("1.02"),
+            b"exbc" as &[u8],
+            PeerIdFormat::BitCometLegacy,
+         ),
+      ];
+
+      for (id, expected_name, expected_version, expected_prefix, expected_format) in cases {
+         let peer = PeerId::from(id);
+         let info = peer.client_info();
+
+         assert_eq!(peer.client_name(), expected_name);
+         assert_eq!(peer.version().as_deref(), expected_version);
+         assert_eq!(info.name, expected_name);
+         assert_eq!(info.prefix, expected_prefix);
+         assert_eq!(info.format, expected_format);
+      }
    }
 
    #[test]
-   fn test_parse_tortillas_peer_id() {
+   fn peer_id_when_generated_for_tortillas_then_uses_azureus_layout() {
       let peer = PeerId::new();
       // Derive expected Azureus "A.B.CD" exactly like PeerId::default
       let core = VERSION
@@ -474,52 +518,10 @@ mod tests {
       assert_eq!(peer.as_bytes()[7], b'-');
    }
    #[test]
-   fn test_parse_webtorrent_peer_id() {
-      let id = *b"-WW1234-abcdefghijkn";
-      let peer = PeerId::from(id);
-      assert_eq!(peer.client_name(), "WebTorrent");
-      assert_eq!(peer.version(), Some("1.2.34".to_string()));
-   }
-
-   #[test]
-   fn test_parse_shadow_style_peer_id() {
-      let id = *b"T58B-----abcdefghijk";
-      let peer = PeerId::from(id);
-      assert_eq!(peer.client_name(), "BitTornado");
-      assert_eq!(peer.version(), Some("58B".to_string()));
-   }
-
-   #[test]
-   fn test_parse_mainline_peer_id() {
-      let id = *b"M4-3-6--abcdefghijkl";
-      let peer = PeerId::from(id);
-      assert_eq!(peer.client_name(), "Mainline BitTorrent");
-      assert_eq!(peer.version(), Some("4.3.6".to_string()));
-   }
-
-   #[test]
-   fn test_parse_bitcomet_legacy_peer_id() {
-      let id = *b"exbc\x01\x02abcdefghijklmn";
-      let peer = PeerId::from(id);
-      assert_eq!(peer.client_name(), "BitComet (legacy)");
-      assert_eq!(peer.version(), Some("1.02".to_string()));
-   }
-
-   #[test]
-   fn test_parse_unknown_peer_id() {
+   fn peer_id_when_prefix_is_unknown_then_returns_unknown_client() {
       let id = *b"sdfsfdsfabcdefghijkl";
       let peer = PeerId::from(id);
       assert_eq!(peer.client_name(), "Unknown");
       assert_eq!(peer.version(), None);
-   }
-
-   #[test]
-   fn test_client_info_access() {
-      let id = *b"-UT1234-abcdefghijkn";
-      let peer = PeerId::from(id);
-      let info = peer.client_info();
-      assert_eq!(info.name, "µTorrent");
-      assert_eq!(info.prefix, b"UT");
-      assert_eq!(info.format, PeerIdFormat::Azureus);
    }
 }
