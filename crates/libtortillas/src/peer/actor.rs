@@ -60,7 +60,7 @@ impl PeerActor {
             .stream
             .send(message)
             .await
-            .expect("Something went wrong when sending the Extended Message handshake");
+            .unwrap_or_else(|err| warn!(error = %err, "Failed to send extended handshake"));
       }
    }
 
@@ -322,9 +322,18 @@ impl Actor for PeerActor {
 
       info!(peer_id = %peer.id.unwrap(),  peer_addr = %stream, torrent_id = %info_hash, "Peer connected");
       let msg = TorrentRequest::Bitfield;
-      let bitfield = match supervisor.ask(msg).await.unwrap() {
-         TorrentResponse::Bitfield(bitfield) => bitfield,
-         _ => unreachable!("Unexpected response from supervisor"),
+      let bitfield = match supervisor.ask(msg).await {
+         Ok(TorrentResponse::Bitfield(bitfield)) => bitfield,
+         Ok(_) => {
+            return Err(PeerActorError::SupervisorCommunicationFailed(
+               "unexpected bitfield response".into(),
+            ));
+         }
+         Err(err) => {
+            return Err(PeerActorError::SupervisorCommunicationFailed(
+               err.to_string(),
+            ));
+         }
       };
 
       // Dont send `BitVec::EMPTY`
@@ -361,22 +370,23 @@ impl Actor for PeerActor {
          .elapsed()
          .as_secs();
 
-      if last_message > PEER_KEEPALIVE_TIMEOUT {
-         self
+      if last_message > PEER_KEEPALIVE_TIMEOUT
+         && let Err(err) = self
             .stream
             .send(PeerMessages::KeepAlive)
             .await
             .context("Peer connection closed")
-            .expect("Failed to send Keep Alive message to peer");
+      {
+         warn!(error = %err, "Failed to send keep alive message to peer");
+         return Ok(Some(Signal::Stop));
       }
 
       if last_message > PEER_DISCONNECT_TIMEOUT {
          let id = self.peer.id.expect("Peer ID should exist");
-         self
-            .supervisor
-            .tell(TorrentMessage::KillPeer(id))
-            .await
-            .expect("Failed to tell supervisor to kill peer");
+         if let Err(err) = self.supervisor.tell(TorrentMessage::KillPeer(id)).await {
+            warn!(error = %err, "Failed to tell supervisor to kill peer");
+         }
+         return Ok(Some(Signal::Stop));
          // The supervisor will kill the peer manually, no need to do it
          // ourselves.
       }
@@ -444,11 +454,9 @@ impl Message<PeerMessages> for PeerActor {
          }
          PeerMessages::KeepAlive => {
             trace!("Received keep alive");
-            self
-               .stream
-               .send(PeerMessages::KeepAlive)
-               .await
-               .expect("Failed to send keep alive");
+            if let Err(err) = self.stream.send(PeerMessages::KeepAlive).await {
+               warn!(error = %err, "Failed to send keep alive response");
+            }
          }
          PeerMessages::Have(piece_index) => {
             trace!(piece_index, "Peer has a new piece");
@@ -507,7 +515,9 @@ impl Message<PeerMessages> for PeerActor {
                piece_index = index,
                offset, length, "Peer cancelled piece request"
             );
-            todo!()
+            self
+               .pending_block_requests
+               .remove(&(index as usize, offset as usize, length as usize));
          }
          PeerMessages::Bitfield(bitfield) => {
             self.peer.pieces = bitfield;
