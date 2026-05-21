@@ -22,11 +22,10 @@ use tokio::{
 use tokio_retry2::{Retry, RetryError, strategy::ExponentialBackoff};
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use super::Peer;
 use crate::{
    errors::TrackerActorError,
    hashes::InfoHash,
-   peer::PeerId,
+   peer::{Peer, PeerId},
    tracker::{Event, TrackerBase, TrackerStats, TrackerUpdate},
 };
 
@@ -179,8 +178,8 @@ enum TrackerResponse {
       leechers: u32,
       /// Number of seeders (4 bytes)
       seeders: u32,
-      /// List of [peers](super::Peer) (6 bytes per peer) unless ipv6
-      peers: Vec<super::Peer>,
+      /// List of [peers](Peer) (6 bytes per peer) unless ipv6
+      peers: Vec<Peer>,
    },
 
    /// Error response (8 + message length bytes total)
@@ -701,7 +700,7 @@ impl UdpTracker {
    /// Sends a message with exponential backoff to a tracker. The following
    /// refers to the exponential backoff settings used in this function:
    ///
-   /// ```
+   /// ```ignore
    /// let retry_strategy = ExponentialBackoff::from_millis(15 * 1000)
    ///    .factor(2)
    ///    .max_delay_millis(3840 * 1000)

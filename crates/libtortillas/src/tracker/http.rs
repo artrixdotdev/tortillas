@@ -21,12 +21,10 @@ use tokio::{
 };
 use tracing::{debug, error, instrument, trace, warn};
 
-/// See https://www.bittorrent.org/beps/bep_0003.html
-use super::Peer;
 use crate::{
    errors::TrackerActorError,
    hashes::InfoHash,
-   peer::PeerId,
+   peer::{Peer, PeerId},
    tracker::{Event, TrackerBase, TrackerStats, TrackerUpdate},
 };
 
