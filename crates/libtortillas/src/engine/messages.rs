@@ -5,6 +5,7 @@ use kameo::{
    mailbox,
    prelude::{ActorRef, Context, Message},
 };
+use tokio::time::{Duration, timeout};
 use tracing::{error, warn};
 
 use super::{EngineActor, EngineExport};
@@ -21,6 +22,8 @@ use crate::{
       TorrentActor, TorrentActorArgs, TorrentMessage, TorrentRequest, TorrentResponse, TorrentState,
    },
 };
+
+const INCOMING_PEER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) enum EngineMessage {
    /// Handles an incoming peer connection. The peer has been neither handshaked
@@ -49,10 +52,14 @@ impl Message<EngineMessage> for EngineActor {
    ) -> Self::Reply {
       match msg {
          EngineMessage::IncomingPeer(mut stream) => {
-            let msg = match stream.recv().await {
-               Ok(msg) => msg,
-               Err(err) => {
+            let msg = match timeout(INCOMING_PEER_HANDSHAKE_TIMEOUT, stream.recv()).await {
+               Ok(Ok(msg)) => msg,
+               Ok(Err(err)) => {
                   warn!(error = %err, %stream, "Failed to read incoming peer handshake");
+                  return;
+               }
+               Err(_) => {
+                  warn!(%stream, timeout = ?INCOMING_PEER_HANDSHAKE_TIMEOUT, "Timed out reading incoming peer handshake");
                   return;
                }
             };
@@ -80,7 +87,7 @@ impl Message<EngineMessage> for EngineActor {
                   drop(stream);
                }
             } else {
-               error!("Received unexpected message from peer");
+               error!(message = %msg, "Received unexpected message from peer");
             }
          }
          EngineMessage::StartAll => {
