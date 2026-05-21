@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use dashmap::DashMap;
+use futures::{StreamExt, stream};
 use kameo::{
    Actor,
    actor::{ActorRef, Spawn},
@@ -36,6 +37,9 @@ use crate::{
    },
    tracker::{Event, Tracker, TrackerActor, TrackerMessage, TrackerUpdate, udp::UdpServer},
 };
+
+const PEER_BROADCAST_CONCURRENCY: usize = 32;
+const TRACKER_BROADCAST_CONCURRENCY: usize = 8;
 /// A hook that is called when the torrent is ready to start downloading.
 /// This is used to implement [`Torrent::poll_ready`].
 pub(super) type ReadyHook = oneshot::Sender<()>;
@@ -695,47 +699,37 @@ impl TorrentActor {
       });
    }
 
-   /// Broadcasts a message to all peers concurrently.
+   /// Broadcasts a message to all peers with bounded concurrency.
    ///
-   /// This function snapshots the current set of peer actor references before
-   /// sending, which avoids holding the [`DashMap`] lock across `.await`
-   /// points. This means other tasks can continue to access and modify the
-   /// peer set while the broadcast is in progress.
-   ///
-   /// Each peer receives the message in parallel using a
-   /// [`tokio::task::JoinSet`]. This prevents a slow or unresponsive peer
-   /// from blocking delivery to others. However, this also means that
-   /// broadcasting may use more memory, since all messages are cloned and
-   /// dispatched at once.
-   ///
-   /// Any errors from individual peers are logged, but do not stop the
-   /// broadcast from continuing to other peers.
+   /// The peer refs are snapshotted before any `.await` so DashMap guards are
+   /// not held across actor sends. Unlike detached tasks, bounded sends
+   /// preserve backpressure and make delivery failures visible to this
+   /// actor.
    #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]
    pub(super) async fn broadcast_to_peers(&self, tell: PeerTell) {
-      // Snapshot actor refs to release DashMap locks before awaiting.
-      let peers = self.peers.clone(); // assuming Arc<DashMap<..>>
+      let peers = self.peers.clone();
 
       let actor_refs: Vec<(PeerId, ActorRef<PeerActor>)> = peers
          .iter()
          .map(|entry| (*entry.key(), entry.value().clone()))
          .collect();
 
-      for (id, actor) in actor_refs {
-         let msg = tell.clone();
-         let peers = peers.clone();
-
-         tokio::spawn(async move {
-            if actor.is_alive() {
-               if let Err(e) = actor.tell(msg).await {
-                  warn!(error = %e, peer_id = %id, "Failed to send to peer");
+      stream::iter(actor_refs)
+         .for_each_concurrent(PEER_BROADCAST_CONCURRENCY, |(id, actor)| {
+            let msg = tell.clone();
+            let peers = peers.clone();
+            async move {
+               if actor.is_alive() {
+                  if let Err(e) = actor.tell(msg).await {
+                     warn!(error = %e, peer_id = %id, "Failed to send to peer");
+                  }
+               } else {
+                  trace!(peer_id = %id, "Peer actor is dead, removing from peers set");
+                  peers.remove(&id);
                }
-            } else {
-               trace!(peer_id = %id, "Peer actor is dead, removing from peers set");
-               peers.remove(&id);
             }
-         });
-      }
-      // Returns immediately, without waiting for any peer responses
+         })
+         .await;
    }
 
    /// Broadcasts a [`TrackerUpdate`] to all trackers concurrently. similar to
@@ -749,21 +743,22 @@ impl TorrentActor {
          .map(|entry| (entry.key().clone(), entry.value().clone()))
          .collect();
 
-      for (uri, actor) in actor_refs {
-         let msg = message.clone();
-         let trackers = trackers.clone();
-
-         tokio::spawn(async move {
-            if actor.is_alive() {
-               if let Err(e) = actor.tell(msg).await {
-                  warn!(error = %e, tracker_uri = ?uri, "Failed to send to tracker");
+      stream::iter(actor_refs)
+         .for_each_concurrent(TRACKER_BROADCAST_CONCURRENCY, |(uri, actor)| {
+            let msg = message.clone();
+            let trackers = trackers.clone();
+            async move {
+               if actor.is_alive() {
+                  if let Err(e) = actor.tell(msg).await {
+                     warn!(error = %e, tracker_uri = ?uri, "Failed to send to tracker");
+                  }
+               } else {
+                  trace!(tracker_uri = ?uri, "Tracker actor is dead, removing from trackers set");
+                  trackers.remove(&uri);
                }
-            } else {
-               trace!(tracker_uri = ?uri, "Tracker actor is dead, removing from trackers set");
-               trackers.remove(&uri);
             }
-         });
-      }
+         })
+         .await;
    }
 
    pub(super) async fn broadcast_to_trackers(&self, message: TrackerMessage) {
@@ -774,20 +769,21 @@ impl TorrentActor {
          .map(|entry| (entry.key().clone(), entry.value().clone()))
          .collect();
 
-      for (uri, actor) in actor_refs {
-         let trackers = trackers.clone();
-
-         tokio::spawn(async move {
-            if actor.is_alive() {
-               if let Err(e) = actor.tell(message).await {
-                  warn!(error = %e, tracker_uri = ?uri, "Failed to send to tracker");
+      stream::iter(actor_refs)
+         .for_each_concurrent(TRACKER_BROADCAST_CONCURRENCY, |(uri, actor)| {
+            let trackers = trackers.clone();
+            async move {
+               if actor.is_alive() {
+                  if let Err(e) = actor.tell(message).await {
+                     warn!(error = %e, tracker_uri = ?uri, "Failed to send to tracker");
+                  }
+               } else {
+                  trace!(tracker_uri = ?uri, "Tracker actor is dead, removing from trackers set");
+                  trackers.remove(&uri);
                }
-            } else {
-               trace!(tracker_uri = ?uri, "Tracker actor is dead, removing from trackers set");
-               trackers.remove(&uri);
             }
-         });
-      }
+         })
+         .await;
    }
 
    /// Gets the path to a piece file based on the index. Only should be used
