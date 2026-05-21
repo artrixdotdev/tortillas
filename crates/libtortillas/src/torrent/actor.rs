@@ -17,7 +17,6 @@ use kameo::{
    mailbox,
 };
 use librqbit_utp::UtpSocketUdp;
-use serde::{Deserialize, Serialize};
 use tokio::{fs, sync::oneshot};
 use tracing::{debug, error, info, instrument, trace, warn};
 
@@ -32,78 +31,11 @@ use crate::{
       stream::{PeerSend, PeerStream},
    },
    torrent::{
-      TorrentExport,
+      BLOCK_SIZE, BlockMap, PieceStorageStrategy, TorrentExport, TorrentState,
       piece_manager::{FilePieceManager, PieceManager},
    },
    tracker::{Event, Tracker, TrackerActor, TrackerMessage, TrackerUpdate, udp::UdpServer},
 };
-pub const BLOCK_SIZE: usize = 16 * 1024;
-
-/// Defines how torrent pieces are stored and accessed.
-///
-/// A torrent is composed of multiple pieces, and this enum determines
-/// whether those pieces are referenced directly from the downloaded
-/// files or written into a separate cache directory.
-///
-/// # Variants
-///
-/// - [`Self::InFile`]: References pieces directly from the files that the
-///   torrent describes. No extra storage is used; the piece data is read
-///   directly from the final output files. This is the default strategy and is
-///   efficient when you are downloading directly into the final file layout.
-///
-/// - [`Self::Disk`]: Stores each piece as a separate file in the specified
-///   cache directory. The filename for each piece is its SHA‑1 hash. This
-///   strategy is required if you are using a custom output stream, since pieces
-///   need to be retrieved later on for future seeding. It is also useful for:
-///   - HTTP Streaming or when the file itself is never actually written to disk
-///   - Supporting non-standard output backends
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(tag = "strategy", content = "piece_output_path")]
-pub enum PieceStorageStrategy {
-   /// Reference pieces directly from the downloaded files themselves.
-   ///
-   /// This avoids extra storage overhead and is the default strategy.
-   #[default]
-   InFile,
-   /// Write each piece to disk separately in the given cache directory.
-   ///
-   /// Each piece is stored as a file named by its SHA‑1 hash.
-   /// This strategy is **required** when using a custom piece receiver.
-   ///
-   /// The path is not automatically set, and libtortillas will not function
-   /// properly without the path being set.
-   Disk(PathBuf),
-}
-
-/// The current state of the torrent, defaults to
-/// [`Inactive`](TorrentState::Inactive)
-#[derive(
-   Debug,
-   Default,
-   Clone,
-   Copy,
-   PartialEq,
-   Eq,
-   PartialOrd,
-   Ord,
-   Serialize,
-   Deserialize
-)]
-pub enum TorrentState {
-   /// Torrent is downloading new pieces actively
-   ///
-   /// > Note: Even when in this state, we still seed the pieces that we *do*
-   /// > have.
-   Downloading,
-   /// Torrent is seeding and has already completed the file
-   Seeding,
-   /// Torrent is paused or currently inactive, no seeding or piece downloading
-   /// is happening.
-   #[default]
-   Inactive,
-}
-
 /// A hook that is called when the torrent is ready to start downloading.
 /// This is used to implement [`Torrent::poll_ready`].
 pub(super) type ReadyHook = oneshot::Sender<()>;
@@ -150,8 +82,6 @@ impl PieceManager for PieceManagerProxy {
       }
    }
 }
-
-pub type BlockMap = DashMap<usize, BitVec<usize>>;
 
 pub(crate) struct TorrentActor {
    pub(crate) peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
@@ -319,11 +249,14 @@ impl TorrentActor {
          self.block_map.insert(index, vec);
       }
 
-      self
-         .block_map
-         .get_mut(&index)
-         .unwrap()
-         .set(block_index, true);
+      if let Some(mut blocks) = self.block_map.get_mut(&index) {
+         blocks.set(block_index, true);
+      } else {
+         warn!(
+            piece_index = index,
+            block_index, "Failed to initialize block map"
+         );
+      }
    }
 
    /// Writes a block to the appropriate storage location based on the
@@ -332,15 +265,24 @@ impl TorrentActor {
    async fn write_block_to_storage(&self, index: usize, offset: usize, block: Bytes) {
       match &self.piece_storage {
          PieceStorageStrategy::Disk(_) => {
-            let path = self
-               .get_piece_path(index)
-               .expect("Failed to get piece path");
-            util::write_block_to_file(path, offset, block)
-               .await
-               .expect("Failed to write block to file")
+            let Ok(path) = self.get_piece_path(index) else {
+               warn!(piece_index = index, "Failed to get piece path");
+               return;
+            };
+            if let Err(err) = util::write_block_to_file(path, offset, block).await {
+               warn!(
+                  ?err,
+                  piece_index = index,
+                  offset,
+                  "Failed to write block to file"
+               );
+            }
          }
          PieceStorageStrategy::InFile => {
-            unimplemented!()
+            warn!(
+               piece_index = index,
+               offset, "In-file block writes are not implemented yet"
+            );
          }
       }
    }
@@ -409,9 +351,10 @@ impl TorrentActor {
 
       match &self.piece_storage {
          PieceStorageStrategy::Disk(_) => {
-            let path = self
-               .get_piece_path(index)
-               .expect("Failed to get piece path");
+            let Ok(path) = self.get_piece_path(index) else {
+               warn!(index, "Failed to get piece path; re-requesting");
+               return false;
+            };
 
             if util::validate_piece_file(path.clone(), info_dict.pieces[index])
                .await
@@ -428,7 +371,13 @@ impl TorrentActor {
                return false;
             }
 
-            let data = fs::read(&path).await.unwrap().into();
+            let data = match fs::read(&path).await {
+               Ok(data) => data.into(),
+               Err(err) => {
+                  warn!(?err, index, path = %path.display(), "Failed to read completed piece; re-requesting");
+                  return false;
+               }
+            };
             if let Err(err) = self.piece_manager.recv(index, data).await {
                warn!(?err, index, path = %path.display(), "Piece manager rejected piece; re-requesting");
                if let Some((_, mut blocks)) = previous_blocks {
@@ -443,7 +392,11 @@ impl TorrentActor {
             }
          }
          PieceStorageStrategy::InFile => {
-            unimplemented!()
+            warn!(
+               index,
+               "In-file piece validation is not implemented yet; re-requesting"
+            );
+            return false;
          }
       }
       true
@@ -539,12 +492,15 @@ impl TorrentActor {
       };
 
       // Start piece manager
-      self
+      if let Err(err) = self
          .piece_manager
          // Probably not the best to clone here, but should be fine for now
          .pre_start(info.clone())
          .await
-         .expect("Failed to pre-start piece manager");
+      {
+         warn!(?err, "Failed to pre-start piece manager");
+         return;
+      }
 
       info!(
          torrent_id = %self.info_hash(),
@@ -715,8 +671,10 @@ impl TorrentActor {
                }
             }
          };
-         // Safe because we always know the id is defined by the lines above
-         let id = id.unwrap();
+         let Some(id) = id else {
+            trace!(peer_addr = %peer.socket_addr(), "Peer connection completed without a peer id; exiting");
+            return;
+         };
 
          // Dont add ourselves as peers
          if id == our_id {
@@ -930,9 +888,10 @@ impl Actor for TorrentActor {
          base_path,
       } = args;
 
+      let torrent_id = metainfo.info_hash()?;
       let primary_addr = primary_addr.unwrap_or_else(|| {
          let addr = utp_server.bind_addr();
-         debug!(torrent_id = %metainfo.info_hash().unwrap(), %addr, "No primary address provided, using default");
+         debug!(torrent_id = %torrent_id, %addr, "No primary address provided, using default");
          addr
       });
       if let PieceStorageStrategy::Disk(dir) = &piece_storage {
@@ -940,7 +899,7 @@ impl Actor for TorrentActor {
       }
 
       info!(
-         torrent_id = %metainfo.info_hash().unwrap(),
+         torrent_id = %torrent_id,
          "Starting new torrent instance",
       );
 
@@ -962,10 +921,10 @@ impl Actor for TorrentActor {
          _ => None,
       };
       if info.is_none() {
-         debug!(torrent_id = %metainfo.info_hash().unwrap(), "No info dict found in metainfo, you're probably using a magnet uri");
+         debug!(torrent_id = %torrent_id, "No info dict found in metainfo, you're probably using a magnet uri");
       }
       let bitfield: Arc<BitVec<AtomicU8>> = if let Some(info) = &info {
-         debug!(torrent_id = %metainfo.info_hash().unwrap(), "Using bitfield length {}", info.piece_count());
+         debug!(torrent_id = %torrent_id, "Using bitfield length {}", info.piece_count());
          Arc::new(BitVec::repeat(false, info.piece_count()))
       } else {
          Arc::new(BitVec::EMPTY)

@@ -14,14 +14,18 @@ use kameo::{
 use sha1::{Digest, Sha1};
 use tracing::{info, instrument, trace, warn};
 
-use super::{PieceStorageStrategy, ReadyHook, TorrentActor, TorrentExport, TorrentState, util};
+use super::{
+   PieceStorageStrategy, TorrentActor, TorrentExport, TorrentState,
+   actor::{PieceManagerProxy, ReadyHook},
+   util,
+};
 use crate::{
    actor_request_response,
    hashes::InfoHash,
    metainfo::Info,
    peer::{Peer, PeerId, PeerTell},
    protocol::stream::PeerStream,
-   torrent::{PieceManagerProxy, piece_manager::PieceManager},
+   torrent::piece_manager::PieceManager,
    tracker::Tracker,
 };
 

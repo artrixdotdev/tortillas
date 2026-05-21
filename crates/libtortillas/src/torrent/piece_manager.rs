@@ -149,12 +149,14 @@ impl PieceManager for FilePieceManager {
    }
 
    async fn pre_start(&mut self, info_dict: Info) -> anyhow::Result<()> {
-      // Intentional panic because this is unintended behavior
-      assert!(self.0.is_some(), "Path must be set before pre_start");
+      let base_path = self
+         .0
+         .as_ref()
+         .ok_or_else(|| anyhow::anyhow!("path must be set before pre_start"))?;
 
       let info_hash = info_dict.hash()?;
 
-      trace!(torrent_id = %info_hash, path = %self.0.as_ref().unwrap().display(), "Pre-starting piece manager");
+      trace!(torrent_id = %info_hash, path = %base_path.display(), "Pre-starting piece manager");
 
       self.1 = Some(info_dict);
       Ok(())
@@ -162,8 +164,8 @@ impl PieceManager for FilePieceManager {
 
    #[allow(unused)]
    async fn recv(&self, index: usize, data: Bytes) -> anyhow::Result<()> {
-      let base_path = &self.path().unwrap();
-      let info = self.info().ok_or_else(|| anyhow::anyhow!("info not set"))?;
+      let base_path = self.path().ok_or_else(|| anyhow::anyhow!("path not set"))?;
+      let _info = self.info().ok_or_else(|| anyhow::anyhow!("info not set"))?;
 
       let piece_bounds = self.piece_to_paths(index)?;
       let mut data_offset = 0; // Track how much of `data` we've consumed
