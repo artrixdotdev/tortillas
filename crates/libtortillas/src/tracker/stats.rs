@@ -75,8 +75,7 @@ impl TrackerStats {
    }
 
    pub fn increment_announce_attempts(&self) {
-      let cur = self.get_announce_attempts();
-      self.announce_attempts.store(cur + 1, Ordering::Release)
+      self.announce_attempts.fetch_add(1, Ordering::AcqRel);
    }
 
    pub fn get_announce_successes(&self) -> usize {
@@ -84,8 +83,7 @@ impl TrackerStats {
    }
 
    pub fn increment_announce_successes(&self) {
-      let cur = self.get_announce_successes();
-      self.announce_successes.store(cur + 1, Ordering::Release)
+      self.announce_successes.fetch_add(1, Ordering::AcqRel);
    }
 
    pub fn get_total_peers_received(&self) -> usize {
@@ -93,10 +91,7 @@ impl TrackerStats {
    }
 
    pub fn increment_total_peers_received(&self, value: usize) {
-      let cur = self.get_total_peers_received();
-      self
-         .total_peers_received
-         .store(cur + value, Ordering::Release)
+      self.total_peers_received.fetch_add(value, Ordering::AcqRel);
    }
 
    pub fn get_bytes_sent(&self) -> usize {
@@ -104,8 +99,7 @@ impl TrackerStats {
    }
 
    pub fn increment_bytes_sent(&self, value: usize) {
-      let cur = self.get_bytes_sent();
-      self.bytes_sent.store(cur + value, Ordering::Release)
+      self.bytes_sent.fetch_add(value, Ordering::AcqRel);
    }
 
    pub fn get_bytes_received(&self) -> usize {
@@ -113,8 +107,7 @@ impl TrackerStats {
    }
 
    pub fn increment_bytes_received(&self, value: usize) {
-      let cur = self.get_bytes_received();
-      self.bytes_received.store(cur + value, Ordering::Release)
+      self.bytes_received.fetch_add(value, Ordering::AcqRel);
    }
 
    pub fn get_last_interaction(&self) -> Option<Instant> {

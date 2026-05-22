@@ -9,7 +9,7 @@ mod storage;
 mod swarm;
 
 pub(crate) use actor::{TorrentActor, TorrentActorArgs};
-pub(crate) use block::{BLOCK_SIZE, BlockMap};
+pub use block::{BLOCK_SIZE, BlockMap};
 pub use export::TorrentExport;
 pub use handle::Torrent;
 pub(crate) use messages::*;

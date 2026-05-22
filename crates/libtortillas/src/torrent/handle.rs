@@ -83,7 +83,10 @@ impl Torrent {
 
       match self.actor().ask(msg).await? {
          TorrentResponse::GetState(state) => Ok(state),
-         _ => unreachable!(),
+         response => Err(anyhow::anyhow!(
+            "Unexpected actor response for GetState request: expected GetState, got {:?}",
+            std::mem::discriminant(&response)
+         )),
       }
    }
 
@@ -92,7 +95,10 @@ impl Torrent {
 
       match self.actor().ask(msg).await? {
          TorrentResponse::Export(export) => Ok(*export),
-         _ => unreachable!(),
+         response => Err(anyhow::anyhow!(
+            "Unexpected actor response for Export request: expected Export, got {:?}",
+            std::mem::discriminant(&response)
+         )),
       }
    }
 

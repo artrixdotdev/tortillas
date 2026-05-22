@@ -48,7 +48,11 @@ impl Actor for TrackerActor {
          .map_err(|e| TrackerActorError::SupervisorCommunicationFailed(e.to_string()))?;
       let info_hash = match torrent_response {
          TorrentResponse::InfoHash(info_hash) => info_hash,
-         _ => unreachable!(),
+         _ => {
+            return Err(TrackerActorError::InvalidResponse {
+               reason: format!("Expected InfoHash response, got unexpected variant"),
+            })
+         }
       };
 
       let tracker_uri = tracker.uri();

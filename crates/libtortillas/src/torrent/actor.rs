@@ -190,6 +190,12 @@ impl TorrentActor {
          return;
       };
 
+      // Pre-start the piece manager before transitioning state
+      if let Err(err) = self.piece_manager.pre_start(info.clone()).await {
+         error!(?err, "Failed to pre-start piece manager; aborting start");
+         return;
+      }
+
       if self.is_full() {
          self.state = TorrentState::Seeding;
          info!(id = %self.info_hash(), "Torrent is now seeding");
@@ -209,11 +215,6 @@ impl TorrentActor {
             .await;
          self.start_time = Some(Instant::now());
       };
-
-      if let Err(err) = self.piece_manager.pre_start(info.clone()).await {
-         warn!(?err, "Failed to pre-start piece manager");
-         return;
-      }
 
       if self.state == TorrentState::Downloading {
          let peer_ids: Vec<_> = self.peers.keys().copied().collect();
