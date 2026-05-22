@@ -45,8 +45,12 @@ pub(crate) enum TorrentMessage {
    /// Used to manually add a peer. This is primarily used for testing but can
    /// be used to initiate a peer connection without it having to come from an
    /// announce.
-   AddPeer(Peer),
-   /// Index, Offset, Data
+    AddPeer(Peer),
+
+    /// Sent by a connection task after peer handshaking completes.
+    PeerConnected(Peer, Box<PeerStream>),
+
+    /// Index, Offset, Data
    /// See the corresponding [peer message](PeerMessages::Piece)
    IncomingPiece(usize, usize, Bytes),
    /// Bytes for the [Info] dict from an peer, these info bytes are expected to
@@ -146,8 +150,9 @@ impl Message<TorrentMessage> for TorrentActor {
                self.append_peer(peer, None);
             }
          }
-         TorrentMessage::IncomingPeer(peer, stream) => self.append_peer(peer, Some(*stream)),
-         TorrentMessage::AddPeer(peer) => self.append_peer(peer, None),
+          TorrentMessage::IncomingPeer(peer, stream) => self.append_peer(peer, Some(*stream)),
+          TorrentMessage::AddPeer(peer) => self.append_peer(peer, None),
+          TorrentMessage::PeerConnected(peer, stream) => self.insert_peer(peer, *stream),
 
          TorrentMessage::InfoBytes(bytes) => {
             if self.info.is_some() {
