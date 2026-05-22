@@ -412,7 +412,7 @@ impl Message<PeerMessages> for PeerActor {
    ) -> Self::Reply {
       self.peer.update_last_message_received();
       match msg {
-          PeerMessages::Piece(index, offset, data) => {
+         PeerMessages::Piece(index, offset, data) => {
             trace!(
                piece_index = index,
                offset,
