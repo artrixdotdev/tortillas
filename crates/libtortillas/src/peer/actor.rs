@@ -11,6 +11,7 @@ use dashmap::DashSet;
 use kameo::{
    Actor,
    actor::{ActorRef, WeakActorRef},
+   error::ActorStopReason,
    mailbox::Signal,
    prelude::{Context as KameoContext, MailboxReceiver, Message},
 };
@@ -353,6 +354,21 @@ impl Actor for PeerActor {
          pending_block_requests: Arc::new(DashSet::new()),
          pending_message_requests: VecDeque::with_capacity(MAX_PENDING_MESSAGES),
       })
+   }
+
+   async fn on_stop(
+      &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
+   ) -> Result<(), Self::Error> {
+      if let Some(peer_id) = self.peer.id
+         && let Err(err) = self
+            .supervisor
+            .tell(TorrentMessage::KillPeer(peer_id))
+            .await
+      {
+         warn!(error = %err, %peer_id, "Failed to notify torrent actor about stopped peer");
+      }
+
+      Ok(())
    }
 
    /// Coerces messages from the [PeerStream] to a [Message]
