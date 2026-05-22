@@ -24,10 +24,12 @@ use crate::{
    hashes::InfoHash,
    metainfo::Info,
    peer::{Peer, PeerId, PeerTell},
+   pieces::PieceManager,
    protocol::stream::PeerStream,
-   torrent::piece_manager::PieceManager,
    tracker::Tracker,
 };
+
+const MAX_IN_FLIGHT_PER_PEER: usize = 32;
 
 /// For incoming from outside sources (e.g Peers, Trackers and Engine)
 #[allow(dead_code)]
@@ -181,6 +183,7 @@ impl Message<TorrentMessage> for TorrentActor {
             }
          }
          TorrentMessage::KillPeer(id) => {
+            self.piece_scheduler.peer_disconnected(id);
             // Kill the actor quietly
             if let Some(actor) = self.peers.get(&id) {
                actor.kill();
@@ -206,13 +209,10 @@ impl Message<TorrentMessage> for TorrentActor {
                && self.state == TorrentState::Downloading
                && self.is_ready()
             {
-               let (piece_idx, block_offset, block_length) =
-                  self.next_block_coordinates(self.next_piece);
-               actor
-                  .tell(PeerTell::NeedPiece(piece_idx, block_offset, block_length))
-                  .await
-                  .expect("Failed to send piece request to peer");
-               trace!(peer_id = %id, piece_idx, block_offset, block_length, "Requested piece from new peer");
+               self
+                  .request_blocks_from_peer(id, MAX_IN_FLIGHT_PER_PEER)
+                  .await;
+               trace!(peer_id = %id, "Filled peer request window");
             } else {
                trace!(peer_id = %id, state = ?self.state, ready = self.is_ready(), "Ignoring PeerReady: peer unknown, dead, or torrent not in download state");
             }
@@ -296,7 +296,6 @@ impl Message<TorrentMessage> for TorrentActor {
 impl Message<TorrentRequest> for TorrentActor {
    type Reply = TorrentResponse;
 
-   // TODO: Figure out a way to send the peers back to the engine (if needed)
    async fn handle(
       &mut self, message: TorrentRequest, _: &mut Context<Self, Self::Reply>,
    ) -> Self::Reply {
