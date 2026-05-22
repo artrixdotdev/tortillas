@@ -113,11 +113,16 @@ actor_request_response!(
    pub(crate) TorrentRequest,
    pub(crate) TorrentResponse #[derive(Reply)],
 
-   /// Bitfield of the torrent
-   Bitfield
-   Bitfield(Arc<BitVec<AtomicU8>>),
+    /// Bitfield of the torrent
+    Bitfield
+    Bitfield(Arc<BitVec<AtomicU8>>),
 
-   PeerCount
+    /// Whether a peer has pieces this torrent still needs, plus the number of
+    /// interesting pieces.
+    InterestingPieces(Arc<BitVec<AtomicU8>>)
+    InterestingPieces(bool, usize),
+
+    PeerCount
    PeerCount(usize),
    /// Info hash of the torrent
    InfoHash
@@ -301,6 +306,19 @@ impl Message<TorrentRequest> for TorrentActor {
    ) -> Self::Reply {
       match message {
          TorrentRequest::Bitfield => TorrentResponse::Bitfield(Arc::new(self.bitfield.clone())),
+         TorrentRequest::InterestingPieces(peer_bitfield) => {
+            let interesting_count = if self.bitfield.is_empty() {
+               peer_bitfield.count_ones()
+            } else {
+               peer_bitfield
+                  .iter()
+                  .by_vals()
+                  .zip(self.bitfield.iter().by_vals())
+                  .filter(|(peer_has_piece, we_have_piece)| *peer_has_piece && !*we_have_piece)
+                  .count()
+            };
+            TorrentResponse::InterestingPieces(interesting_count > 0, interesting_count)
+         }
          TorrentRequest::PeerCount => TorrentResponse::PeerCount(self.peers.len()),
          TorrentRequest::InfoHash => TorrentResponse::InfoHash(self.info_hash()),
 

@@ -1,5 +1,5 @@
 use std::{
-   collections::{HashMap, VecDeque},
+   collections::{HashMap, HashSet, VecDeque},
    sync::{Arc, atomic::AtomicU8},
    time::Instant,
 };
@@ -7,7 +7,6 @@ use std::{
 use anyhow::Context;
 use bitvec::vec::BitVec;
 use bytes::Bytes;
-use dashmap::DashSet;
 use kameo::{
    Actor,
    actor::{ActorRef, WeakActorRef},
@@ -41,7 +40,7 @@ pub(crate) struct PeerActor {
    /// The [TorrentActor] that manages this peer
    supervisor: ActorRef<TorrentActor>,
 
-   pending_block_requests: Arc<DashSet<(usize, usize, usize)>>,
+   pending_block_requests: HashSet<(usize, usize, usize)>,
    pending_message_requests: VecDeque<PeerMessages>,
 }
 
@@ -189,24 +188,20 @@ impl PeerActor {
    /// sends an interested message if so.
    #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn determine_interest(&mut self) {
-      let msg = TorrentRequest::Bitfield;
-
       let their_bitfield = self.peer.pieces.clone();
-      let our_bitfield = match self.supervisor.ask(msg).await.unwrap() {
-         TorrentResponse::Bitfield(bitfield) => bitfield,
+      let (has_interesting_pieces, interesting_piece_count) = match self
+         .supervisor
+         .ask(TorrentRequest::InterestingPieces(their_bitfield))
+         .await
+         .unwrap()
+      {
+         TorrentResponse::InterestingPieces(has_interesting_pieces, count) => {
+            (has_interesting_pieces, count)
+         }
          _ => unreachable!("Unexpected response from supervisor"),
       };
 
-      let is_our_bitfield_empty = our_bitfield.is_empty();
-
-      // Find pieces the peer has that we don't have
-      let their_bitfield = (*their_bitfield).clone();
-      let our_bitfield = (*our_bitfield).clone();
-      let peer_has_we_dont = their_bitfield & !our_bitfield;
-
-      let has_interesting_pieces = peer_has_we_dont.any();
-
-      if is_our_bitfield_empty || has_interesting_pieces {
+      if has_interesting_pieces {
          self
             .stream
             .send(PeerMessages::Interested)
@@ -215,7 +210,7 @@ impl PeerActor {
 
          debug!(
             "Peer has {} pieces we are interested in",
-            peer_has_we_dont.count_ones()
+            interesting_piece_count
          );
       } else {
          self
@@ -340,7 +335,7 @@ impl Actor for PeerActor {
          peer,
          stream,
          supervisor,
-         pending_block_requests: Arc::new(DashSet::new()),
+         pending_block_requests: HashSet::new(),
          pending_message_requests: VecDeque::with_capacity(MAX_PENDING_MESSAGES),
       })
    }
