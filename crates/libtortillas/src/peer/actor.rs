@@ -412,7 +412,7 @@ impl Message<PeerMessages> for PeerActor {
    ) -> Self::Reply {
       self.peer.update_last_message_received();
       match msg {
-         PeerMessages::Piece(index, offset, data) => {
+          PeerMessages::Piece(index, offset, data) => {
             trace!(
                piece_index = index,
                offset,
@@ -426,14 +426,26 @@ impl Message<PeerMessages> for PeerActor {
             if self.pending_block_requests.contains(&key) {
                self.pending_block_requests.remove(&key);
 
+               let Some(peer_id) = self.peer.id else {
+                  warn!("Received piece from peer without id; ignoring");
+                  return;
+               };
                let supervisor_msg =
-                  TorrentMessage::IncomingPiece(index as usize, offset as usize, data);
+                  TorrentMessage::IncomingPiece(peer_id, index as usize, offset as usize, data);
 
-               let _ = self
+               if let Err(err) = self
                   .supervisor
                   .tell(supervisor_msg)
                   .await
-                  .context("Failed to send piece to tracker");
+                  .context("Failed to send piece to torrent")
+               {
+                  warn!(?err, "Failed to forward piece data to torrent actor");
+               }
+            } else {
+               trace!(
+                  piece_index = index,
+                  offset, "Ignoring unrequested piece data"
+               );
             }
          }
          PeerMessages::Choke => {
