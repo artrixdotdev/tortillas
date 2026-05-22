@@ -115,15 +115,8 @@ actor_request_response!(
    Bitfield
    Bitfield(Arc<BitVec<AtomicU8>>),
 
-   /// Current peers of the torrent
-   CurrentPeers
-   CurrentPeers(Vec<&'static Peer>),
-
    PeerCount
    PeerCount(usize),
-   /// Current trackers of the torrent
-   CurrentTrackers
-   CurrentTrackers(Vec<&'static Tracker>),
    /// Info hash of the torrent
    InfoHash
    InfoHash(InfoHash),
@@ -310,15 +303,6 @@ impl Message<TorrentRequest> for TorrentActor {
       match message {
          TorrentRequest::Bitfield => TorrentResponse::Bitfield(self.bitfield.clone()),
          TorrentRequest::PeerCount => TorrentResponse::PeerCount(self.peers.len()),
-         TorrentRequest::CurrentPeers => {
-            unimplemented!()
-            // TorrentResponse::CurrentPeers(self.peers.values().map(|peer|
-            // peer).collect());
-         }
-         TorrentRequest::CurrentTrackers => {
-            unimplemented!()
-            // TorrentResponse::CurrentTrackers(self.trackers.keys().collect())
-         }
          TorrentRequest::InfoHash => TorrentResponse::InfoHash(self.info_hash()),
 
          TorrentRequest::HasInfoDict => TorrentResponse::HasInfoDict(self.info.clone()),
