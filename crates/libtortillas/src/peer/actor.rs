@@ -546,6 +546,37 @@ impl Message<PeerMessages> for PeerActor {
    }
 }
 
+impl PeerActor {
+   async fn notify_ready(&self) {
+      let Some(peer_id) = self.peer.id else {
+         return;
+      };
+
+      if let Err(err) = self
+         .supervisor
+         .tell(TorrentMessage::PeerReady(peer_id))
+         .await
+      {
+         trace!(error = %err, %peer_id, "Failed to notify torrent actor that peer is ready");
+      }
+   }
+
+   async fn reject_piece_request(&self, index: usize, begin: usize) {
+      if let Err(err) = self
+         .supervisor
+         .tell(TorrentMessage::PeerRejectedRequest(index, begin))
+         .await
+      {
+         trace!(
+            error = %err,
+            piece_index = index,
+            offset = begin,
+            "Failed to notify torrent actor about rejected piece request"
+         );
+      }
+   }
+}
+
 #[derive(Clone, Debug)]
 #[allow(dead_code)]
 pub(crate) enum PeerTell {
