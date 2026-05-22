@@ -52,7 +52,7 @@ pub(crate) enum TorrentMessage {
 
     /// Index, Offset, Data
    /// See the corresponding [peer message](PeerMessages::Piece)
-   IncomingPiece(usize, usize, Bytes),
+   IncomingPiece(PeerId, usize, usize, Bytes),
    /// Release a scheduler entry for a request a peer could not accept.
    PeerRejectedRequest(usize, usize),
    /// Bytes for the [Info] dict from an peer, these info bytes are expected to
@@ -94,7 +94,7 @@ impl fmt::Debug for TorrentMessage {
          TorrentMessage::KillPeer(peer_id) => write!(f, "KillPeer({peer_id:?})"),
          TorrentMessage::KillTracker(tracker) => write!(f, "KillTracker({tracker:?})"),
          TorrentMessage::AddPeer(peer) => write!(f, "AddPeer({peer:?})"),
-         TorrentMessage::IncomingPiece(index, offset, data) => {
+         TorrentMessage::IncomingPiece(_, index, offset, data) => {
             write!(f, "IncomingPiece({index}, {offset}, {})", data.len())
          }
          TorrentMessage::PeerRejectedRequest(index, offset) => {
@@ -224,8 +224,8 @@ impl Message<TorrentMessage> for TorrentActor {
                trace!(peer_id = %id, state = ?self.state, ready = self.is_ready(), "Ignoring PeerReady: peer unknown, dead, or torrent not in download state");
             }
          }
-         TorrentMessage::IncomingPiece(index, offset, block) => {
-            self.incoming_piece(index, offset, block).await
+         TorrentMessage::IncomingPiece(peer_id, index, offset, block) => {
+            self.incoming_piece(peer_id, index, offset, block).await
          }
          TorrentMessage::PeerRejectedRequest(index, offset) => {
             self.piece_scheduler.release_request(index, offset);
