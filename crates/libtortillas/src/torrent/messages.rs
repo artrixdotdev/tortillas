@@ -306,8 +306,29 @@ impl Message<TorrentRequest> for TorrentActor {
          TorrentRequest::InfoHash => TorrentResponse::InfoHash(self.info_hash()),
 
          TorrentRequest::HasInfoDict => TorrentResponse::HasInfoDict(self.info.clone()),
-         TorrentRequest::Request(_, _, _) => {
-            unimplemented!()
+         TorrentRequest::Request(index, offset, length) => {
+            let data = if self
+               .bitfield
+               .get(index)
+               .as_deref()
+               .copied()
+               .unwrap_or(false)
+            {
+               match self.read_piece_block(index, offset, length).await {
+                  Ok(data) => data,
+                  Err(err) => {
+                     warn!(
+                        ?err,
+                        index, offset, length, "Failed to read requested piece block"
+                     );
+                     Bytes::new()
+                  }
+               }
+            } else {
+               warn!(index, offset, length, "Peer requested piece we do not have");
+               Bytes::new()
+            };
+            TorrentResponse::Request(index, offset, data)
          }
          TorrentRequest::GetState => TorrentResponse::GetState(self.state),
          TorrentRequest::Export => TorrentResponse::Export(Box::new(self.export())),
