@@ -53,6 +53,8 @@ pub(crate) enum TorrentMessage {
     /// Index, Offset, Data
    /// See the corresponding [peer message](PeerMessages::Piece)
    IncomingPiece(usize, usize, Bytes),
+   /// Release a scheduler entry for a request a peer could not accept.
+   PeerRejectedRequest(usize, usize),
    /// Bytes for the [Info] dict from an peer, these info bytes are expected to
    /// be verified by the torrent us before being used.
    InfoBytes(Bytes),
@@ -94,6 +96,9 @@ impl fmt::Debug for TorrentMessage {
          TorrentMessage::AddPeer(peer) => write!(f, "AddPeer({peer:?})"),
          TorrentMessage::IncomingPiece(index, offset, data) => {
             write!(f, "IncomingPiece({index}, {offset}, {})", data.len())
+         }
+         TorrentMessage::PeerRejectedRequest(index, offset) => {
+            write!(f, "PeerRejectedRequest({index}, {offset})")
          }
          TorrentMessage::Announce(peers) => write!(f, "Announce({peers:?})"),
          _ => write!(f, "TorrentMessage"), // Add more later,
@@ -221,6 +226,9 @@ impl Message<TorrentMessage> for TorrentActor {
          }
          TorrentMessage::IncomingPiece(index, offset, block) => {
             self.incoming_piece(index, offset, block).await
+         }
+         TorrentMessage::PeerRejectedRequest(index, offset) => {
+            self.piece_scheduler.release_request(index, offset);
          }
 
          TorrentMessage::PieceStorage(strategy) => {
