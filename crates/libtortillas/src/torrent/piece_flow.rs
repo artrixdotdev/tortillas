@@ -1,4 +1,4 @@
-use std::io::SeekFrom;
+use std::{io::SeekFrom, path::PathBuf};
 
 use bytes::Bytes;
 use tokio::{
@@ -226,7 +226,7 @@ impl TorrentActor {
       self.piece_scheduler.is_piece_complete(index)
    }
 
-   pub(super) fn get_piece_path(&self, index: usize) -> anyhow::Result<std::path::PathBuf> {
+   pub(super) fn get_piece_path(&self, index: usize) -> anyhow::Result<PathBuf> {
       let info_dict = self.info_dict().ok_or(TorrentError::MissingInfoDict)?;
       anyhow::ensure!(info_dict.pieces.len() > index, "Index out of bounds");
 

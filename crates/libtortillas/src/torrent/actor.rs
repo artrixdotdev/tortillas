@@ -14,7 +14,7 @@ use kameo::{
    Actor,
    actor::{ActorRef, Spawn, WeakActorRef},
    error::ActorStopReason,
-   mailbox,
+   mailbox::{MailboxReceiver, Signal},
 };
 use librqbit_utp::UtpSocketUdp;
 use tokio::sync::oneshot;
@@ -41,7 +41,7 @@ pub(super) enum PieceManagerProxy {
 }
 
 impl Display for PieceManagerProxy {
-   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
       match self {
          Self::Custom(_) => write!(f, "Custom Piece Manager"),
          Self::Default(_) => write!(f, "Default Piece Manager"),
@@ -112,7 +112,7 @@ pub(crate) struct TorrentActor {
 }
 
 impl fmt::Display for TorrentActor {
-   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
       let working_trackers = self.trackers.len();
       let working_peers = self.peers.len();
       write!(
@@ -459,9 +459,8 @@ impl Actor for TorrentActor {
    }
 
    async fn next(
-      &mut self, _: kameo::prelude::WeakActorRef<Self>,
-      mailbox_rx: &mut kameo::prelude::MailboxReceiver<Self>,
-   ) -> Result<Option<mailbox::Signal<Self>>, Self::Error> {
+      &mut self, _: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
+   ) -> Result<Option<Signal<Self>>, Self::Error> {
       if !self.pending_start {
          self.autostart().await;
       }

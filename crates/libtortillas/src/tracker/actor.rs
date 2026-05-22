@@ -5,11 +5,11 @@ use kameo::{
    Actor,
    actor::{ActorRef, WeakActorRef},
    error::ActorStopReason,
-   mailbox::Signal,
+   mailbox::{MailboxReceiver, Signal},
    prelude::{Context, Message},
 };
 use tokio::time::{Interval, interval, timeout};
-use tracing::{error, warn};
+use tracing::{Span, error, warn};
 
 use super::{
    Tracker, TrackerBase, TrackerInstance, TrackerMessage, TrackerStats, TrackerUpdate,
@@ -102,8 +102,7 @@ impl Actor for TrackerActor {
    }
 
    async fn next(
-      &mut self, actor_ref: WeakActorRef<Self>,
-      mailbox_rx: &mut kameo::prelude::MailboxReceiver<Self>,
+      &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
    ) -> Result<Option<Signal<Self>>, Self::Error> {
       Ok(tokio::select! {
          signal = mailbox_rx.recv() => signal,
@@ -117,7 +116,7 @@ impl Actor for TrackerActor {
                reply: None,
                sent_within_actor: true,
                message_name: "TrackerMessage",
-               caller_span: tracing::Span::current(),
+                caller_span: Span::current(),
             })
          }
       })

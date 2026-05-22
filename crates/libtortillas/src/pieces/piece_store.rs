@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{io::Result as IoResult, path::PathBuf};
 
 use bytes::Bytes;
 use kameo::{
@@ -6,6 +6,7 @@ use kameo::{
    actor::ActorRef,
    prelude::{Context, Message},
 };
+use tokio::fs::read;
 
 use crate::{errors::TorrentError, hashes::Hash, torrent::util};
 
@@ -30,7 +31,7 @@ pub(crate) enum PieceStoreMessage {
 }
 
 impl Message<PieceStoreMessage> for PieceStoreActor {
-   type Reply = std::io::Result<()>;
+   type Reply = IoResult<()>;
 
    async fn handle(
       &mut self, msg: PieceStoreMessage, _: &mut Context<Self, Self::Reply>,
@@ -60,7 +61,7 @@ impl Message<PieceStoreRequest> for PieceStoreActor {
          PieceStoreRequest::ValidateAndRead { path, hash } => {
             async {
                util::validate_piece_file(path.clone(), hash).await?;
-               Ok(tokio::fs::read(&path).await?.into())
+               Ok(read(&path).await?.into())
             }
             .await
          }

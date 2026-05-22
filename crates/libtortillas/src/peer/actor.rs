@@ -16,7 +16,7 @@ use kameo::{
 };
 use messages::{ExtendedMessage, ExtendedMessageType, PeerMessages};
 use stream::{PeerSend, PeerStream};
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{Span, debug, info, instrument, trace, warn};
 
 use crate::{
    errors::PeerActorError,
@@ -75,7 +75,7 @@ impl PeerActor {
             reply: None,
             sent_within_actor: true,
             message_name: "PeerMessages",
-            caller_span: tracing::Span::current(),
+            caller_span: Span::current(),
          }),
          Err(e) => {
             use std::io::ErrorKind::*;

@@ -11,9 +11,10 @@ pub(crate) mod util;
 
 #[cfg(test)]
 pub(crate) mod testing {
-   use std::{net::SocketAddr, path::PathBuf, str::FromStr};
+   use std::{env, net::SocketAddr, path::PathBuf, process, str::FromStr};
 
    use rand::random_range;
+   use tokio::fs::read_to_string;
 
    use crate::{
       metainfo::{MagnetUri, MetaInfo, TorrentFile},
@@ -48,7 +49,7 @@ pub(crate) mod testing {
    }
 
    pub(crate) async fn read_magnet_fixture(file_name: &str) -> MetaInfo {
-      let contents = tokio::fs::read_to_string(magnet_fixture_path(file_name))
+      let contents = read_to_string(magnet_fixture_path(file_name))
          .await
          .unwrap();
       MagnetUri::parse(contents).unwrap()
@@ -71,9 +72,9 @@ pub(crate) mod testing {
    }
 
    pub(crate) fn torrent_temp_path() -> PathBuf {
-      std::env::temp_dir().join(format!(
+      env::temp_dir().join(format!(
          "tortillas-{}-{}",
-         std::process::id(),
+         process::id(),
          rand::random::<u64>()
       ))
    }
