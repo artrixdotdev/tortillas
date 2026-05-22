@@ -46,7 +46,10 @@ impl TorrentActor {
 
       // Validate offset is within bounds
       if offset >= concrete_piece_len {
-         warn!(index, offset, concrete_piece_len, "Received piece block with offset out of bounds");
+         warn!(
+            index,
+            offset, concrete_piece_len, "Received piece block with offset out of bounds"
+         );
          return;
       }
 
@@ -59,18 +62,32 @@ impl TorrentActor {
       // Validate that offset + block.len() does not exceed piece bounds
       if let Some(end) = offset.checked_add(block.len()) {
          if end > concrete_piece_len {
-            warn!(index, offset, block_len = block.len(), concrete_piece_len, "Received piece block that exceeds piece bounds");
+            warn!(
+               index,
+               offset,
+               block_len = block.len(),
+               concrete_piece_len,
+               "Received piece block that exceeds piece bounds"
+            );
             return;
          }
       } else {
-         warn!(index, offset, block_len = block.len(), "Offset + block length overflows");
+         warn!(
+            index,
+            offset,
+            block_len = block.len(),
+            "Offset + block length overflows"
+         );
          return;
       }
 
       let expected_blocks = concrete_piece_len.div_ceil(BLOCK_SIZE);
       let block_index = offset / BLOCK_SIZE;
       if block_index >= expected_blocks {
-         warn!(index, offset, block_index, expected_blocks, "Received piece block with invalid block index");
+         warn!(
+            index,
+            offset, block_index, expected_blocks, "Received piece block with invalid block index"
+         );
          return;
       }
 
@@ -108,10 +125,12 @@ impl TorrentActor {
       let Some(peer) = self.peers.get(&peer_id).cloned() else {
          return;
       };
-      let requests =
-         self
-            .piece_scheduler
-            .requests_for_peer(peer_id, limit, info.piece_length as usize, info.total_length());
+      let requests = self.piece_scheduler.requests_for_peer(
+         peer_id,
+         limit,
+         info.piece_length as usize,
+         info.total_length(),
+      );
       for request in requests {
          if let Err(err) = peer
             .tell(PeerTell::NeedPiece(

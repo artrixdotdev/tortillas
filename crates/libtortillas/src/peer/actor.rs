@@ -513,8 +513,8 @@ impl Message<PeerMessages> for PeerActor {
                }
                TorrentResponse::Request(index, offset, None) => {
                   warn!(
-                     index, offset,
-                     "Torrent could not provide requested piece data; skipping response"
+                     index,
+                     offset, "Torrent could not provide requested piece data; skipping response"
                   );
                }
                _ => unreachable!(),
