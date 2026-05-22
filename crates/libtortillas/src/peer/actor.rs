@@ -293,18 +293,7 @@ impl PeerActor {
    /// request, you should use this function over [`Self::stream.send`].
    #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn send_message(&mut self, msg: PeerMessages) -> Result<(), PeerActorError> {
-      if self.peer.am_choked() {
-         // Only push the message if it's not a request
-         if matches!(msg, PeerMessages::Request(..)) {
-            return Ok(());
-         }
-         if self.pending_message_requests.len() >= MAX_PENDING_MESSAGES {
-            self.pending_message_requests.pop_back();
-         }
-
-         self.pending_message_requests.push_front(msg);
-         trace!("Peer is choked, queueing message");
-
+      if self.peer.am_choked() && matches!(msg, PeerMessages::Request(..)) {
          return Ok(());
       }
 
