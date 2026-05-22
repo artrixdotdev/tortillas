@@ -181,6 +181,15 @@ impl TorrentActor {
    }
 
    pub async fn start(&mut self) {
+      if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
+         error!(?err, "Failed to send ready hook");
+      }
+
+      let Some(info) = self.info.clone() else {
+         warn!(id = %self.info_hash(), "Start requested before info dict is available; deferring");
+         return;
+      };
+
       if self.is_full() {
          self.state = TorrentState::Seeding;
          info!(id = %self.info_hash(), "Torrent is now seeding");
@@ -199,15 +208,6 @@ impl TorrentActor {
             .update_trackers(TrackerUpdate::Event(Event::Empty))
             .await;
          self.start_time = Some(Instant::now());
-      }
-
-      if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
-         error!(?err, "Failed to send ready hook");
-      }
-
-      let Some(info) = self.info.clone() else {
-         warn!(id = %self.info_hash(), "Start requested before info dict is available; deferring");
-         return;
       };
 
       if let Err(err) = self.piece_manager.pre_start(info.clone()).await {

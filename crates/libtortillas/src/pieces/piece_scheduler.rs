@@ -98,15 +98,34 @@ impl PieceScheduler {
    }
 
    pub(crate) fn requests_for_peer(
-      &mut self, peer_id: PeerId, limit: usize, piece_length: usize,
+      &mut self, peer_id: PeerId, limit: usize, piece_length: usize, total_length: usize,
    ) -> Vec<BlockRequest> {
       let mut requests = Vec::new();
-      let total_blocks = piece_length.div_ceil(BLOCK_SIZE);
+
+      // Early guard for zero limit
+      if limit == 0 {
+         return requests;
+      }
+
+      let last_piece_index = self.completed_pieces.len().saturating_sub(1);
+      let last_piece_len = if total_length % piece_length == 0 {
+         piece_length
+      } else {
+         total_length % piece_length
+      };
 
       for piece_index in self.next_piece..self.completed_pieces.len() {
          if self.completed_pieces[piece_index] {
             continue;
          }
+
+         // Compute per-piece length
+         let piece_len = if piece_index == last_piece_index {
+            last_piece_len
+         } else {
+            piece_length
+         };
+         let total_blocks = piece_len.div_ceil(BLOCK_SIZE);
 
          for block_index in 0..total_blocks {
             let key = (piece_index, block_index);
@@ -121,7 +140,7 @@ impl PieceScheduler {
             }
 
             self.in_flight.insert(key, peer_id);
-            requests.push(self.block_request(piece_index, block_index, piece_length));
+            requests.push(self.block_request(piece_index, block_index, piece_len));
             if requests.len() >= limit {
                return requests;
             }

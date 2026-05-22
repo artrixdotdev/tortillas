@@ -132,7 +132,7 @@ actor_request_response!(
    HasInfoDict(Option<Info>),
    /// Requests a piece from the torrent
    Request(usize, usize, usize)
-   Request(usize, usize, Bytes),
+   Request(usize, usize, Option<Bytes>),
 
    GetState
    GetState(TorrentState),
@@ -332,18 +332,18 @@ impl Message<TorrentRequest> for TorrentActor {
                .unwrap_or(false)
             {
                match self.read_piece_block(index, offset, length).await {
-                  Ok(data) => data,
+                  Ok(data) => Some(data),
                   Err(err) => {
                      warn!(
                         ?err,
                         index, offset, length, "Failed to read requested piece block"
                      );
-                     Bytes::new()
+                     None
                   }
                }
             } else {
                warn!(index, offset, length, "Peer requested piece we do not have");
-               Bytes::new()
+               None
             };
             TorrentResponse::Request(index, offset, data)
          }

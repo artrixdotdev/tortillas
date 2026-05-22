@@ -504,12 +504,18 @@ impl Message<PeerMessages> for PeerActor {
                .expect("Failed to get piece");
 
             match res {
-               TorrentResponse::Request(index, offset, data) => {
+               TorrentResponse::Request(index, offset, Some(data)) => {
                   self
                      .stream
                      .send(PeerMessages::Piece(index as u32, offset as u32, data))
                      .await
                      .expect("Failed to send piece");
+               }
+               TorrentResponse::Request(index, offset, None) => {
+                  warn!(
+                     index, offset,
+                     "Torrent could not provide requested piece data; skipping response"
+                  );
                }
                _ => unreachable!(),
             };

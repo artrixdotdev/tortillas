@@ -73,7 +73,11 @@ impl Message<EngineMessage> for EngineActor {
 
             if let PeerMessages::Handshake(handshake) = msg {
                let info_hash = *handshake.info_hash;
-               let peer = Peer::from_socket_addr(peer_addr);
+               let mut peer = Peer::from_socket_addr(peer_addr);
+
+               // Populate peer fields from parsed handshake
+               peer.id = Some(handshake.peer_id);
+               peer.reserved = handshake.reserved;
 
                if let Some(torrent) = self.torrents.get(&info_hash) {
                   if let Err(err) = torrent

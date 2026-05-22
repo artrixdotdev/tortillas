@@ -30,11 +30,47 @@ impl TorrentActor {
       };
 
       let piece_length = info_dict.piece_length as usize;
-      let expected_blocks = piece_length.div_ceil(BLOCK_SIZE);
+      let total_length = info_dict.total_length();
+      let last_piece_index = info_dict.piece_count().saturating_sub(1);
 
+      // Compute concrete length for this specific piece
+      let concrete_piece_len = if index == last_piece_index {
+         if total_length % piece_length == 0 {
+            piece_length
+         } else {
+            total_length % piece_length
+         }
+      } else {
+         piece_length
+      };
+
+      // Validate offset is within bounds
+      if offset >= concrete_piece_len {
+         warn!(index, offset, concrete_piece_len, "Received piece block with offset out of bounds");
+         return;
+      }
+
+      // Validate block is non-empty
+      if block.len() == 0 {
+         warn!(index, offset, "Received piece block with zero length");
+         return;
+      }
+
+      // Validate that offset + block.len() does not exceed piece bounds
+      if let Some(end) = offset.checked_add(block.len()) {
+         if end > concrete_piece_len {
+            warn!(index, offset, block_len = block.len(), concrete_piece_len, "Received piece block that exceeds piece bounds");
+            return;
+         }
+      } else {
+         warn!(index, offset, block_len = block.len(), "Offset + block length overflows");
+         return;
+      }
+
+      let expected_blocks = concrete_piece_len.div_ceil(BLOCK_SIZE);
       let block_index = offset / BLOCK_SIZE;
       if block_index >= expected_blocks {
-         warn!("Received piece block with invalid offset");
+         warn!(index, offset, block_index, expected_blocks, "Received piece block with invalid block index");
          return;
       }
 
@@ -43,12 +79,13 @@ impl TorrentActor {
          return;
       }
 
+      let block_len = block.len();
+      self.write_block_to_storage(index, offset, block).await;
+
+      // Only mark block complete after successful write
       self
          .piece_scheduler
          .mark_block_complete(index, block_index, expected_blocks);
-
-      let block_len = block.len();
-      self.write_block_to_storage(index, offset, block).await;
 
       self
          .broadcast_to_peers(PeerTell::CancelPiece(index, offset, block_len))
@@ -74,7 +111,7 @@ impl TorrentActor {
       let requests =
          self
             .piece_scheduler
-            .requests_for_peer(peer_id, limit, info.piece_length as usize);
+            .requests_for_peer(peer_id, limit, info.piece_length as usize, info.total_length());
       for request in requests {
          if let Err(err) = peer
             .tell(PeerTell::NeedPiece(
