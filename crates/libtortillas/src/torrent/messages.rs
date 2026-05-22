@@ -170,10 +170,10 @@ impl Message<TorrentMessage> for TorrentActor {
                info!("Received valid info dict, starting torrent process...");
                let info: Info =
                   serde_bencode::from_bytes(&bytes).expect("Failed to parse info dict");
-               self.bitfield = Arc::new(BitVec::with_capacity(info.piece_count()));
+               self.bitfield = BitVec::repeat(false, info.piece_count());
                self.info = Some(info);
                self
-                  .broadcast_to_peers(PeerTell::HaveInfoDict(self.bitfield.clone()))
+                  .broadcast_to_peers(PeerTell::HaveInfoDict(Arc::new(self.bitfield.clone())))
                   .await;
             } else {
                warn!(
@@ -300,7 +300,7 @@ impl Message<TorrentRequest> for TorrentActor {
       &mut self, message: TorrentRequest, _: &mut Context<Self, Self::Reply>,
    ) -> Self::Reply {
       match message {
-         TorrentRequest::Bitfield => TorrentResponse::Bitfield(self.bitfield.clone()),
+         TorrentRequest::Bitfield => TorrentResponse::Bitfield(Arc::new(self.bitfield.clone())),
          TorrentRequest::PeerCount => TorrentResponse::PeerCount(self.peers.len()),
          TorrentRequest::InfoHash => TorrentResponse::InfoHash(self.info_hash()),
 
