@@ -108,7 +108,7 @@ impl PieceScheduler {
       }
 
       let last_piece_index = self.completed_pieces.len().saturating_sub(1);
-      let last_piece_len = if total_length % piece_length == 0 {
+      let last_piece_len = if total_length.is_multiple_of(piece_length) {
          piece_length
       } else {
          total_length % piece_length

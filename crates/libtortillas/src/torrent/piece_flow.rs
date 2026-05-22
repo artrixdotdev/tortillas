@@ -51,7 +51,7 @@ impl TorrentActor {
       }
 
       // Validate block is non-empty
-      if block.len() == 0 {
+      if block.is_empty() {
          warn!(index, offset, "Received piece block with zero length");
          return;
       }
