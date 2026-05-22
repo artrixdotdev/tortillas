@@ -459,6 +459,7 @@ impl Message<PeerMessages> for PeerActor {
             // Send all pending messages
             self.flush_queue().await;
             self.flush_block_requests().await;
+            self.notify_ready().await;
             trace!("Peer unchoked us");
          }
          PeerMessages::Interested => {
@@ -539,6 +540,7 @@ impl Message<PeerMessages> for PeerActor {
          PeerMessages::Bitfield(bitfield) => {
             self.peer.pieces = bitfield;
             self.determine_interest().await;
+            self.notify_ready().await;
          }
          PeerMessages::Handshake(_) => {
             warn!("Received unexpected handshake from peer");
