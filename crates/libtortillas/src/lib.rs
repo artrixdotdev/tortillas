@@ -3,6 +3,7 @@ pub mod errors;
 pub mod hashes;
 pub mod metainfo;
 pub mod peer;
+pub mod pieces;
 pub mod protocol;
 pub mod torrent;
 pub mod tracker;
