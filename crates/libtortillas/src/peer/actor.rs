@@ -589,19 +589,34 @@ impl Message<PeerTell> for PeerActor {
                   piece_index = index,
                   "Peer does not have piece, not sending request"
                );
+               self.reject_piece_request(index, begin).await;
                return;
             }
 
-            if !self.peer.am_choked() {
-               self
-                  .stream
-                  .send(PeerMessages::Request(
-                     index as u32,
-                     begin as u32,
-                     length as u32,
-                  ))
-                  .await
-                  .expect("Failed to send piece request");
+            if self.peer.am_choked() {
+               trace!(piece_index = index, "Peer is choking us, queueing request");
+               self.pending_block_requests.insert((index, begin, length));
+               return;
+            }
+
+            if let Err(err) = self
+               .stream
+               .send(PeerMessages::Request(
+                  index as u32,
+                  begin as u32,
+                  length as u32,
+               ))
+               .await
+            {
+               warn!(
+                  ?err,
+                  piece_index = index,
+                  begin,
+                  length,
+                  "Failed to send piece request"
+               );
+               self.reject_piece_request(index, begin).await;
+               return;
             }
             self.pending_block_requests.insert((index, begin, length));
             trace!(piece_index = index, "Sent piece request to peer");
