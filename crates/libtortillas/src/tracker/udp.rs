@@ -828,81 +828,104 @@ impl TrackerBase for UdpTracker {
 
       self.stats.increment_announce_attempts();
 
-      let transaction_id: TransactionId = rand::random();
+      for attempt in 0..2 {
+         let transaction_id: TransactionId = rand::random();
 
-      let params = self.announce_params.read().await;
+         let (downloaded, left, uploaded, event) = {
+            let params = self.announce_params.read().await;
+            (
+               params.downloaded,
+               params.left as u64,
+               params.uploaded,
+               params.event,
+            )
+         };
 
-      let request = TrackerRequest::Announce {
-         connection_id: self.get_connection_id(),
-         transaction_id,
-         info_hash: self.info_hash,
-         peer_id: self.peer_id,
-         downloaded: params.downloaded,
-         left: params.left as u64,
-         uploaded: params.uploaded,
-         event: params.event,
-         ip_address: 0,
-         key: 0,
-         num_want: -1,
-         port: self.peer_addr.port(),
-      };
-
-      let response = self.send_and_wait(request).await?;
-
-      match response {
-         TrackerResponse::Announce {
-            peers,
-            transaction_id: resp_tid,
-            interval,
-            leechers,
-            seeders,
-            ..
-         } => {
-            ensure!(
-               resp_tid == transaction_id,
-               TrackerActorError::TransactionMismatch {
-                  expected: transaction_id,
-                  received: resp_tid
-               }
-            );
-
-            // Update statistics
-            self.stats.increment_announce_successes();
-            self.stats.increment_total_peers_received(peers.len());
-
-            debug!(
-               peers_count = peers.len(),
-               interval_seconds = interval,
-               swarm_leechers = leechers,
-               swarm_seeders = seeders,
-               "Announce completed successfully"
-            );
-
-            self.set_interval(interval);
-            Ok(peers)
-         }
-         TrackerResponse::Error {
-            message,
+         let request = TrackerRequest::Announce {
+            connection_id: self.get_connection_id(),
             transaction_id,
-            ..
-         } => {
-            error!(
-                error_message = %message,
-                transaction_id = transaction_id,
-                "Tracker returned error for announce request"
-            );
-            bail!(TrackerActorError::TrackerError { message })
-         }
-         _ => {
-            trace!(
-                response_type = ?response,
-                "Unexpected response type to announce request"
-            );
-            bail!(TrackerActorError::InvalidResponse {
-               reason: "Expected announce response".to_string(),
-            })
+            info_hash: self.info_hash,
+            peer_id: self.peer_id,
+            downloaded,
+            left,
+            uploaded,
+            event,
+            ip_address: 0,
+            key: 0,
+            num_want: -1,
+            port: self.peer_addr.port(),
+         };
+
+         let response = self.send_and_wait(request).await?;
+
+         match response {
+            TrackerResponse::Announce {
+               peers,
+               transaction_id: resp_tid,
+               interval,
+               leechers,
+               seeders,
+               ..
+            } => {
+               ensure!(
+                  resp_tid == transaction_id,
+                  TrackerActorError::TransactionMismatch {
+                     expected: transaction_id,
+                     received: resp_tid
+                  }
+               );
+
+               // Update statistics
+               self.stats.increment_announce_successes();
+               self.stats.increment_total_peers_received(peers.len());
+
+               debug!(
+                  peers_count = peers.len(),
+                  interval_seconds = interval,
+                  swarm_leechers = leechers,
+                  swarm_seeders = seeders,
+                  "Announce completed successfully"
+               );
+
+               self.set_interval(interval);
+               return Ok(peers);
+            }
+            TrackerResponse::Error {
+               message,
+               transaction_id,
+               ..
+            } => {
+               if attempt == 0 && message.to_ascii_lowercase().contains("connection id") {
+                  warn!(
+                     error_message = %message,
+                     transaction_id = transaction_id,
+                     "Tracker rejected connection ID; reconnecting before retrying announce"
+                  );
+                  self.set_ready_state(ReadyState::Disconnected);
+                  self.connect().await?;
+                  continue;
+               }
+
+               error!(
+                   error_message = %message,
+                   transaction_id = transaction_id,
+                   "Tracker returned error for announce request"
+               );
+               bail!(TrackerActorError::TrackerError { message })
+            }
+            _ => {
+               trace!(
+                   response_type = ?response,
+                   "Unexpected response type to announce request"
+               );
+               bail!(TrackerActorError::InvalidResponse {
+                  reason: "Expected announce response".to_string(),
+               })
+            }
          }
       }
+
+      unreachable!("announce retry loop should return or error")
    }
 
    async fn update(&self, update: TrackerUpdate) -> anyhow::Result<()> {

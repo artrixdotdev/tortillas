@@ -24,10 +24,12 @@ use crate::{
    hashes::InfoHash,
    metainfo::Info,
    peer::{Peer, PeerId, PeerTell},
+   pieces::PieceManager,
    protocol::stream::PeerStream,
-   torrent::piece_manager::PieceManager,
    tracker::Tracker,
 };
+
+const MAX_IN_FLIGHT_PER_PEER: usize = 32;
 
 /// For incoming from outside sources (e.g Peers, Trackers and Engine)
 #[allow(dead_code)]
@@ -46,9 +48,15 @@ pub(crate) enum TorrentMessage {
    /// be used to initiate a peer connection without it having to come from an
    /// announce.
    AddPeer(Peer),
+
+   /// Sent by a connection task after peer handshaking completes.
+   PeerConnected(Peer, Box<PeerStream>),
+
    /// Index, Offset, Data
    /// See the corresponding [peer message](PeerMessages::Piece)
-   IncomingPiece(usize, usize, Bytes),
+   IncomingPiece(PeerId, usize, usize, Bytes),
+   /// Release a scheduler entry for a request a peer could not accept.
+   PeerRejectedRequest(usize, usize),
    /// Bytes for the [Info] dict from an peer, these info bytes are expected to
    /// be verified by the torrent us before being used.
    InfoBytes(Bytes),
@@ -88,8 +96,11 @@ impl fmt::Debug for TorrentMessage {
          TorrentMessage::KillPeer(peer_id) => write!(f, "KillPeer({peer_id:?})"),
          TorrentMessage::KillTracker(tracker) => write!(f, "KillTracker({tracker:?})"),
          TorrentMessage::AddPeer(peer) => write!(f, "AddPeer({peer:?})"),
-         TorrentMessage::IncomingPiece(index, offset, data) => {
+         TorrentMessage::IncomingPiece(_, index, offset, data) => {
             write!(f, "IncomingPiece({index}, {offset}, {})", data.len())
+         }
+         TorrentMessage::PeerRejectedRequest(index, offset) => {
+            write!(f, "PeerRejectedRequest({index}, {offset})")
          }
          TorrentMessage::Announce(peers) => write!(f, "Announce({peers:?})"),
          _ => write!(f, "TorrentMessage"), // Add more later,
@@ -102,19 +113,17 @@ actor_request_response!(
    pub(crate) TorrentRequest,
    pub(crate) TorrentResponse #[derive(Reply)],
 
-   /// Bitfield of the torrent
-   Bitfield
-   Bitfield(Arc<BitVec<AtomicU8>>),
+    /// Bitfield of the torrent
+    Bitfield
+    Bitfield(Arc<BitVec<AtomicU8>>),
 
-   /// Current peers of the torrent
-   CurrentPeers
-   CurrentPeers(Vec<&'static Peer>),
+    /// Whether a peer has pieces this torrent still needs, plus the number of
+    /// interesting pieces.
+    InterestingPieces(Arc<BitVec<AtomicU8>>)
+    InterestingPieces(bool, usize),
 
-   PeerCount
+    PeerCount
    PeerCount(usize),
-   /// Current trackers of the torrent
-   CurrentTrackers
-   CurrentTrackers(Vec<&'static Tracker>),
    /// Info hash of the torrent
    InfoHash
    InfoHash(InfoHash),
@@ -123,7 +132,7 @@ actor_request_response!(
    HasInfoDict(Option<Info>),
    /// Requests a piece from the torrent
    Request(usize, usize, usize)
-   Request(usize, usize, Bytes),
+   Request(usize, usize, Option<Bytes>),
 
    GetState
    GetState(TorrentState),
@@ -148,6 +157,7 @@ impl Message<TorrentMessage> for TorrentActor {
          }
          TorrentMessage::IncomingPeer(peer, stream) => self.append_peer(peer, Some(*stream)),
          TorrentMessage::AddPeer(peer) => self.append_peer(peer, None),
+         TorrentMessage::PeerConnected(peer, stream) => self.insert_peer(peer, *stream),
 
          TorrentMessage::InfoBytes(bytes) => {
             if self.info.is_some() {
@@ -165,10 +175,10 @@ impl Message<TorrentMessage> for TorrentActor {
                info!("Received valid info dict, starting torrent process...");
                let info: Info =
                   serde_bencode::from_bytes(&bytes).expect("Failed to parse info dict");
-               self.bitfield = Arc::new(BitVec::with_capacity(info.piece_count()));
+               self.bitfield = BitVec::repeat(false, info.piece_count());
                self.info = Some(info);
                self
-                  .broadcast_to_peers(PeerTell::HaveInfoDict(self.bitfield.clone()))
+                  .broadcast_to_peers(PeerTell::HaveInfoDict(Arc::new(self.bitfield.clone())))
                   .await;
             } else {
                warn!(
@@ -178,6 +188,7 @@ impl Message<TorrentMessage> for TorrentActor {
             }
          }
          TorrentMessage::KillPeer(id) => {
+            self.piece_scheduler.peer_disconnected(id);
             // Kill the actor quietly
             if let Some(actor) = self.peers.get(&id) {
                actor.kill();
@@ -203,19 +214,19 @@ impl Message<TorrentMessage> for TorrentActor {
                && self.state == TorrentState::Downloading
                && self.is_ready()
             {
-               let (piece_idx, block_offset, block_length) =
-                  self.next_block_coordinates(self.next_piece);
-               actor
-                  .tell(PeerTell::NeedPiece(piece_idx, block_offset, block_length))
-                  .await
-                  .expect("Failed to send piece request to peer");
-               trace!(peer_id = %id, piece_idx, block_offset, block_length, "Requested piece from new peer");
+               self
+                  .request_blocks_from_peer(id, MAX_IN_FLIGHT_PER_PEER)
+                  .await;
+               trace!(peer_id = %id, "Filled peer request window");
             } else {
                trace!(peer_id = %id, state = ?self.state, ready = self.is_ready(), "Ignoring PeerReady: peer unknown, dead, or torrent not in download state");
             }
          }
-         TorrentMessage::IncomingPiece(index, offset, block) => {
-            self.incoming_piece(index, offset, block).await
+         TorrentMessage::IncomingPiece(peer_id, index, offset, block) => {
+            self.incoming_piece(peer_id, index, offset, block).await
+         }
+         TorrentMessage::PeerRejectedRequest(index, offset) => {
+            self.piece_scheduler.release_request(index, offset);
          }
 
          TorrentMessage::PieceStorage(strategy) => {
@@ -290,27 +301,51 @@ impl Message<TorrentMessage> for TorrentActor {
 impl Message<TorrentRequest> for TorrentActor {
    type Reply = TorrentResponse;
 
-   // TODO: Figure out a way to send the peers back to the engine (if needed)
    async fn handle(
       &mut self, message: TorrentRequest, _: &mut Context<Self, Self::Reply>,
    ) -> Self::Reply {
       match message {
-         TorrentRequest::Bitfield => TorrentResponse::Bitfield(self.bitfield.clone()),
+         TorrentRequest::Bitfield => TorrentResponse::Bitfield(Arc::new(self.bitfield.clone())),
+         TorrentRequest::InterestingPieces(peer_bitfield) => {
+            let interesting_count = if self.bitfield.is_empty() {
+               peer_bitfield.count_ones()
+            } else {
+               peer_bitfield
+                  .iter()
+                  .by_vals()
+                  .zip(self.bitfield.iter().by_vals())
+                  .filter(|(peer_has_piece, we_have_piece)| *peer_has_piece && !*we_have_piece)
+                  .count()
+            };
+            TorrentResponse::InterestingPieces(interesting_count > 0, interesting_count)
+         }
          TorrentRequest::PeerCount => TorrentResponse::PeerCount(self.peers.len()),
-         TorrentRequest::CurrentPeers => {
-            unimplemented!()
-            // TorrentResponse::CurrentPeers(self.peers.values().map(|peer|
-            // peer).collect());
-         }
-         TorrentRequest::CurrentTrackers => {
-            unimplemented!()
-            // TorrentResponse::CurrentTrackers(self.trackers.keys().collect())
-         }
          TorrentRequest::InfoHash => TorrentResponse::InfoHash(self.info_hash()),
 
          TorrentRequest::HasInfoDict => TorrentResponse::HasInfoDict(self.info.clone()),
-         TorrentRequest::Request(_, _, _) => {
-            unimplemented!()
+         TorrentRequest::Request(index, offset, length) => {
+            let data = if self
+               .bitfield
+               .get(index)
+               .as_deref()
+               .copied()
+               .unwrap_or(false)
+            {
+               match self.read_piece_block(index, offset, length).await {
+                  Ok(data) => Some(data),
+                  Err(err) => {
+                     warn!(
+                        ?err,
+                        index, offset, length, "Failed to read requested piece block"
+                     );
+                     None
+                  }
+               }
+            } else {
+               warn!(index, offset, length, "Peer requested piece we do not have");
+               None
+            };
+            TorrentResponse::Request(index, offset, data)
          }
          TorrentRequest::GetState => TorrentResponse::GetState(self.state),
          TorrentRequest::Export => TorrentResponse::Export(Box::new(self.export())),

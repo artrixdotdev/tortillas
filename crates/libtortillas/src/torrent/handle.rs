@@ -6,10 +6,10 @@ use tokio::sync::oneshot;
 use tracing::error;
 
 use super::{
-   PieceManager, PieceStorageStrategy, TorrentActor, TorrentExport, TorrentMessage, TorrentRequest,
+   PieceStorageStrategy, TorrentActor, TorrentExport, TorrentMessage, TorrentRequest,
    TorrentResponse, TorrentState,
 };
-use crate::hashes::InfoHash;
+use crate::{hashes::InfoHash, pieces::PieceManager};
 
 /// A handle to a torrent managed by the engine.
 ///

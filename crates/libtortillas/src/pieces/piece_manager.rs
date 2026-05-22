@@ -4,7 +4,7 @@ use anyhow::ensure;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::{
-   fs::OpenOptions,
+   fs::{OpenOptions, create_dir_all},
    io::{AsyncSeekExt, AsyncWriteExt},
 };
 use tracing::trace;
@@ -174,7 +174,7 @@ impl PieceManager for FilePieceManager {
          // Ensure parent directories exist
          let full_path = base_path.join(&path);
          if let Some(parent) = full_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
+            create_dir_all(parent).await?;
          }
 
          let mut file = OpenOptions::new()

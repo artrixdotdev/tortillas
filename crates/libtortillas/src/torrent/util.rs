@@ -1,4 +1,5 @@
 use std::{
+   fs::File as StdFile,
    io::{Read, SeekFrom},
    path::{Path, PathBuf},
 };
@@ -8,7 +9,7 @@ use bytes::Bytes;
 use sha1::{Digest, Sha1};
 use tokio::{
    fs::{self, File, OpenOptions},
-   io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, copy},
+   io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, Error, copy},
    task::spawn_blocking,
 };
 
@@ -62,7 +63,7 @@ pub async fn create_empty_file(path: impl AsRef<Path>, length: usize) -> anyhow:
 /// ```
 pub async fn write_block_to_file(
    path: impl AsRef<Path>, offset: usize, block: Bytes,
-) -> anyhow::Result<(), tokio::io::Error> {
+) -> anyhow::Result<(), Error> {
    let mut file = OpenOptions::new()
       .create(true) // create if it doesn't exist
       .write(true) // open for writing
@@ -97,7 +98,7 @@ pub async fn validate_piece_file(
 ) -> anyhow::Result<()> {
    let piece_file_hash = spawn_blocking(move || -> anyhow::Result<Hash<20>> {
       let mut hasher = Sha1::new();
-      let mut file = std::fs::File::open(&path)?;
+      let mut file = StdFile::open(&path)?;
       let mut buffer = [0; 8192];
       loop {
          let bytes_read = file.read(&mut buffer)?;
@@ -121,7 +122,7 @@ pub async fn validate_piece_file(
 
 /// Creates a dir if it doesn't exist. This function can be called even if the
 /// directory exists -- if it does, nothing will happen.
-pub async fn create_dir(path: &PathBuf) -> Result<(), tokio::io::Error> {
+pub async fn create_dir(path: &PathBuf) -> Result<(), Error> {
    match path.try_exists() {
       // Path doesn't exist
       Ok(false) => fs::create_dir_all(path).await,
