@@ -12,7 +12,10 @@ use crate::{
       messages::PeerMessages,
       stream::{PeerRecv, PeerStream},
    },
-   torrent::{TorrentActor, TorrentActorArgs, TorrentMessage, TorrentState, commands::ExportState},
+   torrent::{
+      TorrentActor, TorrentActorArgs, TorrentState, commands::ExportState,
+      events::IncomingPeer as TorrentIncomingPeer,
+   },
 };
 
 const INCOMING_PEER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -54,10 +57,7 @@ pub(crate) mod commands {
             peer.reserved = handshake.reserved;
 
             if let Some(torrent) = self.torrents.get(&info_hash) {
-               if let Err(err) = torrent
-                  .tell(TorrentMessage::IncomingPeer(peer, stream))
-                  .await
-               {
+               if let Err(err) = torrent.tell(TorrentIncomingPeer { peer, stream }).await {
                   warn!(error = %err, %info_hash, "Failed to route incoming peer to torrent");
                }
             } else {

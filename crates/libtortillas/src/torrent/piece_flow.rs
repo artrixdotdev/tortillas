@@ -11,14 +11,14 @@ use super::TorrentActor;
 use crate::{
    errors::TorrentError,
    peer::commands::{CancelPiece, Have, NeedPiece},
-   pieces::{PieceManager, PieceStoreMessage, PieceStoreRequest},
+   pieces::{PieceManager, ValidateAndRead, WriteBlock},
    torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentState},
-   tracker::{Event, TrackerMessage, TrackerUpdate},
+   tracker::{Announce, Event, TrackerUpdate},
 };
 
 impl TorrentActor {
    /// Handles an incoming piece block from a peer.
-   pub async fn incoming_piece(
+   pub async fn handle_incoming_piece(
       &mut self, peer_id: crate::peer::PeerId, index: usize, offset: usize, block: Bytes,
    ) {
       let info_dict = match &self.info {
@@ -163,7 +163,7 @@ impl TorrentActor {
             };
             match self
                .piece_store
-               .ask(PieceStoreMessage::WriteBlock {
+               .ask(WriteBlock {
                   path,
                   offset,
                   block,
@@ -230,7 +230,7 @@ impl TorrentActor {
          self
             .update_trackers(TrackerUpdate::Event(Event::Completed))
             .await;
-         self.broadcast_to_trackers(TrackerMessage::Announce).await;
+         self.broadcast_to_trackers(Announce).await;
          info!("Torrenting process completed, switching to seeding mode");
       }
    }
@@ -258,7 +258,7 @@ impl TorrentActor {
 
             let data = match self
                .piece_store
-               .ask(PieceStoreRequest::ValidateAndRead {
+               .ask(ValidateAndRead {
                   path: path.clone(),
                   hash: info_dict.pieces[index],
                })

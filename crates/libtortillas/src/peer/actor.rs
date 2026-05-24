@@ -25,8 +25,9 @@ use crate::{
    peer::Peer,
    protocol::{stream::PeerRecv, *},
    torrent::{
-      TorrentActor, TorrentMessage,
+      TorrentActor,
       commands::{GetBitfield, HasInfoDict, InterestingPieces, KillPeer, RequestPiece},
+      events::{IncomingPiece, InfoBytes, PeerReady, PeerRejectedRequest},
    },
 };
 
@@ -156,7 +157,9 @@ impl PeerActor {
          trace!("Peer has all info bytes, sending them to supervisor...");
          self
             .supervisor
-            .tell(TorrentMessage::InfoBytes(self.peer.info.info_bytes()))
+            .tell(InfoBytes {
+               bytes: self.peer.info.info_bytes(),
+            })
             .await
             .unwrap();
       }
@@ -333,7 +336,9 @@ impl Actor for PeerActor {
       }
 
       supervisor
-         .tell(TorrentMessage::PeerReady(peer.id.unwrap()))
+         .tell(PeerReady {
+            id: peer.id.unwrap(),
+         })
          .await
          .map_err(|e| PeerActorError::SupervisorCommunicationFailed(e.to_string()))?;
 
@@ -428,8 +433,12 @@ impl Message<PeerMessages> for PeerActor {
                   warn!("Received piece from peer without id; ignoring");
                   return;
                };
-               let supervisor_msg =
-                  TorrentMessage::IncomingPiece(peer_id, index as usize, offset as usize, data);
+               let supervisor_msg = IncomingPiece {
+                  peer_id,
+                  index: index as usize,
+                  offset: offset as usize,
+                  block: data,
+               };
 
                if let Err(err) = self
                   .supervisor
@@ -560,11 +569,7 @@ impl PeerActor {
          return;
       };
 
-      if let Err(err) = self
-         .supervisor
-         .tell(TorrentMessage::PeerReady(peer_id))
-         .await
-      {
+      if let Err(err) = self.supervisor.tell(PeerReady { id: peer_id }).await {
          trace!(error = %err, %peer_id, "Failed to notify torrent actor that peer is ready");
       }
    }
@@ -572,7 +577,10 @@ impl PeerActor {
    async fn reject_piece_request(&self, index: usize, begin: usize) {
       if let Err(err) = self
          .supervisor
-         .tell(TorrentMessage::PeerRejectedRequest(index, begin))
+         .tell(PeerRejectedRequest {
+            index,
+            offset: begin,
+         })
          .await
       {
          trace!(

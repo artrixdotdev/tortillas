@@ -30,7 +30,7 @@ use crate::{
    peer::{PeerActor, PeerId},
    pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
    torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentExport, TorrentState},
-   tracker::{Event, Tracker, TrackerActor, TrackerMessage, TrackerUpdate, udp::UdpServer},
+   tracker::{Announce, Event, Tracker, TrackerActor, TrackerUpdate, udp::UdpServer},
 };
 
 /// A hook that is called when the torrent is ready to start downloading.
@@ -209,7 +209,7 @@ impl TorrentActor {
          self
             .update_trackers(TrackerUpdate::Event(Event::Started))
             .await;
-         self.broadcast_to_trackers(TrackerMessage::Announce).await;
+         self.broadcast_to_trackers(Announce).await;
          self
             .update_trackers(TrackerUpdate::Event(Event::Empty))
             .await;

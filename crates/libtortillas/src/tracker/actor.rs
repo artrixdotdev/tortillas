@@ -5,6 +5,7 @@ use kameo::{
    Actor,
    actor::{ActorRef, WeakActorRef},
    error::ActorStopReason,
+   messages,
    prelude::{Context, Message},
 };
 use kameo_actors::scheduler::{Scheduler, SetTimeout};
@@ -12,14 +13,14 @@ use tokio::{task::AbortHandle, time::timeout};
 use tracing::{error, warn};
 
 use super::{
-   Tracker, TrackerBase, TrackerInstance, TrackerMessage, TrackerStats, TrackerUpdate,
+   Tracker, TrackerBase, TrackerInstance, TrackerStats, TrackerUpdate,
    http::HttpTracker,
    udp::{UdpServer, UdpTracker},
 };
 use crate::{
    errors::TrackerActorError,
    peer::PeerId,
-   torrent::{TorrentActor, TorrentMessage, commands::GetInfoHash},
+   torrent::{TorrentActor, commands::GetInfoHash, events::Announce as TorrentAnnounce},
 };
 
 /// The actor that handles all communication with a given tracker.
@@ -28,6 +29,7 @@ pub(crate) struct TrackerActor {
    supervisor: ActorRef<TorrentActor>,
    scheduler: ActorRef<Scheduler>,
    next_announce: Option<AbortHandle>,
+   actor_ref: ActorRef<Self>,
 }
 
 impl Actor for TrackerActor {
@@ -86,7 +88,7 @@ impl Actor for TrackerActor {
          .ask(SetTimeout::new(
             actor_ref.downgrade(),
             Duration::from_secs(0),
-            TrackerMessage::Announce,
+            Announce,
          ))
          .await
          .map_err(|e| TrackerActorError::SupervisorCommunicationFailed(e.to_string()))?;
@@ -96,6 +98,7 @@ impl Actor for TrackerActor {
          supervisor,
          scheduler,
          next_announce: Some(next_announce),
+         actor_ref,
       })
    }
 
@@ -114,8 +117,9 @@ impl Actor for TrackerActor {
    }
 }
 
+#[messages]
 impl TrackerActor {
-   async fn schedule_next_announce(&mut self, actor_ref: WeakActorRef<Self>) {
+   async fn schedule_next_announce(&mut self) {
       let delay = self.tracker.interval().max(1) as u64;
       if let Some(next_announce) = self.next_announce.take() {
          next_announce.abort();
@@ -123,9 +127,9 @@ impl TrackerActor {
       match self
          .scheduler
          .ask(SetTimeout::new(
-            actor_ref,
+            self.actor_ref.downgrade(),
             Duration::from_secs(delay),
-            TrackerMessage::Announce,
+            Announce,
          ))
          .await
       {
@@ -133,31 +137,20 @@ impl TrackerActor {
          Err(e) => error!(error = %e, "Failed to schedule next announce"),
       }
    }
-}
 
-impl Message<TrackerMessage> for TrackerActor {
-   type Reply = Option<TrackerStats>;
-
-   async fn handle(
-      &mut self, msg: TrackerMessage, ctx: &mut Context<Self, Self::Reply>,
-   ) -> Self::Reply {
-      match msg {
-         TrackerMessage::Announce => {
-            match self.tracker.announce().await {
-               Ok(peers) => {
-                  if let Err(e) = self.supervisor.tell(TorrentMessage::Announce(peers)).await {
-                     error!(error = %e, "Failed to send announce to supervisor");
-                  }
-               }
-               Err(e) => error!(error = %e, "Announce request failed"),
+   /// Forces the tracker to make an announce request.
+   #[message(derive(Debug, Clone, Copy))]
+   pub(crate) async fn announce(&mut self) -> Option<TrackerStats> {
+      match self.tracker.announce().await {
+         Ok(peers) => {
+            if let Err(e) = self.supervisor.tell(TorrentAnnounce { peers }).await {
+               error!(error = %e, "Failed to send announce to supervisor");
             }
-            self
-               .schedule_next_announce(ctx.actor_ref().downgrade())
-               .await;
-            None
          }
-         TrackerMessage::GetStats => Some(self.tracker.stats()),
+         Err(e) => error!(error = %e, "Announce request failed"),
       }
+      self.schedule_next_announce().await;
+      None
    }
 }
 

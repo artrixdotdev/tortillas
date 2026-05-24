@@ -1,15 +1,11 @@
 use std::{
-   fmt,
    path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
 };
 
 use bitvec::vec::BitVec;
 use bytes::Bytes;
-use kameo::{
-   messages,
-   prelude::{Context, Message},
-};
+use kameo::messages;
 use sha1::{Digest, Sha1};
 use tracing::{info, instrument, trace, warn};
 
@@ -29,126 +25,117 @@ use crate::{
 
 const MAX_IN_FLIGHT_PER_PEER: usize = 32;
 
-/// For incoming from outside sources (e.g Peers, Trackers and Engine)
-#[allow(dead_code)]
-pub(crate) enum TorrentMessage {
-   /// A message from an announce actor containing new Peers
-   Announce(Vec<Peer>),
+pub(crate) mod events {
+   use super::*;
 
-   /// Sent after an incoming peer initializes a handshake
-   /// The handshake will be preverified and routed to this torrent instance.
-   ///
-   /// We as the instance are expected to reply to said handshake, this is not
-   /// the responsibility of the engine.
-   IncomingPeer(Peer, Box<PeerStream>),
-
-   /// Used to manually add a peer. This is primarily used for testing but can
-   /// be used to initiate a peer connection without it having to come from an
-   /// announce.
-   AddPeer(Peer),
-
-   /// Sent by a connection task after peer handshaking completes.
-   PeerConnected(Peer, Box<PeerStream>),
-
-   /// Index, Offset, Data
-   /// See the corresponding peer `Piece` message.
-   IncomingPiece(PeerId, usize, usize, Bytes),
-   /// Release a scheduler entry for a request a peer could not accept.
-   PeerRejectedRequest(usize, usize),
-   /// Bytes for the [Info] dict from an peer, these info bytes are expected to
-   /// be verified by the torrent us before being used.
-   InfoBytes(Bytes),
-
-   /// Sent after the `PeerActor::on_start` is ran
-   PeerReady(PeerId),
-}
-
-impl fmt::Debug for TorrentMessage {
-   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-      match self {
-         TorrentMessage::InfoBytes(bytes) => write!(f, "InfoBytes({bytes:?})"),
-         TorrentMessage::AddPeer(peer) => write!(f, "AddPeer({peer:?})"),
-         TorrentMessage::IncomingPiece(_, index, offset, data) => {
-            write!(f, "IncomingPiece({index}, {offset}, {})", data.len())
+   #[messages]
+   impl TorrentActor {
+      /// A message from an announce actor containing new peers.
+      #[message(derive(Debug))]
+      #[instrument(skip(self, peers), fields(torrent_id = %self.info_hash()))]
+      pub(crate) fn announce(&mut self, peers: Vec<Peer>) {
+         trace!(peer_count = peers.len(), "Received announce message");
+         for peer in peers {
+            self.append_peer(peer, None);
          }
-         TorrentMessage::PeerRejectedRequest(index, offset) => {
-            write!(f, "PeerRejectedRequest({index}, {offset})")
-         }
-         TorrentMessage::Announce(peers) => write!(f, "Announce({peers:?})"),
-         _ => write!(f, "TorrentMessage"), // Add more later,
       }
-   }
-}
 
-impl Message<TorrentMessage> for TorrentActor {
-   type Reply = ();
+      /// Sent after an incoming peer initializes a handshake.
+      /// The handshake will be preverified and routed to this torrent instance.
+      ///
+      /// We as the instance are expected to reply to said handshake, this is
+      /// not the responsibility of the engine.
+      #[allow(clippy::boxed_local)]
+      #[message]
+      #[instrument(skip(self, stream), fields(torrent_id = %self.info_hash()))]
+      pub(crate) fn incoming_peer(&mut self, peer: Peer, stream: Box<PeerStream>) {
+         self.append_peer(peer, Some(*stream));
+      }
 
-   #[instrument(skip(self, message), fields(torrent_id = %self.info_hash()))]
-   async fn handle(
-      &mut self, message: TorrentMessage, _: &mut Context<Self, Self::Reply>,
-   ) -> Self::Reply {
-      match message {
-         TorrentMessage::Announce(peers) => {
-            trace!(peer_count = peers.len(), "Received announce message");
-            for peer in peers {
-               self.append_peer(peer, None);
-            }
-         }
-         TorrentMessage::IncomingPeer(peer, stream) => self.append_peer(peer, Some(*stream)),
-         TorrentMessage::AddPeer(peer) => self.append_peer(peer, None),
-         TorrentMessage::PeerConnected(peer, stream) => self.insert_peer(peer, *stream),
+      /// Used to manually add a peer. This is primarily used for testing but
+      /// can be used to initiate a peer connection without it having to
+      /// come from an announce.
+      #[message(derive(Debug))]
+      #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
+      pub(crate) fn add_peer(&mut self, peer: Peer) {
+         self.append_peer(peer, None);
+      }
 
-         TorrentMessage::InfoBytes(bytes) => {
-            if self.info.is_some() {
-               trace!(
-                  dict = %String::from_utf8_lossy(&bytes),
-                  "Received info dict when we already have one"
-               );
-               return;
-            }
-            let mut hasher = Sha1::new();
+      /// Sent by a connection task after peer handshaking completes.
+      #[allow(clippy::boxed_local)]
+      #[message]
+      #[instrument(skip(self, stream), fields(torrent_id = %self.info_hash()))]
+      pub(crate) fn peer_connected(&mut self, peer: Peer, stream: Box<PeerStream>) {
+         self.insert_peer(peer, *stream);
+      }
 
-            hasher.update(&bytes);
-            let hash = hex::encode(hasher.finalize());
-            if hash == self.info_hash().to_hex() {
-               info!("Received valid info dict, starting torrent process...");
-               let info: Info =
-                  serde_bencode::from_bytes(&bytes).expect("Failed to parse info dict");
-               self.bitfield = BitVec::repeat(false, info.piece_count());
-               self.info = Some(info);
-               self
-                  .broadcast_to_peers(HaveInfoDict {
-                     bitfield: Arc::new(self.bitfield.clone()),
-                  })
-                  .await;
-            } else {
-               warn!(
-                  dict = %String::from_utf8_lossy(&bytes),
-                  "Received invalid info hash"
-               );
-            }
+      /// Index, offset, and data for a received peer `Piece` message.
+      #[message(derive(Debug))]
+      #[instrument(skip(self, block), fields(torrent_id = %self.info_hash()))]
+      pub(crate) async fn incoming_piece(
+         &mut self, peer_id: PeerId, index: usize, offset: usize, block: Bytes,
+      ) {
+         self
+            .handle_incoming_piece(peer_id, index, offset, block)
+            .await;
+      }
+
+      /// Release a scheduler entry for a request a peer could not accept.
+      #[message(derive(Debug, Clone, Copy))]
+      #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
+      pub(crate) fn peer_rejected_request(&mut self, index: usize, offset: usize) {
+         self.piece_scheduler.release_request(index, offset);
+      }
+
+      /// Bytes for the [`Info`] dict from a peer. These info bytes are expected
+      /// to be verified by the torrent before being used.
+      #[message(derive(Debug))]
+      #[instrument(skip(self, bytes), fields(torrent_id = %self.info_hash()))]
+      pub(crate) async fn info_bytes(&mut self, bytes: Bytes) {
+         if self.info.is_some() {
+            trace!(
+               dict = %String::from_utf8_lossy(&bytes),
+               "Received info dict when we already have one"
+            );
+            return;
          }
-         // If we're in the downloading state, send a piece request to the peer
-         // that just connected
-         TorrentMessage::PeerReady(id) => {
-            if let Some(actor) = self.peers.get(&id)
-               && actor.is_alive()
-               && self.state == TorrentState::Downloading
-               && self.is_ready()
-            {
-               self
-                  .request_blocks_from_peer(id, MAX_IN_FLIGHT_PER_PEER)
-                  .await;
-               trace!(peer_id = %id, "Filled peer request window");
-            } else {
-               trace!(peer_id = %id, state = ?self.state, ready = self.is_ready(), "Ignoring PeerReady: peer unknown, dead, or torrent not in download state");
-            }
+         let mut hasher = Sha1::new();
+
+         hasher.update(&bytes);
+         let hash = hex::encode(hasher.finalize());
+         if hash == self.info_hash().to_hex() {
+            info!("Received valid info dict, starting torrent process...");
+            let info: Info = serde_bencode::from_bytes(&bytes).expect("Failed to parse info dict");
+            self.bitfield = BitVec::repeat(false, info.piece_count());
+            self.info = Some(info);
+            self
+               .broadcast_to_peers(HaveInfoDict {
+                  bitfield: Arc::new(self.bitfield.clone()),
+               })
+               .await;
+         } else {
+            warn!(
+               dict = %String::from_utf8_lossy(&bytes),
+               "Received invalid info hash"
+            );
          }
-         TorrentMessage::IncomingPiece(peer_id, index, offset, block) => {
-            self.incoming_piece(peer_id, index, offset, block).await
-         }
-         TorrentMessage::PeerRejectedRequest(index, offset) => {
-            self.piece_scheduler.release_request(index, offset);
+      }
+
+      /// Sent after `PeerActor::on_start` runs.
+      #[message(derive(Debug, Clone, Copy))]
+      #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
+      pub(crate) async fn peer_ready(&mut self, id: PeerId) {
+         if let Some(actor) = self.peers.get(&id)
+            && actor.is_alive()
+            && self.state == TorrentState::Downloading
+            && self.is_ready()
+         {
+            self
+               .request_blocks_from_peer(id, MAX_IN_FLIGHT_PER_PEER)
+               .await;
+            trace!(peer_id = %id, "Filled peer request window");
+         } else {
+            trace!(peer_id = %id, state = ?self.state, ready = self.is_ready(), "Ignoring PeerReady: peer unknown, dead, or torrent not in download state");
          }
       }
    }

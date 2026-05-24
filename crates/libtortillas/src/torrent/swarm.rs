@@ -8,14 +8,15 @@ use kameo::{
 };
 use tracing::{debug, instrument, trace, warn};
 
-use super::{TorrentActor, TorrentMessage};
+use super::TorrentActor;
 use crate::{
    peer::{Peer, PeerActor, PeerId},
    protocol::{
       messages::{Handshake, PeerMessages},
       stream::{PeerSend, PeerStream},
    },
-   tracker::{Tracker, TrackerActor, TrackerMessage, TrackerUpdate},
+   torrent::events::PeerConnected,
+   tracker::{Tracker, TrackerActor, TrackerUpdate},
 };
 
 const PEER_BROADCAST_CONCURRENCY: usize = 32;
@@ -83,7 +84,10 @@ impl TorrentActor {
          peer.id = Some(id);
 
          if let Err(err) = actor_ref
-            .tell(TorrentMessage::PeerConnected(peer, Box::new(stream)))
+            .tell(PeerConnected {
+               peer,
+               stream: Box::new(stream),
+            })
             .await
          {
             warn!(?err, peer_id = %id, "Failed to route connected peer back to torrent actor");
@@ -177,7 +181,11 @@ impl TorrentActor {
       }
    }
 
-   pub(super) async fn broadcast_to_trackers(&mut self, message: TrackerMessage) {
+   pub(super) async fn broadcast_to_trackers<M>(&mut self, tell: M)
+   where
+      TrackerActor: Message<M>,
+      M: Clone + std::fmt::Debug + Send + 'static,
+   {
       let actor_refs: Vec<(Tracker, ActorRef<TrackerActor>)> = self
          .trackers
          .iter()
@@ -186,13 +194,16 @@ impl TorrentActor {
       let mut dead_trackers = Vec::new();
 
       stream::iter(actor_refs)
-         .for_each_concurrent(TRACKER_BROADCAST_CONCURRENCY, |(uri, actor)| async move {
-            if actor.is_alive() {
-               if let Err(e) = actor.tell(message).await {
-                  warn!(error = %e, tracker_uri = ?uri, "Failed to send to tracker");
+         .for_each_concurrent(TRACKER_BROADCAST_CONCURRENCY, |(uri, actor)| {
+            let msg = tell.clone();
+            async move {
+               if actor.is_alive() {
+                  if let Err(e) = actor.tell(msg).await {
+                     warn!(error = %e, tracker_uri = ?uri, "Failed to send to tracker");
+                  }
+               } else {
+                  trace!(tracker_uri = ?uri, "Tracker actor is dead, removing from trackers set");
                }
-            } else {
-               trace!(tracker_uri = ?uri, "Tracker actor is dead, removing from trackers set");
             }
          })
          .await;
