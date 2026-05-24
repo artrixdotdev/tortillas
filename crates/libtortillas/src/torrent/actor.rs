@@ -108,7 +108,7 @@ pub(crate) struct TorrentActor {
    /// If there is already a pending start, we don't want to start a new one
    pub(super) pending_start: bool,
 
-   pub(super) ready_hook: Option<ReadyHook>,
+   pub(super) ready_hook: Vec<ReadyHook>,
 }
 
 impl fmt::Display for TorrentActor {
@@ -171,9 +171,7 @@ impl TorrentActor {
             self.start().await;
          } else {
             // Torrent is ready, but auto-start is disabled
-            if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
-               error!(?err, "Failed to send ready hook");
-            }
+            self.send_ready_hooks();
          }
       }
 
@@ -181,9 +179,7 @@ impl TorrentActor {
    }
 
    pub async fn start(&mut self) {
-      if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
-         error!(?err, "Failed to send ready hook");
-      }
+      self.send_ready_hooks();
 
       let Some(info) = self.info.clone() else {
          warn!(id = %self.info_hash(), "Start requested before info dict is available; deferring");
@@ -234,6 +230,14 @@ impl TorrentActor {
          state = ?self.state,
          "Started torrenting process"
       );
+   }
+
+   pub(super) fn send_ready_hooks(&mut self) {
+      for hook in self.ready_hook.drain(..) {
+         if let Err(err) = hook.send(()) {
+            error!(?err, "Failed to send ready hook");
+         }
+      }
    }
 
    pub fn total_bytes_downloaded(&self) -> Option<usize> {
@@ -454,7 +458,7 @@ impl Actor for TorrentActor {
          sufficient_peers: sufficient_peers.unwrap_or(6),
          autostart: autostart.unwrap_or(true),
          pending_start: false,
-         ready_hook: None,
+         ready_hook: Vec::new(),
          piece_manager: PieceManagerProxy::Default(default_manager),
       })
    }
@@ -727,7 +731,7 @@ mod tests {
          sufficient_peers: 6,
          autostart: false,
          pending_start: false,
-         ready_hook: None,
+         ready_hook: Vec::new(),
       };
 
       let export = test_actor.export();

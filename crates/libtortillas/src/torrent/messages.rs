@@ -15,7 +15,7 @@ use sha1::{Digest, Sha1};
 use tracing::{info, instrument, trace, warn};
 
 use super::{
-   PieceStorageStrategy, TorrentActor, TorrentExport, TorrentState,
+   BLOCK_SIZE, PieceStorageStrategy, TorrentActor, TorrentExport, TorrentState,
    actor::{PieceManagerProxy, ReadyHook},
    util,
 };
@@ -290,7 +290,7 @@ impl Message<TorrentMessage> for TorrentActor {
             if is_ready && !self.autostart {
                let _ = hook.send(());
             } else {
-               self.ready_hook = Some(hook);
+               self.ready_hook.push(hook);
                self.autostart().await;
             }
          }
@@ -324,6 +324,60 @@ impl Message<TorrentRequest> for TorrentActor {
 
          TorrentRequest::HasInfoDict => TorrentResponse::HasInfoDict(self.info.clone()),
          TorrentRequest::Request(index, offset, length) => {
+            let Some(info) = self.info.as_ref() else {
+               warn!(
+                  index,
+                  offset, length, "Peer requested block before info dict was available"
+               );
+               return TorrentResponse::Request(index, offset, None);
+            };
+
+            if length > BLOCK_SIZE {
+               warn!(
+                  index,
+                  offset, length, "Peer requested block larger than maximum size"
+               );
+               return TorrentResponse::Request(index, offset, None);
+            }
+
+            let piece_count = info.piece_count();
+            if index >= piece_count {
+               warn!(
+                  index,
+                  offset, length, piece_count, "Peer requested out-of-bounds piece"
+               );
+               return TorrentResponse::Request(index, offset, None);
+            }
+
+            let piece_length = info.piece_length as usize;
+            let total_length = info.total_length();
+            let last_piece_index = piece_count.saturating_sub(1);
+            let concrete_piece_len = if index == last_piece_index {
+               let remainder = total_length % piece_length;
+               if remainder == 0 {
+                  piece_length
+               } else {
+                  remainder
+               }
+            } else {
+               piece_length
+            };
+
+            let Some(end) = offset.checked_add(length) else {
+               warn!(
+                  index,
+                  offset, length, "Peer requested block with overflowing bounds"
+               );
+               return TorrentResponse::Request(index, offset, None);
+            };
+            if offset >= concrete_piece_len || end > concrete_piece_len {
+               warn!(
+                  index,
+                  offset, length, concrete_piece_len, "Peer requested block outside piece bounds"
+               );
+               return TorrentResponse::Request(index, offset, None);
+            }
+
             let data = if self
                .bitfield
                .get(index)

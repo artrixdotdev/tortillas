@@ -53,8 +53,7 @@ impl PieceScheduler {
       }
    }
 
-   pub(crate) fn restore_piece_blocks(&mut self, index: usize, mut blocks: BitVec) {
-      blocks.fill(false);
+   pub(crate) fn restore_piece_blocks(&mut self, index: usize, blocks: BitVec) {
       self.completed_blocks.insert(index, blocks);
    }
 

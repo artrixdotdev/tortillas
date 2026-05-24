@@ -59,11 +59,8 @@ impl Message<PieceStoreRequest> for PieceStoreActor {
    ) -> Self::Reply {
       match msg {
          PieceStoreRequest::ValidateAndRead { path, hash } => {
-            async {
-               util::validate_piece_file(path.clone(), hash).await?;
-               Ok(read(&path).await?.into())
-            }
-            .await
+            util::validate_piece_file(path.clone(), hash).await?;
+            Ok(read(&path).await?.into())
          }
       }
    }

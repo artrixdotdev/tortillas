@@ -97,7 +97,9 @@ impl TorrentActor {
       }
 
       let block_len = block.len();
-      self.write_block_to_storage(index, offset, block).await;
+      if !self.write_block_to_storage(index, offset, block).await {
+         return;
+      }
 
       // Only mark block complete after successful write
       self
@@ -148,12 +150,12 @@ impl TorrentActor {
       }
    }
 
-   async fn write_block_to_storage(&self, index: usize, offset: usize, block: Bytes) {
+   async fn write_block_to_storage(&self, index: usize, offset: usize, block: Bytes) -> bool {
       match &self.piece_storage {
          PieceStorageStrategy::Disk(_) => {
             let Ok(path) = self.get_piece_path(index) else {
                warn!(piece_index = index, "Failed to get piece path");
-               return;
+               return false;
             };
             match self
                .piece_store
@@ -164,13 +166,16 @@ impl TorrentActor {
                })
                .await
             {
-               Ok(()) => {}
-               Err(err) => warn!(
-                  ?err,
-                  piece_index = index,
-                  offset,
-                  "Piece store failed to write block"
-               ),
+               Ok(()) => true,
+               Err(err) => {
+                  warn!(
+                     ?err,
+                     piece_index = index,
+                     offset,
+                     "Piece store failed to write block"
+                  );
+                  false
+               }
             }
          }
          PieceStorageStrategy::InFile => {
@@ -178,6 +183,7 @@ impl TorrentActor {
                piece_index = index,
                offset, "In-file block writes are not implemented yet"
             );
+            false
          }
       }
    }
@@ -237,6 +243,12 @@ impl TorrentActor {
          PieceStorageStrategy::Disk(_) => {
             let Ok(path) = self.get_piece_path(index) else {
                warn!(index, "Failed to get piece path; re-requesting");
+               if let Some(blocks) = previous_blocks.as_ref() {
+                  self
+                     .piece_scheduler
+                     .restore_piece_blocks(index, blocks.clone());
+               }
+               self.request_blocks_from_peer(peer_id, 1).await;
                return false;
             };
 
@@ -251,6 +263,12 @@ impl TorrentActor {
                Ok(data) => data,
                Err(err) => {
                   warn!(?err, index, path = %path.display(), "Failed to validate piece through piece store actor; re-requesting");
+                  if let Some(blocks) = previous_blocks.as_ref() {
+                     self
+                        .piece_scheduler
+                        .restore_piece_blocks(index, blocks.clone());
+                  }
+                  self.request_blocks_from_peer(peer_id, 1).await;
                   return false;
                }
             };

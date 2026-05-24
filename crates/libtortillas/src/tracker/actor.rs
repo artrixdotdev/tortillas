@@ -50,8 +50,8 @@ impl Actor for TrackerActor {
          TorrentResponse::InfoHash(info_hash) => info_hash,
          _ => {
             return Err(TrackerActorError::InvalidResponse {
-               reason: format!("Expected InfoHash response, got unexpected variant"),
-            })
+               reason: String::from("Expected InfoHash response, got unexpected variant"),
+            });
          }
       };
 

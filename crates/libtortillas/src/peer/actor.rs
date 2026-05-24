@@ -189,16 +189,26 @@ impl PeerActor {
    #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
    async fn determine_interest(&mut self) {
       let their_bitfield = self.peer.pieces.clone();
-      let (has_interesting_pieces, interesting_piece_count) = match self
+      let response = match self
          .supervisor
          .ask(TorrentRequest::InterestingPieces(their_bitfield))
          .await
-         .unwrap()
       {
+         Ok(response) => response,
+         Err(err) => {
+            warn!(?err, "Failed to ask supervisor for interesting pieces");
+            return;
+         }
+      };
+
+      let (has_interesting_pieces, interesting_piece_count) = match response {
          TorrentResponse::InterestingPieces(has_interesting_pieces, count) => {
             (has_interesting_pieces, count)
          }
-         _ => unreachable!("Unexpected response from supervisor"),
+         _ => {
+            warn!("Unexpected response from supervisor for interesting pieces");
+            return;
+         }
       };
 
       if has_interesting_pieces {
