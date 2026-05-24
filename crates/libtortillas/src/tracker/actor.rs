@@ -19,7 +19,7 @@ use super::{
 use crate::{
    errors::TrackerActorError,
    peer::PeerId,
-   torrent::{GetInfoHash, TorrentActor, TorrentMessage},
+   torrent::{TorrentActor, TorrentMessage, commands::GetInfoHash},
 };
 
 /// The actor that handles all communication with a given tracker.

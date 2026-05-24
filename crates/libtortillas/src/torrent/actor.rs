@@ -36,7 +36,7 @@ use crate::{
 /// A hook that is called when the torrent is ready to start downloading.
 /// This is used to implement
 /// [`Torrent::poll_ready`](crate::torrent::Torrent::poll_ready).
-pub(super) type ReadyHook = oneshot::Sender<()>;
+pub(super) type ReadyHookSender = oneshot::Sender<()>;
 
 pub(super) enum PieceManagerProxy {
    Custom(Box<dyn PieceManager>),
@@ -112,7 +112,7 @@ pub(crate) struct TorrentActor {
    /// If there is already a pending start, we don't want to start a new one
    pub(super) pending_start: bool,
 
-   pub(super) ready_hook: Vec<ReadyHook>,
+   pub(super) ready_hook: Vec<ReadyHookSender>,
 }
 
 impl fmt::Display for TorrentActor {
@@ -526,7 +526,7 @@ mod tests {
    use crate::{
       metainfo::MetaInfo,
       testing,
-      torrent::{BLOCK_SIZE, HasInfoDict, Torrent, TorrentExport},
+      torrent::{BLOCK_SIZE, Torrent, TorrentExport, commands::HasInfoDict},
    };
 
    #[tokio::test(flavor = "multi_thread")]

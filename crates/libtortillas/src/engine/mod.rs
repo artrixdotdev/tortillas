@@ -46,6 +46,7 @@ pub(crate) use messages::*;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
+use self::commands::{CreateTorrent, ExportEngine, StartAll};
 use crate::{
    errors::EngineError,
    metainfo::{MetaInfo, TorrentFile},
@@ -260,7 +261,7 @@ impl Engine {
    pub async fn start_all(&self) -> Result<(), EngineError> {
       self
          .actor()
-         .tell(EngineMessage::StartAll)
+         .tell(StartAll)
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
       Ok(())

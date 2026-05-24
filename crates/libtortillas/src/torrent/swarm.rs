@@ -4,12 +4,13 @@ use futures::{StreamExt, stream};
 use kameo::{
    actor::{ActorRef, Spawn},
    mailbox,
+   prelude::Message,
 };
 use tracing::{debug, instrument, trace, warn};
 
 use super::{TorrentActor, TorrentMessage};
 use crate::{
-   peer::{Peer, PeerActor, PeerId, PeerTell},
+   peer::{Peer, PeerActor, PeerId},
    protocol::{
       messages::{Handshake, PeerMessages},
       stream::{PeerSend, PeerStream},
@@ -105,7 +106,11 @@ impl TorrentActor {
    }
 
    #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]
-   pub(super) async fn broadcast_to_peers(&mut self, tell: PeerTell) {
+   pub(super) async fn broadcast_to_peers<M>(&mut self, tell: M)
+   where
+      PeerActor: Message<M, Reply = ()>,
+      M: Clone + std::fmt::Debug + Send + 'static,
+   {
       let actor_refs: Vec<(PeerId, ActorRef<PeerActor>)> = self
          .peers
          .iter()

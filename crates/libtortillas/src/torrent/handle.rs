@@ -6,8 +6,11 @@ use tokio::sync::oneshot;
 use tracing::error;
 
 use super::{
-   ExportState, GetState, PieceStorageStrategy, TorrentActor, TorrentExport, TorrentMessage,
-   TorrentState,
+   PieceStorageStrategy, TorrentActor, TorrentExport, TorrentState,
+   commands::{
+      ExportState, GetState, ReadyHook, SetAutoStart, SetOutputPath, SetPieceManager,
+      SetPieceStorage, SetState, SetSufficientPeers,
+   },
 };
 use crate::{hashes::InfoHash, pieces::PieceManager};
 
@@ -43,7 +46,9 @@ impl Torrent {
    pub async fn set_piece_storage(&self, piece_storage: PieceStorageStrategy) -> Result<()> {
       self
          .actor()
-         .tell(TorrentMessage::PieceStorage(piece_storage))
+         .tell(SetPieceStorage {
+            strategy: piece_storage,
+         })
          .await?;
       Ok(())
    }
@@ -51,7 +56,9 @@ impl Torrent {
    pub async fn with_output_folder(&self, folder: impl Into<PathBuf>) -> Result<()> {
       self
          .actor()
-         .ask(TorrentMessage::SetOutputPath(folder.into()))
+         .ask(SetOutputPath {
+            path: folder.into(),
+         })
          .await?;
       Ok(())
    }
@@ -61,13 +68,17 @@ impl Torrent {
    ) -> Result<()> {
       self
          .actor()
-         .tell(TorrentMessage::PieceManager(Box::new(piece_manager)))
+         .tell(SetPieceManager {
+            manager: Box::new(piece_manager),
+         })
          .await?;
       Ok(())
    }
 
    pub async fn start(&self) -> Result<()> {
-      let msg = TorrentMessage::SetState(TorrentState::Downloading);
+      let msg = SetState {
+         state: TorrentState::Downloading,
+      };
 
       self
          .actor()
@@ -87,20 +98,20 @@ impl Torrent {
    }
 
    pub async fn set_auto_start(&self, auto: bool) -> Result<()> {
-      let msg = TorrentMessage::SetAutoStart(auto);
+      let msg = SetAutoStart { auto };
       self.actor().tell(msg).await?;
       Ok(())
    }
 
    pub async fn set_sufficient_peers(&self, peers: usize) -> Result<()> {
-      let msg = TorrentMessage::SetSufficientPeers(peers);
+      let msg = SetSufficientPeers { peers };
       self.actor().tell(msg).await?;
       Ok(())
    }
 
    pub async fn poll_ready(&self) -> Result<()> {
       let (hook, hook_rx) = oneshot::channel();
-      let msg = TorrentMessage::ReadyHook(hook);
+      let msg = ReadyHook { hook };
       self.actor().tell(msg).await?;
       hook_rx.await?;
 

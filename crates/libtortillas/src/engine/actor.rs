@@ -12,7 +12,7 @@ use librqbit_utp::UtpSocketUdp;
 use tokio::net::TcpListener;
 use tracing::error;
 
-use super::EngineMessage;
+use super::commands::IncomingPeer;
 use crate::{
    errors::EngineError,
    hashes::InfoHash,
@@ -193,11 +193,11 @@ impl Actor for EngineActor {
                };
 
                Some(Signal::Message {
-                  message: Box::new(EngineMessage::IncomingPeer(peer_stream)),
+                  message: Box::new(IncomingPeer { stream: peer_stream }),
                   actor_ref,
                    reply: None,
                    sent_within_actor: true,
-                   message_name: "EngineMessage",
+                   message_name: "IncomingPeer",
                    caller_span: tracing::Span::current(),
                 })
             }
@@ -216,11 +216,11 @@ impl Actor for EngineActor {
                };
 
                Some(Signal::Message {
-                  message: Box::new(EngineMessage::IncomingPeer(peer_stream)),
+                  message: Box::new(IncomingPeer { stream: peer_stream }),
                   actor_ref,
                    reply: None,
                    sent_within_actor: true,
-                   message_name: "EngineMessage",
+                   message_name: "IncomingPeer",
                    caller_span: tracing::Span::current(),
                 })
             }

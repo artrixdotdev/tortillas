@@ -12,6 +12,7 @@ use kameo::{
    actor::{ActorRef, WeakActorRef},
    error::ActorStopReason,
    mailbox::Signal,
+   messages,
    prelude::{Context as KameoContext, MailboxReceiver, Message},
 };
 use messages::{ExtendedMessage, ExtendedMessageType, PeerMessages};
@@ -24,7 +25,8 @@ use crate::{
    peer::Peer,
    protocol::{stream::PeerRecv, *},
    torrent::{
-      GetBitfield, HasInfoDict, InterestingPieces, RequestPiece, TorrentActor, TorrentMessage,
+      TorrentActor, TorrentMessage,
+      commands::{GetBitfield, HasInfoDict, InterestingPieces, KillPeer, RequestPiece},
    },
 };
 
@@ -348,10 +350,7 @@ impl Actor for PeerActor {
       &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
    ) -> Result<(), Self::Error> {
       if let Some(peer_id) = self.peer.id
-         && let Err(err) = self
-            .supervisor
-            .tell(TorrentMessage::KillPeer(peer_id))
-            .await
+         && let Err(err) = self.supervisor.tell(KillPeer { id: peer_id }).await
       {
          warn!(error = %err, %peer_id, "Failed to notify torrent actor about stopped peer");
       }
@@ -387,7 +386,7 @@ impl Actor for PeerActor {
 
       if last_message > PEER_DISCONNECT_TIMEOUT {
          let id = self.peer.id.expect("Peer ID should exist");
-         if let Err(err) = self.supervisor.tell(TorrentMessage::KillPeer(id)).await {
+         if let Err(err) = self.supervisor.tell(KillPeer { id }).await {
             warn!(error = %err, "Failed to tell supervisor to kill peer");
          }
          return Ok(Some(Signal::Stop));
@@ -586,93 +585,81 @@ impl PeerActor {
    }
 }
 
-#[derive(Clone, Debug)]
-#[allow(dead_code)]
-pub(crate) enum PeerTell {
-   NeedPiece(usize, usize, usize),
-   CancelPiece(usize, usize, usize),
-   HaveInfoDict(Arc<BitVec<AtomicU8>>),
-   Have(usize),
-}
+pub(crate) mod commands {
+   use super::*;
 
-impl Message<PeerTell> for PeerActor {
-   type Reply = ();
+   #[messages]
+   impl PeerActor {
+      #[message(derive(Clone, Debug))]
+      #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+      pub(crate) async fn need_piece(&mut self, index: usize, begin: usize, length: usize) {
+         let piece_exists = matches!(self.peer.pieces.get(index).as_deref(), Some(true));
 
-   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
-   async fn handle(&mut self, msg: PeerTell, _: &mut KameoContext<Self, Self::Reply>) {
-      match msg {
-         PeerTell::NeedPiece(index, begin, length) => {
-            let piece_exists = matches!(self.peer.pieces.get(index).as_deref(), Some(true));
+         if !piece_exists {
+            trace!(
+               piece_index = index,
+               "Peer does not have piece, not sending request"
+            );
+            self.reject_piece_request(index, begin).await;
+            return;
+         }
 
-            if !piece_exists {
-               trace!(
-                  piece_index = index,
-                  "Peer does not have piece, not sending request"
-               );
-               self.reject_piece_request(index, begin).await;
-               return;
-            }
-
-            if self.peer.am_choked() {
-               trace!(piece_index = index, "Peer is choking us, queueing request");
-               self.pending_block_requests.insert((index, begin, length));
-               return;
-            }
-
-            if let Err(err) = self
-               .stream
-               .send(PeerMessages::Request(
-                  index as u32,
-                  begin as u32,
-                  length as u32,
-               ))
-               .await
-            {
-               warn!(
-                  ?err,
-                  piece_index = index,
-                  begin,
-                  length,
-                  "Failed to send piece request"
-               );
-               self.reject_piece_request(index, begin).await;
-               return;
-            }
+         if self.peer.am_choked() {
+            trace!(piece_index = index, "Peer is choking us, queueing request");
             self.pending_block_requests.insert((index, begin, length));
-            trace!(piece_index = index, "Sent piece request to peer");
+            return;
          }
-         PeerTell::CancelPiece(index, begin, length) => {
-            if !self
-               .pending_block_requests
-               .contains(&(index, begin, length))
-            {
-               return; // Silently ignore if we don't have the request
-            }
-            // TODO: Refactor PeerStream to allow for cancelling requests
-            // This can't be done yet because it would require a refactor of PeerStream, for
-            // now we'll just ignore the request
-            // self
-            //   .stream
-            //   .send(PeerMessages::Cancel(
-            //      index as u32,
-            //      begin as u32,
-            //      length as u32,
-            //   ))
-            //   .await
-            //   .expect("Failed to send piece request");
-            self.pending_block_requests.remove(&(index, begin, length));
+
+         if let Err(err) = self
+            .stream
+            .send(PeerMessages::Request(
+               index as u32,
+               begin as u32,
+               length as u32,
+            ))
+            .await
+         {
+            warn!(
+               ?err,
+               piece_index = index,
+               begin,
+               length,
+               "Failed to send piece request"
+            );
+            self.reject_piece_request(index, begin).await;
+            return;
          }
-         PeerTell::HaveInfoDict(bitfield) => {
-            self
-               .send_message(PeerMessages::Bitfield(bitfield))
-               .await
-               .expect("Failed to send bitfield");
-            trace!("Sent bitfield to peer");
+         self.pending_block_requests.insert((index, begin, length));
+         trace!(piece_index = index, "Sent piece request to peer");
+      }
+
+      #[message(derive(Clone, Debug))]
+      pub(crate) fn cancel_piece(&mut self, index: usize, begin: usize, length: usize) {
+         if !self
+            .pending_block_requests
+            .contains(&(index, begin, length))
+         {
+            return; // Silently ignore if we don't have the request
          }
-         PeerTell::Have(piece) => {
-            if let Err(e) = self.send_message(PeerMessages::Have(piece as u32)).await {
-               trace!(piece_num = piece, error = %e, "Failed to send Have message to peer");
-            }
+         // TODO: Refactor PeerStream to allow for cancelling requests
+         // This can't be done yet because it would require a refactor of PeerStream, for
+         // now we'll just ignore the request.
+         self.pending_block_requests.remove(&(index, begin, length));
+      }
+
+      #[message(derive(Clone, Debug))]
+      pub(crate) async fn have_info_dict(&mut self, bitfield: Arc<BitVec<AtomicU8>>) {
+         self
+            .send_message(PeerMessages::Bitfield(bitfield))
+            .await
+            .expect("Failed to send bitfield");
+         trace!("Sent bitfield to peer");
+      }
+
+      #[message(derive(Clone, Debug))]
+      pub(crate) async fn have(&mut self, piece: usize) {
+         if let Err(e) = self.send_message(PeerMessages::Have(piece as u32)).await {
+            trace!(piece_num = piece, error = %e, "Failed to send Have message to peer");
          }
       }
    }

@@ -10,7 +10,7 @@ use tracing::{debug, info, trace, warn};
 use super::TorrentActor;
 use crate::{
    errors::TorrentError,
-   peer::PeerTell,
+   peer::commands::{CancelPiece, Have, NeedPiece},
    pieces::{PieceManager, PieceStoreMessage, PieceStoreRequest},
    torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentState},
    tracker::{Event, TrackerMessage, TrackerUpdate},
@@ -107,7 +107,11 @@ impl TorrentActor {
          .mark_block_complete(index, block_index, expected_blocks);
 
       self
-         .broadcast_to_peers(PeerTell::CancelPiece(index, offset, block_len))
+         .broadcast_to_peers(CancelPiece {
+            index,
+            begin: offset,
+            length: block_len,
+         })
          .await;
 
       if self.is_piece_complete(index) {
@@ -135,11 +139,11 @@ impl TorrentActor {
       );
       for request in requests {
          if let Err(err) = peer
-            .tell(PeerTell::NeedPiece(
-               request.piece_index,
-               request.offset(),
-               request.length,
-            ))
+            .tell(NeedPiece {
+               index: request.piece_index,
+               begin: request.offset(),
+               length: request.length,
+            })
             .await
          {
             self
@@ -212,7 +216,7 @@ impl TorrentActor {
          "Piece is now complete"
       );
 
-      self.broadcast_to_peers(PeerTell::Have(index)).await;
+      self.broadcast_to_peers(Have { piece: index }).await;
 
       if let Some(total_downloaded) = self.total_bytes_downloaded() {
          let total_bytes_left = total_length - total_downloaded;
