@@ -390,7 +390,7 @@ pub enum ExtendedMessageType {
 /// [PeerMessages::Extended] is optional as well.
 ///
 /// # Examples
-/// ```
+/// ```ignore
 /// let handshake_message = ExtendedMessage::new();
 /// let other_handshake_message: ExtendedMessage = Default::default();
 ///

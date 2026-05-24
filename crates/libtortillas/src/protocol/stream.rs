@@ -191,7 +191,7 @@ impl PeerStream {
    /// Returns the addr of the connected peer
    pub fn remote_addr(&self) -> Result<SocketAddr> {
       match self {
-         PeerStream::Tcp(s) => Ok(s.peer_addr().unwrap()),
+         PeerStream::Tcp(s) => Ok(s.peer_addr()?),
          PeerStream::Utp(s) => Ok(s.remote_addr()),
       }
    }
@@ -220,7 +220,10 @@ impl PeerStream {
 
 impl Display for PeerStream {
    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-      write!(f, "{}@{}", self.protocol(), self.remote_addr().unwrap())
+      match self.remote_addr() {
+         Ok(addr) => write!(f, "{}@{}", self.protocol(), addr),
+         Err(_) => write!(f, "{}@<disconnected>", self.protocol()),
+      }
    }
 }
 

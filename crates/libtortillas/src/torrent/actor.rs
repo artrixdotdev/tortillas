@@ -1,4 +1,5 @@
 use std::{
+   collections::HashMap,
    fmt::{self, Display},
    net::SocketAddr,
    path::PathBuf,
@@ -6,19 +7,17 @@ use std::{
    time::Instant,
 };
 
-use anyhow::ensure;
 use async_trait::async_trait;
 use bitvec::vec::BitVec;
 use bytes::Bytes;
-use dashmap::DashMap;
 use kameo::{
    Actor,
-   actor::{ActorRef, Spawn},
-   mailbox,
+   actor::{ActorRef, Spawn, WeakActorRef},
+   error::ActorStopReason,
+   mailbox::{MailboxReceiver, Signal},
 };
 use librqbit_utp::UtpSocketUdp;
-use serde::{Deserialize, Serialize};
-use tokio::{fs, sync::oneshot};
+use tokio::sync::oneshot;
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use super::util;
@@ -26,83 +25,11 @@ use crate::{
    errors::TorrentError,
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
-   peer::{Peer, PeerActor, PeerId, PeerTell},
-   protocol::{
-      messages::{Handshake, PeerMessages},
-      stream::{PeerSend, PeerStream},
-   },
-   torrent::{
-      TorrentExport,
-      piece_manager::{FilePieceManager, PieceManager},
-   },
+   peer::{PeerActor, PeerId},
+   pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
+   torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentExport, TorrentState},
    tracker::{Event, Tracker, TrackerActor, TrackerMessage, TrackerUpdate, udp::UdpServer},
 };
-pub const BLOCK_SIZE: usize = 16 * 1024;
-
-/// Defines how torrent pieces are stored and accessed.
-///
-/// A torrent is composed of multiple pieces, and this enum determines
-/// whether those pieces are referenced directly from the downloaded
-/// files or written into a separate cache directory.
-///
-/// # Variants
-///
-/// - [`Self::InFile`]: References pieces directly from the files that the
-///   torrent describes. No extra storage is used; the piece data is read
-///   directly from the final output files. This is the default strategy and is
-///   efficient when you are downloading directly into the final file layout.
-///
-/// - [`Self::Disk`]: Stores each piece as a separate file in the specified
-///   cache directory. The filename for each piece is its SHA‑1 hash. This
-///   strategy is required if you are using a custom output stream, since pieces
-///   need to be retrieved later on for future seeding. It is also useful for:
-///   - HTTP Streaming or when the file itself is never actually written to disk
-///   - Supporting non-standard output backends
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[serde(tag = "strategy", content = "piece_output_path")]
-pub enum PieceStorageStrategy {
-   /// Reference pieces directly from the downloaded files themselves.
-   ///
-   /// This avoids extra storage overhead and is the default strategy.
-   #[default]
-   InFile,
-   /// Write each piece to disk separately in the given cache directory.
-   ///
-   /// Each piece is stored as a file named by its SHA‑1 hash.
-   /// This strategy is **required** when using a custom piece receiver.
-   ///
-   /// The path is not automatically set, and libtortillas will not function
-   /// properly without the path being set.
-   Disk(PathBuf),
-}
-
-/// The current state of the torrent, defaults to
-/// [`Inactive`](TorrentState::Inactive)
-#[derive(
-   Debug,
-   Default,
-   Clone,
-   Copy,
-   PartialEq,
-   Eq,
-   PartialOrd,
-   Ord,
-   Serialize,
-   Deserialize
-)]
-pub enum TorrentState {
-   /// Torrent is downloading new pieces actively
-   ///
-   /// > Note: Even when in this state, we still seed the pieces that we *do*
-   /// > have.
-   Downloading,
-   /// Torrent is seeding and has already completed the file
-   Seeding,
-   /// Torrent is paused or currently inactive, no seeding or piece downloading
-   /// is happening.
-   #[default]
-   Inactive,
-}
 
 /// A hook that is called when the torrent is ready to start downloading.
 /// This is used to implement [`Torrent::poll_ready`].
@@ -114,7 +41,7 @@ pub(super) enum PieceManagerProxy {
 }
 
 impl Display for PieceManagerProxy {
-   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
       match self {
          Self::Custom(_) => write!(f, "Custom Piece Manager"),
          Self::Default(_) => write!(f, "Default Piece Manager"),
@@ -151,13 +78,11 @@ impl PieceManager for PieceManagerProxy {
    }
 }
 
-pub type BlockMap = DashMap<usize, BitVec<usize>>;
-
 pub(crate) struct TorrentActor {
-   pub(crate) peers: Arc<DashMap<PeerId, ActorRef<PeerActor>>>,
-   pub(crate) trackers: Arc<DashMap<Tracker, ActorRef<TrackerActor>>>,
+   pub(crate) peers: HashMap<PeerId, ActorRef<PeerActor>>,
+   pub(crate) trackers: HashMap<Tracker, ActorRef<TrackerActor>>,
 
-   pub(crate) bitfield: Arc<BitVec<AtomicU8>>,
+   pub(crate) bitfield: BitVec<AtomicU8>,
    pub(super) id: PeerId,
    pub(super) info: Option<Info>,
    pub(super) metainfo: MetaInfo,
@@ -167,13 +92,11 @@ pub(crate) struct TorrentActor {
    pub(super) utp_server: Arc<UtpSocketUdp>,
    pub(super) actor_ref: ActorRef<Self>,
    pub(super) piece_storage: PieceStorageStrategy,
+   pub(super) piece_store: ActorRef<PieceStoreActor>,
    pub(super) piece_manager: PieceManagerProxy,
    pub state: TorrentState,
-   pub next_piece: usize,
-   /// Map of piece indices to block indices. These will be used to track which
-   /// blocks we have for each piece. Each entry is deleted when the piece is
-   /// completed.
-   pub(super) block_map: Arc<BlockMap>,
+   /// Scheduler for managing piece and block requests
+   pub(super) piece_scheduler: PieceScheduler,
 
    pub(super) start_time: Option<Instant>,
    /// The number of peers we need to have before we start downloading, defaults
@@ -185,11 +108,11 @@ pub(crate) struct TorrentActor {
    /// If there is already a pending start, we don't want to start a new one
    pub(super) pending_start: bool,
 
-   pub(super) ready_hook: Option<ReadyHook>,
+   pub(super) ready_hook: Vec<ReadyHook>,
 }
 
 impl fmt::Display for TorrentActor {
-   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
       let working_trackers = self.trackers.len();
       let working_peers = self.peers.len();
       write!(
@@ -248,252 +171,27 @@ impl TorrentActor {
             self.start().await;
          } else {
             // Torrent is ready, but auto-start is disabled
-            if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
-               error!(?err, "Failed to send ready hook");
-            }
+            self.send_ready_hooks();
          }
       }
 
       self.pending_start = false;
    }
 
-   /// Handles an incoming piece block from a peer. This is the main entry point
-   /// that orchestrates receiving, validating, and storing piece blocks. If
-   /// all blocks for a piece are received, it triggers piece completion
-   /// logic.
-   pub async fn incoming_piece(&mut self, index: usize, offset: usize, block: Bytes) {
-      let info_dict = match &self.info {
-         Some(info) => info,
-         None => {
-            warn!("Received piece block before info dict was available");
-            return;
-         }
-      };
-
-      let piece_length = info_dict.piece_length as usize;
-      let expected_blocks = piece_length.div_ceil(BLOCK_SIZE);
-
-      let block_index = offset / BLOCK_SIZE;
-      if block_index >= expected_blocks {
-         warn!("Received piece block with invalid offset");
-         return;
-      }
-
-      if self.is_duplicate_block(index, block_index) {
-         trace!("Received duplicate piece block");
-         return;
-      }
-
-      self.initialize_and_mark_block(index, block_index);
-
-      self
-         .broadcast_to_peers(PeerTell::CancelPiece(index, offset, block.len()))
-         .await;
-
-      self.write_block_to_storage(index, offset, block).await;
-
-      if self.is_piece_complete(index) {
-         self.piece_completed(index).await;
-      } else {
-         let (piece_idx, block_offset, block_length) = self.next_block_coordinates(index);
-         self
-            .broadcast_to_peers(PeerTell::NeedPiece(piece_idx, block_offset, block_length))
-            .await;
-         trace!(piece = piece_idx, "Requested next block");
-      }
-   }
-
-   /// Checks if a block has already been received and initializes the block map
-   /// for a piece if it doesn't exist yet. Also marks the current block as
-   /// received in the block map.
-   fn initialize_and_mark_block(&mut self, index: usize, block_index: usize) {
-      if !self.block_map.contains_key(&index) {
-         let info_dict = self
-            .info_dict()
-            .expect("Can't receive piece without info dict");
-
-         let piece_length = info_dict.piece_length as usize;
-         let total_blocks = piece_length.div_ceil(BLOCK_SIZE);
-         let mut vec = BitVec::with_capacity(total_blocks);
-         vec.resize(total_blocks, false);
-         self.block_map.insert(index, vec);
-      }
-
-      self
-         .block_map
-         .get_mut(&index)
-         .unwrap()
-         .set(block_index, true);
-   }
-
-   /// Writes a block to the appropriate storage location based on the
-   /// configured storage strategy. Currently supports disk-based storage
-   /// with file-based storage unimplemented.
-   async fn write_block_to_storage(&self, index: usize, offset: usize, block: Bytes) {
-      match &self.piece_storage {
-         PieceStorageStrategy::Disk(_) => {
-            let path = self
-               .get_piece_path(index)
-               .expect("Failed to get piece path");
-            util::write_block_to_file(path, offset, block)
-               .await
-               .expect("Failed to write block to file")
-         }
-         PieceStorageStrategy::InFile => {
-            unimplemented!()
-         }
-      }
-   }
-
-   /// Handles the completion of a full piece. This validates the piece hash,
-   /// sends it to the piece manager, updates the bitfield, notifies peers,
-   /// updates trackers, and either requests the next piece or transitions to
-   /// seeding mode if done.
-   async fn piece_completed(&mut self, index: usize) {
-      let info_dict = self
-         .info_dict()
-         .expect("Can't receive piece without info dict");
-
-      let previous_blocks = self.block_map.remove(&index);
-      let cur_piece = self.next_piece;
-      let piece_count = info_dict.piece_count();
-      let total_length = info_dict.total_length();
-
-      if !self.validate_and_send_piece(index, previous_blocks).await {
-         return;
-      }
-
-      self.next_piece += 1;
-      self.bitfield.set_aliased(index, true);
-
-      debug!(
-         piece_index = index,
-         pieces_left = piece_count.saturating_sub(index + 1),
-         "Piece is now complete"
-      );
-
-      self.broadcast_to_peers(PeerTell::Have(cur_piece)).await;
-
-      if let Some(total_downloaded) = self.total_bytes_downloaded() {
-         let total_bytes_left = total_length - total_downloaded;
-         self
-            .update_trackers(TrackerUpdate::Left(total_bytes_left))
-            .await;
-      }
-
-      if self.next_piece >= piece_count {
-         self.state = TorrentState::Seeding;
-         self
-            .update_trackers(TrackerUpdate::Event(Event::Completed))
-            .await;
-         self.broadcast_to_trackers(TrackerMessage::Announce).await;
-         info!("Torrenting process completed, switching to seeding mode");
-      } else {
-         let (piece_idx, block_offset, block_length) = self.next_block_coordinates(self.next_piece);
-         self
-            .broadcast_to_peers(PeerTell::NeedPiece(piece_idx, block_offset, block_length))
-            .await;
-      }
-   }
-
-   /// Validates a completed piece by checking its hash and sends it to the
-   /// piece manager. Returns false if validation fails or the piece manager
-   /// rejects it, which triggers a re-request of the piece. Returns true if
-   /// the piece is successfully validated and stored.
-   async fn validate_and_send_piece(
-      &mut self, index: usize, previous_blocks: Option<(usize, BitVec)>,
-   ) -> bool {
-      let info_dict = self
-         .info_dict()
-         .expect("Can't receive piece without info dict");
-
-      match &self.piece_storage {
-         PieceStorageStrategy::Disk(_) => {
-            let path = self
-               .get_piece_path(index)
-               .expect("Failed to get piece path");
-
-            if util::validate_piece_file(path.clone(), info_dict.pieces[index])
-               .await
-               .is_err()
-            {
-               warn!(path = %path.display(), index, "Piece file is invalid, clearing it");
-               let path_clone = path.clone();
-
-               tokio::spawn(async move {
-                  fs::remove_file(&path_clone).await.unwrap_or_else(|_| {
-                     error!(path = ?path_clone.display(), "Failed to delete file piece");
-                  });
-               });
-               return false;
-            }
-
-            let data = fs::read(&path).await.unwrap().into();
-            if let Err(err) = self.piece_manager.recv(index, data).await {
-               warn!(?err, index, path = %path.display(), "Piece manager rejected piece; re-requesting");
-               if let Some((_, mut blocks)) = previous_blocks {
-                  blocks.fill(false);
-                  self.block_map.insert(index, blocks);
-               }
-               let (piece_idx, block_offset, block_length) = self.next_block_coordinates(index);
-               self
-                  .broadcast_to_peers(PeerTell::NeedPiece(piece_idx, block_offset, block_length))
-                  .await;
-               return false;
-            }
-         }
-         PieceStorageStrategy::InFile => {
-            unimplemented!()
-         }
-      }
-      true
-   }
-
-   /// Calculates the coordinates of the next block to request for a given
-   /// piece. Returns a tuple of (piece_index, offset, block_length) where
-   /// the offset points to the next unreceived block and the length accounts
-   /// for the final block potentially being smaller than the standard block
-   /// size.
-   pub fn next_block_coordinates(&self, piece_index: usize) -> (usize, usize, usize) {
-      let info_dict = self
-         .info_dict()
-         .expect("Can't receive piece without info dict");
-
-      let piece_length = info_dict.piece_length as usize;
-
-      let next_block_index = self
-         .block_map
-         .get(&piece_index)
-         .and_then(|blocks| blocks.iter().position(|b| !*b))
-         .unwrap_or(0);
-
-      let offset = next_block_index * BLOCK_SIZE;
-      let is_overflowing = offset + BLOCK_SIZE > piece_length;
-      let block_length = if is_overflowing {
-         piece_length - offset
-      } else {
-         BLOCK_SIZE
-      };
-
-      (piece_index, offset, block_length)
-   }
-
-   fn is_duplicate_block(&self, index: usize, block_index: usize) -> bool {
-      self
-         .block_map
-         .get(&index)
-         .and_then(|block_map| block_map.get(block_index).as_deref().copied())
-         .unwrap_or(false)
-   }
-
-   fn is_piece_complete(&self, index: usize) -> bool {
-      self
-         .block_map
-         .get(&index)
-         .map(|blocks| blocks.iter().all(|b| *b))
-         .unwrap_or(false)
-   }
    pub async fn start(&mut self) {
+      self.send_ready_hooks();
+
+      let Some(info) = self.info.clone() else {
+         warn!(id = %self.info_hash(), "Start requested before info dict is available; deferring");
+         return;
+      };
+
+      // Pre-start the piece manager before transitioning state
+      if let Err(err) = self.piece_manager.pre_start(info.clone()).await {
+         error!(?err, "Failed to pre-start piece manager; aborting start");
+         return;
+      }
+
       if self.is_full() {
          self.state = TorrentState::Seeding;
          info!(id = %self.info_hash(), "Torrent is now seeding");
@@ -504,47 +202,22 @@ impl TorrentActor {
          self.state = TorrentState::Downloading;
          info!(id = %self.info_hash(), "Torrent is now downloading");
 
-         trace!(id = %self.info_hash(), peer_count = self.peers.len(), "Requesting first piece from peers");
-
-         self.next_piece = self.bitfield.first_zero().unwrap_or_default();
-         // Announce that we have started
          self
             .update_trackers(TrackerUpdate::Event(Event::Started))
             .await;
-
-         // Force announce
          self.broadcast_to_trackers(TrackerMessage::Announce).await;
-
-         // Now apperently we're supposed to set our event back to "empty" for the next
-         // announce (done via the interval), no clue why, just the way it's
-         // specified in the spec.
          self
             .update_trackers(TrackerUpdate::Event(Event::Empty))
             .await;
-
-         // Request first piece from peers
-         self
-            .broadcast_to_peers(PeerTell::NeedPiece(self.next_piece, 0, BLOCK_SIZE))
-            .await;
          self.start_time = Some(Instant::now());
-      }
-      // Send ready hook
-      if let Some(err) = self.ready_hook.take().and_then(|hook| hook.send(()).err()) {
-         error!(?err, "Failed to send ready hook");
-      }
-
-      let Some(info) = self.info.as_ref() else {
-         warn!(id = %self.info_hash(), "Start requested before info dict is available; deferring");
-         return;
       };
 
-      // Start piece manager
-      self
-         .piece_manager
-         // Probably not the best to clone here, but should be fine for now
-         .pre_start(info.clone())
-         .await
-         .expect("Failed to pre-start piece manager");
+      if self.state == TorrentState::Downloading {
+         let peer_ids: Vec<_> = self.peers.keys().copied().collect();
+         for peer_id in peer_ids {
+            self.request_blocks_from_peer(peer_id, 32).await;
+         }
+      }
 
       info!(
          torrent_id = %self.info_hash(),
@@ -559,8 +232,14 @@ impl TorrentActor {
       );
    }
 
-   /// Calculates the total number of bytes downloaded by the torrent. Returns
-   /// None if the info dict is not present.
+   pub(super) fn send_ready_hooks(&mut self) {
+      for hook in self.ready_hook.drain(..) {
+         if let Err(err) = hook.send(()) {
+            error!(?err, "Failed to send ready hook");
+         }
+      }
+   }
+
    pub fn total_bytes_downloaded(&self) -> Option<usize> {
       let info = self.info_dict()?;
       let total_length = info.total_length();
@@ -569,14 +248,12 @@ impl TorrentActor {
       let num_pieces = self.bitfield.len();
       let mut total_bytes = 0usize;
 
-      // Calculate the size of the last piece
       let last_piece_len = if total_length % piece_length == 0 {
          piece_length
       } else {
          total_length % piece_length
       };
 
-      // Sum bytes from completed pieces
       for piece_idx in 0..num_pieces {
          if self.bitfield[piece_idx] {
             let piece_size = if piece_idx == num_pieces - 1 {
@@ -588,8 +265,10 @@ impl TorrentActor {
          }
       }
 
-      // Sum bytes from incomplete pieces via block_map
-      for (piece_idx, block) in self.block_map.iter().enumerate() {
+      let block_map = self.piece_scheduler.block_map_export();
+      for entry in block_map.iter() {
+         let piece_idx = *entry.key();
+         let block = entry.value();
          if piece_idx < num_pieces && !self.bitfield[piece_idx] {
             let piece_size = if piece_idx == num_pieces - 1 {
                last_piece_len
@@ -602,17 +281,16 @@ impl TorrentActor {
                if block[block_idx] {
                   let block_size = (piece_size - piece_offset).min(BLOCK_SIZE);
                   total_bytes = total_bytes.saturating_add(block_size);
-                  piece_offset = piece_offset.saturating_add(block_size);
-               } else {
-                  piece_offset =
-                     piece_offset.saturating_add(BLOCK_SIZE.min(piece_size - piece_offset));
                }
+               piece_offset =
+                  piece_offset.saturating_add(BLOCK_SIZE.min(piece_size - piece_offset));
             }
          }
       }
 
       Some(total_bytes)
    }
+
    pub fn export(&self) -> TorrentExport {
       TorrentExport {
          info_hash: self.info_hash(),
@@ -626,14 +304,11 @@ impl TorrentActor {
          metainfo: self.metainfo.clone(),
          piece_storage: self.piece_storage.clone(),
          info_dict: self.info_dict().cloned(),
-         bitfield: (*self.bitfield).clone(),
-         block_map: (*self.block_map).clone(),
+         bitfield: self.bitfield.clone(),
+         block_map: self.piece_scheduler.block_map_export(),
       }
    }
 
-   /// Checks if the torrent has all of the pieces (we've downloaded/have
-   /// started with the entire file) by checking if our bitfield is filled with
-   /// zeroes.
    pub fn is_full(&self) -> bool {
       self.bitfield.count_ones() == self.bitfield.len()
    }
@@ -644,217 +319,6 @@ impl TorrentActor {
 
    pub fn is_ready_to_start(&self) -> bool {
       self.is_ready() && self.state == TorrentState::Inactive
-   }
-
-   /// Spawns a new [`PeerActor`] for the given [`Peer`] and adds it to the
-   /// torrent's peer set.
-   ///
-   /// - If a [`PeerStream`] is provided, a handshake is sent immediately.
-   /// - If no stream is provided, this function attempts to connect to the peer
-   ///   and performs the handshake sequence inline.
-   ///
-   /// The peer is ignored if:
-   /// - The handshake fails,
-   /// - The peer ID matches our own, or
-   /// - The peer already exists in the peer set.
-   #[instrument(skip(self, peer, stream), fields(%self, peer_addr = ?peer.socket_addr(), torrent_id = %self.info_hash()))]
-   pub(super) fn append_peer(&self, mut peer: Peer, stream: Option<PeerStream>) {
-      let info_hash = Arc::new(self.info_hash());
-      let actor_ref = self.actor_ref.clone();
-      let our_id = self.id;
-      let utp_server = self.utp_server.clone();
-      let peers = self.peers.clone();
-
-      tokio::spawn(async move {
-         // Should pass the stream to PeerActor at some point
-         let mut id = peer.id;
-         let stream = match stream {
-            Some(mut stream) => {
-               let handshake = Handshake::new(info_hash.clone(), our_id);
-               if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
-                  debug!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer");
-                  return;
-               }
-               stream
-            }
-            None => {
-               let stream = PeerStream::connect(peer.socket_addr(), Some(utp_server)).await;
-               match stream {
-                  Ok(mut stream) => {
-                     match stream.send_handshake(our_id, Arc::clone(&info_hash)).await {
-                        Ok(_) => match stream.recv_handshake().await {
-                           Ok((peer_id, reserved)) => {
-                              id = Some(peer_id);
-                              peer.reserved = reserved;
-                              peer.determine_supported().await;
-                              stream
-                           }
-                           Err(err) => {
-                              trace!(
-                                 error = %err,
-                                 peer_addr = %peer.socket_addr(),
-                                 "Failed to receive handshake from peer; exiting"
-                              );
-                              return;
-                           }
-                        },
-                        Err(err) => {
-                           trace!(
-                              error = %err,
-                              peer_addr = %peer.socket_addr(),
-                              "Failed to send handshake to peer; exiting"
-                           );
-                           return;
-                        }
-                     }
-                  }
-                  Err(err) => {
-                     trace!(error = %err, "Failed to connect to peer; exiting");
-                     return;
-                  }
-               }
-            }
-         };
-         // Safe because we always know the id is defined by the lines above
-         let id = id.unwrap();
-
-         // Dont add ourselves as peers
-         if id == our_id {
-            return;
-         }
-
-         peer.id = Some(id);
-
-         // Prevents a TOCTOU bug. Checks if peer id is in dashmap. The closure
-         // atomically prevents the `PeerActor` from being created unless there
-         // is no entry for the peer id (?)
-         peers.entry(id).or_insert_with(|| {
-            PeerActor::spawn_with_mailbox(
-               (peer.clone(), stream, actor_ref, *info_hash),
-               mailbox::bounded(120),
-            )
-         });
-      });
-   }
-
-   /// Broadcasts a message to all peers concurrently.
-   ///
-   /// This function snapshots the current set of peer actor references before
-   /// sending, which avoids holding the [`DashMap`] lock across `.await`
-   /// points. This means other tasks can continue to access and modify the
-   /// peer set while the broadcast is in progress.
-   ///
-   /// Each peer receives the message in parallel using a
-   /// [`tokio::task::JoinSet`]. This prevents a slow or unresponsive peer
-   /// from blocking delivery to others. However, this also means that
-   /// broadcasting may use more memory, since all messages are cloned and
-   /// dispatched at once.
-   ///
-   /// Any errors from individual peers are logged, but do not stop the
-   /// broadcast from continuing to other peers.
-   #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]
-   pub(super) async fn broadcast_to_peers(&self, tell: PeerTell) {
-      // Snapshot actor refs to release DashMap locks before awaiting.
-      let peers = self.peers.clone(); // assuming Arc<DashMap<..>>
-
-      let actor_refs: Vec<(PeerId, ActorRef<PeerActor>)> = peers
-         .iter()
-         .map(|entry| (*entry.key(), entry.value().clone()))
-         .collect();
-
-      for (id, actor) in actor_refs {
-         let msg = tell.clone();
-         let peers = peers.clone();
-
-         tokio::spawn(async move {
-            if actor.is_alive() {
-               if let Err(e) = actor.tell(msg).await {
-                  warn!(error = %e, peer_id = %id, "Failed to send to peer");
-               }
-            } else {
-               trace!(peer_id = %id, "Peer actor is dead, removing from peers set");
-               peers.remove(&id);
-            }
-         });
-      }
-      // Returns immediately, without waiting for any peer responses
-   }
-
-   /// Broadcasts a [`TrackerUpdate`] to all trackers concurrently. similar to
-   /// [`Self::broadcast_to_peers`], but for trackers.
-   #[instrument(skip(self, message), fields(torrent_id = %self.info_hash()))]
-   pub(super) async fn update_trackers(&self, message: TrackerUpdate) {
-      let trackers = self.trackers.clone();
-
-      let actor_refs: Vec<(Tracker, ActorRef<TrackerActor>)> = trackers
-         .iter()
-         .map(|entry| (entry.key().clone(), entry.value().clone()))
-         .collect();
-
-      for (uri, actor) in actor_refs {
-         let msg = message.clone();
-         let trackers = trackers.clone();
-
-         tokio::spawn(async move {
-            if actor.is_alive() {
-               if let Err(e) = actor.tell(msg).await {
-                  warn!(error = %e, tracker_uri = ?uri, "Failed to send to tracker");
-               }
-            } else {
-               trace!(tracker_uri = ?uri, "Tracker actor is dead, removing from trackers set");
-               trackers.remove(&uri);
-            }
-         });
-      }
-   }
-
-   pub(super) async fn broadcast_to_trackers(&self, message: TrackerMessage) {
-      let trackers = self.trackers.clone();
-
-      let actor_refs: Vec<(Tracker, ActorRef<TrackerActor>)> = trackers
-         .iter()
-         .map(|entry| (entry.key().clone(), entry.value().clone()))
-         .collect();
-
-      for (uri, actor) in actor_refs {
-         let trackers = trackers.clone();
-
-         tokio::spawn(async move {
-            if actor.is_alive() {
-               if let Err(e) = actor.tell(message).await {
-                  warn!(error = %e, tracker_uri = ?uri, "Failed to send to tracker");
-               }
-            } else {
-               trace!(tracker_uri = ?uri, "Tracker actor is dead, removing from trackers set");
-               trackers.remove(&uri);
-            }
-         });
-      }
-   }
-
-   /// Gets the path to a piece file based on the index. Only should be used
-   /// when the piece storage strategy is [`Disk`](PieceStorageStrategy::Disk),
-   /// this function will panic otherwise.
-   pub(super) fn get_piece_path(&self, index: usize) -> anyhow::Result<PathBuf> {
-      let info_dict = self.info_dict().ok_or(TorrentError::MissingInfoDict)?;
-      ensure!(info_dict.pieces.len() > index, "Index out of bounds");
-
-      let hash = info_dict.pieces[index];
-
-      // Panic because this is a user error, this function should never be called if
-      // the storage strategy is not Disk
-      assert!(
-         matches!(self.piece_storage, PieceStorageStrategy::Disk(_)),
-         "Piece storage strategy is not Disk"
-      );
-
-      if let PieceStorageStrategy::Disk(path) = &self.piece_storage {
-         let mut path = path.clone();
-         path.push(format!("{hash}.piece"));
-         Ok(path.to_path_buf())
-      } else {
-         unreachable!()
-      }
    }
 }
 
@@ -930,9 +394,10 @@ impl Actor for TorrentActor {
          base_path,
       } = args;
 
+      let torrent_id = metainfo.info_hash()?;
       let primary_addr = primary_addr.unwrap_or_else(|| {
          let addr = utp_server.bind_addr();
-         debug!(torrent_id = %metainfo.info_hash().unwrap(), %addr, "No primary address provided, using default");
+         debug!(torrent_id = %torrent_id, %addr, "No primary address provided, using default");
          addr
       });
       if let PieceStorageStrategy::Disk(dir) = &piece_storage {
@@ -940,13 +405,13 @@ impl Actor for TorrentActor {
       }
 
       info!(
-         torrent_id = %metainfo.info_hash().unwrap(),
+         torrent_id = %torrent_id,
          "Starting new torrent instance",
       );
 
       // Create tracker actors
       let tracker_list = metainfo.announce_list();
-      let trackers = DashMap::new();
+      let mut trackers = HashMap::new();
       for tracker in tracker_list {
          let actor = TrackerActor::spawn((
             tracker.clone(),
@@ -962,47 +427,63 @@ impl Actor for TorrentActor {
          _ => None,
       };
       if info.is_none() {
-         debug!(torrent_id = %metainfo.info_hash().unwrap(), "No info dict found in metainfo, you're probably using a magnet uri");
+         debug!(torrent_id = %torrent_id, "No info dict found in metainfo, you're probably using a magnet uri");
       }
-      let bitfield: Arc<BitVec<AtomicU8>> = if let Some(info) = &info {
-         debug!(torrent_id = %metainfo.info_hash().unwrap(), "Using bitfield length {}", info.piece_count());
-         Arc::new(BitVec::repeat(false, info.piece_count()))
+      let piece_count = if let Some(info) = &info {
+         debug!(torrent_id = %torrent_id, "Using bitfield length {}", info.piece_count());
+         info.piece_count()
       } else {
-         Arc::new(BitVec::EMPTY)
+         0
       };
+      let bitfield = BitVec::repeat(false, piece_count);
       let default_manager = FilePieceManager(base_path, info.clone());
+      let piece_store = PieceStoreActor::spawn(());
+      us.link(&piece_store).await;
 
       Ok(Self {
-         peers: Arc::new(DashMap::new()),
+         peers: HashMap::new(),
          bitfield,
          tracker_server,
          utp_server,
-         trackers: Arc::new(trackers),
+         trackers,
          id: peer_id,
          metainfo,
          info,
          actor_ref: us,
          piece_storage,
+         piece_store,
          state: TorrentState::default(),
-         next_piece: 0,
-         block_map: Arc::new(DashMap::new()),
+         piece_scheduler: PieceScheduler::new(piece_count),
          start_time: None,
          sufficient_peers: sufficient_peers.unwrap_or(6),
          autostart: autostart.unwrap_or(true),
          pending_start: false,
-         ready_hook: None,
+         ready_hook: Vec::new(),
          piece_manager: PieceManagerProxy::Default(default_manager),
       })
    }
 
    async fn next(
-      &mut self, _: kameo::prelude::WeakActorRef<Self>,
-      mailbox_rx: &mut kameo::prelude::MailboxReceiver<Self>,
-   ) -> Result<Option<mailbox::Signal<Self>>, Self::Error> {
+      &mut self, _: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
+   ) -> Result<Option<Signal<Self>>, Self::Error> {
       if !self.pending_start {
          self.autostart().await;
       }
       Ok(mailbox_rx.recv().await)
+   }
+
+   async fn on_stop(
+      &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
+   ) -> Result<(), Self::Error> {
+      for peer in self.peers.values() {
+         peer.kill();
+      }
+      for tracker in self.trackers.values() {
+         tracker.kill();
+      }
+      self.piece_store.kill();
+
+      Ok(())
    }
 }
 
@@ -1018,7 +499,7 @@ mod tests {
    use crate::{
       metainfo::MetaInfo,
       testing,
-      torrent::{Torrent, TorrentRequest, TorrentResponse},
+      torrent::{BLOCK_SIZE, Torrent, TorrentExport, TorrentRequest, TorrentResponse},
    };
 
    #[tokio::test(flavor = "multi_thread")]
@@ -1217,7 +698,6 @@ mod tests {
       }
 
       // Build a fake block map with one partial piece
-      let block_map: BlockMap = DashMap::new();
       let partial_piece_index = fake_completed; // next piece
       let total_blocks = (info_dict.piece_length as usize).div_ceil(BLOCK_SIZE);
       let mut blocks = BitVec::<usize>::repeat(false, total_blocks);
@@ -1225,13 +705,14 @@ mod tests {
       for i in 0..partial_blocks_received {
          blocks.set(i, true);
       }
-      block_map.insert(partial_piece_index, blocks);
+      let mut piece_scheduler = PieceScheduler::new(info_dict.piece_count());
+      piece_scheduler.set_piece_blocks(partial_piece_index, blocks);
 
       // Construct the actor manually for export testing
       let test_actor = TorrentActor {
-         peers: Arc::new(DashMap::new()),
-         trackers: Arc::new(DashMap::new()),
-         bitfield: Arc::new(bitfield),
+         peers: HashMap::new(),
+         trackers: HashMap::new(),
+         bitfield,
          id: peer_id,
          info: Some(info_dict.clone()),
          metainfo: metainfo.clone(),
@@ -1239,18 +720,18 @@ mod tests {
          utp_server,
          actor_ref: actor_ref.clone(),
          piece_storage: PieceStorageStrategy::Disk(piece_path.clone()),
+         piece_store: PieceStoreActor::spawn(()),
          piece_manager: PieceManagerProxy::Default(FilePieceManager(
             Some(file_path),
             Some(info_dict.clone()),
          )),
          state: TorrentState::Inactive,
-         next_piece: fake_completed,
-         block_map: Arc::new(block_map),
+         piece_scheduler,
          start_time: None,
          sufficient_peers: 6,
          autostart: false,
          pending_start: false,
-         ready_hook: None,
+         ready_hook: Vec::new(),
       };
 
       let export = test_actor.export();

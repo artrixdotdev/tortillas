@@ -5,6 +5,7 @@ use kameo::{
    mailbox,
    prelude::{ActorRef, Context, Message},
 };
+use tokio::time::{Duration, timeout};
 use tracing::{error, warn};
 
 use super::{EngineActor, EngineExport};
@@ -21,6 +22,8 @@ use crate::{
       TorrentActor, TorrentActorArgs, TorrentMessage, TorrentRequest, TorrentResponse, TorrentState,
    },
 };
+
+const INCOMING_PEER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) enum EngineMessage {
    /// Handles an incoming peer connection. The peer has been neither handshaked
@@ -49,32 +52,56 @@ impl Message<EngineMessage> for EngineActor {
    ) -> Self::Reply {
       match msg {
          EngineMessage::IncomingPeer(mut stream) => {
-            let msg = stream.recv().await.expect("Can't read from peer stream");
-            let peer_addr = stream.remote_addr().expect("Can't get remote address");
+            let msg = match timeout(INCOMING_PEER_HANDSHAKE_TIMEOUT, stream.recv()).await {
+               Ok(Ok(msg)) => msg,
+               Ok(Err(err)) => {
+                  warn!(error = %err, %stream, "Failed to read incoming peer handshake");
+                  return;
+               }
+               Err(_) => {
+                  warn!(%stream, timeout = ?INCOMING_PEER_HANDSHAKE_TIMEOUT, "Timed out reading incoming peer handshake");
+                  return;
+               }
+            };
+            let peer_addr = match stream.remote_addr() {
+               Ok(addr) => addr,
+               Err(err) => {
+                  warn!(error = %err, %stream, "Failed to get incoming peer remote address");
+                  return;
+               }
+            };
 
             if let PeerMessages::Handshake(handshake) = msg {
                let info_hash = *handshake.info_hash;
-               let peer = Peer::from_socket_addr(peer_addr);
+               let mut peer = Peer::from_socket_addr(peer_addr);
+
+               // Populate peer fields from parsed handshake
+               peer.id = Some(handshake.peer_id);
+               peer.reserved = handshake.reserved;
 
                if let Some(torrent) = self.torrents.get(&info_hash) {
-                  torrent
+                  if let Err(err) = torrent
                      .tell(TorrentMessage::IncomingPeer(peer, stream))
                      .await
-                     .expect("Failed to tell torrent about incoming peer");
+                  {
+                     warn!(error = %err, %info_hash, "Failed to route incoming peer to torrent");
+                  }
                } else {
                   error!(%stream, "Received incoming peer for unknown torrent, killing connection");
                   drop(stream);
                }
             } else {
-               error!("Received unexpected message from peer");
+               error!(message = %msg, "Received unexpected message from peer");
             }
          }
          EngineMessage::StartAll => {
             for torrent in self.torrents.iter() {
-               torrent
+               if let Err(err) = torrent
                   .tell(TorrentMessage::SetState(TorrentState::Downloading))
                   .await
-                  .expect("Failed to start torrent");
+               {
+                  warn!(error = %err, "Failed to start torrent");
+               }
             }
          }
       };
@@ -88,12 +115,10 @@ impl Message<EngineRequest> for EngineActor {
    ) -> Self::Reply {
       match msg {
          EngineRequest::Torrent(metainfo) => {
-            let info_hash = metainfo
-               .info_hash()
-               .map_err(|e| {
-                  error!(error = %e, "Failed to unwrap info hash");
-               })
-               .expect("Failed to unwrap info hash");
+            let info_hash = metainfo.info_hash().map_err(|e| {
+               error!(error = %e, "Failed to unwrap info hash");
+               EngineError::Other(e)
+            })?;
 
             if self.torrents.contains_key(&info_hash) {
                error!(
