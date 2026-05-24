@@ -8,7 +8,7 @@ use std::{
 use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{
-   Reply,
+   messages,
    prelude::{Context, Message},
 };
 use sha1::{Digest, Sha1};
@@ -20,7 +20,6 @@ use super::{
    util,
 };
 use crate::{
-   actor_request_response,
    hashes::InfoHash,
    metainfo::Info,
    peer::{Peer, PeerId, PeerTell},
@@ -53,7 +52,7 @@ pub(crate) enum TorrentMessage {
    PeerConnected(Peer, Box<PeerStream>),
 
    /// Index, Offset, Data
-   /// See the corresponding [peer message](PeerMessages::Piece)
+   /// See the corresponding peer `Piece` message.
    IncomingPiece(PeerId, usize, usize, Bytes),
    /// Release a scheduler entry for a request a peer could not accept.
    PeerRejectedRequest(usize, usize),
@@ -69,7 +68,7 @@ pub(crate) enum TorrentMessage {
    /// Sets the current piece manager to a custom implementation.
    PieceManager(Box<dyn PieceManager>),
 
-   /// Sets the output path, should only be used when the [`FilePieceManager`]
+   /// Sets the output path, should only be used when the `FilePieceManager`
    /// is used
    SetOutputPath(PathBuf),
 
@@ -80,7 +79,8 @@ pub(crate) enum TorrentMessage {
 
    SetSufficientPeers(usize),
    /// A hook that is called when the torrent is ready to start downloading.
-   /// This is used to implement [`Torrent::poll_ready`].
+   /// This is used to implement
+   /// [`Torrent::poll_ready`](crate::torrent::Torrent::poll_ready).
    ///
    /// Only should be used internally.
    ReadyHook(ReadyHook),
@@ -107,39 +107,6 @@ impl fmt::Debug for TorrentMessage {
       }
    }
 }
-
-actor_request_response!(
-   #[allow(dead_code)]
-   pub(crate) TorrentRequest,
-   pub(crate) TorrentResponse #[derive(Reply)],
-
-    /// Bitfield of the torrent
-    Bitfield
-    Bitfield(Arc<BitVec<AtomicU8>>),
-
-    /// Whether a peer has pieces this torrent still needs, plus the number of
-    /// interesting pieces.
-    InterestingPieces(Arc<BitVec<AtomicU8>>)
-    InterestingPieces(bool, usize),
-
-    PeerCount
-   PeerCount(usize),
-   /// Info hash of the torrent
-   InfoHash
-   InfoHash(InfoHash),
-   /// Sends the current info dict if we have it
-   HasInfoDict
-   HasInfoDict(Option<Info>),
-   /// Requests a piece from the torrent
-   Request(usize, usize, usize)
-   Request(usize, usize, Option<Bytes>),
-
-   GetState
-   GetState(TorrentState),
-
-   Export
-   Export(Box<TorrentExport>),
-);
 
 impl Message<TorrentMessage> for TorrentActor {
    type Reply = ();
@@ -298,111 +265,138 @@ impl Message<TorrentMessage> for TorrentActor {
    }
 }
 
-impl Message<TorrentRequest> for TorrentActor {
-   type Reply = TorrentResponse;
+#[messages]
+impl TorrentActor {
+   /// Bitfield of the torrent.
+   #[message]
+   pub(crate) fn get_bitfield(&self) -> Arc<BitVec<AtomicU8>> {
+      Arc::new(self.bitfield.clone())
+   }
 
-   async fn handle(
-      &mut self, message: TorrentRequest, _: &mut Context<Self, Self::Reply>,
-   ) -> Self::Reply {
-      match message {
-         TorrentRequest::Bitfield => TorrentResponse::Bitfield(Arc::new(self.bitfield.clone())),
-         TorrentRequest::InterestingPieces(peer_bitfield) => {
-            let interesting_count = if self.bitfield.is_empty() {
-               peer_bitfield.count_ones()
-            } else {
-               peer_bitfield
-                  .iter()
-                  .by_vals()
-                  .zip(self.bitfield.iter().by_vals())
-                  .filter(|(peer_has_piece, we_have_piece)| *peer_has_piece && !*we_have_piece)
-                  .count()
-            };
-            TorrentResponse::InterestingPieces(interesting_count > 0, interesting_count)
-         }
-         TorrentRequest::PeerCount => TorrentResponse::PeerCount(self.peers.len()),
-         TorrentRequest::InfoHash => TorrentResponse::InfoHash(self.info_hash()),
+   /// Whether a peer has pieces this torrent still needs, plus the number of
+   /// interesting pieces.
+   #[message]
+   pub(crate) fn interesting_pieces(&self, peer_bitfield: Arc<BitVec<AtomicU8>>) -> (bool, usize) {
+      let interesting_count = if self.bitfield.is_empty() {
+         peer_bitfield.count_ones()
+      } else {
+         peer_bitfield
+            .iter()
+            .by_vals()
+            .zip(self.bitfield.iter().by_vals())
+            .filter(|(peer_has_piece, we_have_piece)| *peer_has_piece && !*we_have_piece)
+            .count()
+      };
+      (interesting_count > 0, interesting_count)
+   }
 
-         TorrentRequest::HasInfoDict => TorrentResponse::HasInfoDict(self.info.clone()),
-         TorrentRequest::Request(index, offset, length) => {
-            let Some(info) = self.info.as_ref() else {
-               warn!(
-                  index,
-                  offset, length, "Peer requested block before info dict was available"
-               );
-               return TorrentResponse::Request(index, offset, None);
-            };
+   #[message]
+   pub(crate) fn peer_count(&self) -> usize {
+      self.peers.len()
+   }
 
-            if length > BLOCK_SIZE {
-               warn!(
-                  index,
-                  offset, length, "Peer requested block larger than maximum size"
-               );
-               return TorrentResponse::Request(index, offset, None);
-            }
+   /// Info hash of the torrent.
+   #[message]
+   pub(crate) fn get_info_hash(&self) -> InfoHash {
+      self.info_hash()
+   }
 
-            let piece_count = info.piece_count();
-            if index >= piece_count {
-               warn!(
-                  index,
-                  offset, length, piece_count, "Peer requested out-of-bounds piece"
-               );
-               return TorrentResponse::Request(index, offset, None);
-            }
+   /// Sends the current info dict if we have it.
+   #[message]
+   pub(crate) fn has_info_dict(&self) -> Option<Info> {
+      self.info.clone()
+   }
 
-            let piece_length = info.piece_length as usize;
-            let total_length = info.total_length();
-            let last_piece_index = piece_count.saturating_sub(1);
-            let concrete_piece_len = if index == last_piece_index {
-               let remainder = total_length % piece_length;
-               if remainder == 0 {
-                  piece_length
-               } else {
-                  remainder
-               }
-            } else {
-               piece_length
-            };
+   /// Requests a piece from the torrent.
+   #[message]
+   pub(crate) async fn request_piece(
+      &mut self, index: usize, offset: usize, length: usize,
+   ) -> (usize, usize, Option<Bytes>) {
+      let Some(info) = self.info.as_ref() else {
+         warn!(
+            index,
+            offset, length, "Peer requested block before info dict was available"
+         );
+         return (index, offset, None);
+      };
 
-            let Some(end) = offset.checked_add(length) else {
-               warn!(
-                  index,
-                  offset, length, "Peer requested block with overflowing bounds"
-               );
-               return TorrentResponse::Request(index, offset, None);
-            };
-            if offset >= concrete_piece_len || end > concrete_piece_len {
-               warn!(
-                  index,
-                  offset, length, concrete_piece_len, "Peer requested block outside piece bounds"
-               );
-               return TorrentResponse::Request(index, offset, None);
-            }
-
-            let data = if self
-               .bitfield
-               .get(index)
-               .as_deref()
-               .copied()
-               .unwrap_or(false)
-            {
-               match self.read_piece_block(index, offset, length).await {
-                  Ok(data) => Some(data),
-                  Err(err) => {
-                     warn!(
-                        ?err,
-                        index, offset, length, "Failed to read requested piece block"
-                     );
-                     None
-                  }
-               }
-            } else {
-               warn!(index, offset, length, "Peer requested piece we do not have");
-               None
-            };
-            TorrentResponse::Request(index, offset, data)
-         }
-         TorrentRequest::GetState => TorrentResponse::GetState(self.state),
-         TorrentRequest::Export => TorrentResponse::Export(Box::new(self.export())),
+      if length > BLOCK_SIZE {
+         warn!(
+            index,
+            offset, length, "Peer requested block larger than maximum size"
+         );
+         return (index, offset, None);
       }
+
+      let piece_count = info.piece_count();
+      if index >= piece_count {
+         warn!(
+            index,
+            offset, length, piece_count, "Peer requested out-of-bounds piece"
+         );
+         return (index, offset, None);
+      }
+
+      let piece_length = info.piece_length as usize;
+      let total_length = info.total_length();
+      let last_piece_index = piece_count.saturating_sub(1);
+      let concrete_piece_len = if index == last_piece_index {
+         let remainder = total_length % piece_length;
+         if remainder == 0 {
+            piece_length
+         } else {
+            remainder
+         }
+      } else {
+         piece_length
+      };
+
+      let Some(end) = offset.checked_add(length) else {
+         warn!(
+            index,
+            offset, length, "Peer requested block with overflowing bounds"
+         );
+         return (index, offset, None);
+      };
+      if offset >= concrete_piece_len || end > concrete_piece_len {
+         warn!(
+            index,
+            offset, length, concrete_piece_len, "Peer requested block outside piece bounds"
+         );
+         return (index, offset, None);
+      }
+
+      let data = if self
+         .bitfield
+         .get(index)
+         .as_deref()
+         .copied()
+         .unwrap_or(false)
+      {
+         match self.read_piece_block(index, offset, length).await {
+            Ok(data) => Some(data),
+            Err(err) => {
+               warn!(
+                  ?err,
+                  index, offset, length, "Failed to read requested piece block"
+               );
+               None
+            }
+         }
+      } else {
+         warn!(index, offset, length, "Peer requested piece we do not have");
+         None
+      };
+      (index, offset, data)
+   }
+
+   #[message]
+   pub(crate) fn get_state(&self) -> TorrentState {
+      self.state
+   }
+
+   #[message]
+   pub(crate) fn export_state(&self) -> Box<TorrentExport> {
+      Box::new(self.export())
    }
 }

@@ -6,8 +6,8 @@ use tokio::sync::oneshot;
 use tracing::error;
 
 use super::{
-   PieceStorageStrategy, TorrentActor, TorrentExport, TorrentMessage, TorrentRequest,
-   TorrentResponse, TorrentState,
+   ExportState, GetState, PieceStorageStrategy, TorrentActor, TorrentExport, TorrentMessage,
+   TorrentState,
 };
 use crate::{hashes::InfoHash, pieces::PieceManager};
 
@@ -79,27 +79,11 @@ impl Torrent {
    }
 
    pub async fn state(&self) -> Result<TorrentState> {
-      let msg = TorrentRequest::GetState;
-
-      match self.actor().ask(msg).await? {
-         TorrentResponse::GetState(state) => Ok(state),
-         response => Err(anyhow::anyhow!(
-            "Unexpected actor response for GetState request: expected GetState, got {:?}",
-            std::mem::discriminant(&response)
-         )),
-      }
+      Ok(self.actor().ask(GetState).await?)
    }
 
    pub async fn export(&self) -> Result<TorrentExport> {
-      let msg = TorrentRequest::Export;
-
-      match self.actor().ask(msg).await? {
-         TorrentResponse::Export(export) => Ok(*export),
-         response => Err(anyhow::anyhow!(
-            "Unexpected actor response for Export request: expected Export, got {:?}",
-            std::mem::discriminant(&response)
-         )),
-      }
+      Ok(*self.actor().ask(ExportState).await?)
    }
 
    pub async fn set_auto_start(&self, auto: bool) -> Result<()> {

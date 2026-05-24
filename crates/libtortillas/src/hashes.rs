@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::anyhow;
 use bytes::{Bytes, BytesMut};
+use kameo::Reply;
 use serde::{
    Deserialize, Deserializer, Serialize, Serializer,
    de::{self, Visitor},
@@ -33,7 +34,7 @@ use serde::{
 /// // Display a hash (automatically converts to hex)
 /// println!("Hash: {}", hash); // Outputs: Hash: 0000000000
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Reply)]
 pub struct Hash<const N: usize>([u8; N]);
 
 /// A specialized Hash type for BitTorrent info hashes (20 bytes/160 bits)

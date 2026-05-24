@@ -15,7 +15,9 @@ use kameo::{
    actor::{ActorRef, Spawn, WeakActorRef},
    error::ActorStopReason,
    mailbox::{MailboxReceiver, Signal},
+   supervision::{RestartPolicy, SupervisionStrategy},
 };
+use kameo_actors::scheduler::Scheduler;
 use librqbit_utp::UtpSocketUdp;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -32,7 +34,8 @@ use crate::{
 };
 
 /// A hook that is called when the torrent is ready to start downloading.
-/// This is used to implement [`Torrent::poll_ready`].
+/// This is used to implement
+/// [`Torrent::poll_ready`](crate::torrent::Torrent::poll_ready).
 pub(super) type ReadyHook = oneshot::Sender<()>;
 
 pub(super) enum PieceManagerProxy {
@@ -88,6 +91,7 @@ pub(crate) struct TorrentActor {
    pub(super) metainfo: MetaInfo,
    #[allow(dead_code)]
    pub(super) tracker_server: UdpServer,
+   pub(super) scheduler: ActorRef<Scheduler>,
    /// Should only be used to create new connections
    pub(super) utp_server: Arc<UtpSocketUdp>,
    pub(super) actor_ref: ActorRef<Self>,
@@ -381,6 +385,10 @@ impl Actor for TorrentActor {
 
    type Error = TorrentError;
 
+   fn supervision_strategy() -> SupervisionStrategy {
+      SupervisionStrategy::OneForOne
+   }
+
    async fn on_start(args: Self::Args, us: ActorRef<Self>) -> Result<Self, Self::Error> {
       let TorrentActorArgs {
          peer_id,
@@ -409,17 +417,31 @@ impl Actor for TorrentActor {
          "Starting new torrent instance",
       );
 
+      let scheduler = Scheduler::supervise_with(&us, Scheduler::new)
+         .restart_policy(RestartPolicy::Permanent)
+         .restart_limit(3, std::time::Duration::from_secs(10))
+         .spawn()
+         .await;
+
       // Create tracker actors
       let tracker_list = metainfo.announce_list();
       let mut trackers = HashMap::new();
       for tracker in tracker_list {
-         let actor = TrackerActor::spawn((
-            tracker.clone(),
-            peer_id,
-            tracker_server.clone(),
-            primary_addr,
-            us.clone(),
-         ));
+         let actor = TrackerActor::supervise(
+            &us,
+            (
+               tracker.clone(),
+               peer_id,
+               tracker_server.clone(),
+               primary_addr,
+               us.clone(),
+               scheduler.clone(),
+            ),
+         )
+         .restart_policy(RestartPolicy::Transient)
+         .restart_limit(3, std::time::Duration::from_secs(60))
+         .spawn()
+         .await;
          trackers.insert(tracker, actor);
       }
       let info = match &metainfo {
@@ -437,13 +459,17 @@ impl Actor for TorrentActor {
       };
       let bitfield = BitVec::repeat(false, piece_count);
       let default_manager = FilePieceManager(base_path, info.clone());
-      let piece_store = PieceStoreActor::spawn(());
-      us.link(&piece_store).await;
+      let piece_store = PieceStoreActor::supervise(&us, ())
+         .restart_policy(RestartPolicy::Permanent)
+         .restart_limit(3, std::time::Duration::from_secs(10))
+         .spawn()
+         .await;
 
       Ok(Self {
          peers: HashMap::new(),
          bitfield,
          tracker_server,
+         scheduler,
          utp_server,
          trackers,
          id: peer_id,
@@ -482,6 +508,7 @@ impl Actor for TorrentActor {
          tracker.kill();
       }
       self.piece_store.kill();
+      self.scheduler.kill();
 
       Ok(())
    }
@@ -499,7 +526,7 @@ mod tests {
    use crate::{
       metainfo::MetaInfo,
       testing,
-      torrent::{BLOCK_SIZE, Torrent, TorrentExport, TorrentRequest, TorrentResponse},
+      torrent::{BLOCK_SIZE, HasInfoDict, Torrent, TorrentExport},
    };
 
    #[tokio::test(flavor = "multi_thread")]
@@ -565,15 +592,10 @@ mod tests {
 
       // Blocking loop that runs until we get an info dict
       loop {
-         match actor.ask(TorrentRequest::HasInfoDict).await.unwrap() {
-            TorrentResponse::HasInfoDict(maybe_info_dict) => {
-               if maybe_info_dict.is_some() {
-                  trace!("Got info dict!");
-                  break;
-               }
-            }
-            _ => unreachable!(),
-         };
+         if actor.ask(HasInfoDict).await.unwrap().is_some() {
+            trace!("Got info dict!");
+            break;
+         }
          sleep(Duration::from_millis(100)).await;
       }
 
@@ -717,6 +739,7 @@ mod tests {
          info: Some(info_dict.clone()),
          metainfo: metainfo.clone(),
          tracker_server: udp_server.clone(),
+         scheduler: Scheduler::spawn(Scheduler::new()),
          utp_server,
          actor_ref: actor_ref.clone(),
          piece_storage: PieceStorageStrategy::Disk(piece_path.clone()),

@@ -6,6 +6,7 @@ use kameo::{
    actor::{ActorRef, WeakActorRef},
    mailbox::Signal,
    prelude::MailboxReceiver,
+   supervision::SupervisionStrategy,
 };
 use librqbit_utp::UtpSocketUdp;
 use tokio::net::TcpListener;
@@ -22,8 +23,8 @@ use crate::{
 };
 
 /// The "top level" struct for torrenting. Handles all
-/// [Torrent] actors. Note that the engine itself also
-/// implements the [Actor] trait, and consequently behaves like an
+/// [`Torrent`](crate::torrent::Torrent) actors. Note that the engine itself
+/// also implements the [Actor] trait, and consequently behaves like an
 /// actor.
 pub struct EngineActor {
    /// Listener to wait for incoming TCP connections from peers
@@ -38,13 +39,13 @@ pub struct EngineActor {
    pub(super) torrents: Arc<DashMap<InfoHash, ActorRef<TorrentActor>>>,
    /// Our peer ID, used for the following actors "below" the engine.
    ///
-   /// - [Torrent]
+   /// - [`Torrent`](crate::torrent::Torrent)
    /// - [PeerActor](crate::peer::PeerActor)
    /// - [TrackerActor](crate::tracker::TrackerActor)
    ///
-   /// The peer id is created in the [Engine::on_start] method.
+   /// The peer id is created in the engine actor's `on_start` method.
    pub peer_id: PeerId,
-   /// Our actor reference. Created in [Engine::on_start]
+   /// Our actor reference. Created in the engine actor's `on_start` method.
    pub(crate) actor_ref: ActorRef<EngineActor>,
 
    pub(crate) default_piece_storage_strategy: PieceStorageStrategy,
@@ -124,6 +125,10 @@ impl Actor for EngineActor {
    /// unspecified address (`0.0.0.0`) and a dynamically assigned port (`0`).
    type Args = EngineActorArgs;
    type Error = EngineError;
+
+   fn supervision_strategy() -> SupervisionStrategy {
+      SupervisionStrategy::OneForOne
+   }
 
    /// See Kameo documentation for docs on the
    /// [on_start](kameo::Actor::on_start) function itself.
