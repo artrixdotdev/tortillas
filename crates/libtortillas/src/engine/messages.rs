@@ -1,4 +1,4 @@
-use futures::future::join_all;
+use futures::future::try_join_all;
 use kameo::{actor::Spawn, mailbox, messages, prelude::ActorRef, supervision::RestartPolicy};
 use tokio::time::{Duration, timeout};
 use tracing::{error, warn};
@@ -12,15 +12,14 @@ use crate::{
       messages::PeerMessages,
       stream::{PeerRecv, PeerStream},
    },
-   torrent::{
-      TorrentActor, TorrentActorArgs, TorrentState, commands::ExportState,
-      events::IncomingPeer as TorrentIncomingPeer,
-   },
+   torrent::{self, TorrentActor, TorrentActorArgs, TorrentState},
 };
 
 const INCOMING_PEER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) mod commands {
+   use anyhow::anyhow;
+
    use super::*;
 
    #[messages]
@@ -28,7 +27,7 @@ pub(crate) mod commands {
       /// Handles an incoming peer connection. The peer has been neither
       /// handshaked nor verified at this point.
       #[message]
-      pub(crate) async fn incoming_peer(&mut self, mut stream: Box<PeerStream>) {
+      pub(crate) async fn incoming_peer(&mut self, mut stream: PeerStream) {
          let msg = match timeout(INCOMING_PEER_HANDSHAKE_TIMEOUT, stream.recv()).await {
             Ok(Ok(msg)) => msg,
             Ok(Err(err)) => {
@@ -57,7 +56,10 @@ pub(crate) mod commands {
             peer.reserved = handshake.reserved;
 
             if let Some(torrent) = self.torrents.get(&info_hash) {
-               if let Err(err) = torrent.tell(TorrentIncomingPeer { peer, stream }).await {
+               if let Err(err) = torrent
+                  .tell(torrent::events::IncomingPeer { peer, stream })
+                  .await
+               {
                   warn!(error = %err, %info_hash, "Failed to route incoming peer to torrent");
                }
             } else {
@@ -74,7 +76,7 @@ pub(crate) mod commands {
       pub(crate) async fn start_all(&self) {
          for torrent in self.torrents.iter() {
             if let Err(err) = torrent
-               .tell(crate::torrent::commands::SetState {
+               .tell(torrent::commands::SetState {
                   state: TorrentState::Downloading,
                })
                .await
@@ -103,23 +105,22 @@ pub(crate) mod commands {
          }
 
          let torrent_ref = TorrentActor::supervise(
-         &self.actor_ref,
-         TorrentActorArgs {
-            peer_id: self.peer_id,
-            metainfo: *metainfo,
-            utp_server: self.utp_socket.clone(),
-            tracker_server: self.udp_server.clone(),
-            primary_addr: None,
-            piece_storage: self.default_piece_storage_strategy.clone(),
-            autostart: self.autostart,
-            sufficient_peers: self.sufficient_peers,
-            base_path: self.default_base_path.clone(),
-         },
-      )
-      .restart_policy(RestartPolicy::Permanent)
-      .restart_limit(3, Duration::from_secs(60))
-      .spawn_with_mailbox(
-         match self.mailbox_size {
+            &self.actor_ref,
+            TorrentActorArgs {
+               peer_id: self.peer_id,
+               metainfo: *metainfo,
+               utp_server: self.utp_socket.clone(),
+               tracker_server: self.udp_server.clone(),
+               primary_addr: None,
+               piece_storage: self.default_piece_storage_strategy.clone(),
+               autostart: self.autostart,
+               sufficient_peers: self.sufficient_peers,
+               base_path: self.default_base_path.clone(),
+            },
+         )
+         .restart_policy(RestartPolicy::Permanent)
+         .restart_limit(3, Duration::from_secs(60))
+         .spawn_with_mailbox(match self.mailbox_size {
             0 => {
                warn!(
                   ?info_hash,
@@ -128,9 +129,8 @@ pub(crate) mod commands {
                mailbox::unbounded()
             }
             size => mailbox::bounded(size),
-         },
-      )
-      .await;
+         })
+         .await;
 
          self.torrents.insert(info_hash, torrent_ref.clone());
          Ok(torrent_ref)
@@ -139,22 +139,24 @@ pub(crate) mod commands {
       /// Exports the current state of the engine.
       #[message]
       pub(crate) async fn export_engine(&self) -> Result<EngineExport, EngineError> {
-         // Concurrently collect all torrent exports
          let futures = self
             .torrents
             .iter()
             .map(|torrent| {
                let torrent = torrent.clone();
                async move {
-                  *torrent
-                     .ask(ExportState)
+                  torrent
+                     .ask(torrent::commands::ExportState)
                      .await
-                     .expect("Failed to get torrent export")
+                     .map(|export| *export)
+                     .map_err(|err| {
+                        EngineError::Other(anyhow!("failed to get torrent export: {err}"))
+                     })
                }
             })
             .collect::<Vec<_>>();
 
-         let torrents = join_all(futures).await;
+         let torrents = try_join_all(futures).await?;
 
          Ok(EngineExport { torrents })
       }
