@@ -7,7 +7,6 @@ pub mod pieces;
 pub mod protocol;
 pub mod torrent;
 pub mod tracker;
-pub(crate) mod util;
 
 #[cfg(test)]
 pub(crate) mod testing {

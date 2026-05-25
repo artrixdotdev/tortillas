@@ -1,17 +1,19 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, ops::ControlFlow, path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
 use kameo::{
    Actor,
-   actor::{ActorRef, WeakActorRef},
+   actor::{ActorId, ActorRef, WeakActorRef},
+   error::ActorStopReason,
    mailbox::Signal,
    prelude::MailboxReceiver,
+   supervision::SupervisionStrategy,
 };
 use librqbit_utp::UtpSocketUdp;
 use tokio::net::TcpListener;
-use tracing::error;
+use tracing::{error, instrument};
 
-use super::EngineMessage;
+use super::commands;
 use crate::{
    errors::EngineError,
    hashes::InfoHash,
@@ -22,8 +24,8 @@ use crate::{
 };
 
 /// The "top level" struct for torrenting. Handles all
-/// [Torrent] actors. Note that the engine itself also
-/// implements the [Actor] trait, and consequently behaves like an
+/// [`Torrent`](crate::torrent::Torrent) actors. Note that the engine itself
+/// also implements the [Actor] trait, and consequently behaves like an
 /// actor.
 pub struct EngineActor {
    /// Listener to wait for incoming TCP connections from peers
@@ -38,13 +40,13 @@ pub struct EngineActor {
    pub(super) torrents: Arc<DashMap<InfoHash, ActorRef<TorrentActor>>>,
    /// Our peer ID, used for the following actors "below" the engine.
    ///
-   /// - [Torrent]
+   /// - [`Torrent`](crate::torrent::Torrent)
    /// - [PeerActor](crate::peer::PeerActor)
    /// - [TrackerActor](crate::tracker::TrackerActor)
    ///
-   /// The peer id is created in the [Engine::on_start] method.
+   /// The peer id is created in the engine actor's `on_start` method.
    pub peer_id: PeerId,
-   /// Our actor reference. Created in [Engine::on_start]
+   /// Our actor reference. Created in the engine actor's `on_start` method.
    pub(crate) actor_ref: ActorRef<EngineActor>,
 
    pub(crate) default_piece_storage_strategy: PieceStorageStrategy,
@@ -125,6 +127,10 @@ impl Actor for EngineActor {
    type Args = EngineActorArgs;
    type Error = EngineError;
 
+   fn supervision_strategy() -> SupervisionStrategy {
+      SupervisionStrategy::OneForOne
+   }
+
    /// See Kameo documentation for docs on the
    /// [on_start](kameo::Actor::on_start) function itself.
    ///
@@ -173,6 +179,15 @@ impl Actor for EngineActor {
       })
    }
 
+   #[instrument(skip(self), fields(engine_id = ?self.peer_id))]
+   async fn on_link_died(
+      &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
+   ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
+      error!(?id, ?reason, "Linked child died");
+
+      Ok(ControlFlow::Continue(()))
+   }
+
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
    ) -> Result<Option<Signal<Self>>, Self::Error> {
@@ -180,7 +195,7 @@ impl Actor for EngineActor {
          signal = mailbox_rx.recv() => signal,
          peer_stream = self.tcp_socket.accept() => match peer_stream {
             Ok((stream, _)) => {
-               let peer_stream = Box::new(PeerStream::Tcp(stream));
+               let peer_stream = PeerStream::Tcp(stream);
 
                let Some(actor_ref) = actor_ref.upgrade() else {
                   error!("Failed to upgrade weak actor reference");
@@ -188,11 +203,11 @@ impl Actor for EngineActor {
                };
 
                Some(Signal::Message {
-                  message: Box::new(EngineMessage::IncomingPeer(peer_stream)),
+                  message: Box::new(commands::IncomingPeer { stream: peer_stream }),
                   actor_ref,
                    reply: None,
                    sent_within_actor: true,
-                   message_name: "EngineMessage",
+                   message_name: "IncomingPeer",
                    caller_span: tracing::Span::current(),
                 })
             }
@@ -203,7 +218,7 @@ impl Actor for EngineActor {
          },
          peer_stream = self.utp_socket.accept() => match peer_stream {
             Ok(stream) => {
-               let peer_stream = Box::new(PeerStream::Utp(stream));
+               let peer_stream = PeerStream::Utp(stream);
 
                let Some(actor_ref) = actor_ref.upgrade() else {
                   error!("Failed to upgrade weak actor reference");
@@ -211,11 +226,11 @@ impl Actor for EngineActor {
                };
 
                Some(Signal::Message {
-                  message: Box::new(EngineMessage::IncomingPeer(peer_stream)),
+                  message: Box::new(commands::IncomingPeer { stream: peer_stream }),
                   actor_ref,
                    reply: None,
                    sent_within_actor: true,
-                   message_name: "EngineMessage",
+                   message_name: "IncomingPeer",
                    caller_span: tracing::Span::current(),
                 })
             }

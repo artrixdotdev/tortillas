@@ -2,9 +2,10 @@ use std::{
    collections::HashMap,
    fmt::{self, Display},
    net::SocketAddr,
+   ops::ControlFlow,
    path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
-   time::Instant,
+   time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -12,10 +13,12 @@ use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{
    Actor,
-   actor::{ActorRef, Spawn, WeakActorRef},
+   actor::{ActorId, ActorRef, Spawn, WeakActorRef},
    error::ActorStopReason,
    mailbox::{MailboxReceiver, Signal},
+   supervision::{RestartPolicy, SupervisionStrategy},
 };
+use kameo_actors::scheduler::Scheduler;
 use librqbit_utp::UtpSocketUdp;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -28,12 +31,13 @@ use crate::{
    peer::{PeerActor, PeerId},
    pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
    torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentExport, TorrentState},
-   tracker::{Event, Tracker, TrackerActor, TrackerMessage, TrackerUpdate, udp::UdpServer},
+   tracker::{Announce, Event, Tracker, TrackerActor, TrackerUpdate, udp::UdpServer},
 };
 
 /// A hook that is called when the torrent is ready to start downloading.
-/// This is used to implement [`Torrent::poll_ready`].
-pub(super) type ReadyHook = oneshot::Sender<()>;
+/// This is used to implement
+/// [`Torrent::poll_ready`](crate::torrent::Torrent::poll_ready).
+pub(super) type ReadyHookSender = oneshot::Sender<()>;
 
 pub(super) enum PieceManagerProxy {
    Custom(Box<dyn PieceManager>),
@@ -88,6 +92,7 @@ pub(crate) struct TorrentActor {
    pub(super) metainfo: MetaInfo,
    #[allow(dead_code)]
    pub(super) tracker_server: UdpServer,
+   pub(super) scheduler: ActorRef<Scheduler>,
    /// Should only be used to create new connections
    pub(super) utp_server: Arc<UtpSocketUdp>,
    pub(super) actor_ref: ActorRef<Self>,
@@ -108,7 +113,7 @@ pub(crate) struct TorrentActor {
    /// If there is already a pending start, we don't want to start a new one
    pub(super) pending_start: bool,
 
-   pub(super) ready_hook: Vec<ReadyHook>,
+   pub(super) ready_hook: Vec<ReadyHookSender>,
 }
 
 impl fmt::Display for TorrentActor {
@@ -205,7 +210,7 @@ impl TorrentActor {
          self
             .update_trackers(TrackerUpdate::Event(Event::Started))
             .await;
-         self.broadcast_to_trackers(TrackerMessage::Announce).await;
+         self.broadcast_to_trackers(Announce).await;
          self
             .update_trackers(TrackerUpdate::Event(Event::Empty))
             .await;
@@ -381,6 +386,10 @@ impl Actor for TorrentActor {
 
    type Error = TorrentError;
 
+   fn supervision_strategy() -> SupervisionStrategy {
+      SupervisionStrategy::OneForOne
+   }
+
    async fn on_start(args: Self::Args, us: ActorRef<Self>) -> Result<Self, Self::Error> {
       let TorrentActorArgs {
          peer_id,
@@ -409,17 +418,32 @@ impl Actor for TorrentActor {
          "Starting new torrent instance",
       );
 
+      let scheduler = Scheduler::supervise_with(&us, Scheduler::new)
+         .restart_policy(RestartPolicy::Permanent)
+         .restart_limit(3, Duration::from_secs(10))
+         .spawn()
+         .await;
+
       // Create tracker actors
       let tracker_list = metainfo.announce_list();
       let mut trackers = HashMap::new();
       for tracker in tracker_list {
-         let actor = TrackerActor::spawn((
-            tracker.clone(),
-            peer_id,
-            tracker_server.clone(),
-            primary_addr,
-            us.clone(),
-         ));
+         let actor = TrackerActor::supervise(
+            &us,
+            (
+               tracker.clone(),
+               peer_id,
+               tracker_server.clone(),
+               primary_addr,
+               us.clone(),
+               scheduler.clone(),
+            ),
+         )
+         .restart_policy(RestartPolicy::Transient)
+         .restart_limit(3, Duration::from_secs(60))
+         .spawn()
+         .await;
+
          trackers.insert(tracker, actor);
       }
       let info = match &metainfo {
@@ -437,13 +461,17 @@ impl Actor for TorrentActor {
       };
       let bitfield = BitVec::repeat(false, piece_count);
       let default_manager = FilePieceManager(base_path, info.clone());
-      let piece_store = PieceStoreActor::spawn(());
-      us.link(&piece_store).await;
+      let piece_store = PieceStoreActor::supervise(&us, ())
+         .restart_policy(RestartPolicy::Permanent)
+         .restart_limit(3, Duration::from_secs(10))
+         .spawn()
+         .await;
 
       Ok(Self {
          peers: HashMap::new(),
          bitfield,
          tracker_server,
+         scheduler,
          utp_server,
          trackers,
          id: peer_id,
@@ -472,9 +500,11 @@ impl Actor for TorrentActor {
       Ok(mailbox_rx.recv().await)
    }
 
+   #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
    async fn on_stop(
-      &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
+      &mut self, _: WeakActorRef<Self>, reason: ActorStopReason,
    ) -> Result<(), Self::Error> {
+      info!(reason = %reason, "Torrent stopped");
       for peer in self.peers.values() {
          peer.kill();
       }
@@ -482,8 +512,18 @@ impl Actor for TorrentActor {
          tracker.kill();
       }
       self.piece_store.kill();
+      self.scheduler.kill();
 
       Ok(())
+   }
+
+   #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
+   async fn on_link_died(
+      &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
+   ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
+      error!(?id, ?reason, "Linked child died");
+
+      Ok(ControlFlow::Continue(()))
    }
 }
 
@@ -499,7 +539,7 @@ mod tests {
    use crate::{
       metainfo::MetaInfo,
       testing,
-      torrent::{BLOCK_SIZE, Torrent, TorrentExport, TorrentRequest, TorrentResponse},
+      torrent::{BLOCK_SIZE, Torrent, TorrentExport, commands::HasInfoDict},
    };
 
    #[tokio::test(flavor = "multi_thread")]
@@ -565,15 +605,17 @@ mod tests {
 
       // Blocking loop that runs until we get an info dict
       loop {
-         match actor.ask(TorrentRequest::HasInfoDict).await.unwrap() {
-            TorrentResponse::HasInfoDict(maybe_info_dict) => {
-               if maybe_info_dict.is_some() {
-                  trace!("Got info dict!");
-                  break;
-               }
+         match actor.ask(HasInfoDict).await {
+            Ok(Some(_)) => {
+               trace!("Got info dict!");
+               break;
             }
-            _ => unreachable!(),
-         };
+            Ok(None) => {}
+            Err(err) => {
+               error!(error = %err, "Failed to get info dict");
+               break;
+            }
+         }
          sleep(Duration::from_millis(100)).await;
       }
 
@@ -717,6 +759,7 @@ mod tests {
          info: Some(info_dict.clone()),
          metainfo: metainfo.clone(),
          tracker_server: udp_server.clone(),
+         scheduler: Scheduler::spawn(Scheduler::new()),
          utp_server,
          actor_ref: actor_ref.clone(),
          piece_storage: PieceStorageStrategy::Disk(piece_path.clone()),

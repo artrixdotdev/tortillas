@@ -5,28 +5,31 @@ use kameo::{
    Actor,
    actor::{ActorRef, WeakActorRef},
    error::ActorStopReason,
-   mailbox::{MailboxReceiver, Signal},
+   messages,
    prelude::{Context, Message},
 };
-use tokio::time::{Interval, interval, timeout};
-use tracing::{Span, error, warn};
+use kameo_actors::scheduler::{Scheduler, SetTimeout};
+use tokio::{task::AbortHandle, time::timeout};
+use tracing::{error, warn};
 
 use super::{
-   Tracker, TrackerBase, TrackerInstance, TrackerMessage, TrackerStats, TrackerUpdate,
+   Tracker, TrackerBase, TrackerInstance, TrackerStats, TrackerUpdate,
    http::HttpTracker,
    udp::{UdpServer, UdpTracker},
 };
 use crate::{
    errors::TrackerActorError,
    peer::PeerId,
-   torrent::{TorrentActor, TorrentMessage, TorrentRequest, TorrentResponse},
+   torrent::{self, TorrentActor},
 };
 
 /// The actor that handles all communication with a given tracker.
 pub(crate) struct TrackerActor {
    tracker: TrackerInstance,
    supervisor: ActorRef<TorrentActor>,
-   interval: Interval,
+   scheduler: ActorRef<Scheduler>,
+   next_announce: Option<AbortHandle>,
+   actor_ref: ActorRef<Self>,
 }
 
 impl Actor for TrackerActor {
@@ -36,24 +39,17 @@ impl Actor for TrackerActor {
       UdpServer,
       SocketAddr,
       ActorRef<TorrentActor>,
+      ActorRef<Scheduler>,
    );
    type Error = TrackerActorError;
 
-   async fn on_start(state: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (tracker, peer_id, server, socket_addr, supervisor) = state;
+   async fn on_start(state: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
+      let (tracker, peer_id, server, socket_addr, supervisor, scheduler) = state;
 
-      let torrent_response = supervisor
-         .ask(TorrentRequest::InfoHash)
+      let info_hash = supervisor
+         .ask(torrent::commands::GetInfoHash)
          .await
          .map_err(|e| TrackerActorError::SupervisorCommunicationFailed(e.to_string()))?;
-      let info_hash = match torrent_response {
-         TorrentResponse::InfoHash(info_hash) => info_hash,
-         _ => {
-            return Err(TrackerActorError::InvalidResponse {
-               reason: String::from("Expected InfoHash response, got unexpected variant"),
-            });
-         }
-      };
 
       let tracker_uri = tracker.uri();
       let tracker = match tracker {
@@ -88,69 +84,77 @@ impl Actor for TrackerActor {
          }
       };
 
+      let next_announce = scheduler
+         .ask(SetTimeout::new(
+            actor_ref.downgrade(),
+            Duration::from_secs(0),
+            Announce,
+         ))
+         .await
+         .map_err(|e| TrackerActorError::SupervisorCommunicationFailed(e.to_string()))?;
+
       Ok(Self {
          tracker,
          supervisor,
-         interval: interval(Duration::from_secs(30)),
+         scheduler,
+         next_announce: Some(next_announce),
+         actor_ref,
       })
    }
 
    async fn on_stop(
       &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
    ) -> Result<(), Self::Error> {
+      if let Some(next_announce) = self.next_announce.take() {
+         next_announce.abort();
+      }
+
       let _ = timeout(Duration::from_secs(5), self.tracker.stop())
          .await
          .inspect_err(|e| warn!(e = %e.to_string(), "Tracker stop timed out"));
 
       Ok(())
    }
-
-   async fn next(
-      &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
-   ) -> Result<Option<Signal<Self>>, Self::Error> {
-      Ok(tokio::select! {
-         signal = mailbox_rx.recv() => signal,
-         _ = self.interval.tick() => {
-            let Some(actor_ref) = actor_ref.upgrade() else {
-               return Ok(None);
-            };
-            Some(Signal::Message {
-               message: Box::new(TrackerMessage::Announce),
-               actor_ref,
-               reply: None,
-               sent_within_actor: true,
-               message_name: "TrackerMessage",
-                caller_span: Span::current(),
-            })
-         }
-      })
-   }
 }
 
-impl Message<TrackerMessage> for TrackerActor {
-   type Reply = Option<TrackerStats>;
-
-   async fn handle(
-      &mut self, msg: TrackerMessage, _ctx: &mut Context<Self, Self::Reply>,
-   ) -> Self::Reply {
-      match msg {
-         TrackerMessage::Announce => {
-            match self.tracker.announce().await {
-               Ok(peers) => {
-                  if let Err(e) = self.supervisor.tell(TorrentMessage::Announce(peers)).await {
-                     error!(error = %e, "Failed to send announce to supervisor");
-                  } else {
-                     let delay = self.tracker.interval().max(1) as u64;
-                     self.interval = interval(Duration::from_secs(delay));
-                     self.interval.tick().await;
-                  }
-               }
-               Err(e) => error!(error = %e, "Announce request failed"),
-            }
-            None
-         }
-         TrackerMessage::GetStats => Some(self.tracker.stats()),
+#[messages]
+impl TrackerActor {
+   async fn schedule_next_announce(&mut self) {
+      let delay = self.tracker.interval().max(1) as u64;
+      if let Some(next_announce) = self.next_announce.take() {
+         next_announce.abort();
       }
+      match self
+         .scheduler
+         .ask(SetTimeout::new(
+            self.actor_ref.downgrade(),
+            Duration::from_secs(delay),
+            Announce,
+         ))
+         .await
+      {
+         Ok(next_announce) => self.next_announce = Some(next_announce),
+         Err(e) => error!(error = %e, "Failed to schedule next announce"),
+      }
+   }
+
+   /// Forces the tracker to make an announce request.
+   #[message(derive(Debug, Clone, Copy))]
+   pub(crate) async fn announce(&mut self) -> Option<TrackerStats> {
+      match self.tracker.announce().await {
+         Ok(peers) => {
+            if let Err(e) = self
+               .supervisor
+               .tell(torrent::events::Announce { peers })
+               .await
+            {
+               error!(error = %e, "Failed to send announce to supervisor");
+            }
+         }
+         Err(e) => error!(error = %e, "Announce request failed"),
+      }
+      self.schedule_next_announce().await;
+      None
    }
 }
 
@@ -158,7 +162,7 @@ impl Message<TrackerUpdate> for TrackerActor {
    type Reply = ();
 
    async fn handle(
-      &mut self, msg: TrackerUpdate, _ctx: &mut Context<Self, Self::Reply>,
+      &mut self, msg: TrackerUpdate, _: &mut Context<Self, Self::Reply>,
    ) -> Self::Reply {
       if let Err(err) = self.tracker.update(msg).await {
          warn!(error = %err, "Failed to update tracker state");

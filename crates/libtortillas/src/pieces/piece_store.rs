@@ -1,11 +1,7 @@
 use std::{io::Result as IoResult, path::PathBuf};
 
 use bytes::Bytes;
-use kameo::{
-   Actor,
-   actor::ActorRef,
-   prelude::{Context, Message},
-};
+use kameo::{Actor, actor::ActorRef, messages};
 use tokio::fs::read;
 
 use crate::{errors::TorrentError, hashes::Hash, torrent::util};
@@ -21,47 +17,20 @@ impl Actor for PieceStoreActor {
    }
 }
 
-#[derive(Debug)]
-pub(crate) enum PieceStoreMessage {
-   WriteBlock {
-      path: PathBuf,
-      offset: usize,
-      block: Bytes,
-   },
-}
-
-impl Message<PieceStoreMessage> for PieceStoreActor {
-   type Reply = IoResult<()>;
-
-   async fn handle(
-      &mut self, msg: PieceStoreMessage, _: &mut Context<Self, Self::Reply>,
-   ) -> Self::Reply {
-      match msg {
-         PieceStoreMessage::WriteBlock {
-            path,
-            offset,
-            block,
-         } => util::write_block_to_file(path, offset, block).await,
-      }
+#[messages]
+impl PieceStoreActor {
+   #[message(derive(Debug))]
+   pub(crate) async fn write_block(
+      &mut self, path: PathBuf, offset: usize, block: Bytes,
+   ) -> IoResult<()> {
+      util::write_block_to_file(path, offset, block).await
    }
-}
 
-#[derive(Debug)]
-pub(crate) enum PieceStoreRequest {
-   ValidateAndRead { path: PathBuf, hash: Hash<20> },
-}
-
-impl Message<PieceStoreRequest> for PieceStoreActor {
-   type Reply = anyhow::Result<Bytes>;
-
-   async fn handle(
-      &mut self, msg: PieceStoreRequest, _: &mut Context<Self, Self::Reply>,
-   ) -> Self::Reply {
-      match msg {
-         PieceStoreRequest::ValidateAndRead { path, hash } => {
-            util::validate_piece_file(path.clone(), hash).await?;
-            Ok(read(&path).await?.into())
-         }
-      }
+   #[message(derive(Debug))]
+   pub(crate) async fn validate_and_read(
+      &mut self, path: PathBuf, hash: Hash<20>,
+   ) -> anyhow::Result<Bytes> {
+      util::validate_piece_file(path.clone(), hash).await?;
+      Ok(read(&path).await?.into())
    }
 }

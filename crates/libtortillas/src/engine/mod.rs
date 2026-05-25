@@ -46,6 +46,7 @@ pub(crate) use messages::*;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
+use self::commands::{CreateTorrent, ExportEngine, StartAll};
 use crate::{
    errors::EngineError,
    metainfo::{MetaInfo, TorrentFile},
@@ -243,17 +244,13 @@ impl Engine {
 
       let info_hash = metainfo.info_hash()?;
 
-      let response = self
+      let torrent_ref = self
          .actor()
-         .ask(EngineRequest::Torrent(Box::new(metainfo)))
+         .ask(CreateTorrent {
+            metainfo: Box::new(metainfo),
+         })
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
-
-      let torrent_ref = match response {
-         EngineResponse::Torrent(torrent_ref) => torrent_ref,
-         #[allow(unreachable_patterns)]
-         _ => unreachable!(),
-      };
 
       Ok(Torrent::new(info_hash, torrent_ref))
       // We don't need to assign link or insert the ref here because its already
@@ -264,7 +261,7 @@ impl Engine {
    pub async fn start_all(&self) -> Result<(), EngineError> {
       self
          .actor()
-         .tell(EngineMessage::StartAll)
+         .tell(StartAll)
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
       Ok(())
@@ -273,16 +270,11 @@ impl Engine {
    /// Exports the current state of the engine.
    /// See [`Torrent::export`] for more information.
    pub async fn export(&self) -> Result<EngineExport, EngineError> {
-      let response = self
+      self
          .actor()
-         .ask(EngineRequest::Export)
+         .ask(ExportEngine)
          .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
-
-      match response {
-         EngineResponse::Export(export) => Ok(export),
-         _ => unreachable!(),
-      }
+         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))
    }
 }
 

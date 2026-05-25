@@ -1,3 +1,4 @@
+use kameo::Reply;
 use serde::{Deserialize, Serialize};
 
 /// The current state of the torrent.
@@ -11,7 +12,8 @@ use serde::{Deserialize, Serialize};
    PartialOrd,
    Ord,
    Serialize,
-   Deserialize
+   Deserialize,
+   Reply
 )]
 pub enum TorrentState {
    /// Torrent is downloading new pieces actively.
