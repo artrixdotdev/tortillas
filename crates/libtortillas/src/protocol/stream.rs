@@ -261,7 +261,10 @@ impl PeerRecv for PeerStream {
                   return message;
                }
                if stream.read_buf(read_buffer).await? == 0 {
-                  return Err(peer_closed());
+                  return Err(PeerActorError::ReceiveFailed(io::Error::new(
+                     io::ErrorKind::UnexpectedEof,
+                     "peer closed connection",
+                  )));
                }
             }
             PeerStream::Utp {
@@ -272,7 +275,10 @@ impl PeerRecv for PeerStream {
                   return message;
                }
                if stream.read_buf(read_buffer).await? == 0 {
-                  return Err(peer_closed());
+                  return Err(PeerActorError::ReceiveFailed(io::Error::new(
+                     io::ErrorKind::UnexpectedEof,
+                     "peer closed connection",
+                  )));
                }
             }
          }
@@ -303,13 +309,6 @@ fn buffered_message(read_buffer: &mut BytesMut) -> Option<Result<PeerMessages, P
 
    let frame = read_buffer.split_to(frame_len).freeze();
    Some(PeerMessages::from_bytes(frame))
-}
-
-fn peer_closed() -> PeerActorError {
-   PeerActorError::ReceiveFailed(io::Error::new(
-      io::ErrorKind::UnexpectedEof,
-      "peer closed connection",
-   ))
 }
 
 impl AsyncRead for PeerStream {
