@@ -403,10 +403,16 @@ impl Actor for PeerActor {
          // ourselves.
       }
 
-      Ok(tokio::select! {
-         signal = mailbox_rx.recv() => signal,
-         msg = self.stream.recv() =>  self.check_message_signal(actor_ref, msg)
-      })
+      loop {
+         tokio::select! {
+            signal = mailbox_rx.recv() => return Ok(signal),
+            msg = self.stream.recv() => {
+               if let Some(signal) = self.check_message_signal(actor_ref.clone(), msg) {
+                  return Ok(Some(signal));
+               }
+            }
+         }
+      }
    }
 }
 
