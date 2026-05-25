@@ -650,17 +650,33 @@ pub(crate) mod commands {
       }
 
       #[message(derive(Clone, Debug))]
-      pub(crate) fn cancel_piece(&mut self, index: usize, begin: usize, length: usize) {
+      pub(crate) async fn cancel_piece(&mut self, index: usize, begin: usize, length: usize) {
          if !self
             .pending_block_requests
             .contains(&(index, begin, length))
          {
             return; // Silently ignore if we don't have the request
          }
-         // TODO: Refactor PeerStream to allow for cancelling requests
-         // This can't be done yet because it would require a refactor of PeerStream, for
-         // now we'll just ignore the request.
+
          self.pending_block_requests.remove(&(index, begin, length));
+
+         if let Err(err) = self
+            .stream
+            .send(PeerMessages::Cancel(
+               index as u32,
+               begin as u32,
+               length as u32,
+            ))
+            .await
+         {
+            warn!(
+               ?err,
+               piece_index = index,
+               begin,
+               length,
+               "Failed to send cancel request"
+            );
+         }
       }
 
       #[message(derive(Clone, Debug))]
