@@ -195,7 +195,7 @@ impl Actor for EngineActor {
          signal = mailbox_rx.recv() => signal,
          peer_stream = self.tcp_socket.accept() => match peer_stream {
             Ok((stream, _)) => {
-               let peer_stream = PeerStream::Tcp(stream);
+               let peer_stream = PeerStream::tcp(stream);
 
                let Some(actor_ref) = actor_ref.upgrade() else {
                   error!("Failed to upgrade weak actor reference");
@@ -218,7 +218,7 @@ impl Actor for EngineActor {
          },
          peer_stream = self.utp_socket.accept() => match peer_stream {
             Ok(stream) => {
-               let peer_stream = PeerStream::Utp(stream);
+               let peer_stream = PeerStream::utp(stream);
 
                let Some(actor_ref) = actor_ref.upgrade() else {
                   error!("Failed to upgrade weak actor reference");
