@@ -1,18 +1,19 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{net::SocketAddr, ops::ControlFlow, path::PathBuf, sync::Arc};
 
 use dashmap::DashMap;
 use kameo::{
    Actor,
-   actor::{ActorRef, WeakActorRef},
+   actor::{ActorId, ActorRef, WeakActorRef},
+   error::ActorStopReason,
    mailbox::Signal,
    prelude::MailboxReceiver,
    supervision::SupervisionStrategy,
 };
 use librqbit_utp::UtpSocketUdp;
 use tokio::net::TcpListener;
-use tracing::error;
+use tracing::{error, instrument};
 
-use super::commands::IncomingPeer;
+use super::commands;
 use crate::{
    errors::EngineError,
    hashes::InfoHash,
@@ -178,6 +179,15 @@ impl Actor for EngineActor {
       })
    }
 
+   #[instrument(skip(self), fields(engine_id = ?self.peer_id))]
+   async fn on_link_died(
+      &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
+   ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
+      error!(?id, ?reason, "Linked child died");
+
+      Ok(ControlFlow::Continue(()))
+   }
+
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
    ) -> Result<Option<Signal<Self>>, Self::Error> {
@@ -185,7 +195,7 @@ impl Actor for EngineActor {
          signal = mailbox_rx.recv() => signal,
          peer_stream = self.tcp_socket.accept() => match peer_stream {
             Ok((stream, _)) => {
-               let peer_stream = Box::new(PeerStream::Tcp(stream));
+               let peer_stream = PeerStream::Tcp(stream);
 
                let Some(actor_ref) = actor_ref.upgrade() else {
                   error!("Failed to upgrade weak actor reference");
@@ -193,7 +203,7 @@ impl Actor for EngineActor {
                };
 
                Some(Signal::Message {
-                  message: Box::new(IncomingPeer { stream: peer_stream }),
+                  message: Box::new(commands::IncomingPeer { stream: peer_stream }),
                   actor_ref,
                    reply: None,
                    sent_within_actor: true,
@@ -208,7 +218,7 @@ impl Actor for EngineActor {
          },
          peer_stream = self.utp_socket.accept() => match peer_stream {
             Ok(stream) => {
-               let peer_stream = Box::new(PeerStream::Utp(stream));
+               let peer_stream = PeerStream::Utp(stream);
 
                let Some(actor_ref) = actor_ref.upgrade() else {
                   error!("Failed to upgrade weak actor reference");
@@ -216,7 +226,7 @@ impl Actor for EngineActor {
                };
 
                Some(Signal::Message {
-                  message: Box::new(IncomingPeer { stream: peer_stream }),
+                  message: Box::new(commands::IncomingPeer { stream: peer_stream }),
                   actor_ref,
                    reply: None,
                    sent_within_actor: true,
