@@ -2,9 +2,10 @@ use std::{
    collections::HashMap,
    fmt::{self, Display},
    net::SocketAddr,
+   ops::ControlFlow,
    path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
-   time::Instant,
+   time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -12,7 +13,7 @@ use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{
    Actor,
-   actor::{ActorRef, Spawn, WeakActorRef},
+   actor::{ActorId, ActorRef, Spawn, WeakActorRef},
    error::ActorStopReason,
    mailbox::{MailboxReceiver, Signal},
    supervision::{RestartPolicy, SupervisionStrategy},
@@ -419,7 +420,7 @@ impl Actor for TorrentActor {
 
       let scheduler = Scheduler::supervise_with(&us, Scheduler::new)
          .restart_policy(RestartPolicy::Permanent)
-         .restart_limit(3, std::time::Duration::from_secs(10))
+         .restart_limit(3, Duration::from_secs(10))
          .spawn()
          .await;
 
@@ -439,9 +440,10 @@ impl Actor for TorrentActor {
             ),
          )
          .restart_policy(RestartPolicy::Transient)
-         .restart_limit(3, std::time::Duration::from_secs(60))
+         .restart_limit(3, Duration::from_secs(60))
          .spawn()
          .await;
+
          trackers.insert(tracker, actor);
       }
       let info = match &metainfo {
@@ -461,7 +463,7 @@ impl Actor for TorrentActor {
       let default_manager = FilePieceManager(base_path, info.clone());
       let piece_store = PieceStoreActor::supervise(&us, ())
          .restart_policy(RestartPolicy::Permanent)
-         .restart_limit(3, std::time::Duration::from_secs(10))
+         .restart_limit(3, Duration::from_secs(10))
          .spawn()
          .await;
 
@@ -498,9 +500,11 @@ impl Actor for TorrentActor {
       Ok(mailbox_rx.recv().await)
    }
 
+   #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
    async fn on_stop(
-      &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
+      &mut self, _: WeakActorRef<Self>, reason: ActorStopReason,
    ) -> Result<(), Self::Error> {
+      info!(reason = %reason, "Torrent stopped");
       for peer in self.peers.values() {
          peer.kill();
       }
@@ -511,6 +515,15 @@ impl Actor for TorrentActor {
       self.scheduler.kill();
 
       Ok(())
+   }
+
+   #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
+   async fn on_link_died(
+      &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
+   ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
+      error!(?id, ?reason, "Linked child died");
+
+      Ok(ControlFlow::Continue(()))
    }
 }
 
@@ -592,9 +605,16 @@ mod tests {
 
       // Blocking loop that runs until we get an info dict
       loop {
-         if actor.ask(HasInfoDict).await.unwrap().is_some() {
-            trace!("Got info dict!");
-            break;
+         match actor.ask(HasInfoDict).await {
+            Ok(Some(_)) => {
+               trace!("Got info dict!");
+               break;
+            }
+            Ok(None) => {}
+            Err(err) => {
+               error!(error = %err, "Failed to get info dict");
+               break;
+            }
          }
          sleep(Duration::from_millis(100)).await;
       }
