@@ -20,7 +20,7 @@ use super::{
 use crate::{
    errors::TrackerActorError,
    peer::PeerId,
-   torrent::{TorrentActor, commands::GetInfoHash, events::Announce as TorrentAnnounce},
+   torrent::{self, TorrentActor},
 };
 
 /// The actor that handles all communication with a given tracker.
@@ -47,7 +47,7 @@ impl Actor for TrackerActor {
       let (tracker, peer_id, server, socket_addr, supervisor, scheduler) = state;
 
       let info_hash = supervisor
-         .ask(GetInfoHash)
+         .ask(torrent::commands::GetInfoHash)
          .await
          .map_err(|e| TrackerActorError::SupervisorCommunicationFailed(e.to_string()))?;
 
@@ -143,7 +143,11 @@ impl TrackerActor {
    pub(crate) async fn announce(&mut self) -> Option<TrackerStats> {
       match self.tracker.announce().await {
          Ok(peers) => {
-            if let Err(e) = self.supervisor.tell(TorrentAnnounce { peers }).await {
+            if let Err(e) = self
+               .supervisor
+               .tell(torrent::events::Announce { peers })
+               .await
+            {
                error!(error = %e, "Failed to send announce to supervisor");
             }
          }
@@ -158,7 +162,7 @@ impl Message<TrackerUpdate> for TrackerActor {
    type Reply = ();
 
    async fn handle(
-      &mut self, msg: TrackerUpdate, _ctx: &mut Context<Self, Self::Reply>,
+      &mut self, msg: TrackerUpdate, _: &mut Context<Self, Self::Reply>,
    ) -> Self::Reply {
       if let Err(err) = self.tracker.update(msg).await {
          warn!(error = %err, "Failed to update tracker state");
