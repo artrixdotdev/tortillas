@@ -8,10 +8,7 @@ use crate::{
    errors::EngineError,
    metainfo::MetaInfo,
    peer::Peer,
-   protocol::{
-      messages::PeerMessages,
-      stream::{PeerRecv, PeerStream},
-   },
+   protocol::stream::{PeerStream, validate_handshake_protocol},
    torrent::{self, TorrentActor, TorrentActorArgs, TorrentState},
 };
 
@@ -28,8 +25,13 @@ pub(crate) mod commands {
       /// handshaked nor verified at this point.
       #[message]
       pub(crate) async fn incoming_peer(&mut self, mut stream: PeerStream) {
-         let msg = match timeout(INCOMING_PEER_HANDSHAKE_TIMEOUT, stream.recv()).await {
-            Ok(Ok(msg)) => msg,
+         let handshake = match timeout(
+            INCOMING_PEER_HANDSHAKE_TIMEOUT,
+            stream.recv_handshake_message(),
+         )
+         .await
+         {
+            Ok(Ok(handshake)) => handshake,
             Ok(Err(err)) => {
                warn!(error = %err, %stream, "Failed to read incoming peer handshake");
                return;
@@ -47,27 +49,28 @@ pub(crate) mod commands {
             }
          };
 
-         if let PeerMessages::Handshake(handshake) = msg {
-            let info_hash = *handshake.info_hash;
-            let mut peer = Peer::from_socket_addr(peer_addr);
+         if let Err(err) = validate_handshake_protocol(&handshake, peer_addr) {
+            warn!(error = %err, %stream, "Rejected incoming peer handshake");
+            return;
+         }
 
-            // Populate peer fields from parsed handshake.
-            peer.id = Some(handshake.peer_id);
-            peer.reserved = handshake.reserved;
+         let info_hash = *handshake.info_hash;
+         let mut peer = Peer::from_socket_addr(peer_addr);
 
-            if let Some(torrent) = self.torrents.get(&info_hash) {
-               if let Err(err) = torrent
-                  .tell(torrent::events::IncomingPeer { peer, stream })
-                  .await
-               {
-                  warn!(error = %err, %info_hash, "Failed to route incoming peer to torrent");
-               }
-            } else {
-               error!(%stream, "Received incoming peer for unknown torrent, killing connection");
-               drop(stream);
+         // Populate peer fields from parsed handshake.
+         peer.id = Some(handshake.peer_id);
+         peer.reserved = handshake.reserved;
+
+         if let Some(torrent) = self.torrents.get(&info_hash) {
+            if let Err(err) = torrent
+               .tell(torrent::events::IncomingPeer { peer, stream })
+               .await
+            {
+               warn!(error = %err, %info_hash, "Failed to route incoming peer to torrent");
             }
          } else {
-            error!(message = %msg, "Received unexpected message from peer");
+            error!(%stream, "Received incoming peer for unknown torrent, killing connection");
+            drop(stream);
          }
       }
 
