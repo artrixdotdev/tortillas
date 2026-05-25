@@ -83,13 +83,7 @@ impl TorrentActor {
 
          peer.id = Some(id);
 
-         if let Err(err) = actor_ref
-            .tell(PeerConnected {
-               peer,
-               stream: Box::new(stream),
-            })
-            .await
-         {
+         if let Err(err) = actor_ref.tell(PeerConnected { peer, stream }).await {
             warn!(?err, peer_id = %id, "Failed to route connected peer back to torrent actor");
          }
       });

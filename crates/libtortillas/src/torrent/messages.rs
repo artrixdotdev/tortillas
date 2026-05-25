@@ -45,11 +45,10 @@ pub(crate) mod events {
       ///
       /// We as the instance are expected to reply to said handshake, this is
       /// not the responsibility of the engine.
-      #[allow(clippy::boxed_local)]
       #[message]
       #[instrument(skip(self, stream), fields(torrent_id = %self.info_hash()))]
-      pub(crate) fn incoming_peer(&mut self, peer: Peer, stream: Box<PeerStream>) {
-         self.append_peer(peer, Some(*stream));
+      pub(crate) fn incoming_peer(&mut self, peer: Peer, stream: PeerStream) {
+         self.append_peer(peer, Some(stream));
       }
 
       /// Used to manually add a peer. This is primarily used for testing but
@@ -62,11 +61,10 @@ pub(crate) mod events {
       }
 
       /// Sent by a connection task after peer handshaking completes.
-      #[allow(clippy::boxed_local)]
       #[message]
       #[instrument(skip(self, stream), fields(torrent_id = %self.info_hash()))]
-      pub(crate) fn peer_connected(&mut self, peer: Peer, stream: Box<PeerStream>) {
-         self.insert_peer(peer, *stream);
+      pub(crate) fn peer_connected(&mut self, peer: Peer, stream: PeerStream) {
+         self.insert_peer(peer, stream);
       }
 
       /// Index, offset, and data for a received peer `Piece` message.
