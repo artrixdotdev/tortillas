@@ -31,7 +31,10 @@ use crate::{
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)] // REMOVE SOON
 pub struct TrackerResponse {
+   #[serde(default, rename = "failure reason")]
+   pub failure_reason: Option<String>,
    pub interval: Option<usize>,
+   #[serde(default)]
    #[serde(deserialize_with = "deserialize_peers")]
    pub peers: Vec<Peer>,
 }
@@ -221,8 +224,7 @@ impl TrackerBase for HttpTracker {
       self.stats.increment_bytes_received(response_bytes.len());
 
       // Response parsing phase
-      let response: TrackerResponse =
-         serde_bencode::from_bytes(&response_bytes).map_err(TrackerActorError::BencodeDecoding)?;
+      let response = parse_tracker_response(&response_bytes)?;
 
       self.stats.increment_announce_successes();
       self
@@ -297,6 +299,17 @@ fn urlencode(t: &[u8; 20]) -> String {
    }
 
    encoded
+}
+
+fn parse_tracker_response(response_bytes: &[u8]) -> Result<TrackerResponse> {
+   let response: TrackerResponse =
+      serde_bencode::from_bytes(response_bytes).map_err(TrackerActorError::BencodeDecoding)?;
+
+   if let Some(message) = response.failure_reason {
+      return Err(TrackerActorError::TrackerError { message }.into());
+   }
+
+   Ok(response)
 }
 
 /// Serde related code. Used for deserializing response from HTTP request made
@@ -420,8 +433,9 @@ mod tests {
 
    use tracing_test::traced_test;
 
-   use super::HttpTracker;
+   use super::{HttpTracker, parse_tracker_response};
    use crate::{
+      errors::TrackerActorError,
       metainfo::MetaInfo,
       peer::PeerId,
       testing::{
@@ -429,6 +443,17 @@ mod tests {
       },
       tracker::TrackerBase,
    };
+
+   #[test]
+   fn parse_tracker_response_when_failure_reason_is_present_then_returns_tracker_error() {
+      let error = parse_tracker_response(b"d14:failure reason12:tracker downe").unwrap_err();
+
+      let error = error.downcast_ref::<TrackerActorError>().unwrap();
+      assert!(matches!(
+         error,
+         TrackerActorError::TrackerError { message } if message == "tracker down"
+      ));
+   }
 
    #[tokio::test]
    #[ignore = "external-network test: reaches public HTTP trackers"]
