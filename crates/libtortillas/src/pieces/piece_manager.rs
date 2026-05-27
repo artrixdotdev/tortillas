@@ -159,13 +159,16 @@ impl FilePieceManager {
       self.read_piece_range(index, offset, length).await
    }
 
-   async fn write_piece_range(
-      &self, index: usize, offset: usize, data: &[u8],
-   ) -> anyhow::Result<()> {
-      let base_path = self.path().ok_or_else(|| anyhow::anyhow!("path not set"))?;
-      let mut remaining = data.len();
+   fn piece_range_segments(
+      &self, index: usize, offset: usize, length: usize,
+   ) -> anyhow::Result<Vec<(PathBuf, usize, usize)>> {
+      let mut remaining = length;
       let mut skipped = offset;
-      let mut data_offset = 0;
+      let mut segments = Vec::new();
+
+      if remaining == 0 {
+         return Ok(segments);
+      }
 
       for (path, file_offset, len) in self.piece_to_paths(index)? {
          if skipped >= len {
@@ -173,7 +176,26 @@ impl FilePieceManager {
             continue;
          }
 
-         let write_len = remaining.min(len - skipped);
+         let segment_len = remaining.min(len - skipped);
+         segments.push((path, file_offset + skipped, segment_len));
+         remaining -= segment_len;
+         skipped = 0;
+
+         if remaining == 0 {
+            return Ok(segments);
+         }
+      }
+
+      anyhow::bail!("piece range exceeds file lengths")
+   }
+
+   async fn write_piece_range(
+      &self, index: usize, offset: usize, data: &[u8],
+   ) -> anyhow::Result<()> {
+      let base_path = self.path().ok_or_else(|| anyhow::anyhow!("path not set"))?;
+      let mut data_offset = 0;
+
+      for (path, file_offset, len) in self.piece_range_segments(index, offset, data.len())? {
          let full_path = base_path.join(&path);
          if let Some(parent) = full_path.parent() {
             create_dir_all(parent).await?;
@@ -185,59 +207,34 @@ impl FilePieceManager {
             .truncate(false)
             .open(&full_path)
             .await?;
+         file.seek(SeekFrom::Start(file_offset as u64)).await?;
          file
-            .seek(SeekFrom::Start((file_offset + skipped) as u64))
-            .await?;
-         file
-            .write_all(&data[data_offset..data_offset + write_len])
+            .write_all(&data[data_offset..data_offset + len])
             .await?;
 
-         remaining -= write_len;
-         data_offset += write_len;
-         skipped = 0;
-
-         if remaining == 0 {
-            return Ok(());
-         }
+         data_offset += len;
       }
 
-      anyhow::bail!("piece range exceeds file lengths")
+      Ok(())
    }
 
    async fn read_piece_range(
       &self, index: usize, offset: usize, length: usize,
    ) -> anyhow::Result<Bytes> {
       let base_path = self.path().ok_or_else(|| anyhow::anyhow!("path not set"))?;
-      let mut remaining = length;
-      let mut skipped = offset;
       let mut data = Vec::with_capacity(length);
 
-      for (path, file_offset, len) in self.piece_to_paths(index)? {
-         if skipped >= len {
-            skipped -= len;
-            continue;
-         }
-
-         let read_len = remaining.min(len - skipped);
+      for (path, file_offset, len) in self.piece_range_segments(index, offset, length)? {
          let full_path = base_path.join(&path);
          let mut file = OpenOptions::new().read(true).open(&full_path).await?;
-         file
-            .seek(SeekFrom::Start((file_offset + skipped) as u64))
-            .await?;
+         file.seek(SeekFrom::Start(file_offset as u64)).await?;
 
          let start = data.len();
-         data.resize(start + read_len, 0);
+         data.resize(start + len, 0);
          file.read_exact(&mut data[start..]).await?;
-
-         remaining -= read_len;
-         skipped = 0;
-
-         if remaining == 0 {
-            return Ok(data.into());
-         }
       }
 
-      anyhow::bail!("piece range exceeds file lengths")
+      Ok(data.into())
    }
 }
 
@@ -271,25 +268,16 @@ impl PieceManager for FilePieceManager {
 #[cfg(test)]
 mod tests {
    use super::*;
-   use crate::{
-      hashes::{Hash, HashVec},
-      prelude::MetaInfo,
-      testing,
-   };
-
-   fn piece_hash(data: &[u8]) -> Hash<20> {
-      use sha1::{Digest, Sha1};
-
-      let mut hasher = Sha1::new();
-      hasher.update(data);
-      Hash::from_bytes(hasher.finalize().into())
-   }
+   use crate::{hashes::HashVec, prelude::MetaInfo, testing};
 
    fn single_file_info() -> Info {
       Info {
          name: "data.bin".to_string(),
          piece_length: 4,
-         pieces: HashVec::from(vec![piece_hash(b"abcd"), piece_hash(b"ef")]),
+         pieces: HashVec::from(vec![
+            testing::piece_hash(b"abcd"),
+            testing::piece_hash(b"ef"),
+         ]),
          file: InfoKeys::Single {
             length: 6,
             md5sum: None,

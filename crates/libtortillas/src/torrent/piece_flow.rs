@@ -396,11 +396,10 @@ mod tests {
    use kameo::actor::Spawn;
    use kameo_actors::scheduler::Scheduler;
    use librqbit_utp::UtpSocket;
-   use sha1::{Digest, Sha1};
 
    use super::*;
    use crate::{
-      hashes::{Hash, HashVec},
+      hashes::HashVec,
       metainfo::{Info, InfoKeys, MetaInfo, TorrentFile},
       peer::PeerId,
       pieces::{FilePieceManager, PieceScheduler, PieceStoreActor},
@@ -409,17 +408,11 @@ mod tests {
       tracker::{Tracker, udp::UdpServer},
    };
 
-   fn piece_hash(data: &[u8]) -> Hash<20> {
-      let mut hasher = Sha1::new();
-      hasher.update(data);
-      Hash::from_bytes(hasher.finalize().into())
-   }
-
    fn test_info() -> Info {
       Info {
          name: "data.bin".to_string(),
          piece_length: 4,
-         pieces: HashVec::from(vec![piece_hash(b"abcd")]),
+         pieces: HashVec::from(vec![testing::piece_hash(b"abcd")]),
          file: InfoKeys::Single {
             length: 4,
             md5sum: None,
