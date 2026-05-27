@@ -29,8 +29,8 @@ use crate::{
 
 const MAX_PENDING_MESSAGES: usize = 8;
 
-const PEER_KEEPALIVE_TIMEOUT: u64 = 10;
-const PEER_DISCONNECT_TIMEOUT: u64 = 20;
+const PEER_KEEPALIVE_TIMEOUT: u64 = 120;
+const PEER_DISCONNECT_TIMEOUT: u64 = 240;
 
 /// The actor that handles all communications with a given peer.
 pub(crate) struct PeerActor {
@@ -368,9 +368,8 @@ impl Actor for PeerActor {
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
    ) -> Result<Option<Signal<Self>>, Self::Error> {
-      // Disconnects the peer by killing the actor if a message has not been received
-      // within the last 15 seconds, *only after* sending a KeepAlive message when a
-      // message has not been received with the last 10 seconds.
+      // Send a BEP 3 keepalive after two minutes of silence, then disconnect
+      // only if the peer remains silent for another keepalive interval.
       let last_message = self
          .peer
          .last_message_received()
@@ -489,9 +488,6 @@ impl Message<PeerMessages> for PeerActor {
          }
          PeerMessages::KeepAlive => {
             trace!("Received keep alive");
-            if let Err(err) = self.stream.send(PeerMessages::KeepAlive).await {
-               warn!(error = %err, "Failed to send keep alive response");
-            }
          }
          PeerMessages::Have(piece_index) => {
             trace!(piece_index, "Peer has a new piece");

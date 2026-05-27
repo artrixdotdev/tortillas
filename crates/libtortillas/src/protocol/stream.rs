@@ -188,22 +188,27 @@ impl PeerStream {
    }
 
    /// Receives an incoming handshake from a peer.
+   pub async fn recv_handshake_message(&mut self) -> Result<Handshake, PeerActorError> {
+      let protocol_len = self.read_u8().await?;
+      let mut buf = Vec::with_capacity(1 + protocol_len as usize + 8 + 40);
+      buf.push(protocol_len);
+
+      let mut rest = vec![0u8; protocol_len as usize + 8 + 40];
+      self.read_exact(&mut rest).await?;
+      buf.extend_from_slice(&rest);
+
+      Handshake::from_bytes(&buf).map_err(|e| PeerActorError::HandshakeFailed {
+         reason: e.to_string(),
+      })
+   }
+
+   /// Receives an incoming handshake from a peer.
    ///
    /// Will fail if the next message is not a handshake.
    pub async fn recv_handshake(&mut self) -> Result<(PeerId, [u8; 8]), PeerActorError> {
-      // Handshakes will always be 68 bytes
-      //
-      // mem::size_of::<Handshake>() is 72 bytes, for some reason. We think it might
-      // be due to the Arc<>(s) in the Handshake struct
-      let mut buf = [0u8; 68];
-
-      self.read_exact(&mut buf).await?;
-
       let Handshake {
          peer_id, reserved, ..
-      } = Handshake::from_bytes(&buf).map_err(|e| PeerActorError::HandshakeFailed {
-         reason: e.to_string(),
-      })?;
+      } = self.recv_handshake_message().await?;
 
       Ok((peer_id, reserved))
    }
@@ -402,19 +407,7 @@ impl PeerSend for PeerWriter {}
 pub fn validate_handshake(
    received_handshake: &Handshake, peer_addr: SocketAddr, info_hash: Arc<InfoHash>,
 ) -> Result<(), PeerActorError> {
-   // Validate protocol string
-   if MAGIC_STRING != received_handshake.protocol.as_ref() {
-      error!(
-          peer_addr = %peer_addr,
-          received_protocol = %String::from_utf8_lossy(&received_handshake.protocol),
-          expected_protocol = %String::from_utf8_lossy(MAGIC_STRING),
-          "Invalid protocol string received from peer"
-      );
-      return Err(PeerActorError::HandshakeMagicMismatch {
-         received: String::from_utf8_lossy(&received_handshake.protocol).into(),
-         expected: String::from_utf8_lossy(MAGIC_STRING).into(),
-      });
-   }
+   validate_handshake_protocol(received_handshake, peer_addr)?;
 
    // Validate info hash
    if info_hash.clone() != received_handshake.info_hash {
@@ -439,11 +432,30 @@ pub fn validate_handshake(
    Ok(())
 }
 
+pub fn validate_handshake_protocol(
+   received_handshake: &Handshake, peer_addr: SocketAddr,
+) -> Result<(), PeerActorError> {
+   if MAGIC_STRING != received_handshake.protocol.as_ref() {
+      error!(
+          peer_addr = %peer_addr,
+          received_protocol = %String::from_utf8_lossy(&received_handshake.protocol),
+          expected_protocol = %String::from_utf8_lossy(MAGIC_STRING),
+          "Invalid protocol string received from peer"
+      );
+      return Err(PeerActorError::HandshakeMagicMismatch {
+         received: String::from_utf8_lossy(&received_handshake.protocol).into(),
+         expected: String::from_utf8_lossy(MAGIC_STRING).into(),
+      });
+   }
+
+   Ok(())
+}
+
 #[cfg(test)]
 mod tests {
    use std::time::Duration;
 
-   use tokio::{net::TcpListener, time::timeout};
+   use tokio::{io::AsyncWriteExt, net::TcpListener, time::timeout};
    use tracing_test::traced_test;
 
    use super::*;
@@ -485,6 +497,37 @@ mod tests {
       assert_eq!(incoming_id, client_id);
    }
 
+   #[tokio::test]
+   async fn peer_stream_when_handshake_protocol_is_invalid_then_returns_handshake() {
+      let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+      let addr = listener.local_addr().unwrap();
+
+      let info_hash = Arc::new(Hash::new([1u8; 20]));
+      let mut handshake = Handshake::new(info_hash, PeerId::new());
+      handshake.protocol = "not bittorrent".into();
+      let handshake_bytes = handshake.to_bytes();
+
+      let client = tokio::spawn(async move {
+         let mut stream = TcpStream::connect(addr).await.unwrap();
+         stream.write_all(&handshake_bytes).await.unwrap();
+      });
+
+      let (stream, _) = timeout(Duration::from_secs(1), listener.accept())
+         .await
+         .expect("client should connect before timeout")
+         .unwrap();
+      let mut peer_stream = PeerStream::Tcp(stream);
+
+      let received_handshake =
+         timeout(Duration::from_secs(1), peer_stream.recv_handshake_message())
+            .await
+            .expect("handshake should arrive before timeout")
+            .unwrap();
+      client.await.expect("client task should not panic");
+
+      assert_eq!(received_handshake.protocol.as_ref(), b"not bittorrent");
+   }
+
    #[test]
    fn validate_handshake_when_protocol_is_invalid_then_returns_magic_mismatch() {
       let info_hash = Arc::new(Hash::new([1u8; 20]));
@@ -493,6 +536,21 @@ mod tests {
 
       let error =
          validate_handshake(&handshake, "127.0.0.1:6881".parse().unwrap(), info_hash).unwrap_err();
+
+      assert!(matches!(
+         error,
+         PeerActorError::HandshakeMagicMismatch { .. }
+      ));
+   }
+
+   #[test]
+   fn validate_handshake_protocol_when_protocol_is_invalid_then_returns_magic_mismatch() {
+      let info_hash = Arc::new(Hash::new([1u8; 20]));
+      let mut handshake = Handshake::new(info_hash, PeerId::new());
+      handshake.protocol = "not bittorrent".into();
+
+      let error =
+         validate_handshake_protocol(&handshake, "127.0.0.1:6881".parse().unwrap()).unwrap_err();
 
       assert!(matches!(
          error,
