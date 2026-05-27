@@ -418,9 +418,11 @@ where
 #[cfg(test)]
 mod tests {
 
+   use std::net::{IpAddr, Ipv4Addr};
+
    use tracing_test::traced_test;
 
-   use super::HttpTracker;
+   use super::{HttpTracker, TrackerResponse};
    use crate::{
       metainfo::MetaInfo,
       peer::PeerId,
@@ -429,6 +431,35 @@ mod tests {
       },
       tracker::TrackerBase,
    };
+
+   #[test]
+   fn tracker_response_when_peers_are_non_compact_then_deserializes_peer_dictionaries() {
+      let response = b"d8:intervali1800e5:peersld2:ip9:127.0.0.17:peer id20:-TR2940-6wfG2wk6wWLc4:porti6881eeee";
+
+      let response: TrackerResponse = serde_bencode::from_bytes(response).unwrap();
+
+      assert_eq!(response.interval, Some(1800));
+      assert_eq!(response.peers.len(), 1);
+
+      let peer = &response.peers[0];
+      assert_eq!(peer.ip, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+      assert_eq!(peer.port, 6881);
+      assert_eq!(peer.id, Some(PeerId::from(*b"-TR2940-6wfG2wk6wWLc")));
+   }
+
+   #[test]
+   fn tracker_response_when_non_compact_peer_id_is_missing_then_deserializes_peer() {
+      let response = b"d5:peersld2:ip10:192.0.2.254:porti51413eeee";
+
+      let response: TrackerResponse = serde_bencode::from_bytes(response).unwrap();
+
+      assert_eq!(response.peers.len(), 1);
+
+      let peer = &response.peers[0];
+      assert_eq!(peer.ip, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 25)));
+      assert_eq!(peer.port, 51413);
+      assert_eq!(peer.id, None);
+   }
 
    #[tokio::test]
    #[ignore = "external-network test: reaches public HTTP trackers"]
