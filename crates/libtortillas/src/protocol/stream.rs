@@ -221,14 +221,33 @@ impl PeerStream {
       }
    }
 
-   /// Splits the PeerStream into separate reader and writer halves
+   /// Splits the PeerStream into separate reader and writer halves.
+   ///
+   /// Panics if `read_buffer` contains bytes buffered by `PeerRecv::recv()`.
+   /// Callers must split before using buffered reads, or ensure
+   /// `recv_handshake_message()` and other direct reads did not leave data for
+   /// `PeerRecv::recv()` to process.
    pub fn split(self) -> (PeerReader, PeerWriter) {
       match self {
-         PeerStream::Tcp { stream, .. } => {
+         PeerStream::Tcp {
+            stream,
+            read_buffer,
+         } => {
+            assert!(
+               read_buffer.is_empty(),
+               "PeerStream::split would discard buffered read data"
+            );
             let (reader, writer) = stream.into_split();
             (PeerReader::Tcp(reader), PeerWriter::Tcp(writer))
          }
-         PeerStream::Utp { stream, .. } => {
+         PeerStream::Utp {
+            stream,
+            read_buffer,
+         } => {
+            assert!(
+               read_buffer.is_empty(),
+               "PeerStream::split would discard buffered read data"
+            );
             let (reader, writer) = stream.split();
             (PeerReader::Utp(reader), PeerWriter::Utp(writer))
          }

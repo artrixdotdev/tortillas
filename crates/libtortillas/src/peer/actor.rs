@@ -652,6 +652,7 @@ pub(crate) mod commands {
       }
 
       #[message(derive(Clone, Debug))]
+      #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
       pub(crate) async fn cancel_piece(&mut self, index: usize, begin: usize, length: usize) {
          if !self
             .pending_block_requests
