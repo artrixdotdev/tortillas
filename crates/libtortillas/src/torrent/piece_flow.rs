@@ -437,7 +437,9 @@ mod tests {
       })
    }
 
-   async fn test_actor(base_path: std::path::PathBuf) -> TorrentActor {
+   async fn test_actor(
+      piece_storage: PieceStorageStrategy, base_path: std::path::PathBuf,
+   ) -> TorrentActor {
       let info = test_info();
       let metainfo = test_metainfo(info.clone());
       let peer_id = testing::peer_id();
@@ -452,7 +454,7 @@ mod tests {
          utp_server: utp_server.clone(),
          tracker_server: tracker_server.clone(),
          primary_addr: None,
-         piece_storage: PieceStorageStrategy::InFile,
+         piece_storage: piece_storage.clone(),
          autostart: Some(false),
          sufficient_peers: Some(usize::MAX),
          base_path: Some(base_path.clone()),
@@ -469,7 +471,7 @@ mod tests {
          scheduler: Scheduler::spawn(Scheduler::new()),
          utp_server,
          actor_ref,
-         piece_storage: PieceStorageStrategy::InFile,
+         piece_storage,
          piece_store: PieceStoreActor::spawn(()),
          piece_manager: PieceManagerProxy::Default(FilePieceManager(Some(base_path), Some(info))),
          state: TorrentState::Downloading,
@@ -485,7 +487,7 @@ mod tests {
    #[tokio::test]
    async fn torrent_actor_when_using_in_file_storage_then_downloads_and_reads_back_piece() {
       let base_path = testing::torrent_temp_path();
-      let mut actor = test_actor(base_path.clone()).await;
+      let mut actor = test_actor(PieceStorageStrategy::InFile, base_path.clone()).await;
 
       assert!(
          actor
@@ -512,6 +514,49 @@ mod tests {
       actor.actor_ref.kill();
       actor.piece_store.kill();
       actor.scheduler.kill();
+      tokio::fs::remove_dir_all(base_path).await.unwrap();
+   }
+
+   #[tokio::test]
+   async fn torrent_actor_when_using_disk_storage_then_keeps_piece_cache_and_writes_output_file() {
+      let piece_path = testing::torrent_temp_path();
+      let base_path = testing::torrent_temp_path();
+      let mut actor = test_actor(
+         PieceStorageStrategy::Disk(piece_path.clone()),
+         base_path.clone(),
+      )
+      .await;
+
+      assert!(
+         actor
+            .write_block_to_storage(0, 0, Bytes::from_static(b"ab"))
+            .await
+      );
+      assert!(
+         actor
+            .write_block_to_storage(0, 2, Bytes::from_static(b"cd"))
+            .await
+      );
+      assert!(
+         actor
+            .validate_and_send_piece(PeerId::default(), 0, None)
+            .await
+      );
+
+      actor.bitfield.set_aliased(0, true);
+      assert_eq!(
+         actor.read_piece_block(0, 1, 2).await.unwrap(),
+         Bytes::from_static(b"bc")
+      );
+      assert_eq!(
+         tokio::fs::read(base_path.join("data.bin")).await.unwrap(),
+         b"abcd"
+      );
+
+      actor.actor_ref.kill();
+      actor.piece_store.kill();
+      actor.scheduler.kill();
+      tokio::fs::remove_dir_all(piece_path).await.unwrap();
       tokio::fs::remove_dir_all(base_path).await.unwrap();
    }
 }
