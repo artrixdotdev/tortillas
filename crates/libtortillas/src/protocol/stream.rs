@@ -516,7 +516,7 @@ mod tests {
          .await
          .expect("client should connect before timeout")
          .unwrap();
-      let mut peer_stream = PeerStream::Tcp(stream);
+      let mut peer_stream = PeerStream::tcp(stream);
 
       let received_handshake =
          timeout(Duration::from_secs(1), peer_stream.recv_handshake_message())
