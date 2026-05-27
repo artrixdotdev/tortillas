@@ -313,6 +313,14 @@ pub(crate) mod commands {
             return (index, offset, None);
          };
 
+         if length == 0 {
+            warn!(
+               index,
+               offset, length, "Peer requested block with zero length"
+            );
+            return (index, offset, None);
+         }
+
          if length > BLOCK_SIZE {
             warn!(
                index,

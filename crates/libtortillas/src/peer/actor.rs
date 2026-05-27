@@ -17,6 +17,7 @@ use kameo::{
 };
 use messages::{ExtendedMessage, ExtendedMessageType, PeerMessages};
 use stream::{PeerSend, PeerStream};
+use tokio::io::AsyncWriteExt;
 use tracing::{Span, debug, info, instrument, trace, warn};
 
 use crate::{
@@ -24,7 +25,7 @@ use crate::{
    hashes::InfoHash,
    peer::Peer,
    protocol::{stream::PeerRecv, *},
-   torrent::{self, TorrentActor},
+   torrent::{self, BLOCK_SIZE, TorrentActor},
 };
 
 const MAX_PENDING_MESSAGES: usize = 8;
@@ -512,6 +513,16 @@ impl Message<PeerMessages> for PeerActor {
                piece_index = index,
                offset, length, "Peer requested piece data"
             );
+
+            if length == 0 || length as usize > BLOCK_SIZE {
+               warn!(
+                  piece_index = index,
+                  offset, length, "Peer sent invalid request; closing connection"
+               );
+               let _ = self.stream.shutdown().await;
+               return;
+            }
+
             let (index, offset, data) = self
                .supervisor
                .ask(torrent::commands::RequestPiece {
