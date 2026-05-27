@@ -386,3 +386,139 @@ impl TorrentActor {
       }
    }
 }
+
+#[cfg(test)]
+mod tests {
+   use std::{collections::HashMap, sync::atomic::AtomicU8};
+
+   use bitvec::vec::BitVec;
+   use bytes::Bytes;
+   use kameo::actor::Spawn;
+   use kameo_actors::scheduler::Scheduler;
+   use librqbit_utp::UtpSocket;
+   use sha1::{Digest, Sha1};
+
+   use super::*;
+   use crate::{
+      hashes::{Hash, HashVec},
+      metainfo::{Info, InfoKeys, MetaInfo, TorrentFile},
+      peer::PeerId,
+      pieces::{FilePieceManager, PieceScheduler, PieceStoreActor},
+      testing,
+      torrent::actor::{PieceManagerProxy, TorrentActorArgs},
+      tracker::{Tracker, udp::UdpServer},
+   };
+
+   fn piece_hash(data: &[u8]) -> Hash<20> {
+      let mut hasher = Sha1::new();
+      hasher.update(data);
+      Hash::from_bytes(hasher.finalize().into())
+   }
+
+   fn test_info() -> Info {
+      Info {
+         name: "data.bin".to_string(),
+         piece_length: 4,
+         pieces: HashVec::from(vec![piece_hash(b"abcd")]),
+         file: InfoKeys::Single {
+            length: 4,
+            md5sum: None,
+         },
+         is_private: None,
+         publisher: None,
+         publisher_url: None,
+         source: None,
+      }
+   }
+
+   fn test_metainfo(info: Info) -> MetaInfo {
+      MetaInfo::Torrent(TorrentFile {
+         announce: Tracker::Http("http://127.0.0.1/announce".to_string()),
+         announce_list: None,
+         comment: None,
+         created_by: None,
+         creation_date: None,
+         encoding: None,
+         info,
+         url_list: None,
+      })
+   }
+
+   async fn test_actor(base_path: std::path::PathBuf) -> TorrentActor {
+      let info = test_info();
+      let metainfo = test_metainfo(info.clone());
+      let peer_id = testing::peer_id();
+      let tracker_server = UdpServer::new(None).await;
+      let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
+         .await
+         .unwrap();
+
+      let actor_ref = TorrentActor::spawn(TorrentActorArgs {
+         peer_id,
+         metainfo: metainfo.clone(),
+         utp_server: utp_server.clone(),
+         tracker_server: tracker_server.clone(),
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::InFile,
+         autostart: Some(false),
+         sufficient_peers: Some(usize::MAX),
+         base_path: Some(base_path.clone()),
+      });
+
+      TorrentActor {
+         peers: HashMap::new(),
+         trackers: HashMap::new(),
+         bitfield: BitVec::<AtomicU8>::repeat(false, info.piece_count()),
+         id: peer_id,
+         info: Some(info.clone()),
+         metainfo,
+         tracker_server,
+         scheduler: Scheduler::spawn(Scheduler::new()),
+         utp_server,
+         actor_ref,
+         piece_storage: PieceStorageStrategy::InFile,
+         piece_store: PieceStoreActor::spawn(()),
+         piece_manager: PieceManagerProxy::Default(FilePieceManager(Some(base_path), Some(info))),
+         state: TorrentState::Downloading,
+         piece_scheduler: PieceScheduler::new(1),
+         start_time: None,
+         sufficient_peers: 6,
+         autostart: false,
+         pending_start: false,
+         ready_hook: Vec::new(),
+      }
+   }
+
+   #[tokio::test]
+   async fn torrent_actor_when_using_in_file_storage_then_downloads_and_reads_back_piece() {
+      let base_path = testing::torrent_temp_path();
+      let mut actor = test_actor(base_path.clone()).await;
+
+      assert!(
+         actor
+            .write_block_to_storage(0, 0, Bytes::from_static(b"ab"))
+            .await
+      );
+      assert!(
+         actor
+            .write_block_to_storage(0, 2, Bytes::from_static(b"cd"))
+            .await
+      );
+      assert!(
+         actor
+            .validate_and_send_piece(PeerId::default(), 0, None)
+            .await
+      );
+
+      actor.bitfield.set_aliased(0, true);
+      assert_eq!(
+         actor.read_piece_block(0, 1, 2).await.unwrap(),
+         Bytes::from_static(b"bc")
+      );
+
+      actor.actor_ref.kill();
+      actor.piece_store.kill();
+      actor.scheduler.kill();
+      tokio::fs::remove_dir_all(base_path).await.unwrap();
+   }
+}
