@@ -147,6 +147,11 @@ impl FilePieceManager {
       self.write_piece_range(index, offset, &block).await
    }
 
+   /// Reads a complete piece back from the final torrent files.
+   ///
+   /// This is used by `PieceStorageStrategy::InFile` after all blocks for a
+   /// piece have arrived, so the torrent actor can hash the exact bytes that
+   /// were written to disk.
    pub(crate) async fn read_piece(&self, index: usize) -> anyhow::Result<Bytes> {
       let piece_bounds = self.piece_to_paths(index)?;
       let piece_len = piece_bounds.iter().map(|(_, _, len)| len).sum();
@@ -159,6 +164,11 @@ impl FilePieceManager {
       self.read_piece_range(index, offset, length).await
    }
 
+   /// Converts a piece-relative byte range into file-relative segments.
+   ///
+   /// A single BitTorrent piece can cross file boundaries in multi-file
+   /// torrents. This helper centralizes that mapping so in-file reads and
+   /// writes cannot drift apart.
    fn piece_range_segments(
       &self, index: usize, offset: usize, length: usize,
    ) -> anyhow::Result<Vec<(PathBuf, usize, usize)>> {

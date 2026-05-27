@@ -12,7 +12,7 @@ use crate::{
    errors::TorrentError,
    peer::commands::{CancelPiece, Have, NeedPiece},
    pieces::{PieceManager, ValidateAndRead, WriteBlock},
-   torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentState},
+   torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentState, actor::PieceManagerProxy},
    tracker::{Announce, Event, TrackerUpdate},
 };
 
@@ -157,6 +157,8 @@ impl TorrentActor {
    async fn write_block_to_storage(&self, index: usize, offset: usize, block: Bytes) -> bool {
       match &self.piece_storage {
          PieceStorageStrategy::Disk(_) => {
+            // Disk storage is the piece-cache strategy: blocks are assembled in
+            // standalone `.piece` files before being flushed to output files.
             let Ok(path) = self.get_piece_path(index) else {
                warn!(piece_index = index, "Failed to get piece path");
                return false;
@@ -183,7 +185,9 @@ impl TorrentActor {
             }
          }
          PieceStorageStrategy::InFile => match &self.piece_manager {
-            crate::torrent::actor::PieceManagerProxy::Default(manager) => {
+            // In-file storage skips the `.piece` cache and writes the incoming
+            // block straight to its final file offset.
+            PieceManagerProxy::Default(manager) => {
                match manager.write_block(index, offset, block).await {
                   Ok(()) => true,
                   Err(err) => {
@@ -197,7 +201,7 @@ impl TorrentActor {
                   }
                }
             }
-            crate::torrent::actor::PieceManagerProxy::Custom(_) => {
+            PieceManagerProxy::Custom(_) => {
                warn!(
                   piece_index = index,
                   offset, "In-file storage requires the default piece manager"
@@ -261,6 +265,8 @@ impl TorrentActor {
 
       match &self.piece_storage {
          PieceStorageStrategy::Disk(_) => {
+            // Cached pieces are validated as standalone files, then handed to
+            // the piece manager to populate the final output files.
             let Ok(path) = self.get_piece_path(index) else {
                warn!(index, "Failed to get piece path; re-requesting");
                if let Some(blocks) = previous_blocks.as_ref() {
@@ -302,8 +308,9 @@ impl TorrentActor {
             }
          }
          PieceStorageStrategy::InFile => {
-            let crate::torrent::actor::PieceManagerProxy::Default(manager) = &self.piece_manager
-            else {
+            // Blocks were already written into output files, so validation must
+            // hash the piece bytes read back from those files.
+            let PieceManagerProxy::Default(manager) = &self.piece_manager else {
                warn!(
                   index,
                   "In-file storage requires the default piece manager; re-requesting"
@@ -376,10 +383,10 @@ impl TorrentActor {
             Ok(buffer.into())
          }
          PieceStorageStrategy::InFile => match &self.piece_manager {
-            crate::torrent::actor::PieceManagerProxy::Default(manager) => {
+            PieceManagerProxy::Default(manager) => {
                manager.read_piece_block(index, offset, length).await
             }
-            crate::torrent::actor::PieceManagerProxy::Custom(_) => {
+            PieceManagerProxy::Custom(_) => {
                anyhow::bail!("in-file reads require the default piece manager")
             }
          },
