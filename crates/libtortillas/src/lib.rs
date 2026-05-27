@@ -16,6 +16,7 @@ pub(crate) mod testing {
    use tokio::fs::read_to_string;
 
    use crate::{
+      hashes::Hash,
       metainfo::{MagnetUri, MetaInfo, TorrentFile},
       peer::PeerId,
       tracker::udp::UdpServer,
@@ -80,6 +81,14 @@ pub(crate) mod testing {
 
    pub(crate) fn peer_id() -> PeerId {
       PeerId::default()
+   }
+
+   pub(crate) fn piece_hash(data: &[u8]) -> Hash<20> {
+      use sha1::{Digest, Sha1};
+
+      let mut hasher = Sha1::new();
+      hasher.update(data);
+      Hash::from_bytes(hasher.finalize().into())
    }
 
    pub(crate) async fn udp_server() -> UdpServer {

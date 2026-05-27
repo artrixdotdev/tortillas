@@ -7,12 +7,12 @@ use tokio::{
 };
 use tracing::{debug, info, trace, warn};
 
-use super::TorrentActor;
+use super::{TorrentActor, util};
 use crate::{
    errors::TorrentError,
    peer::commands::{CancelPiece, Have, NeedPiece},
    pieces::{PieceManager, ValidateAndRead, WriteBlock},
-   torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentState},
+   torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentState, actor::PieceManagerProxy},
    tracker::{Announce, Event, TrackerUpdate},
 };
 
@@ -157,6 +157,8 @@ impl TorrentActor {
    async fn write_block_to_storage(&self, index: usize, offset: usize, block: Bytes) -> bool {
       match &self.piece_storage {
          PieceStorageStrategy::Disk(_) => {
+            // Disk storage is the piece-cache strategy: blocks are assembled in
+            // standalone `.piece` files before being flushed to output files.
             let Ok(path) = self.get_piece_path(index) else {
                warn!(piece_index = index, "Failed to get piece path");
                return false;
@@ -182,13 +184,31 @@ impl TorrentActor {
                }
             }
          }
-         PieceStorageStrategy::InFile => {
-            warn!(
-               piece_index = index,
-               offset, "In-file block writes are not implemented yet"
-            );
-            false
-         }
+         PieceStorageStrategy::InFile => match &self.piece_manager {
+            // In-file storage skips the `.piece` cache and writes the incoming
+            // block straight to its final file offset.
+            PieceManagerProxy::Default(manager) => {
+               match manager.write_block(index, offset, block).await {
+                  Ok(()) => true,
+                  Err(err) => {
+                     warn!(
+                        ?err,
+                        piece_index = index,
+                        offset,
+                        "Failed to write in-file block"
+                     );
+                     false
+                  }
+               }
+            }
+            PieceManagerProxy::Custom(_) => {
+               warn!(
+                  piece_index = index,
+                  offset, "In-file storage requires the default piece manager"
+               );
+               false
+            }
+         },
       }
    }
 
@@ -245,6 +265,8 @@ impl TorrentActor {
 
       match &self.piece_storage {
          PieceStorageStrategy::Disk(_) => {
+            // Cached pieces are validated as standalone files, then handed to
+            // the piece manager to populate the final output files.
             let Ok(path) = self.get_piece_path(index) else {
                warn!(index, "Failed to get piece path; re-requesting");
                if let Some(blocks) = previous_blocks.as_ref() {
@@ -286,11 +308,41 @@ impl TorrentActor {
             }
          }
          PieceStorageStrategy::InFile => {
-            warn!(
-               index,
-               "In-file piece validation is not implemented yet; re-requesting"
-            );
-            return false;
+            // Blocks were already written into output files, so validation must
+            // hash the piece bytes read back from those files.
+            let PieceManagerProxy::Default(manager) = &self.piece_manager else {
+               warn!(
+                  index,
+                  "In-file storage requires the default piece manager; re-requesting"
+               );
+               return false;
+            };
+
+            let data = match manager.read_piece(index).await {
+               Ok(data) => data,
+               Err(err) => {
+                  warn!(?err, index, "Failed to read in-file piece; re-requesting");
+                  if let Some(blocks) = previous_blocks.as_ref() {
+                     self
+                        .piece_scheduler
+                        .restore_piece_blocks(index, blocks.clone());
+                  }
+                  self.request_blocks_from_peer(peer_id, 1).await;
+                  return false;
+               }
+            };
+
+            if let Err(err) = util::validate_piece_bytes(&data, info_dict.pieces[index]) {
+               warn!(
+                  ?err,
+                  index, "Failed to validate in-file piece; re-requesting"
+               );
+               if let Some(blocks) = previous_blocks {
+                  self.piece_scheduler.restore_piece_blocks(index, blocks);
+               }
+               self.request_blocks_from_peer(peer_id, 1).await;
+               return false;
+            }
          }
       }
       true
@@ -322,15 +374,196 @@ impl TorrentActor {
    pub(super) async fn read_piece_block(
       &self, index: usize, offset: usize, length: usize,
    ) -> anyhow::Result<Bytes> {
-      anyhow::ensure!(
-         matches!(self.piece_storage, PieceStorageStrategy::Disk(_)),
-         "in-file piece reads are not implemented yet"
+      match &self.piece_storage {
+         PieceStorageStrategy::Disk(_) => {
+            let mut file = File::open(self.get_piece_path(index)?).await?;
+            let mut buffer = vec![0; length];
+            file.seek(SeekFrom::Start(offset as u64)).await?;
+            file.read_exact(&mut buffer).await?;
+            Ok(buffer.into())
+         }
+         PieceStorageStrategy::InFile => match &self.piece_manager {
+            PieceManagerProxy::Default(manager) => {
+               manager.read_piece_block(index, offset, length).await
+            }
+            PieceManagerProxy::Custom(_) => {
+               anyhow::bail!("in-file reads require the default piece manager")
+            }
+         },
+      }
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use std::{collections::HashMap, sync::atomic::AtomicU8};
+
+   use bitvec::vec::BitVec;
+   use bytes::Bytes;
+   use kameo::actor::Spawn;
+   use kameo_actors::scheduler::Scheduler;
+   use librqbit_utp::UtpSocket;
+
+   use super::*;
+   use crate::{
+      hashes::HashVec,
+      metainfo::{Info, InfoKeys, MetaInfo, TorrentFile},
+      peer::PeerId,
+      pieces::{FilePieceManager, PieceScheduler, PieceStoreActor},
+      testing,
+      torrent::actor::{PieceManagerProxy, TorrentActorArgs},
+      tracker::{Tracker, udp::UdpServer},
+   };
+
+   fn test_info() -> Info {
+      Info {
+         name: "data.bin".to_string(),
+         piece_length: 4,
+         pieces: HashVec::from(vec![testing::piece_hash(b"abcd")]),
+         file: InfoKeys::Single {
+            length: 4,
+            md5sum: None,
+         },
+         is_private: None,
+         publisher: None,
+         publisher_url: None,
+         source: None,
+      }
+   }
+
+   fn test_metainfo(info: Info) -> MetaInfo {
+      MetaInfo::Torrent(TorrentFile {
+         announce: Tracker::Http("http://127.0.0.1/announce".to_string()),
+         announce_list: None,
+         comment: None,
+         created_by: None,
+         creation_date: None,
+         encoding: None,
+         info,
+         url_list: None,
+      })
+   }
+
+   async fn test_actor(
+      piece_storage: PieceStorageStrategy, base_path: std::path::PathBuf,
+   ) -> TorrentActor {
+      let info = test_info();
+      let metainfo = test_metainfo(info.clone());
+      let peer_id = testing::peer_id();
+      let tracker_server = UdpServer::new(None).await;
+      let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
+         .await
+         .unwrap();
+
+      let actor_ref = TorrentActor::spawn(TorrentActorArgs {
+         peer_id,
+         metainfo: metainfo.clone(),
+         utp_server: utp_server.clone(),
+         tracker_server: tracker_server.clone(),
+         primary_addr: None,
+         piece_storage: piece_storage.clone(),
+         autostart: Some(false),
+         sufficient_peers: Some(usize::MAX),
+         base_path: Some(base_path.clone()),
+      });
+
+      TorrentActor {
+         peers: HashMap::new(),
+         trackers: HashMap::new(),
+         bitfield: BitVec::<AtomicU8>::repeat(false, info.piece_count()),
+         id: peer_id,
+         info: Some(info.clone()),
+         metainfo,
+         tracker_server,
+         scheduler: Scheduler::spawn(Scheduler::new()),
+         utp_server,
+         actor_ref,
+         piece_storage,
+         piece_store: PieceStoreActor::spawn(()),
+         piece_manager: PieceManagerProxy::Default(FilePieceManager(Some(base_path), Some(info))),
+         state: TorrentState::Downloading,
+         piece_scheduler: PieceScheduler::new(1),
+         start_time: None,
+         sufficient_peers: 6,
+         autostart: false,
+         pending_start: false,
+         ready_hook: Vec::new(),
+      }
+   }
+
+   #[tokio::test]
+   async fn torrent_actor_when_using_in_file_storage_then_downloads_and_reads_back_piece() {
+      let base_path = testing::torrent_temp_path();
+      let mut actor = test_actor(PieceStorageStrategy::InFile, base_path.clone()).await;
+
+      assert!(
+         actor
+            .write_block_to_storage(0, 0, Bytes::from_static(b"ab"))
+            .await
+      );
+      assert!(
+         actor
+            .write_block_to_storage(0, 2, Bytes::from_static(b"cd"))
+            .await
+      );
+      assert!(
+         actor
+            .validate_and_send_piece(PeerId::default(), 0, None)
+            .await
       );
 
-      let mut file = File::open(self.get_piece_path(index)?).await?;
-      let mut buffer = vec![0; length];
-      file.seek(SeekFrom::Start(offset as u64)).await?;
-      file.read_exact(&mut buffer).await?;
-      Ok(buffer.into())
+      actor.bitfield.set_aliased(0, true);
+      assert_eq!(
+         actor.read_piece_block(0, 1, 2).await.unwrap(),
+         Bytes::from_static(b"bc")
+      );
+
+      actor.actor_ref.kill();
+      actor.piece_store.kill();
+      actor.scheduler.kill();
+      tokio::fs::remove_dir_all(base_path).await.unwrap();
+   }
+
+   #[tokio::test]
+   async fn torrent_actor_when_using_disk_storage_then_keeps_piece_cache_and_writes_output_file() {
+      let piece_path = testing::torrent_temp_path();
+      let base_path = testing::torrent_temp_path();
+      let mut actor = test_actor(
+         PieceStorageStrategy::Disk(piece_path.clone()),
+         base_path.clone(),
+      )
+      .await;
+
+      assert!(
+         actor
+            .write_block_to_storage(0, 0, Bytes::from_static(b"ab"))
+            .await
+      );
+      assert!(
+         actor
+            .write_block_to_storage(0, 2, Bytes::from_static(b"cd"))
+            .await
+      );
+      assert!(
+         actor
+            .validate_and_send_piece(PeerId::default(), 0, None)
+            .await
+      );
+
+      actor.bitfield.set_aliased(0, true);
+      assert_eq!(
+         actor.read_piece_block(0, 1, 2).await.unwrap(),
+         Bytes::from_static(b"bc")
+      );
+      assert_eq!(
+         tokio::fs::read(base_path.join("data.bin")).await.unwrap(),
+         b"abcd"
+      );
+
+      actor.actor_ref.kill();
+      actor.piece_store.kill();
+      actor.scheduler.kill();
+      tokio::fs::remove_dir_all(piece_path).await.unwrap();
+      tokio::fs::remove_dir_all(base_path).await.unwrap();
    }
 }

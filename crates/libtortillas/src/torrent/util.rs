@@ -120,6 +120,19 @@ pub async fn validate_piece_file(
    Ok(())
 }
 
+pub fn validate_piece_bytes(data: &[u8], hash: Hash<20>) -> anyhow::Result<()> {
+   let mut hasher = Sha1::new();
+   hasher.update(data);
+   let piece_hash = Hash::from_bytes(hasher.finalize().into());
+
+   ensure!(
+      piece_hash == hash,
+      "Hashed bytes were not equal to hash from info dict"
+   );
+
+   Ok(())
+}
+
 /// Creates a dir if it doesn't exist. This function can be called even if the
 /// directory exists -- if it does, nothing will happen.
 pub async fn create_dir(path: &PathBuf) -> Result<(), Error> {
