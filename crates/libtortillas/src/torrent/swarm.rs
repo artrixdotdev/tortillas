@@ -65,7 +65,7 @@ impl TorrentActor {
                      }
                   }
                   Err(err) => {
-                     trace!(error = %err, "Failed to connect to peer; exiting");
+                     trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to connect to peer; exiting");
                      return;
                   }
                }
