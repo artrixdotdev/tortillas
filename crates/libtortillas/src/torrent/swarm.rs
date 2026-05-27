@@ -10,13 +10,13 @@ use tracing::{debug, instrument, trace, warn};
 
 use super::TorrentActor;
 use crate::{
-   peer::{Peer, PeerActor, PeerId},
-   protocol::{
-      messages::{Handshake, PeerMessages},
-      stream::{PeerSend, PeerStream},
-   },
-   torrent::events::PeerConnected,
-   tracker::{Tracker, TrackerActor, TrackerUpdate},
+    peer::{Peer, PeerActor, PeerId},
+    protocol::{
+        messages::{Handshake, PeerMessages},
+        stream::{PeerSend, PeerStream, validate_handshake},
+    },
+    torrent::events::PeerConnected,
+    tracker::{Tracker, TrackerActor, TrackerUpdate},
 };
 
 const PEER_BROADCAST_CONCURRENCY: usize = 32;
@@ -42,28 +42,36 @@ impl TorrentActor {
                stream
             }
             None => {
-               let stream = PeerStream::connect(peer.socket_addr(), Some(utp_server)).await;
-               match stream {
-                  Ok(mut stream) => {
-                     match stream.send_handshake(our_id, Arc::clone(&info_hash)).await {
-                        Ok(_) => match stream.recv_handshake().await {
-                           Ok((peer_id, reserved)) => {
-                              id = Some(peer_id);
-                              peer.reserved = reserved;
-                              peer.determine_supported().await;
-                              stream
-                           }
-                           Err(err) => {
-                              trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to receive handshake from peer; exiting");
-                              return;
-                           }
-                        },
-                        Err(err) => {
-                           trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer; exiting");
-                           return;
-                        }
-                     }
-                  }
+                let stream = PeerStream::connect(peer.socket_addr(), Some(utp_server)).await;
+                match stream {
+                   Ok(mut stream) => {
+                      match stream.send_handshake(our_id, Arc::clone(&info_hash)).await {
+                         Ok(_) => match stream.recv_handshake_message().await {
+                            Ok(handshake) => {
+                               if let Err(err) = validate_handshake(
+                                  &handshake,
+                                  peer.socket_addr(),
+                                  Arc::clone(&info_hash),
+                               ) {
+                                  trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to validate peer handshake; exiting");
+                                  return;
+                               }
+                               id = Some(handshake.peer_id);
+                               peer.reserved = handshake.reserved;
+                               peer.determine_supported().await;
+                               stream
+                            }
+                            Err(err) => {
+                               trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to receive handshake from peer; exiting");
+                               return;
+                            }
+                         },
+                         Err(err) => {
+                            trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer; exiting");
+                            return;
+                         }
+                      }
+                   }
                   Err(err) => {
                      trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to connect to peer; exiting");
                      return;
