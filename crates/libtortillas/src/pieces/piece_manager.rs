@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::{
    fs::{OpenOptions, create_dir_all},
-   io::{AsyncSeekExt, AsyncWriteExt},
+   io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
 };
 use tracing::trace;
 
@@ -140,6 +140,105 @@ impl FilePieceManager {
    pub fn path(&self) -> Option<&PathBuf> {
       self.0.as_ref()
    }
+
+   pub(crate) async fn write_block(
+      &self, index: usize, offset: usize, block: Bytes,
+   ) -> anyhow::Result<()> {
+      self.write_piece_range(index, offset, &block).await
+   }
+
+   pub(crate) async fn read_piece(&self, index: usize) -> anyhow::Result<Bytes> {
+      let piece_bounds = self.piece_to_paths(index)?;
+      let piece_len = piece_bounds.iter().map(|(_, _, len)| len).sum();
+      self.read_piece_range(index, 0, piece_len).await
+   }
+
+   pub(crate) async fn read_piece_block(
+      &self, index: usize, offset: usize, length: usize,
+   ) -> anyhow::Result<Bytes> {
+      self.read_piece_range(index, offset, length).await
+   }
+
+   async fn write_piece_range(
+      &self, index: usize, offset: usize, data: &[u8],
+   ) -> anyhow::Result<()> {
+      let base_path = self.path().ok_or_else(|| anyhow::anyhow!("path not set"))?;
+      let mut remaining = data.len();
+      let mut skipped = offset;
+      let mut data_offset = 0;
+
+      for (path, file_offset, len) in self.piece_to_paths(index)? {
+         if skipped >= len {
+            skipped -= len;
+            continue;
+         }
+
+         let write_len = remaining.min(len - skipped);
+         let full_path = base_path.join(&path);
+         if let Some(parent) = full_path.parent() {
+            create_dir_all(parent).await?;
+         }
+
+         let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&full_path)
+            .await?;
+         file
+            .seek(SeekFrom::Start((file_offset + skipped) as u64))
+            .await?;
+         file
+            .write_all(&data[data_offset..data_offset + write_len])
+            .await?;
+
+         remaining -= write_len;
+         data_offset += write_len;
+         skipped = 0;
+
+         if remaining == 0 {
+            return Ok(());
+         }
+      }
+
+      anyhow::bail!("piece range exceeds file lengths")
+   }
+
+   async fn read_piece_range(
+      &self, index: usize, offset: usize, length: usize,
+   ) -> anyhow::Result<Bytes> {
+      let base_path = self.path().ok_or_else(|| anyhow::anyhow!("path not set"))?;
+      let mut remaining = length;
+      let mut skipped = offset;
+      let mut data = Vec::with_capacity(length);
+
+      for (path, file_offset, len) in self.piece_to_paths(index)? {
+         if skipped >= len {
+            skipped -= len;
+            continue;
+         }
+
+         let read_len = remaining.min(len - skipped);
+         let full_path = base_path.join(&path);
+         let mut file = OpenOptions::new().read(true).open(&full_path).await?;
+         file
+            .seek(SeekFrom::Start((file_offset + skipped) as u64))
+            .await?;
+
+         let start = data.len();
+         data.resize(start + read_len, 0);
+         file.read_exact(&mut data[start..]).await?;
+
+         remaining -= read_len;
+         skipped = 0;
+
+         if remaining == 0 {
+            return Ok(data.into());
+         }
+      }
+
+      anyhow::bail!("piece range exceeds file lengths")
+   }
 }
 
 #[async_trait]
@@ -164,47 +263,43 @@ impl PieceManager for FilePieceManager {
 
    #[allow(unused)]
    async fn recv(&self, index: usize, data: Bytes) -> anyhow::Result<()> {
-      let base_path = self.path().ok_or_else(|| anyhow::anyhow!("path not set"))?;
       let _info = self.info().ok_or_else(|| anyhow::anyhow!("info not set"))?;
-
-      let piece_bounds = self.piece_to_paths(index)?;
-      let mut data_offset = 0; // Track how much of `data` we've consumed
-
-      for (path, file_offset, len) in piece_bounds {
-         // Ensure parent directories exist
-         let full_path = base_path.join(&path);
-         if let Some(parent) = full_path.parent() {
-            create_dir_all(parent).await?;
-         }
-
-         let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&full_path)
-            .await?;
-
-         // Position file correctly
-         file.seek(SeekFrom::Start(file_offset as u64)).await?;
-
-         // Write correct slice from the piece buffer
-         file
-            .write_all(&data[data_offset..data_offset + len])
-            .await?;
-
-         data_offset += len;
-
-         trace!(index, offset = file_offset, len, path = %path.display(), "Wrote piece block to file");
-      }
-
-      Ok(())
+      self.write_piece_range(index, 0, &data).await
    }
 }
 
 #[cfg(test)]
 mod tests {
    use super::*;
-   use crate::{prelude::MetaInfo, testing};
+   use crate::{
+      hashes::{Hash, HashVec},
+      prelude::MetaInfo,
+      testing,
+   };
+
+   fn piece_hash(data: &[u8]) -> Hash<20> {
+      use sha1::{Digest, Sha1};
+
+      let mut hasher = Sha1::new();
+      hasher.update(data);
+      Hash::from_bytes(hasher.finalize().into())
+   }
+
+   fn single_file_info() -> Info {
+      Info {
+         name: "data.bin".to_string(),
+         piece_length: 4,
+         pieces: HashVec::from(vec![piece_hash(b"abcd"), piece_hash(b"ef")]),
+         file: InfoKeys::Single {
+            length: 6,
+            md5sum: None,
+         },
+         is_private: None,
+         publisher: None,
+         publisher_url: None,
+         source: None,
+      }
+   }
 
    #[tokio::test]
    async fn file_piece_manager_when_mapping_first_piece_then_returns_expected_file() {
@@ -224,5 +319,31 @@ mod tests {
 
       // The first file should always be "Big Buck Bunny.en.srt"
       assert_eq!(file_path.extension().unwrap(), "srt");
+   }
+
+   #[tokio::test]
+   async fn file_piece_manager_when_writing_blocks_then_reads_piece_back() {
+      let base_path = testing::torrent_temp_path();
+      let manager = FilePieceManager(Some(base_path.clone()), Some(single_file_info()));
+
+      manager
+         .write_block(0, 0, Bytes::from_static(b"ab"))
+         .await
+         .unwrap();
+      manager
+         .write_block(0, 2, Bytes::from_static(b"cd"))
+         .await
+         .unwrap();
+
+      assert_eq!(
+         manager.read_piece(0).await.unwrap(),
+         Bytes::from_static(b"abcd")
+      );
+      assert_eq!(
+         manager.read_piece_block(0, 1, 2).await.unwrap(),
+         Bytes::from_static(b"bc")
+      );
+
+      tokio::fs::remove_dir_all(base_path).await.unwrap();
    }
 }

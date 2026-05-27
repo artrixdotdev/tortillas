@@ -7,7 +7,7 @@ use tokio::{
 };
 use tracing::{debug, info, trace, warn};
 
-use super::TorrentActor;
+use super::{TorrentActor, util};
 use crate::{
    errors::TorrentError,
    peer::commands::{CancelPiece, Have, NeedPiece},
@@ -182,13 +182,29 @@ impl TorrentActor {
                }
             }
          }
-         PieceStorageStrategy::InFile => {
-            warn!(
-               piece_index = index,
-               offset, "In-file block writes are not implemented yet"
-            );
-            false
-         }
+         PieceStorageStrategy::InFile => match &self.piece_manager {
+            crate::torrent::actor::PieceManagerProxy::Default(manager) => {
+               match manager.write_block(index, offset, block).await {
+                  Ok(()) => true,
+                  Err(err) => {
+                     warn!(
+                        ?err,
+                        piece_index = index,
+                        offset,
+                        "Failed to write in-file block"
+                     );
+                     false
+                  }
+               }
+            }
+            crate::torrent::actor::PieceManagerProxy::Custom(_) => {
+               warn!(
+                  piece_index = index,
+                  offset, "In-file storage requires the default piece manager"
+               );
+               false
+            }
+         },
       }
    }
 
@@ -286,11 +302,40 @@ impl TorrentActor {
             }
          }
          PieceStorageStrategy::InFile => {
-            warn!(
-               index,
-               "In-file piece validation is not implemented yet; re-requesting"
-            );
-            return false;
+            let crate::torrent::actor::PieceManagerProxy::Default(manager) = &self.piece_manager
+            else {
+               warn!(
+                  index,
+                  "In-file storage requires the default piece manager; re-requesting"
+               );
+               return false;
+            };
+
+            let data = match manager.read_piece(index).await {
+               Ok(data) => data,
+               Err(err) => {
+                  warn!(?err, index, "Failed to read in-file piece; re-requesting");
+                  if let Some(blocks) = previous_blocks.as_ref() {
+                     self
+                        .piece_scheduler
+                        .restore_piece_blocks(index, blocks.clone());
+                  }
+                  self.request_blocks_from_peer(peer_id, 1).await;
+                  return false;
+               }
+            };
+
+            if let Err(err) = util::validate_piece_bytes(&data, info_dict.pieces[index]) {
+               warn!(
+                  ?err,
+                  index, "Failed to validate in-file piece; re-requesting"
+               );
+               if let Some(blocks) = previous_blocks {
+                  self.piece_scheduler.restore_piece_blocks(index, blocks);
+               }
+               self.request_blocks_from_peer(peer_id, 1).await;
+               return false;
+            }
          }
       }
       true
@@ -322,15 +367,22 @@ impl TorrentActor {
    pub(super) async fn read_piece_block(
       &self, index: usize, offset: usize, length: usize,
    ) -> anyhow::Result<Bytes> {
-      anyhow::ensure!(
-         matches!(self.piece_storage, PieceStorageStrategy::Disk(_)),
-         "in-file piece reads are not implemented yet"
-      );
-
-      let mut file = File::open(self.get_piece_path(index)?).await?;
-      let mut buffer = vec![0; length];
-      file.seek(SeekFrom::Start(offset as u64)).await?;
-      file.read_exact(&mut buffer).await?;
-      Ok(buffer.into())
+      match &self.piece_storage {
+         PieceStorageStrategy::Disk(_) => {
+            let mut file = File::open(self.get_piece_path(index)?).await?;
+            let mut buffer = vec![0; length];
+            file.seek(SeekFrom::Start(offset as u64)).await?;
+            file.read_exact(&mut buffer).await?;
+            Ok(buffer.into())
+         }
+         PieceStorageStrategy::InFile => match &self.piece_manager {
+            crate::torrent::actor::PieceManagerProxy::Default(manager) => {
+               manager.read_piece_block(index, offset, length).await
+            }
+            crate::torrent::actor::PieceManagerProxy::Custom(_) => {
+               anyhow::bail!("in-file reads require the default piece manager")
+            }
+         },
+      }
    }
 }
