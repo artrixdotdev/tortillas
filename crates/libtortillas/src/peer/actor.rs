@@ -508,6 +508,14 @@ impl Message<PeerMessages> for PeerActor {
             }
          }
          PeerMessages::Request(index, offset, length) => {
+            if self.peer.choked() {
+               trace!(
+                  piece_index = index,
+                  offset, length, "Ignoring request from choked peer"
+               );
+               return;
+            }
+
             debug!(
                piece_index = index,
                offset, length, "Peer requested piece data"
@@ -525,11 +533,13 @@ impl Message<PeerMessages> for PeerActor {
 
             match data {
                Some(data) => {
+                  let uploaded_bytes = data.len();
                   self
                      .stream
                      .send(PeerMessages::Piece(index as u32, offset as u32, data))
                      .await
                      .expect("Failed to send piece");
+                  self.peer.increment_bytes_uploaded(uploaded_bytes);
                }
                None => {
                   warn!(
@@ -680,6 +690,28 @@ pub(crate) mod commands {
                "Failed to send cancel request"
             );
          }
+      }
+
+      #[message(derive(Clone, Debug))]
+      #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+      pub(crate) async fn set_choked(&mut self, choked: bool) {
+         if self.peer.choked() == choked {
+            return;
+         }
+
+         let message = if choked {
+            PeerMessages::Choke
+         } else {
+            PeerMessages::Unchoke
+         };
+
+         if let Err(err) = self.stream.send(message).await {
+            warn!(?err, choked, "Failed to update peer choke state");
+            return;
+         }
+
+         self.peer.set_choked(choked);
+         trace!(choked, "Updated peer choke state");
       }
 
       #[message(derive(Clone, Debug))]
