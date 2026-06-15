@@ -8,10 +8,11 @@ pub(crate) const DEFAULT_UPLOAD_SLOTS: usize = 4;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ChokingDecision {
    pub(crate) unchoked: Vec<PeerId>,
+   pub(crate) optimistic: Option<PeerId>,
 }
 
 pub(crate) fn select_unchoked_peers(
-   peers: &[PeerStats], torrent_state: TorrentState, upload_slots: usize,
+   peers: &[PeerStats], torrent_state: TorrentState, upload_slots: usize, optimistic_index: usize,
 ) -> ChokingDecision {
    let mut candidates: Vec<_> = peers
       .iter()
@@ -24,12 +25,38 @@ pub(crate) fn select_unchoked_peers(
          .then_with(|| left.id.id().cmp(right.id.id()))
    });
 
+   if upload_slots == 0 {
+      return ChokingDecision {
+         unchoked: Vec::new(),
+         optimistic: None,
+      };
+   }
+
+   let reserve_optimistic_slot = candidates.len() > upload_slots;
+   let regular_slots = if reserve_optimistic_slot {
+      upload_slots.saturating_sub(1)
+   } else {
+      upload_slots
+   };
+
+   let mut unchoked: Vec<_> = candidates
+      .iter()
+      .take(regular_slots)
+      .map(|peer| peer.id)
+      .collect();
+
+   let optimistic = if reserve_optimistic_slot {
+      let optimistic_candidates = &candidates[regular_slots..];
+      let peer = optimistic_candidates[optimistic_index % optimistic_candidates.len()].id;
+      unchoked.push(peer);
+      Some(peer)
+   } else {
+      None
+   };
+
    ChokingDecision {
-      unchoked: candidates
-         .iter()
-         .take(upload_slots)
-         .map(|peer| peer.id)
-         .collect(),
+      unchoked,
+      optimistic,
    }
 }
 
@@ -75,18 +102,22 @@ mod tests {
       not_interested.interested = false;
       let peers = [stats(1), not_interested, stats(3)];
 
-      let decision = select_unchoked_peers(&peers, TorrentState::Downloading, DEFAULT_UPLOAD_SLOTS);
+      let decision =
+         select_unchoked_peers(&peers, TorrentState::Downloading, DEFAULT_UPLOAD_SLOTS, 0);
 
       assert_eq!(decision.unchoked, vec![peer_id(1), peer_id(3)]);
+      assert_eq!(decision.optimistic, None);
    }
 
    #[test]
    fn selector_respects_upload_slot_limit() {
       let peers = [stats(1), stats(2), stats(3), stats(4), stats(5)];
 
-      let decision = select_unchoked_peers(&peers, TorrentState::Downloading, DEFAULT_UPLOAD_SLOTS);
+      let decision =
+         select_unchoked_peers(&peers, TorrentState::Downloading, DEFAULT_UPLOAD_SLOTS, 0);
 
       assert_eq!(decision.unchoked.len(), DEFAULT_UPLOAD_SLOTS);
+      assert_eq!(decision.optimistic, Some(peer_id(4)));
       assert_eq!(
          decision.unchoked,
          vec![peer_id(1), peer_id(2), peer_id(3), peer_id(4)]
@@ -101,9 +132,10 @@ mod tests {
          with_rates(3, 60, 1_000),
       ];
 
-      let decision = select_unchoked_peers(&peers, TorrentState::Downloading, 2);
+      let decision = select_unchoked_peers(&peers, TorrentState::Downloading, 2, 0);
 
       assert_eq!(decision.unchoked, vec![peer_id(2), peer_id(3)]);
+      assert_eq!(decision.optimistic, Some(peer_id(3)));
    }
 
    #[test]
@@ -114,8 +146,27 @@ mod tests {
          with_rates(3, 60, 40),
       ];
 
-      let decision = select_unchoked_peers(&peers, TorrentState::Seeding, 2);
+      let decision = select_unchoked_peers(&peers, TorrentState::Seeding, 2, 0);
 
       assert_eq!(decision.unchoked, vec![peer_id(2), peer_id(3)]);
+      assert_eq!(decision.optimistic, Some(peer_id(3)));
+   }
+
+   #[test]
+   fn selector_rotates_optimistic_unchoke() {
+      let peers = [
+         with_rates(1, 100, 0),
+         with_rates(2, 90, 0),
+         with_rates(3, 80, 0),
+         with_rates(4, 70, 0),
+      ];
+
+      let first = select_unchoked_peers(&peers, TorrentState::Downloading, 2, 0);
+      let second = select_unchoked_peers(&peers, TorrentState::Downloading, 2, 1);
+
+      assert_eq!(first.unchoked, vec![peer_id(1), peer_id(2)]);
+      assert_eq!(first.optimistic, Some(peer_id(2)));
+      assert_eq!(second.unchoked, vec![peer_id(1), peer_id(3)]);
+      assert_eq!(second.optimistic, Some(peer_id(3)));
    }
 }
