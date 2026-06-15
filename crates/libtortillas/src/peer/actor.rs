@@ -22,7 +22,7 @@ use tracing::{Span, debug, info, instrument, trace, warn};
 use crate::{
    errors::PeerActorError,
    hashes::InfoHash,
-   peer::Peer,
+   peer::{Peer, PeerId},
    protocol::{stream::PeerRecv, *},
    torrent::{self, TorrentActor},
 };
@@ -31,6 +31,34 @@ const MAX_PENDING_MESSAGES: usize = 8;
 
 const PEER_KEEPALIVE_TIMEOUT: u64 = 120;
 const PEER_DISCONNECT_TIMEOUT: u64 = 240;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PeerStats {
+   pub(crate) id: PeerId,
+   pub(crate) interested: bool,
+   pub(crate) choked: bool,
+   pub(crate) download_rate: usize,
+   pub(crate) upload_rate: usize,
+   pub(crate) bytes_downloaded: usize,
+   pub(crate) bytes_uploaded: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RateSample {
+   at: Instant,
+   bytes_downloaded: usize,
+   bytes_uploaded: usize,
+}
+
+impl RateSample {
+   fn new(peer: &Peer) -> Self {
+      Self {
+         at: Instant::now(),
+         bytes_downloaded: peer.bytes_downloaded(),
+         bytes_uploaded: peer.bytes_uploaded(),
+      }
+   }
+}
 
 /// The actor that handles all communications with a given peer.
 pub(crate) struct PeerActor {
@@ -43,6 +71,7 @@ pub(crate) struct PeerActor {
 
    pending_block_requests: HashSet<(usize, usize, usize)>,
    pending_message_requests: VecDeque<PeerMessages>,
+   last_rate_sample: RateSample,
 }
 
 impl PeerActor {
@@ -306,6 +335,41 @@ impl PeerActor {
 
       self.stream.send(msg).await
    }
+
+   fn snapshot_stats(&mut self) -> Option<PeerStats> {
+      let id = self.peer.id?;
+      let now = Instant::now();
+      let bytes_downloaded = self.peer.bytes_downloaded();
+      let bytes_uploaded = self.peer.bytes_uploaded();
+      let elapsed_secs = now
+         .duration_since(self.last_rate_sample.at)
+         .as_secs()
+         .max(1) as usize;
+
+      let download_rate = bytes_downloaded.saturating_sub(self.last_rate_sample.bytes_downloaded)
+         / 1024
+         / elapsed_secs;
+      let upload_rate =
+         bytes_uploaded.saturating_sub(self.last_rate_sample.bytes_uploaded) / 1024 / elapsed_secs;
+
+      self.peer.set_download_rate(download_rate);
+      self.peer.set_upload_rate(upload_rate);
+      self.last_rate_sample = RateSample {
+         at: now,
+         bytes_downloaded,
+         bytes_uploaded,
+      };
+
+      Some(PeerStats {
+         id,
+         interested: self.peer.interested(),
+         choked: self.peer.choked(),
+         download_rate,
+         upload_rate,
+         bytes_downloaded,
+         bytes_uploaded,
+      })
+   }
 }
 
 impl Actor for PeerActor {
@@ -340,6 +404,7 @@ impl Actor for PeerActor {
          .map_err(|e| PeerActorError::SupervisorCommunicationFailed(e.to_string()))?;
 
       Ok(Self {
+         last_rate_sample: RateSample::new(&peer),
          peer,
          stream,
          supervisor,
@@ -712,6 +777,11 @@ pub(crate) mod commands {
 
          self.peer.set_choked(choked);
          trace!(choked, "Updated peer choke state");
+      }
+
+      #[message]
+      pub(crate) fn stats(&mut self) -> Option<PeerStats> {
+         self.snapshot_stats()
       }
 
       #[message(derive(Clone, Debug))]
