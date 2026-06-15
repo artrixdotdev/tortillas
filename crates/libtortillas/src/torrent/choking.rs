@@ -4,6 +4,56 @@ use crate::{
 };
 
 pub(crate) const DEFAULT_UPLOAD_SLOTS: usize = 4;
+pub(crate) const OPTIMISTIC_UNCHOKE_ROUNDS: usize = 3;
+
+#[derive(Clone, Debug)]
+pub(crate) struct ChokingScheduler {
+   upload_slots: usize,
+   optimistic_unchoke_rounds: usize,
+   optimistic_index: usize,
+   rounds_since_optimistic_rotation: usize,
+}
+
+impl Default for ChokingScheduler {
+   fn default() -> Self {
+      Self::new(DEFAULT_UPLOAD_SLOTS, OPTIMISTIC_UNCHOKE_ROUNDS)
+   }
+}
+
+impl ChokingScheduler {
+   pub(crate) fn new(upload_slots: usize, optimistic_unchoke_rounds: usize) -> Self {
+      Self {
+         upload_slots,
+         optimistic_unchoke_rounds: optimistic_unchoke_rounds.max(1),
+         optimistic_index: 0,
+         rounds_since_optimistic_rotation: 0,
+      }
+   }
+
+   pub(crate) fn decide(
+      &mut self, peers: &[PeerStats], torrent_state: TorrentState,
+   ) -> ChokingDecision {
+      let decision = select_unchoked_peers(
+         peers,
+         torrent_state,
+         self.upload_slots,
+         self.optimistic_index,
+      );
+
+      if decision.optimistic.is_some() {
+         self.rounds_since_optimistic_rotation += 1;
+         if self.rounds_since_optimistic_rotation >= self.optimistic_unchoke_rounds {
+            self.rounds_since_optimistic_rotation = 0;
+            self.optimistic_index = self.optimistic_index.wrapping_add(1);
+         }
+      } else {
+         self.rounds_since_optimistic_rotation = 0;
+         self.optimistic_index = 0;
+      }
+
+      decision
+   }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ChokingDecision {
@@ -168,5 +218,26 @@ mod tests {
       assert_eq!(first.optimistic, Some(peer_id(2)));
       assert_eq!(second.unchoked, vec![peer_id(1), peer_id(3)]);
       assert_eq!(second.optimistic, Some(peer_id(3)));
+   }
+
+   #[test]
+   fn scheduler_rotates_optimistic_unchoke_after_configured_rounds() {
+      let peers = [
+         with_rates(1, 100, 0),
+         with_rates(2, 90, 0),
+         with_rates(3, 80, 0),
+         with_rates(4, 70, 0),
+      ];
+      let mut scheduler = ChokingScheduler::new(2, 3);
+
+      let first = scheduler.decide(&peers, TorrentState::Downloading);
+      let second = scheduler.decide(&peers, TorrentState::Downloading);
+      let third = scheduler.decide(&peers, TorrentState::Downloading);
+      let fourth = scheduler.decide(&peers, TorrentState::Downloading);
+
+      assert_eq!(first.optimistic, Some(peer_id(2)));
+      assert_eq!(second.optimistic, Some(peer_id(2)));
+      assert_eq!(third.optimistic, Some(peer_id(2)));
+      assert_eq!(fourth.optimistic, Some(peer_id(3)));
    }
 }
