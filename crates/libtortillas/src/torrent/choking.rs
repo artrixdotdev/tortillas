@@ -11,15 +11,33 @@ pub(crate) struct ChokingDecision {
 }
 
 pub(crate) fn select_unchoked_peers(
-   peers: &[PeerStats], _torrent_state: TorrentState, upload_slots: usize,
+   peers: &[PeerStats], torrent_state: TorrentState, upload_slots: usize,
 ) -> ChokingDecision {
+   let mut candidates: Vec<_> = peers
+      .iter()
+      .filter(|peer| peer.interested)
+      .copied()
+      .collect();
+   candidates.sort_by(|left, right| {
+      rate_for(right, torrent_state)
+         .cmp(&rate_for(left, torrent_state))
+         .then_with(|| left.id.id().cmp(right.id.id()))
+   });
+
    ChokingDecision {
-      unchoked: peers
+      unchoked: candidates
          .iter()
-         .filter(|peer| peer.interested)
          .take(upload_slots)
          .map(|peer| peer.id)
          .collect(),
+   }
+}
+
+fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> usize {
+   match torrent_state {
+      TorrentState::Downloading => peer.download_rate,
+      TorrentState::Seeding => peer.upload_rate,
+      TorrentState::Inactive => 0,
    }
 }
 
@@ -40,6 +58,14 @@ mod tests {
          upload_rate: 0,
          bytes_downloaded: 0,
          bytes_uploaded: 0,
+      }
+   }
+
+   fn with_rates(id: u8, download_rate: usize, upload_rate: usize) -> PeerStats {
+      PeerStats {
+         download_rate,
+         upload_rate,
+         ..stats(id)
       }
    }
 
@@ -65,5 +91,31 @@ mod tests {
          decision.unchoked,
          vec![peer_id(1), peer_id(2), peer_id(3), peer_id(4)]
       );
+   }
+
+   #[test]
+   fn selector_ranks_downloading_peers_by_download_rate() {
+      let peers = [
+         with_rates(1, 30, 500),
+         with_rates(2, 90, 10),
+         with_rates(3, 60, 1_000),
+      ];
+
+      let decision = select_unchoked_peers(&peers, TorrentState::Downloading, 2);
+
+      assert_eq!(decision.unchoked, vec![peer_id(2), peer_id(3)]);
+   }
+
+   #[test]
+   fn selector_ranks_seeding_peers_by_upload_rate() {
+      let peers = [
+         with_rates(1, 100, 20),
+         with_rates(2, 10, 80),
+         with_rates(3, 60, 40),
+      ];
+
+      let decision = select_unchoked_peers(&peers, TorrentState::Seeding, 2);
+
+      assert_eq!(decision.unchoked, vec![peer_id(2), peer_id(3)]);
    }
 }
