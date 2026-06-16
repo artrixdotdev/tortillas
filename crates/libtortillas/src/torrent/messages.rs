@@ -237,6 +237,7 @@ pub(crate) mod commands {
 
       #[message(derive(Debug, Clone, Copy))]
       pub(crate) async fn rechoke(&mut self) {
+         self.rechoke_peers().await;
          self.schedule_next_rechoke().await;
       }
 
