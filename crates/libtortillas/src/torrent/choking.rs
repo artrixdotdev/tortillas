@@ -1,9 +1,12 @@
+use std::time::Duration;
+
 use crate::{
    peer::{PeerId, PeerStats},
    torrent::TorrentState,
 };
 
 pub(crate) const DEFAULT_UPLOAD_SLOTS: usize = 4;
+pub(crate) const RECHOKE_INTERVAL: Duration = Duration::from_secs(10);
 pub(crate) const OPTIMISTIC_UNCHOKE_ROUNDS: usize = 3;
 
 #[derive(Clone, Debug)]

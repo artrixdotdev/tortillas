@@ -18,12 +18,15 @@ use kameo::{
    mailbox::{MailboxReceiver, Signal},
    supervision::{RestartPolicy, SupervisionStrategy},
 };
-use kameo_actors::scheduler::Scheduler;
+use kameo_actors::scheduler::{Scheduler, SetTimeout};
 use librqbit_utp::UtpSocketUdp;
-use tokio::sync::oneshot;
+use tokio::{sync::oneshot, task::AbortHandle};
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use super::{choking::ChokingScheduler, util};
+use super::{
+   choking::{ChokingScheduler, RECHOKE_INTERVAL},
+   util,
+};
 use crate::{
    errors::TorrentError,
    hashes::InfoHash,
@@ -104,6 +107,7 @@ pub(crate) struct TorrentActor {
    pub(super) piece_scheduler: PieceScheduler,
    /// Scheduler for BEP 3 upload choking decisions.
    pub(super) choking_scheduler: ChokingScheduler,
+   pub(super) next_rechoke: Option<AbortHandle>,
 
    pub(super) start_time: Option<Instant>,
    /// The number of peers we need to have before we start downloading, defaults
@@ -237,6 +241,34 @@ impl TorrentActor {
          state = ?self.state,
          "Started torrenting process"
       );
+
+      self.schedule_next_rechoke().await;
+   }
+
+   pub(super) async fn schedule_next_rechoke(&mut self) {
+      if !matches!(
+         self.state,
+         TorrentState::Downloading | TorrentState::Seeding
+      ) {
+         return;
+      }
+
+      if let Some(next_rechoke) = self.next_rechoke.take() {
+         next_rechoke.abort();
+      }
+
+      match self
+         .scheduler
+         .ask(SetTimeout::new(
+            self.actor_ref.downgrade(),
+            RECHOKE_INTERVAL,
+            super::commands::Rechoke,
+         ))
+         .await
+      {
+         Ok(next_rechoke) => self.next_rechoke = Some(next_rechoke),
+         Err(err) => warn!(?err, "Failed to schedule next rechoke"),
+      }
    }
 
    pub(super) fn send_ready_hooks(&mut self) {
@@ -485,6 +517,7 @@ impl Actor for TorrentActor {
          state: TorrentState::default(),
          piece_scheduler: PieceScheduler::new(piece_count),
          choking_scheduler: ChokingScheduler::default(),
+         next_rechoke: None,
          start_time: None,
          sufficient_peers: sufficient_peers.unwrap_or(6),
          autostart: autostart.unwrap_or(true),
@@ -513,6 +546,9 @@ impl Actor for TorrentActor {
       }
       for tracker in self.trackers.values() {
          tracker.kill();
+      }
+      if let Some(next_rechoke) = self.next_rechoke.take() {
+         next_rechoke.abort();
       }
       self.piece_store.kill();
       self.scheduler.kill();
@@ -774,6 +810,7 @@ mod tests {
          state: TorrentState::Inactive,
          piece_scheduler,
          choking_scheduler: ChokingScheduler::default(),
+         next_rechoke: None,
          start_time: None,
          sufficient_peers: 6,
          autostart: false,

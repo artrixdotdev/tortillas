@@ -235,6 +235,11 @@ pub(crate) mod commands {
          }
       }
 
+      #[message(derive(Debug, Clone, Copy))]
+      pub(crate) async fn rechoke(&mut self) {
+         self.schedule_next_rechoke().await;
+      }
+
       /// A hook that is called when the torrent is ready to start downloading.
       /// This is used to implement
       /// [`Torrent::poll_ready`](crate::torrent::Torrent::poll_ready).
