@@ -23,7 +23,7 @@ use librqbit_utp::UtpSocketUdp;
 use tokio::sync::oneshot;
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use super::util;
+use super::{choking::ChokingScheduler, util};
 use crate::{
    errors::TorrentError,
    hashes::InfoHash,
@@ -102,6 +102,8 @@ pub(crate) struct TorrentActor {
    pub state: TorrentState,
    /// Scheduler for managing piece and block requests
    pub(super) piece_scheduler: PieceScheduler,
+   /// Scheduler for BEP 3 upload choking decisions.
+   pub(super) choking_scheduler: ChokingScheduler,
 
    pub(super) start_time: Option<Instant>,
    /// The number of peers we need to have before we start downloading, defaults
@@ -482,6 +484,7 @@ impl Actor for TorrentActor {
          piece_store,
          state: TorrentState::default(),
          piece_scheduler: PieceScheduler::new(piece_count),
+         choking_scheduler: ChokingScheduler::default(),
          start_time: None,
          sufficient_peers: sufficient_peers.unwrap_or(6),
          autostart: autostart.unwrap_or(true),
@@ -770,6 +773,7 @@ mod tests {
          )),
          state: TorrentState::Inactive,
          piece_scheduler,
+         choking_scheduler: ChokingScheduler::default(),
          start_time: None,
          sufficient_peers: 6,
          autostart: false,
