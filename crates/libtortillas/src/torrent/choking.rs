@@ -253,4 +253,27 @@ mod tests {
       assert_eq!(third.optimistic, Some(peer_id(2)));
       assert_eq!(fourth.optimistic, Some(peer_id(3)));
    }
+
+   #[test]
+   fn scheduler_resets_optimistic_rotation_without_extra_candidates() {
+      let peers = [with_rates(1, 100, 0), with_rates(2, 90, 0)];
+      let mut scheduler = ChokingScheduler::new(4, 3);
+
+      for _ in 0..4 {
+         let decision = scheduler.decide(&peers, TorrentState::Downloading);
+         assert_eq!(decision.unchoked, vec![peer_id(1), peer_id(2)]);
+         assert_eq!(decision.optimistic, None);
+      }
+
+      let crowded_peers = [
+         with_rates(1, 100, 0),
+         with_rates(2, 90, 0),
+         with_rates(3, 80, 0),
+         with_rates(4, 70, 0),
+         with_rates(5, 60, 0),
+      ];
+      let decision = scheduler.decide(&crowded_peers, TorrentState::Downloading);
+
+      assert_eq!(decision.optimistic, Some(peer_id(4)));
+   }
 }
