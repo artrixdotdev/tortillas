@@ -3,13 +3,24 @@ use std::collections::HashSet;
 use tracing::{trace, warn};
 
 use super::TorrentActor;
-use crate::peer::{
-   PeerStats,
-   commands::{SetChoked, Stats},
+use crate::{
+   peer::{
+      PeerStats,
+      commands::{SetChoked, Stats},
+   },
+   torrent::TorrentState,
 };
 
 impl TorrentActor {
    pub(super) async fn rechoke_peers(&mut self) {
+      if !matches!(
+         self.state,
+         TorrentState::Downloading | TorrentState::Seeding
+      ) {
+         trace!(state = ?self.state, "Skipping rechoke while torrent is inactive");
+         return;
+      }
+
       let peer_stats = self.peer_stats().await;
       let decision = self.choking_scheduler.decide(&peer_stats, self.state);
       let unchoked: HashSet<_> = decision.unchoked.iter().copied().collect();

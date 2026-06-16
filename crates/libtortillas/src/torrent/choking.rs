@@ -178,6 +178,16 @@ mod tests {
    }
 
    #[test]
+   fn selector_chokes_everyone_without_upload_slots() {
+      let peers = [stats(1), stats(2), stats(3)];
+
+      let decision = select_unchoked_peers(&peers, TorrentState::Downloading, 0, 0);
+
+      assert!(decision.unchoked.is_empty());
+      assert_eq!(decision.optimistic, None);
+   }
+
+   #[test]
    fn selector_ranks_downloading_peers_by_download_rate() {
       let peers = [
          with_rates(1, 30, 500),
