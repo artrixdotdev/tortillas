@@ -242,6 +242,7 @@ impl TorrentActor {
          "Started torrenting process"
       );
 
+      self.rechoke_peers().await;
       self.schedule_next_rechoke().await;
    }
 
@@ -267,7 +268,17 @@ impl TorrentActor {
          .await
       {
          Ok(next_rechoke) => self.next_rechoke = Some(next_rechoke),
-         Err(err) => warn!(?err, "Failed to schedule next rechoke"),
+         Err(err) => {
+            warn!(?err, "Failed to schedule next rechoke; using local timeout");
+            let actor_ref = self.actor_ref.clone();
+            let fallback = tokio::spawn(async move {
+               tokio::time::sleep(RECHOKE_INTERVAL).await;
+               if let Err(err) = actor_ref.tell(super::commands::Rechoke).await {
+                  warn!(?err, "Failed to run fallback rechoke");
+               }
+            });
+            self.next_rechoke = Some(fallback.abort_handle());
+         }
       }
    }
 

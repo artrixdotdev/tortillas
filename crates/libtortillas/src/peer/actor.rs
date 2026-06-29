@@ -496,17 +496,15 @@ impl Message<PeerMessages> for PeerActor {
                data_len = data.len(),
                "Received piece data"
             );
-            self.peer.increment_bytes_downloaded(data.len());
             let key = (index as usize, offset as usize, data.len());
             // Only send the piece to the supervisor if they request it or it hasn't been
             // cancelled
-            if self.pending_block_requests.contains(&key) {
-               self.pending_block_requests.remove(&key);
-
+            if self.pending_block_requests.remove(&key) {
                let Some(peer_id) = self.peer.id else {
                   warn!("Received piece from peer without id; ignoring");
                   return;
                };
+               self.peer.increment_bytes_downloaded(data.len());
                let supervisor_msg = torrent::events::IncomingPiece {
                   peer_id,
                   index: index as usize,
