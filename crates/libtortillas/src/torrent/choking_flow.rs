@@ -1,15 +1,21 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, time::Duration};
 
+use futures::{StreamExt, stream};
+use kameo::actor::ActorRef;
+use tokio::time::timeout;
 use tracing::{trace, warn};
 
 use super::TorrentActor;
 use crate::{
    peer::{
-      PeerStats,
+      PeerActor, PeerStats,
       commands::{SetChoked, Stats},
    },
    torrent::TorrentState,
 };
+
+const PEER_STATS_CONCURRENCY: usize = 32;
+const PEER_STATS_TIMEOUT: Duration = Duration::from_millis(250);
 
 impl TorrentActor {
    pub(super) async fn rechoke_peers(&mut self) {
@@ -48,20 +54,34 @@ impl TorrentActor {
    }
 
    async fn peer_stats(&self) -> Vec<PeerStats> {
-      let mut snapshots = Vec::with_capacity(self.peers.len());
+      let actor_refs: Vec<(crate::peer::PeerId, ActorRef<PeerActor>)> = self
+         .peers
+         .iter()
+         .filter(|(_, actor)| actor.is_alive())
+         .map(|(peer_id, actor)| (*peer_id, actor.clone()))
+         .collect();
 
-      for (peer_id, actor) in &self.peers {
-         if !actor.is_alive() {
-            continue;
-         }
-
-         match actor.ask(Stats).await {
-            Ok(Some(stats)) => snapshots.push(stats),
-            Ok(None) => trace!(%peer_id, "Peer stats unavailable"),
-            Err(err) => warn!(?err, %peer_id, "Failed to collect peer stats"),
-         }
-      }
-
-      snapshots
+      stream::iter(actor_refs)
+         .map(|(peer_id, actor)| async move {
+            match timeout(PEER_STATS_TIMEOUT, actor.ask(Stats)).await {
+               Ok(Ok(Some(stats))) => Some(stats),
+               Ok(Ok(None)) => {
+                  trace!(%peer_id, "Peer stats unavailable");
+                  None
+               }
+               Ok(Err(err)) => {
+                  warn!(?err, %peer_id, "Failed to collect peer stats");
+                  None
+               }
+               Err(_) => {
+                  trace!(%peer_id, "Timed out collecting peer stats");
+                  None
+               }
+            }
+         })
+         .buffer_unordered(PEER_STATS_CONCURRENCY)
+         .filter_map(std::future::ready)
+         .collect()
+         .await
    }
 }

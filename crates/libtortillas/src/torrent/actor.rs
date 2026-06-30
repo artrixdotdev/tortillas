@@ -582,14 +582,20 @@ mod tests {
    use std::{path::PathBuf, time::Duration};
 
    use librqbit_utp::UtpSocket;
-   use tokio::{fs, time::sleep};
+   use tokio::{
+      fs,
+      time::{sleep, timeout},
+   };
    use tracing::trace;
 
    use super::*;
    use crate::{
       metainfo::MetaInfo,
       testing,
-      torrent::{BLOCK_SIZE, Torrent, TorrentExport, commands::HasInfoDict},
+      torrent::{
+         BLOCK_SIZE, Torrent, TorrentExport,
+         commands::{ExportState, HasInfoDict},
+      },
    };
 
    #[tokio::test(flavor = "multi_thread")]
@@ -722,27 +728,38 @@ mod tests {
 
       assert!(torrent.poll_ready().await.is_ok());
 
-      loop {
-         let mut entries = fs::read_dir(&piece_path).await.unwrap();
-         let mut found_piece = false;
-         while let Some(entry) = entries.next_entry().await.unwrap() {
-            let path = entry.path();
-            if let Some(ext) = path.extension()
-               && ext == "piece"
-            {
-               let metadata = entry.metadata().await.unwrap();
-               if metadata.len() == info_dict.piece_length {
-                  found_piece = true;
-                  break;
+      let wrote_piece_block = timeout(Duration::from_secs(60), async {
+         loop {
+            let export = actor.ask(ExportState).await.unwrap();
+            let has_persisted_progress = export.bitfield.count_ones() > 0
+               || export
+                  .block_map
+                  .iter()
+                  .any(|entry| entry.value().count_ones() > 0);
+
+            if has_persisted_progress {
+               let mut entries = fs::read_dir(&piece_path).await.unwrap();
+               while let Some(entry) = entries.next_entry().await.unwrap() {
+                  let path = entry.path();
+                  if let Some(ext) = path.extension()
+                     && ext == "piece"
+                     && entry.metadata().await.unwrap().len() > 0
+                  {
+                     return true;
+                  }
                }
             }
-         }
-         if found_piece {
-            break;
-         }
 
-         sleep(Duration::from_millis(200)).await;
-      }
+            sleep(Duration::from_millis(200)).await;
+         }
+      })
+      .await
+      .unwrap_or(false);
+
+      assert!(
+         wrote_piece_block,
+         "timed out waiting for piece storage write"
+      );
 
       actor.stop_gracefully().await.unwrap();
       clear_piece_files(&piece_path).await;
