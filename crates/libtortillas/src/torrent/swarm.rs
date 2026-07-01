@@ -13,7 +13,7 @@ use crate::{
    peer::{Peer, PeerActor, PeerId},
    protocol::{
       messages::{Handshake, PeerMessages},
-      stream::{PeerSend, PeerStream},
+      stream::{PeerSend, PeerStream, validate_handshake},
    },
    torrent::events::PeerConnected,
    tracker::{Tracker, TrackerActor, TrackerUpdate},
@@ -46,10 +46,18 @@ impl TorrentActor {
                match stream {
                   Ok(mut stream) => {
                      match stream.send_handshake(our_id, Arc::clone(&info_hash)).await {
-                        Ok(_) => match stream.recv_handshake().await {
-                           Ok((peer_id, reserved)) => {
-                              id = Some(peer_id);
-                              peer.reserved = reserved;
+                        Ok(_) => match stream.recv_handshake_message().await {
+                           Ok(handshake) => {
+                              if let Err(err) = validate_handshake(
+                                 &handshake,
+                                 peer.socket_addr(),
+                                 Arc::clone(&info_hash),
+                              ) {
+                                 trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to validate peer handshake; exiting");
+                                 return;
+                              }
+                              id = Some(handshake.peer_id);
+                              peer.reserved = handshake.reserved;
                               peer.determine_supported().await;
                               stream
                            }
