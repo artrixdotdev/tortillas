@@ -13,7 +13,6 @@ pub struct Settings {
    pub tracker: TrackerSettings,
 }
 
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineSettings {
    pub tcp_addr: SocketAddr,
