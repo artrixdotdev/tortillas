@@ -413,7 +413,10 @@ mod tests {
       peer::PeerId,
       pieces::{FilePieceManager, PieceScheduler, PieceStoreActor},
       testing,
-      torrent::actor::{PieceManagerProxy, TorrentActorArgs},
+      torrent::{
+         actor::{PieceManagerProxy, TorrentActorArgs},
+         choking::ChokingScheduler,
+      },
       tracker::{Tracker, udp::UdpServer},
    };
 
@@ -485,6 +488,8 @@ mod tests {
          piece_manager: PieceManagerProxy::Default(FilePieceManager(Some(base_path), Some(info))),
          state: TorrentState::Downloading,
          piece_scheduler: PieceScheduler::new(1),
+         choking_scheduler: ChokingScheduler::default(),
+         next_rechoke: None,
          start_time: None,
          sufficient_peers: 6,
          autostart: false,
