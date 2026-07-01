@@ -93,7 +93,7 @@ pub(crate) mod testing {
    }
 
    pub(crate) async fn udp_server() -> UdpServer {
-      UdpServer::new(None).await
+      UdpServer::new(None).await.unwrap()
    }
 
    pub(crate) fn init_tracing() {

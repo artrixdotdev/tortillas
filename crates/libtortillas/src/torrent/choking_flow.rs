@@ -52,6 +52,7 @@ impl TorrentActor {
 
    async fn peer_stats(&self) -> Vec<PeerStats> {
       let peer_stats_timeout = self.settings.torrent.peer_stats_timeout;
+      let peer_stats_concurrency = self.settings.torrent.peer_stats_concurrency.max(1);
       let actor_refs: Vec<(crate::peer::PeerId, ActorRef<PeerActor>)> = self
          .peers
          .iter()
@@ -77,7 +78,7 @@ impl TorrentActor {
                }
             }
          })
-         .buffer_unordered(self.settings.torrent.peer_stats_concurrency)
+         .buffer_unordered(peer_stats_concurrency)
          .filter_map(std::future::ready)
          .collect()
          .await

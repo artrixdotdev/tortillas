@@ -144,7 +144,8 @@ impl Actor for EngineActor {
          Some(udp_addr),
          settings.tracker.udp_receive_buffer_size,
       )
-      .await;
+      .await
+      .map_err(|e| EngineError::NetworkSetupFailed(format!("udp bind {udp_addr}: {e}")))?;
 
       let peer_id = peer_id.unwrap_or_default();
 

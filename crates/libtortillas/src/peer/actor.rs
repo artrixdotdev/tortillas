@@ -1,7 +1,7 @@
 use std::{
    collections::{HashMap, HashSet, VecDeque},
    sync::{Arc, atomic::AtomicU8},
-   time::Instant,
+   time::{Duration, Instant},
 };
 
 use anyhow::Context;
@@ -438,47 +438,66 @@ impl Actor for PeerActor {
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
    ) -> Result<Option<Signal<Self>>, Self::Error> {
-      // Send a BEP 3 keepalive after two minutes of silence, then disconnect
-      // only if the peer remains silent for another keepalive interval.
-      let last_message = self
-         .peer
-         .last_message_received()
-         .unwrap_or_else(Instant::now)
-         .elapsed();
-
-      if last_message > self.settings.keepalive_timeout
-         && let Err(err) = self
-            .stream
-            .send(PeerMessages::KeepAlive)
-            .await
-            .context("Peer connection closed")
-      {
-         warn!(error = %err, "Failed to send keep alive message to peer");
-         return Ok(Some(Signal::Stop));
-      }
-
-      if last_message > self.settings.disconnect_timeout {
-         let id = self.peer.id.expect("Peer ID should exist");
-         if let Err(err) = self
-            .supervisor
-            .tell(torrent::commands::KillPeer { id })
-            .await
-         {
-            warn!(error = %err, "Failed to tell supervisor to kill peer");
-         }
-         return Ok(Some(Signal::Stop));
-         // The supervisor will kill the peer manually, no need to do it
-         // ourselves.
-      }
-
       loop {
+         // Send a BEP 3 keepalive after an idle period, then disconnect only if
+         // the peer remains silent until the disconnect deadline.
+         let last_received = self
+            .peer
+            .last_message_received()
+            .unwrap_or_else(Instant::now);
+         let idle = last_received.elapsed();
+
+         if idle >= self.settings.disconnect_timeout {
+            let id = self.peer.id.expect("Peer ID should exist");
+            if let Err(err) = self
+               .supervisor
+               .tell(torrent::commands::KillPeer { id })
+               .await
+            {
+               warn!(error = %err, "Failed to tell supervisor to kill peer");
+            }
+            // The supervisor will kill the peer manually, no need to do it
+            // ourselves.
+            return Ok(Some(Signal::Stop));
+         }
+
+         let keepalive_sent = self
+            .peer
+            .last_message_sent()
+            .is_some_and(|last_sent| last_sent >= last_received);
+         if idle >= self.settings.keepalive_timeout && !keepalive_sent {
+            if let Err(err) = self
+               .stream
+               .send(PeerMessages::KeepAlive)
+               .await
+               .context("Peer connection closed")
+            {
+               warn!(error = %err, "Failed to send keep alive message to peer");
+               return Ok(Some(Signal::Stop));
+            }
+            self.peer.update_last_message_sent();
+         }
+
+         let next_idle_deadline = if keepalive_sent || idle >= self.settings.keepalive_timeout {
+            self.settings.disconnect_timeout
+         } else {
+            self
+               .settings
+               .keepalive_timeout
+               .min(self.settings.disconnect_timeout)
+         };
+         let next_idle_check = next_idle_deadline
+            .saturating_sub(idle)
+            .max(Duration::from_millis(1));
+
          tokio::select! {
             signal = mailbox_rx.recv() => return Ok(signal),
             msg = self.stream.recv() => {
                if let Some(signal) = self.check_message_signal(actor_ref.clone(), msg) {
                   return Ok(Some(signal));
                }
-            }
+            },
+            _ = tokio::time::sleep(next_idle_check) => {}
          }
       }
    }

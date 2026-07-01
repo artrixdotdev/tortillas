@@ -474,8 +474,8 @@ impl Actor for TorrentActor {
       let scheduler = Scheduler::supervise_with(&us, Scheduler::new)
          .restart_policy(RestartPolicy::Permanent)
          .restart_limit(
-            settings.torrent.scheduler_restart_limit,
-            settings.torrent.scheduler_restart_period,
+            settings.torrent.scheduler_restart.limit,
+            settings.torrent.scheduler_restart.period,
          )
          .spawn()
          .await;
@@ -498,8 +498,8 @@ impl Actor for TorrentActor {
          )
          .restart_policy(RestartPolicy::Transient)
          .restart_limit(
-            settings.torrent.tracker_restart_limit,
-            settings.torrent.tracker_restart_period,
+            settings.torrent.tracker_restart.limit,
+            settings.torrent.tracker_restart.period,
          )
          .spawn()
          .await;
@@ -524,8 +524,8 @@ impl Actor for TorrentActor {
       let piece_store = PieceStoreActor::supervise(&us, ())
          .restart_policy(RestartPolicy::Permanent)
          .restart_limit(
-            settings.torrent.piece_store_restart_limit,
-            settings.torrent.piece_store_restart_period,
+            settings.torrent.piece_store_restart.limit,
+            settings.torrent.piece_store_restart.period,
          )
          .spawn()
          .await;

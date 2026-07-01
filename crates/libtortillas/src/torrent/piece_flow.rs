@@ -456,7 +456,7 @@ mod tests {
       let info = test_info();
       let metainfo = test_metainfo(info.clone());
       let peer_id = testing::peer_id();
-      let tracker_server = UdpServer::new(None).await;
+      let tracker_server = UdpServer::new(None).await.unwrap();
       let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
          .await
          .unwrap();

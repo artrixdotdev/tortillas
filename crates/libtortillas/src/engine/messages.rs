@@ -118,8 +118,8 @@ pub(crate) mod commands {
          )
          .restart_policy(RestartPolicy::Permanent)
          .restart_limit(
-            self.settings.engine.torrent_restart_limit,
-            self.settings.engine.torrent_restart_period,
+            self.settings.engine.torrent_restart.limit,
+            self.settings.engine.torrent_restart.period,
          )
          .spawn_with_mailbox(match self.settings.engine.torrent_mailbox_size {
             0 => {

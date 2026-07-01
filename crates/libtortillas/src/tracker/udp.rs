@@ -356,7 +356,7 @@ impl UdpServer {
    /// trackers with a singular [UdpSocket]
    ///
    /// Only fails if the `addr` is in use
-   pub async fn new(addr: Option<SocketAddr>) -> Self {
+   pub async fn new(addr: Option<SocketAddr>) -> Result<Self> {
       Self::new_with_receive_buffer_size(addr, TrackerSettings::default().udp_receive_buffer_size)
          .await
    }
@@ -364,9 +364,13 @@ impl UdpServer {
    /// Creates a new UDP Server with a custom receive buffer size.
    pub async fn new_with_receive_buffer_size(
       addr: Option<SocketAddr>, receive_buffer_size: usize,
-   ) -> Self {
+   ) -> Result<Self> {
       let addr = addr.unwrap_or(SocketAddr::from_str("0.0.0.0:0").unwrap());
-      let socket = Arc::new(UdpSocket::bind(addr).await.unwrap());
+      let socket = Arc::new(
+         UdpSocket::bind(addr)
+            .await
+            .map_err(TrackerActorError::Network)?,
+      );
 
       let receiver = UdpServer {
          response_channels: Arc::new(DashMap::new()),
@@ -375,7 +379,7 @@ impl UdpServer {
 
       // Start the message receiving task
       receiver.start_receiver_task(receive_buffer_size).await;
-      receiver
+      Ok(receiver)
    }
 
    pub fn local_addr(&self) -> SocketAddr {
@@ -383,14 +387,14 @@ impl UdpServer {
    }
 
    /// Register a transaction ID with a response channel
-   async fn register_transaction(
+   fn register_transaction(
       &self, transaction_id: TransactionId, sender: mpsc::UnboundedSender<(usize, TrackerResponse)>,
    ) {
       self.response_channels.insert(transaction_id, sender);
    }
 
    /// Unregister a transaction ID
-   pub async fn unregister_transaction(&self, transaction_id: &TransactionId) {
+   pub fn unregister_transaction(&self, transaction_id: &TransactionId) {
       self.response_channels.remove(transaction_id);
    }
 
@@ -455,6 +459,35 @@ impl UdpServer {
          })?;
 
       Ok(())
+   }
+}
+
+struct TransactionRegistration {
+   server: UdpServer,
+   transaction_id: TransactionId,
+   active: bool,
+}
+
+impl TransactionRegistration {
+   fn new(server: UdpServer, transaction_id: TransactionId) -> Self {
+      Self {
+         server,
+         transaction_id,
+         active: true,
+      }
+   }
+
+   fn unregister(mut self) {
+      self.server.unregister_transaction(&self.transaction_id);
+      self.active = false;
+   }
+}
+
+impl Drop for TransactionRegistration {
+   fn drop(&mut self) {
+      if self.active {
+         self.server.unregister_transaction(&self.transaction_id);
+      }
    }
 }
 
@@ -587,7 +620,7 @@ impl UdpTracker {
       let server = match server {
          Some(receiver) => receiver,
          None => {
-            UdpServer::new_with_receive_buffer_size(None, settings.udp_receive_buffer_size).await
+            UdpServer::new_with_receive_buffer_size(None, settings.udp_receive_buffer_size).await?
          }
       };
 
@@ -703,14 +736,14 @@ impl UdpTracker {
 
       self
          .server
-         .register_transaction(*transaction_id, response_tx)
-         .await;
+         .register_transaction(*transaction_id, response_tx);
+      let registration = TransactionRegistration::new(self.server.clone(), *transaction_id);
 
       // Send the message through the shared message receiver
       let send_result = self.server.send_message(&message_bytes, self.addr).await;
 
       if let Err(err) = send_result {
-         self.server.unregister_transaction(transaction_id).await;
+         registration.unregister();
          return Err(RetryError::Permanent(err));
       }
 
@@ -722,11 +755,9 @@ impl UdpTracker {
           "Sent message to tracker"
       );
 
-      let response = self
+      self
          .recv_registered_response(transaction_id, &mut response_rx)
-         .await;
-      self.server.unregister_transaction(transaction_id).await;
-      response
+         .await
    }
 
    /// Sends a message with exponential backoff to a tracker. Retry timing is

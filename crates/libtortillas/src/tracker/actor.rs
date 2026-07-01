@@ -145,8 +145,19 @@ impl Actor for TrackerActor {
 #[messages]
 impl TrackerActor {
    async fn schedule_next_announce(&mut self) {
-      let delay = Duration::from_secs(self.tracker.interval() as u64)
+      let interval = self.tracker.interval();
+      let delay = if interval == usize::MAX || interval == u32::MAX as usize {
+         self.settings.fallback_announce_interval
+      } else {
+         Duration::from_secs(interval as u64)
+      };
+      let maximum_announce_interval = self
+         .settings
+         .maximum_announce_interval
          .max(self.settings.minimum_announce_interval);
+      let delay = delay
+         .max(self.settings.minimum_announce_interval)
+         .min(maximum_announce_interval);
       if let Some(next_announce) = self.next_announce.take() {
          next_announce.abort();
       }

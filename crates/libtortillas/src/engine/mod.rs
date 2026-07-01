@@ -114,23 +114,42 @@ impl Engine {
       /// instance can have in queue.
       ///
       /// If `Some(0)` is provided, the mailbox will be unbounded (no limit).
-      /// If `None` is provided, a sensible default is used.
+      /// If `Some(_)` is provided, it overrides
+      /// [`Settings::engine.
+      /// torrent_mailbox_size`](crate::settings::EngineSettings::torrent_mailbox_size).
+      /// If `None` is provided, the supplied [`Settings`] value is
+      /// preserved.
       ///
       /// Higher values increase memory usage but reduce sender backpressure
       /// when the mailbox is busy, which can improve throughput. Lower values
       /// do the inverse.
       ///
-      /// Default: `64` when `None` is provided.
+      /// Default: `64` through [`Settings::default`] when no custom settings
+      /// are supplied.
       mailbox_size: Option<usize>,
       /// If we autostart torrents as soon as we have [`Self::sufficient_peers`]
       /// peers connected.
-      /// Default: `true`
+      ///
+      /// If `Some(_)` is provided, it overrides
+      /// [`Settings::torrent.
+      /// autostart`](crate::settings::TorrentSettings::autostart).
+      /// If `None` is provided, the supplied [`Settings`] value is preserved.
+      ///
+      /// Default: `true` through [`Settings::default`] when no custom settings
+      /// are supplied.
       autostart: Option<bool>,
       /// How many peers we need to have before we start downloading.
       ///
       /// Is ignored if [`Self::autostart`] is `false`.
       ///
-      /// Default: `6`
+      /// If `Some(_)` is provided, it overrides
+      /// [`Settings::torrent.
+      /// sufficient_peers`](crate::settings::TorrentSettings::sufficient_peers).
+      /// If `None` is provided, the supplied [`Settings`] value is
+      /// preserved.
+      ///
+      /// Default: `6` through [`Settings::default`] when no custom settings
+      /// are supplied.
       sufficient_peers: Option<usize>,
       /// Default base path for torrents
       ///
