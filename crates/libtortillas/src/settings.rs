@@ -5,6 +5,7 @@ use std::{net::SocketAddr, time::Duration};
 /// Wire-format constants and BEP-mandated protocol values intentionally remain
 /// near the protocol code that depends on them.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Default)]
 pub struct Settings {
    pub engine: EngineSettings,
    pub torrent: TorrentSettings,
@@ -12,16 +13,6 @@ pub struct Settings {
    pub tracker: TrackerSettings,
 }
 
-impl Default for Settings {
-   fn default() -> Self {
-      Self {
-         engine: EngineSettings::default(),
-         torrent: TorrentSettings::default(),
-         peer: PeerSettings::default(),
-         tracker: TrackerSettings::default(),
-      }
-   }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineSettings {
