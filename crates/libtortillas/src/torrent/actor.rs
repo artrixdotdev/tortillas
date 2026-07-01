@@ -5,7 +5,7 @@ use std::{
    ops::ControlFlow,
    path::PathBuf,
    sync::{Arc, atomic::AtomicU8},
-   time::{Duration, Instant},
+   time::Instant,
 };
 
 use async_trait::async_trait;
@@ -23,18 +23,18 @@ use librqbit_utp::UtpSocketUdp;
 use tokio::{sync::oneshot, task::AbortHandle};
 use tracing::{debug, error, info, instrument, trace, warn};
 
-use super::{
-   choking::{ChokingScheduler, RECHOKE_INTERVAL},
-   util,
-};
+use super::{choking::ChokingScheduler, util};
 use crate::{
    errors::TorrentError,
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
    peer::{PeerActor, PeerId},
    pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
+   settings::Settings,
    torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentExport, TorrentState},
-   tracker::{Announce, Event, Tracker, TrackerActor, TrackerUpdate, udp::UdpServer},
+   tracker::{
+      Announce, Event, Tracker, TrackerActor, TrackerActorArgs, TrackerUpdate, udp::UdpServer,
+   },
 };
 
 /// A hook that is called when the torrent is ready to start downloading.
@@ -120,6 +120,7 @@ pub(crate) struct TorrentActor {
    pub(super) pending_start: bool,
 
    pub(super) ready_hook: Vec<ReadyHookSender>,
+   pub(super) settings: Settings,
 }
 
 impl fmt::Display for TorrentActor {
@@ -226,7 +227,9 @@ impl TorrentActor {
       if self.state == TorrentState::Downloading {
          let peer_ids: Vec<_> = self.peers.keys().copied().collect();
          for peer_id in peer_ids {
-            self.request_blocks_from_peer(peer_id, 32).await;
+            self
+               .request_blocks_from_peer(peer_id, self.settings.torrent.initial_peer_request_window)
+               .await;
          }
       }
 
@@ -258,11 +261,12 @@ impl TorrentActor {
          next_rechoke.abort();
       }
 
+      let rechoke_interval = self.settings.torrent.rechoke_interval;
       match self
          .scheduler
          .ask(SetTimeout::new(
             self.actor_ref.downgrade(),
-            RECHOKE_INTERVAL,
+            rechoke_interval,
             super::commands::Rechoke,
          ))
          .await
@@ -272,7 +276,7 @@ impl TorrentActor {
             warn!(?err, "Failed to schedule next rechoke; using local timeout");
             let actor_ref = self.actor_ref.clone();
             let fallback = tokio::spawn(async move {
-               tokio::time::sleep(RECHOKE_INTERVAL).await;
+               tokio::time::sleep(rechoke_interval).await;
                if let Err(err) = actor_ref.tell(super::commands::Rechoke).await {
                   warn!(?err, "Failed to run fallback rechoke");
                }
@@ -424,6 +428,9 @@ pub struct TorrentActorArgs {
    ///
    /// If not provided, torrents will use their own default paths.
    pub base_path: Option<PathBuf>,
+
+   /// Runtime behavior settings.
+   pub settings: Settings,
 }
 
 impl Actor for TorrentActor {
@@ -446,6 +453,7 @@ impl Actor for TorrentActor {
          autostart,
          sufficient_peers,
          base_path,
+         settings,
       } = args;
 
       let torrent_id = metainfo.info_hash()?;
@@ -465,7 +473,10 @@ impl Actor for TorrentActor {
 
       let scheduler = Scheduler::supervise_with(&us, Scheduler::new)
          .restart_policy(RestartPolicy::Permanent)
-         .restart_limit(3, Duration::from_secs(10))
+         .restart_limit(
+            settings.torrent.scheduler_restart_limit,
+            settings.torrent.scheduler_restart_period,
+         )
          .spawn()
          .await;
 
@@ -475,17 +486,21 @@ impl Actor for TorrentActor {
       for tracker in tracker_list {
          let actor = TrackerActor::supervise(
             &us,
-            (
-               tracker.clone(),
+            TrackerActorArgs {
+               tracker: tracker.clone(),
                peer_id,
-               tracker_server.clone(),
-               primary_addr,
-               us.clone(),
-               scheduler.clone(),
-            ),
+               server: tracker_server.clone(),
+               socket_addr: primary_addr,
+               supervisor: us.clone(),
+               scheduler: scheduler.clone(),
+               settings: settings.tracker.clone(),
+            },
          )
          .restart_policy(RestartPolicy::Transient)
-         .restart_limit(3, Duration::from_secs(60))
+         .restart_limit(
+            settings.torrent.tracker_restart_limit,
+            settings.torrent.tracker_restart_period,
+         )
          .spawn()
          .await;
 
@@ -508,7 +523,10 @@ impl Actor for TorrentActor {
       let default_manager = FilePieceManager(base_path, info.clone());
       let piece_store = PieceStoreActor::supervise(&us, ())
          .restart_policy(RestartPolicy::Permanent)
-         .restart_limit(3, Duration::from_secs(10))
+         .restart_limit(
+            settings.torrent.piece_store_restart_limit,
+            settings.torrent.piece_store_restart_period,
+         )
          .spawn()
          .await;
 
@@ -527,14 +545,18 @@ impl Actor for TorrentActor {
          piece_store,
          state: TorrentState::default(),
          piece_scheduler: PieceScheduler::new(piece_count),
-         choking_scheduler: ChokingScheduler::default(),
+         choking_scheduler: ChokingScheduler::new(
+            settings.torrent.upload_slots,
+            settings.torrent.optimistic_unchoke_rounds,
+         ),
          next_rechoke: None,
          start_time: None,
-         sufficient_peers: sufficient_peers.unwrap_or(6),
-         autostart: autostart.unwrap_or(true),
+         sufficient_peers: sufficient_peers.unwrap_or(settings.torrent.sufficient_peers),
+         autostart: autostart.unwrap_or(settings.torrent.autostart),
          pending_start: false,
          ready_hook: Vec::new(),
          piece_manager: PieceManagerProxy::Default(default_manager),
+         settings,
       })
    }
 
@@ -591,6 +613,7 @@ mod tests {
    use super::*;
    use crate::{
       metainfo::MetaInfo,
+      settings::Settings,
       testing,
       torrent::{
          BLOCK_SIZE, Torrent, TorrentExport,
@@ -625,6 +648,7 @@ mod tests {
                                   * have peers */
          sufficient_peers: Some(sufficient_peers),
          base_path: None,
+         settings: Settings::default(),
       });
 
       let torrent = Torrent::new(info_hash, actor.clone());
@@ -657,6 +681,7 @@ mod tests {
          autostart: Some(false),
          sufficient_peers: None,
          base_path: None,
+         settings: Settings::default(),
       });
 
       // Blocking loop that runs until we get an info dict
@@ -722,6 +747,7 @@ mod tests {
          autostart: None,
          sufficient_peers: None,
          base_path: Some(file_path),
+         settings: Settings::default(),
       });
 
       let torrent = Torrent::new(info_hash, actor.clone());
@@ -796,6 +822,7 @@ mod tests {
          autostart: Some(false),
          sufficient_peers: Some(usize::MAX),
          base_path: Some(file_path.clone()),
+         settings: Settings::default(),
       });
 
       // Build the bitfield with fake completed pieces
@@ -844,6 +871,7 @@ mod tests {
          autostart: false,
          pending_start: false,
          ready_hook: Vec::new(),
+         settings: Settings::default(),
       };
 
       let export = test_actor.export();

@@ -19,6 +19,7 @@ use crate::{
    hashes::InfoHash,
    peer::PeerId,
    protocol::stream::PeerStream,
+   settings::Settings,
    torrent::{PieceStorageStrategy, TorrentActor},
    tracker::udp::UdpServer,
 };
@@ -51,13 +52,8 @@ pub struct EngineActor {
 
    pub(crate) default_piece_storage_strategy: PieceStorageStrategy,
 
-   /// Mailbox size for each torrent instance
-   pub(crate) mailbox_size: usize,
-
-   /// If we autostart torrents
-   pub(crate) autostart: Option<bool>,
-   /// How many peers we need to have before we start downloading
-   pub(crate) sufficient_peers: Option<usize>,
+   /// Runtime behavior settings shared with torrent, peer, and tracker actors.
+   pub(crate) settings: Settings,
 
    pub(crate) default_base_path: Option<PathBuf>,
 }
@@ -96,21 +92,8 @@ pub struct EngineActorArgs {
    /// managed by this engine.
    pub piece_storage_strategy: PieceStorageStrategy,
 
-   /// Mailbox size for each torrent instance.
-   ///
-   /// Defaults to 64 if not provided. If set to 0, the mailbox will be
-   /// unbounded.
-   pub mailbox_size: Option<usize>,
-
-   /// Whether to automatically start torrents when they become ready.
-   ///
-   /// If not provided, defaults to `None` (use engine-level default).
-   pub autostart: Option<bool>,
-
-   /// Minimum number of peers required before starting download.
-   ///
-   /// If not provided, defaults to `None` (use engine-level default).
-   pub sufficient_peers: Option<usize>,
+   /// Runtime behavior settings.
+   pub settings: Settings,
 
    /// Default base path for torrent downloads.
    ///
@@ -144,23 +127,24 @@ impl Actor for EngineActor {
          udp_addr,
          peer_id,
          piece_storage_strategy,
-         mailbox_size,
-         autostart,
-         sufficient_peers,
+         settings,
          default_base_path,
       } = args;
 
-      let tcp_addr = tcp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
-      // Should this be port 6881?
-      let utp_addr = utp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
-      let udp_addr = udp_addr.unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
+      let tcp_addr = tcp_addr.unwrap_or(settings.engine.tcp_addr);
+      let utp_addr = utp_addr.unwrap_or(settings.engine.utp_addr);
+      let udp_addr = udp_addr.unwrap_or(settings.engine.udp_addr);
       let tcp_socket = TcpListener::bind(tcp_addr)
          .await
          .map_err(|e| EngineError::NetworkSetupFailed(format!("tcp bind {tcp_addr}: {e}")))?;
       let utp_socket = UtpSocketUdp::new_udp(utp_addr)
          .await
          .map_err(|e| EngineError::NetworkSetupFailed(format!("utp bind {utp_addr}: {e}")))?;
-      let udp_server = UdpServer::new(Some(udp_addr)).await;
+      let udp_server = UdpServer::new_with_receive_buffer_size(
+         Some(udp_addr),
+         settings.tracker.udp_receive_buffer_size,
+      )
+      .await;
 
       let peer_id = peer_id.unwrap_or_default();
 
@@ -172,9 +156,7 @@ impl Actor for EngineActor {
          peer_id,
          actor_ref,
          default_piece_storage_strategy: piece_storage_strategy,
-         mailbox_size: mailbox_size.unwrap_or(64),
-         autostart,
-         sufficient_peers,
+         settings,
          default_base_path,
       })
    }

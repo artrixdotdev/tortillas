@@ -5,6 +5,7 @@ pub mod metainfo;
 pub mod peer;
 pub mod pieces;
 pub mod protocol;
+pub mod settings;
 pub mod torrent;
 pub mod tracker;
 
@@ -119,6 +120,7 @@ pub mod prelude {
       hashes::InfoHash,
       metainfo::*,
       peer::{Peer, PeerId},
+      settings::*,
       torrent::*,
       tracker::Tracker,
    };

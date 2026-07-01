@@ -25,13 +25,9 @@ use crate::{
    hashes::InfoHash,
    peer::{Peer, PeerId},
    protocol::{stream::PeerRecv, *},
+   settings::PeerSettings,
    torrent::{self, BLOCK_SIZE, TorrentActor},
 };
-
-const MAX_PENDING_MESSAGES: usize = 8;
-
-const PEER_KEEPALIVE_TIMEOUT: u64 = 120;
-const PEER_DISCONNECT_TIMEOUT: u64 = 240;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PeerStats {
@@ -73,6 +69,7 @@ pub(crate) struct PeerActor {
    pending_block_requests: HashSet<(usize, usize, usize)>,
    pending_message_requests: VecDeque<PeerMessages>,
    last_rate_sample: RateSample,
+   settings: PeerSettings,
 }
 
 impl PeerActor {
@@ -374,13 +371,19 @@ impl PeerActor {
 }
 
 impl Actor for PeerActor {
-   type Args = (Peer, PeerStream, ActorRef<TorrentActor>, InfoHash);
+   type Args = (
+      Peer,
+      PeerStream,
+      ActorRef<TorrentActor>,
+      InfoHash,
+      PeerSettings,
+   );
    type Error = PeerActorError;
 
    /// At this point, the peer has already been handshaked with. No other
    /// messages have been sent or received from the peer.
    async fn on_start(args: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (peer, mut stream, supervisor, info_hash) = args;
+      let (peer, mut stream, supervisor, info_hash, settings) = args;
 
       info!(peer_id = %peer.id.unwrap(),  peer_addr = %stream, torrent_id = %info_hash, "Peer connected");
       let bitfield = match supervisor.ask(torrent::commands::GetBitfield).await {
@@ -410,7 +413,8 @@ impl Actor for PeerActor {
          stream,
          supervisor,
          pending_block_requests: HashSet::new(),
-         pending_message_requests: VecDeque::with_capacity(MAX_PENDING_MESSAGES),
+         pending_message_requests: VecDeque::with_capacity(settings.pending_message_capacity),
+         settings,
       })
    }
 
@@ -440,10 +444,9 @@ impl Actor for PeerActor {
          .peer
          .last_message_received()
          .unwrap_or_else(Instant::now)
-         .elapsed()
-         .as_secs();
+         .elapsed();
 
-      if last_message > PEER_KEEPALIVE_TIMEOUT
+      if last_message > self.settings.keepalive_timeout
          && let Err(err) = self
             .stream
             .send(PeerMessages::KeepAlive)
@@ -454,7 +457,7 @@ impl Actor for PeerActor {
          return Ok(Some(Signal::Stop));
       }
 
-      if last_message > PEER_DISCONNECT_TIMEOUT {
+      if last_message > self.settings.disconnect_timeout {
          let id = self.peer.id.expect("Peer ID should exist");
          if let Err(err) = self
             .supervisor

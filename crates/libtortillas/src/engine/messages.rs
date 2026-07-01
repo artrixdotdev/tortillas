@@ -1,6 +1,6 @@
 use futures::future::try_join_all;
 use kameo::{actor::Spawn, mailbox, messages, prelude::ActorRef, supervision::RestartPolicy};
-use tokio::time::{Duration, timeout};
+use tokio::time::timeout;
 use tracing::{error, warn};
 
 use super::{EngineActor, EngineExport};
@@ -11,8 +11,6 @@ use crate::{
    protocol::stream::{PeerStream, validate_handshake_protocol},
    torrent::{self, TorrentActor, TorrentActorArgs, TorrentState},
 };
-
-const INCOMING_PEER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) mod commands {
    use anyhow::anyhow;
@@ -25,19 +23,15 @@ pub(crate) mod commands {
       /// handshaked nor verified at this point.
       #[message]
       pub(crate) async fn incoming_peer(&mut self, mut stream: PeerStream) {
-         let handshake = match timeout(
-            INCOMING_PEER_HANDSHAKE_TIMEOUT,
-            stream.recv_handshake_message(),
-         )
-         .await
-         {
+         let handshake_timeout = self.settings.engine.incoming_peer_handshake_timeout;
+         let handshake = match timeout(handshake_timeout, stream.recv_handshake_message()).await {
             Ok(Ok(handshake)) => handshake,
             Ok(Err(err)) => {
                warn!(error = %err, %stream, "Failed to read incoming peer handshake");
                return;
             }
             Err(_) => {
-               warn!(%stream, timeout = ?INCOMING_PEER_HANDSHAKE_TIMEOUT, "Timed out reading incoming peer handshake");
+               warn!(%stream, timeout = ?handshake_timeout, "Timed out reading incoming peer handshake");
                return;
             }
          };
@@ -116,14 +110,18 @@ pub(crate) mod commands {
                tracker_server: self.udp_server.clone(),
                primary_addr: None,
                piece_storage: self.default_piece_storage_strategy.clone(),
-               autostart: self.autostart,
-               sufficient_peers: self.sufficient_peers,
+               autostart: None,
+               sufficient_peers: None,
                base_path: self.default_base_path.clone(),
+               settings: self.settings.clone(),
             },
          )
          .restart_policy(RestartPolicy::Permanent)
-         .restart_limit(3, Duration::from_secs(60))
-         .spawn_with_mailbox(match self.mailbox_size {
+         .restart_limit(
+            self.settings.engine.torrent_restart_limit,
+            self.settings.engine.torrent_restart_period,
+         )
+         .spawn_with_mailbox(match self.settings.engine.torrent_mailbox_size {
             0 => {
                warn!(
                   ?info_hash,

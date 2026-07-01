@@ -1,7 +1,6 @@
 use std::{
    fmt::Debug,
    net::{IpAddr, Ipv4Addr, SocketAddr},
-   str::FromStr,
    sync::{
       Arc,
       atomic::{AtomicUsize, Ordering},
@@ -25,6 +24,7 @@ use crate::{
    errors::TrackerActorError,
    hashes::InfoHash,
    peer::{Peer, PeerId},
+   settings::TrackerSettings,
    tracker::{Event, TrackerBase, TrackerStats, TrackerUpdate},
 };
 
@@ -60,7 +60,7 @@ struct TrackerRequest {
    event: Event,
    /// If we want peers in a compact format or not. Only applicable to HTTP
    /// trackers.
-   compact: Option<bool>,
+   compact: bool,
 }
 
 impl TrackerRequest {
@@ -87,7 +87,7 @@ impl TrackerRequest {
          params.push(format!("event={:?}", self.event).to_lowercase());
       }
 
-      params.push(format!("compact={}", self.compact.unwrap_or(true) as u8));
+      params.push(format!("compact={}", self.compact as u8));
 
       params.join("&")
    }
@@ -95,11 +95,12 @@ impl TrackerRequest {
    #[instrument(fields(peer_tracker_addr = ?peer_tracker_addr))]
    /// peer_tracker_addr refers to the port that we are listening on (which
    /// could be TCP, uTP, etc.).
-   pub fn new(peer_tracker_addr: Option<SocketAddr>) -> TrackerRequest {
+   pub fn new(
+      peer_tracker_addr: Option<SocketAddr>, default_peer_addr: SocketAddr, compact: bool,
+   ) -> TrackerRequest {
       let addr = peer_tracker_addr.unwrap_or_else(|| {
-         let default_addr = SocketAddr::from_str("0.0.0.0:6881").unwrap();
-         debug!(default_addr = %default_addr, "Using default peer tracker address");
-         default_addr
+         debug!(default_addr = %default_peer_addr, "Using default peer tracker address");
+         default_peer_addr
       });
 
       // If the ip address is 127.0.0.1 or 0.0.0.0 just dont send it since its
@@ -119,7 +120,7 @@ impl TrackerRequest {
          downloaded: 0,
          left: Some(0),
          event: Event::Stopped,
-         compact: Some(false),
+         compact,
       }
    }
 }
@@ -134,6 +135,7 @@ pub struct HttpTracker {
    params: Arc<RwLock<TrackerRequest>>,
    interval: Arc<AtomicUsize>,
    stats: TrackerStats,
+   settings: TrackerSettings,
 }
 
 impl HttpTracker {
@@ -146,12 +148,34 @@ impl HttpTracker {
       uri: String, info_hash: InfoHash, peer_id: Option<PeerId>,
       peer_tracker_addr: Option<SocketAddr>,
    ) -> HttpTracker {
+      Self::new_with_settings(
+         uri,
+         info_hash,
+         peer_id,
+         peer_tracker_addr,
+         TrackerSettings::default(),
+      )
+   }
+
+   #[instrument(skip(info_hash, peer_id, settings), fields(
+        tracker_uri = %uri,
+        torrent_id = %info_hash,
+        peer_addr = ?peer_tracker_addr
+    ))]
+   pub fn new_with_settings(
+      uri: String, info_hash: InfoHash, peer_id: Option<PeerId>,
+      peer_tracker_addr: Option<SocketAddr>, settings: TrackerSettings,
+   ) -> HttpTracker {
       let peer_id = peer_id.unwrap_or_else(|| {
          let id = PeerId::new();
          trace!(generated_peer_id = %id, "Generated new peer ID");
          id
       });
-      let params = TrackerRequest::new(peer_tracker_addr);
+      let params = TrackerRequest::new(
+         peer_tracker_addr,
+         settings.default_peer_addr,
+         settings.http_compact_response,
+      );
 
       debug!(
           peer_id = %peer_id,
@@ -166,6 +190,7 @@ impl HttpTracker {
          params,
          info_hash,
          stats: TrackerStats::default(),
+         settings,
       }
    }
 
@@ -279,8 +304,8 @@ impl TrackerBase for HttpTracker {
       {
          self.params.write().await.event = Event::Stopped;
       }
-      // Best‑effort, bounded final announce
-      match timeout(std::time::Duration::from_secs(3), self.announce()).await {
+      // Best-effort, bounded final announce.
+      match timeout(self.settings.http_stop_timeout, self.announce()).await {
          Ok(Ok(_)) => debug!("Stopped tracker"),
          Ok(Err(e)) => debug!(error = %e, "Stop announce failed; ignoring"),
          Err(_) => debug!("Stop announce timed out; ignoring"),

@@ -19,9 +19,6 @@ use crate::{
    tracker::{Tracker, TrackerActor, TrackerUpdate},
 };
 
-const PEER_BROADCAST_CONCURRENCY: usize = 32;
-const TRACKER_BROADCAST_CONCURRENCY: usize = 8;
-
 impl TorrentActor {
    #[instrument(skip(self, peer, stream), fields(%self, peer_addr = ?peer.socket_addr(), torrent_id = %self.info_hash()))]
    pub(super) fn append_peer(&self, mut peer: Peer, stream: Option<PeerStream>) {
@@ -105,9 +102,17 @@ impl TorrentActor {
 
       let actor_ref = self.actor_ref.clone();
       let info_hash = self.info_hash();
+      let peer_settings = self.settings.peer.clone();
+      let peer_mailbox_size = self.settings.torrent.peer_mailbox_size;
 
       self.peers.entry(id).or_insert_with(|| {
-         PeerActor::spawn_with_mailbox((peer, stream, actor_ref, info_hash), mailbox::bounded(120))
+         PeerActor::spawn_with_mailbox(
+            (peer, stream, actor_ref, info_hash, peer_settings),
+            match peer_mailbox_size {
+               0 => mailbox::unbounded(),
+               size => mailbox::bounded(size),
+            },
+         )
       });
    }
 
@@ -125,18 +130,21 @@ impl TorrentActor {
       let mut dead_peers = Vec::new();
 
       stream::iter(actor_refs)
-         .for_each_concurrent(PEER_BROADCAST_CONCURRENCY, |(id, actor)| {
-            let msg = tell.clone();
-            async move {
-               if actor.is_alive() {
-                  if let Err(e) = actor.tell(msg).await {
-                     warn!(error = %e, peer_id = %id, "Failed to send to peer");
+         .for_each_concurrent(
+            self.settings.torrent.peer_broadcast_concurrency,
+            |(id, actor)| {
+               let msg = tell.clone();
+               async move {
+                  if actor.is_alive() {
+                     if let Err(e) = actor.tell(msg).await {
+                        warn!(error = %e, peer_id = %id, "Failed to send to peer");
+                     }
+                  } else {
+                     trace!(peer_id = %id, "Peer actor is dead, removing from peers set");
                   }
-               } else {
-                  trace!(peer_id = %id, "Peer actor is dead, removing from peers set");
                }
-            }
-         })
+            },
+         )
          .await;
 
       for (id, actor) in &self.peers {
@@ -159,7 +167,7 @@ impl TorrentActor {
       let mut dead_trackers = Vec::new();
 
       stream::iter(actor_refs)
-         .for_each_concurrent(TRACKER_BROADCAST_CONCURRENCY, |(uri, actor)| {
+          .for_each_concurrent(self.settings.torrent.tracker_broadcast_concurrency, |(uri, actor)| {
             let msg = message.clone();
             async move {
                if actor.is_alive() {
@@ -196,7 +204,7 @@ impl TorrentActor {
       let mut dead_trackers = Vec::new();
 
       stream::iter(actor_refs)
-         .for_each_concurrent(TRACKER_BROADCAST_CONCURRENCY, |(uri, actor)| {
+          .for_each_concurrent(self.settings.torrent.tracker_broadcast_concurrency, |(uri, actor)| {
             let msg = tell.clone();
             async move {
                if actor.is_alive() {

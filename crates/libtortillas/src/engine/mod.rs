@@ -51,6 +51,7 @@ use crate::{
    errors::EngineError,
    metainfo::{MetaInfo, TorrentFile},
    peer::PeerId,
+   settings::Settings,
    torrent::{PieceStorageStrategy, Torrent, TorrentExport},
 };
 
@@ -104,6 +105,9 @@ impl Engine {
       /// Strategy for storing pieces of the torrent.
       #[builder(default)]
       piece_storage_strategy: PieceStorageStrategy,
+      /// Runtime behavior settings for engine, torrent, peer, and tracker
+      /// actors.
+      settings: Option<Settings>,
       /// The mailbox size for each torrent instance.
       ///
       /// In simple terms, this is the number of messages that each torrent
@@ -134,6 +138,17 @@ impl Engine {
       #[builder(into)]
       output_path: Option<PathBuf>,
    ) -> Self {
+      let mut settings = settings.unwrap_or_default();
+      if let Some(mailbox_size) = mailbox_size {
+         settings.engine.torrent_mailbox_size = mailbox_size;
+      }
+      if let Some(autostart) = autostart {
+         settings.torrent.autostart = autostart;
+      }
+      if let Some(sufficient_peers) = sufficient_peers {
+         settings.torrent.sufficient_peers = sufficient_peers;
+      }
+
       let output_path = match output_path {
          Some(path) => {
             if path.is_absolute() {
@@ -153,9 +168,7 @@ impl Engine {
          udp_addr,
          peer_id: Some(custom_id),
          piece_storage_strategy,
-         mailbox_size,
-         autostart,
-         sufficient_peers,
+         settings,
          default_base_path: Some(output_path),
       };
 

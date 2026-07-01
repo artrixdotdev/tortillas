@@ -20,6 +20,7 @@ use super::{
 use crate::{
    errors::TrackerActorError,
    peer::PeerId,
+   settings::TrackerSettings,
    torrent::{self, TorrentActor},
 };
 
@@ -30,21 +31,34 @@ pub(crate) struct TrackerActor {
    scheduler: ActorRef<Scheduler>,
    next_announce: Option<AbortHandle>,
    actor_ref: ActorRef<Self>,
+   settings: TrackerSettings,
+}
+
+#[derive(Clone)]
+pub(crate) struct TrackerActorArgs {
+   pub(crate) tracker: Tracker,
+   pub(crate) peer_id: PeerId,
+   pub(crate) server: UdpServer,
+   pub(crate) socket_addr: SocketAddr,
+   pub(crate) supervisor: ActorRef<TorrentActor>,
+   pub(crate) scheduler: ActorRef<Scheduler>,
+   pub(crate) settings: TrackerSettings,
 }
 
 impl Actor for TrackerActor {
-   type Args = (
-      Tracker,
-      PeerId,
-      UdpServer,
-      SocketAddr,
-      ActorRef<TorrentActor>,
-      ActorRef<Scheduler>,
-   );
+   type Args = TrackerActorArgs;
    type Error = TrackerActorError;
 
    async fn on_start(state: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (tracker, peer_id, server, socket_addr, supervisor, scheduler) = state;
+      let TrackerActorArgs {
+         tracker,
+         peer_id,
+         server,
+         socket_addr,
+         supervisor,
+         scheduler,
+         settings,
+      } = state;
 
       let info_hash = supervisor
          .ask(torrent::commands::GetInfoHash)
@@ -54,12 +68,17 @@ impl Actor for TrackerActor {
       let tracker_uri = tracker.uri();
       let tracker = match tracker {
          Tracker::Udp(uri) => {
-            let udp_tracker =
-               UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
-                  .await
-                  .map_err(|_| TrackerActorError::InitializationFailed {
-                     tracker_type: format!("UDP: {uri}"),
-                  })?;
+            let udp_tracker = UdpTracker::new_with_settings(
+               uri.clone(),
+               Some(server),
+               info_hash,
+               (peer_id, socket_addr),
+               settings.clone(),
+            )
+            .await
+            .map_err(|_| TrackerActorError::InitializationFailed {
+               tracker_type: format!("UDP: {uri}"),
+            })?;
             udp_tracker.initialize().await.map_err(|_| {
                TrackerActorError::InitializationFailed {
                   tracker_type: format!("UDP: {uri}"),
@@ -68,8 +87,13 @@ impl Actor for TrackerActor {
             TrackerInstance::Udp(udp_tracker)
          }
          Tracker::Http(uri) => {
-            let http_tracker =
-               HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
+            let http_tracker = HttpTracker::new_with_settings(
+               uri.clone(),
+               info_hash,
+               Some(peer_id),
+               Some(socket_addr),
+               settings.clone(),
+            );
             http_tracker.initialize().await.map_err(|_| {
                TrackerActorError::InitializationFailed {
                   tracker_type: format!("HTTP: {uri}"),
@@ -87,7 +111,7 @@ impl Actor for TrackerActor {
       let next_announce = scheduler
          .ask(SetTimeout::new(
             actor_ref.downgrade(),
-            Duration::from_secs(0),
+            settings.initial_announce_delay,
             Announce,
          ))
          .await
@@ -99,6 +123,7 @@ impl Actor for TrackerActor {
          scheduler,
          next_announce: Some(next_announce),
          actor_ref,
+         settings,
       })
    }
 
@@ -109,7 +134,7 @@ impl Actor for TrackerActor {
          next_announce.abort();
       }
 
-      let _ = timeout(Duration::from_secs(5), self.tracker.stop())
+      let _ = timeout(self.settings.stop_timeout, self.tracker.stop())
          .await
          .inspect_err(|e| warn!(e = %e.to_string(), "Tracker stop timed out"));
 
@@ -120,17 +145,14 @@ impl Actor for TrackerActor {
 #[messages]
 impl TrackerActor {
    async fn schedule_next_announce(&mut self) {
-      let delay = self.tracker.interval().max(1) as u64;
+      let delay = Duration::from_secs(self.tracker.interval() as u64)
+         .max(self.settings.minimum_announce_interval);
       if let Some(next_announce) = self.next_announce.take() {
          next_announce.abort();
       }
       match self
          .scheduler
-         .ask(SetTimeout::new(
-            self.actor_ref.downgrade(),
-            Duration::from_secs(delay),
-            Announce,
-         ))
+         .ask(SetTimeout::new(self.actor_ref.downgrade(), delay, Announce))
          .await
       {
          Ok(next_announce) => self.next_announce = Some(next_announce),

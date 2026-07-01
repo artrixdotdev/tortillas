@@ -412,6 +412,7 @@ mod tests {
       metainfo::{Info, InfoKeys, MetaInfo, TorrentFile},
       peer::PeerId,
       pieces::{FilePieceManager, PieceScheduler, PieceStoreActor},
+      settings::Settings,
       testing,
       torrent::{
          actor::{PieceManagerProxy, TorrentActorArgs},
@@ -470,6 +471,7 @@ mod tests {
          autostart: Some(false),
          sufficient_peers: Some(usize::MAX),
          base_path: Some(base_path.clone()),
+         settings: Settings::default(),
       });
 
       TorrentActor {
@@ -495,6 +497,7 @@ mod tests {
          autostart: false,
          pending_start: false,
          ready_hook: Vec::new(),
+         settings: Settings::default(),
       }
    }
 
