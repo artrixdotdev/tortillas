@@ -252,6 +252,8 @@ impl TorrentActor {
             .await;
          self.broadcast_to_trackers(Announce).await;
          info!("Torrenting process completed, switching to seeding mode");
+         self.rechoke_peers().await;
+         self.schedule_next_rechoke().await;
       }
    }
 

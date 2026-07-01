@@ -23,7 +23,7 @@ use tracing::{Span, debug, info, instrument, trace, warn};
 use crate::{
    errors::PeerActorError,
    hashes::InfoHash,
-   peer::Peer,
+   peer::{Peer, PeerId},
    protocol::{stream::PeerRecv, *},
    torrent::{self, BLOCK_SIZE, TorrentActor},
 };
@@ -32,6 +32,34 @@ const MAX_PENDING_MESSAGES: usize = 8;
 
 const PEER_KEEPALIVE_TIMEOUT: u64 = 120;
 const PEER_DISCONNECT_TIMEOUT: u64 = 240;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PeerStats {
+   pub(crate) id: PeerId,
+   pub(crate) interested: bool,
+   pub(crate) choked: bool,
+   pub(crate) download_rate: usize,
+   pub(crate) upload_rate: usize,
+   pub(crate) bytes_downloaded: usize,
+   pub(crate) bytes_uploaded: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RateSample {
+   at: Instant,
+   bytes_downloaded: usize,
+   bytes_uploaded: usize,
+}
+
+impl RateSample {
+   fn new(peer: &Peer) -> Self {
+      Self {
+         at: Instant::now(),
+         bytes_downloaded: peer.bytes_downloaded(),
+         bytes_uploaded: peer.bytes_uploaded(),
+      }
+   }
+}
 
 /// The actor that handles all communications with a given peer.
 pub(crate) struct PeerActor {
@@ -44,6 +72,7 @@ pub(crate) struct PeerActor {
 
    pending_block_requests: HashSet<(usize, usize, usize)>,
    pending_message_requests: VecDeque<PeerMessages>,
+   last_rate_sample: RateSample,
 }
 
 impl PeerActor {
@@ -307,6 +336,41 @@ impl PeerActor {
 
       self.stream.send(msg).await
    }
+
+   fn snapshot_stats(&mut self) -> Option<PeerStats> {
+      let id = self.peer.id?;
+      let now = Instant::now();
+      let bytes_downloaded = self.peer.bytes_downloaded();
+      let bytes_uploaded = self.peer.bytes_uploaded();
+      let elapsed_secs = now
+         .duration_since(self.last_rate_sample.at)
+         .as_secs()
+         .max(1) as usize;
+
+      let download_rate = bytes_downloaded.saturating_sub(self.last_rate_sample.bytes_downloaded)
+         / 1024
+         / elapsed_secs;
+      let upload_rate =
+         bytes_uploaded.saturating_sub(self.last_rate_sample.bytes_uploaded) / 1024 / elapsed_secs;
+
+      self.peer.set_download_rate(download_rate);
+      self.peer.set_upload_rate(upload_rate);
+      self.last_rate_sample = RateSample {
+         at: now,
+         bytes_downloaded,
+         bytes_uploaded,
+      };
+
+      Some(PeerStats {
+         id,
+         interested: self.peer.interested(),
+         choked: self.peer.choked(),
+         download_rate,
+         upload_rate,
+         bytes_downloaded,
+         bytes_uploaded,
+      })
+   }
 }
 
 impl Actor for PeerActor {
@@ -341,6 +405,7 @@ impl Actor for PeerActor {
          .map_err(|e| PeerActorError::SupervisorCommunicationFailed(e.to_string()))?;
 
       Ok(Self {
+         last_rate_sample: RateSample::new(&peer),
          peer,
          stream,
          supervisor,
@@ -432,17 +497,15 @@ impl Message<PeerMessages> for PeerActor {
                data_len = data.len(),
                "Received piece data"
             );
-            self.peer.increment_bytes_downloaded(data.len());
             let key = (index as usize, offset as usize, data.len());
             // Only send the piece to the supervisor if they request it or it hasn't been
             // cancelled
-            if self.pending_block_requests.contains(&key) {
-               self.pending_block_requests.remove(&key);
-
+            if self.pending_block_requests.remove(&key) {
                let Some(peer_id) = self.peer.id else {
                   warn!("Received piece from peer without id; ignoring");
                   return;
                };
+               self.peer.increment_bytes_downloaded(data.len());
                let supervisor_msg = torrent::events::IncomingPiece {
                   peer_id,
                   index: index as usize,
@@ -509,6 +572,14 @@ impl Message<PeerMessages> for PeerActor {
             }
          }
          PeerMessages::Request(index, offset, length) => {
+            if self.peer.choked() {
+               trace!(
+                  piece_index = index,
+                  offset, length, "Ignoring request from choked peer"
+               );
+               return;
+            }
+
             debug!(
                piece_index = index,
                offset, length, "Peer requested piece data"
@@ -536,11 +607,13 @@ impl Message<PeerMessages> for PeerActor {
 
             match data {
                Some(data) => {
+                  let uploaded_bytes = data.len();
                   self
                      .stream
                      .send(PeerMessages::Piece(index as u32, offset as u32, data))
                      .await
                      .expect("Failed to send piece");
+                  self.peer.increment_bytes_uploaded(uploaded_bytes);
                }
                None => {
                   warn!(
@@ -691,6 +764,33 @@ pub(crate) mod commands {
                "Failed to send cancel request"
             );
          }
+      }
+
+      #[message(derive(Clone, Debug))]
+      #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+      pub(crate) async fn set_choked(&mut self, choked: bool) {
+         if self.peer.choked() == choked {
+            return;
+         }
+
+         let message = if choked {
+            PeerMessages::Choke
+         } else {
+            PeerMessages::Unchoke
+         };
+
+         if let Err(err) = self.stream.send(message).await {
+            warn!(?err, choked, "Failed to update peer choke state");
+            return;
+         }
+
+         self.peer.set_choked(choked);
+         trace!(choked, "Updated peer choke state");
+      }
+
+      #[message]
+      pub(crate) fn stats(&mut self) -> Option<PeerStats> {
+         self.snapshot_stats()
       }
 
       #[message(derive(Clone, Debug))]
