@@ -112,13 +112,12 @@ impl PeerActor {
             use std::io::ErrorKind::*;
             debug!(error = ?e, "Peer errored");
             match e {
-               PeerActorError::Io(e) | PeerActorError::ReceiveFailed(e) => {
-                  if e.kind() == UnexpectedEof || e.kind() == ConnectionReset {
-                     Some(Signal::Stop)
-                  } else {
-                     None
-                  }
-               }
+               PeerActorError::Io(e) | PeerActorError::ReceiveFailed(e) => match e.kind() {
+                  UnexpectedEof | ConnectionReset | ConnectionAborted => Some(Signal::Stop),
+
+                  Other | NotConnected | BrokenPipe => Some(Signal::Stop),
+                  _ => None,
+               },
                _ => None,
             }
          }
