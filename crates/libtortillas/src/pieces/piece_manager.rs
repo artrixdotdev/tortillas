@@ -1,4 +1,8 @@
-use std::{io::SeekFrom, path::PathBuf};
+use std::{
+   ffi::OsStr,
+   io::SeekFrom,
+   path::{Component, Path, PathBuf},
+};
 
 use anyhow::ensure;
 use async_trait::async_trait;
@@ -9,7 +13,34 @@ use tokio::{
 };
 use tracing::trace;
 
-use crate::metainfo::{Info, InfoKeys};
+use crate::{
+   errors::TorrentError,
+   metainfo::{Info, InfoKeys},
+};
+
+fn push_torrent_path_segment(path: &mut PathBuf, segment: &str) -> anyhow::Result<()> {
+   let mut components = Path::new(segment).components();
+   let component = components.next();
+   let has_path_separator = segment
+      .chars()
+      .any(|character| matches!(character, '/' | '\\' | ':'));
+   let is_safe_segment = matches!(component, Some(Component::Normal(name)) if name == OsStr::new(segment))
+      && components.next().is_none()
+      && !segment.is_empty()
+      && !has_path_separator;
+
+   if !is_safe_segment {
+      return Err(
+         TorrentError::UnsafeOutputPath {
+            path: segment.to_string(),
+         }
+         .into(),
+      );
+   }
+
+   path.push(segment);
+   Ok(())
+}
 
 #[allow(unused)]
 #[async_trait]
@@ -83,7 +114,10 @@ pub trait PieceManager: Send + Sync {
                let available_in_file = file_len - offset_in_file;
                let take_len = remaining.min(available_in_file);
 
-               results.push((PathBuf::from(&info.name), offset_in_file, take_len));
+               let mut relative_path = PathBuf::new();
+               push_torrent_path_segment(&mut relative_path, &info.name)?;
+
+               results.push((relative_path, offset_in_file, take_len));
 
                remaining -= take_len;
             }
@@ -107,11 +141,11 @@ pub trait PieceManager: Send + Sync {
 
                if file.path.first().map(|component| component.as_str()) != Some(info.name.as_str())
                {
-                  relative_path.push(&info.name);
+                  push_torrent_path_segment(&mut relative_path, &info.name)?;
                }
 
                for component in &file.path {
-                  relative_path.push(component);
+                  push_torrent_path_segment(&mut relative_path, component)?;
                }
 
                results.push((relative_path, offset_in_file, take_len));
@@ -278,7 +312,7 @@ impl PieceManager for FilePieceManager {
 #[cfg(test)]
 mod tests {
    use super::*;
-   use crate::{hashes::HashVec, prelude::MetaInfo, testing};
+   use crate::{hashes::HashVec, metainfo::InfoFile, prelude::MetaInfo, testing};
 
    fn single_file_info() -> Info {
       Info {
@@ -291,6 +325,25 @@ mod tests {
          file: InfoKeys::Single {
             length: 6,
             md5sum: None,
+         },
+         is_private: None,
+         publisher: None,
+         publisher_url: None,
+         source: None,
+      }
+   }
+
+   fn multi_file_info(path: Vec<&str>) -> Info {
+      Info {
+         name: "bundle".to_string(),
+         piece_length: 4,
+         pieces: HashVec::from(vec![testing::piece_hash(b"abcd")]),
+         file: InfoKeys::Multi {
+            files: vec![InfoFile {
+               length: 4,
+               path: path.into_iter().map(ToOwned::to_owned).collect(),
+               md5sum: None,
+            }],
          },
          is_private: None,
          publisher: None,
@@ -343,5 +396,66 @@ mod tests {
       );
 
       tokio::fs::remove_dir_all(base_path).await.unwrap();
+   }
+
+   #[tokio::test]
+   async fn file_piece_manager_when_single_file_name_is_unsafe_then_rejects_path() {
+      for unsafe_name in [
+         "",
+         ".",
+         "..",
+         "../escape.bin",
+         "/tmp/escape.bin",
+         "dir/escape.bin",
+         "dir\\escape.bin",
+         "C:\\tmp\\escape.bin",
+      ] {
+         let mut info = single_file_info();
+         info.name = unsafe_name.to_string();
+
+         let manager = FilePieceManager(Some(testing::fixture_path("")), Some(info));
+         let err = manager.piece_to_paths(0).unwrap_err();
+
+         assert!(
+            err.downcast_ref::<TorrentError>().is_some(),
+            "expected typed unsafe output path error for {unsafe_name:?}, got {err:?}",
+         );
+      }
+   }
+
+   #[tokio::test]
+   async fn file_piece_manager_when_multi_file_path_is_safe_then_maps_inside_torrent_root() {
+      let manager = FilePieceManager(
+         Some(testing::fixture_path("")),
+         Some(multi_file_info(vec!["disc-1", "track.bin"])),
+      );
+
+      let paths = manager.piece_to_paths(0).unwrap();
+
+      assert_eq!(paths[0].0, PathBuf::from("bundle/disc-1/track.bin"));
+   }
+
+   #[tokio::test]
+   async fn file_piece_manager_when_multi_file_path_component_is_unsafe_then_rejects_path() {
+      for unsafe_path in [
+         vec!["..", "escape.bin"],
+         vec![".", "escape.bin"],
+         vec!["/tmp", "escape.bin"],
+         vec!["nested/path", "escape.bin"],
+         vec!["nested\\path", "escape.bin"],
+         vec!["C:\\tmp", "escape.bin"],
+      ] {
+         let manager = FilePieceManager(
+            Some(testing::fixture_path("")),
+            Some(multi_file_info(unsafe_path.clone())),
+         );
+
+         let err = manager.piece_to_paths(0).unwrap_err();
+
+         assert!(
+            err.downcast_ref::<TorrentError>().is_some(),
+            "expected typed unsafe output path error for {unsafe_path:?}, got {err:?}",
+         );
+      }
    }
 }
