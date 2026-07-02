@@ -6,21 +6,15 @@ use tokio::time::timeout;
 use tracing::{trace, warn};
 
 use super::TorrentActor;
-use crate::{
-   peer::{
-      PeerActor, PeerStats,
-      commands::{SetChoked, Stats},
-   },
-   torrent::TorrentState,
+use crate::peer::{
+   PeerActor, PeerStats,
+   commands::{SetChoked, Stats},
 };
 
 impl TorrentActor {
    pub(super) async fn rechoke_peers(&mut self) {
-      if !matches!(
-         self.state,
-         TorrentState::Downloading | TorrentState::Seeding
-      ) {
-         trace!(state = ?self.state, "Skipping rechoke while torrent is inactive");
+      if !self.state.is_transfer_active() {
+         trace!(state = ?self.state, "Skipping rechoke while torrent is not transferring");
          return;
       }
 

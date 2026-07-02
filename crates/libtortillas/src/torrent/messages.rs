@@ -104,6 +104,9 @@ pub(crate) mod events {
             let info: Info = serde_bencode::from_bytes(&bytes).expect("Failed to parse info dict");
             self.bitfield = BitVec::repeat(false, info.piece_count());
             self.info = Some(info);
+            if self.state == TorrentState::ResolvingMetadata {
+               self.state = TorrentState::Added;
+            }
             self
                .broadcast_to_peers(HaveInfoDict {
                   bitfield: Arc::new(self.bitfield.clone()),
@@ -211,9 +214,15 @@ pub(crate) mod commands {
       /// pieces/seeding.
       #[message]
       pub(crate) async fn set_state(&mut self, state: TorrentState) {
-         self.state = state;
-         if let TorrentState::Downloading = state {
-            self.start().await;
+         match state {
+            TorrentState::Downloading => self.start().await,
+            TorrentState::Paused => {
+               if let Some(next_rechoke) = self.next_rechoke.take() {
+                  next_rechoke.abort();
+               }
+               self.state = TorrentState::Paused;
+            }
+            state => self.state = state,
          }
       }
 
@@ -246,9 +255,7 @@ pub(crate) mod commands {
       /// Only should be used internally.
       #[message]
       pub(crate) async fn ready_hook(&mut self, hook: ReadyHookSender) {
-         // If torrent has already transitioned from Inactive state, immediately send
-         // ready signal.
-         if self.state != TorrentState::Inactive {
+         if self.state == TorrentState::Ready || self.state.is_transfer_active() {
             let _ = hook.send(());
             return;
          }
