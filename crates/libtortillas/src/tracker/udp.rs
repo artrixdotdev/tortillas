@@ -526,7 +526,7 @@ pub enum Action {
 #[derive(Debug, Default)]
 struct AnnounceParams {
    /// Bytes left to download.
-   left: u32,
+   left: u64,
    /// Total downloaded bytes.
    downloaded: u64,
    /// Total uploaded bytes.
@@ -894,7 +894,7 @@ impl TrackerBase for UdpTracker {
             let params = self.announce_params.read().await;
             (
                params.downloaded,
-               params.left as u64,
+               params.left,
                params.uploaded,
                params.event,
             )
@@ -999,7 +999,7 @@ impl TrackerBase for UdpTracker {
             params.downloaded = bytes as u64;
          }
          TrackerUpdate::Left(bytes) => {
-            params.left = bytes as u32;
+            params.left = bytes as u64;
          }
          TrackerUpdate::Event(event) => {
             params.event = event;
@@ -1049,6 +1049,47 @@ mod tests {
    };
 
    const EXTERNAL_TRACKER_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
+
+   #[tokio::test]
+   async fn udp_tracker_when_updated_then_preserves_full_announce_state() {
+      let tracker = UdpTracker {
+         addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
+         uri: "udp://127.0.0.1:8080".to_string(),
+         server: udp_server().await,
+         connection_id: Arc::new(AtomicU64::new(0)),
+         ready_state: Arc::new(AtomicU8::new(ReadyState::Disconnected as u8)),
+         peer_id: PeerId::new(),
+         info_hash: InfoHash::new([0; 20]),
+         peer_addr: random_socket_addr(),
+         interval: Arc::new(AtomicU32::new(u32::MAX)),
+         stats: TrackerStats::default(),
+         announce_params: Arc::new(RwLock::new(AnnounceParams::default())),
+         settings: TrackerSettings::default(),
+      };
+
+      tracker
+         .update(TrackerUpdate::Uploaded(21))
+         .await
+         .expect("uploaded update should succeed");
+      tracker
+         .update(TrackerUpdate::Downloaded(34))
+         .await
+         .expect("downloaded update should succeed");
+      tracker
+         .update(TrackerUpdate::Left(u32::MAX as usize + 1))
+         .await
+         .expect("left update should succeed");
+      tracker
+         .update(TrackerUpdate::Event(Event::Started))
+         .await
+         .expect("event update should succeed");
+
+      let params = tracker.announce_params.read().await;
+      assert_eq!(params.uploaded, 21);
+      assert_eq!(params.downloaded, 34);
+      assert_eq!(params.left, u32::MAX as u64 + 1);
+      assert_eq!(params.event, Event::Started);
+   }
 
    #[tokio::test]
    #[ignore = "external-network test: reaches public UDP trackers"]
