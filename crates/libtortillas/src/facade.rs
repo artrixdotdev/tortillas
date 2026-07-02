@@ -76,6 +76,10 @@ pub enum CoreCommand {
    PauseTorrent { torrent: InfoHash },
    /// Stop one torrent.
    StopTorrent { torrent: InfoHash },
+   /// Remove one torrent from the engine.
+   RemoveTorrent { torrent: InfoHash },
+   /// Gracefully shut down the engine.
+   Shutdown,
    /// Change the output folder for one torrent.
    SetTorrentOutputPath { torrent: InfoHash, path: PathBuf },
    /// Enable or disable autostart for one torrent.

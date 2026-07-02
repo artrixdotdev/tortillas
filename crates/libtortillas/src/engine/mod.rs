@@ -46,9 +46,10 @@ pub(crate) use messages::*;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
-use self::commands::{CreateTorrent, ExportEngine, StartAll};
+use self::commands::{CreateTorrent, ExportEngine, RemoveTorrent, StartAll};
 use crate::{
    errors::EngineError,
+   hashes::InfoHash,
    metainfo::{MetaInfo, TorrentFile},
    peer::PeerId,
    settings::Settings,
@@ -296,6 +297,34 @@ impl Engine {
          .tell(StartAll)
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+      Ok(())
+   }
+
+   /// Removes a torrent from the engine and stops its actor gracefully.
+   pub async fn remove_torrent(&self, info_hash: InfoHash) -> Result<(), EngineError> {
+      let torrent = self
+         .actor()
+         .ask(RemoveTorrent { info_hash })
+         .await
+         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+
+      torrent
+         .stop_gracefully()
+         .await
+         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+
+      Ok(())
+   }
+
+   /// Gracefully shuts down the engine and its managed torrent actors.
+   pub async fn shutdown(&self) -> Result<(), EngineError> {
+      self
+         .actor()
+         .stop_gracefully()
+         .await
+         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+      self.actor().wait_for_shutdown().await;
+
       Ok(())
    }
 

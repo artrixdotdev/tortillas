@@ -6,6 +6,7 @@ use tracing::{error, warn};
 use super::{EngineActor, EngineExport};
 use crate::{
    errors::EngineError,
+   hashes::InfoHash,
    metainfo::MetaInfo,
    peer::Peer,
    protocol::stream::{PeerStream, validate_handshake_protocol},
@@ -81,6 +82,18 @@ pub(crate) mod commands {
                warn!(error = %err, "Failed to start torrent");
             }
          }
+      }
+
+      /// Removes a torrent actor from the engine and stops it gracefully.
+      #[message]
+      pub(crate) async fn remove_torrent(
+         &mut self, info_hash: InfoHash,
+      ) -> Result<ActorRef<TorrentActor>, EngineError> {
+         let Some((_, torrent)) = self.torrents.remove(&info_hash) else {
+            return Err(EngineError::TorrentNotFound(info_hash));
+         };
+
+         Ok(torrent)
       }
 
       /// Creates a new [`Torrent`](crate::torrent::Torrent) actor.

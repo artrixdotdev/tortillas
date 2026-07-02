@@ -46,6 +46,12 @@ fn command_variants_identify_torrents_by_info_hash() {
 
    let command = CoreCommand::StopTorrent { torrent };
    assert_eq!(command, CoreCommand::StopTorrent { torrent });
+
+   let command = CoreCommand::RemoveTorrent { torrent };
+   assert_eq!(command, CoreCommand::RemoveTorrent { torrent });
+
+   let command = CoreCommand::Shutdown;
+   assert_eq!(command, CoreCommand::Shutdown);
 }
 
 #[test]
