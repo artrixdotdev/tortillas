@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use bytes::Bytes;
 use reqwest::Url;
@@ -8,6 +8,11 @@ use crate::{
    errors::EngineError,
    metainfo::{MagnetUri, MetaInfo, TorrentFile},
 };
+
+/// Timeout for remote torrent file fetches.
+const REMOTE_TORRENT_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+/// Maximum size for a remote torrent file (10 MB).
+const MAX_TORRENT_FILE_SIZE: usize = 10 * 1024 * 1024;
 
 /// Explicit source type for adding a torrent to an [`Engine`](super::Engine).
 ///
@@ -94,7 +99,10 @@ fn metainfo_from_magnet(uri: String) -> Result<MetaInfo, EngineError> {
 
    MagnetUri::parse(uri.clone()).map_err(|error| {
       error!(magnet_uri = uri, %error);
-      EngineError::MetaInfoDeserializeError
+      EngineError::InvalidTorrentSource {
+         source_type: "magnet URI",
+         reason: format!("failed to parse magnet URI: {}", error),
+      }
    })
 }
 
@@ -115,12 +123,51 @@ fn metainfo_from_bytes(bytes: &[u8]) -> Result<MetaInfo, EngineError> {
 async fn metainfo_from_remote_url(url: String) -> Result<MetaInfo, EngineError> {
    validate_remote_torrent_url(&url)?;
 
-   let torrent_file_bytes = reqwest::get(&url)
-      .await
-      .map_err(EngineError::MetaInfoFetchError)?
-      .bytes()
+   let client = reqwest::Client::builder()
+      .timeout(REMOTE_TORRENT_FETCH_TIMEOUT)
+      .build()
+      .map_err(EngineError::MetaInfoFetchError)?;
+
+   let response = client
+      .get(&url)
+      .send()
       .await
       .map_err(EngineError::MetaInfoFetchError)?;
+
+   if !response.status().is_success() {
+      return Err(EngineError::MetaInfoFetchError(
+         reqwest::Error::from(response.error_for_status().unwrap_err()),
+      ));
+   }
+
+   let content_length = response.content_length().unwrap_or(0);
+   if content_length > MAX_TORRENT_FILE_SIZE as u64 {
+      return Err(EngineError::InvalidTorrentSource {
+         source_type: "remote URL",
+         reason: format!(
+            "torrent file too large: {} bytes (max {} bytes)",
+            content_length, MAX_TORRENT_FILE_SIZE
+         ),
+      });
+   }
+
+   let mut torrent_file_bytes = Vec::new();
+   let mut stream = response.bytes_stream();
+   use futures::StreamExt;
+
+   while let Some(chunk) = stream.next().await {
+      let chunk = chunk.map_err(EngineError::MetaInfoFetchError)?;
+      if torrent_file_bytes.len() + chunk.len() > MAX_TORRENT_FILE_SIZE {
+         return Err(EngineError::InvalidTorrentSource {
+            source_type: "remote URL",
+            reason: format!(
+               "torrent file exceeds maximum size of {} bytes",
+               MAX_TORRENT_FILE_SIZE
+            ),
+         });
+      }
+      torrent_file_bytes.extend_from_slice(&chunk);
+   }
 
    metainfo_from_bytes(&torrent_file_bytes).inspect_err(|_| {
       error!(remote_url = url);
@@ -211,6 +258,47 @@ mod tests {
             ..
          }
       ));
+   }
+
+   #[tokio::test]
+   async fn torrent_source_when_remote_url_is_valid_http_then_downloads_and_loads_metainfo() {
+      use tokio::io::{AsyncReadExt, AsyncWriteExt};
+      use tokio::net::TcpListener;
+
+      // Read the torrent file bytes
+      let torrent_bytes = fs::read(torrent_fixture_path(BIG_BUCK_BUNNY_TORRENT_FILE))
+         .await
+         .unwrap();
+
+      // Spin up a simple HTTP server
+      let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+      let addr = listener.local_addr().unwrap();
+      let url = format!("http://{}/test.torrent", addr);
+
+      // Spawn server task
+      tokio::spawn(async move {
+         let (mut socket, _) = listener.accept().await.unwrap();
+         let mut buf = vec![0u8; 1024];
+         let _ = socket.read(&mut buf).await.unwrap();
+
+         // Send HTTP response with torrent file
+         let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/x-bittorrent\r\n\r\n",
+            torrent_bytes.len()
+         );
+         socket.write_all(response.as_bytes()).await.unwrap();
+         socket.write_all(&torrent_bytes).await.unwrap();
+         socket.flush().await.unwrap();
+      });
+
+      // Give the server a moment to start
+      tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+      // Test the remote URL source
+      let source = TorrentSource::remote_torrent_url(url);
+      let metainfo = source.into_metainfo().await.unwrap();
+
+      assert_info_hash(metainfo);
    }
 
    fn assert_info_hash(metainfo: MetaInfo) {
