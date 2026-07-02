@@ -471,7 +471,7 @@ mod tests {
       testing::{
          KNOPPIX_TORRENT_FILE, init_tracing, random_port, read_torrent_fixture, udp_server,
       },
-      tracker::TrackerBase,
+      tracker::{TrackerBase, TrackerUpdate},
    };
 
    #[test]
@@ -563,6 +563,10 @@ mod tests {
             // An HTTP tracker
             let announce_uri = announce_list[1].uri();
             let http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None, None);
+            http_tracker
+               .update(TrackerUpdate::Left(file.info.total_length()))
+               .await
+               .unwrap();
 
             // Spawn a task to re-fetch the latest list of peers at a given interval
             let peers = http_tracker.announce().await.unwrap();
@@ -595,6 +599,10 @@ mod tests {
 
             let tracker = announce_url
                .to_instance(info_hash, peer_id, port, server)
+               .await
+               .unwrap();
+            tracker
+               .update(TrackerUpdate::Left(torrent.info.total_length()))
                .await
                .unwrap();
 
