@@ -10,6 +10,25 @@ The library is organized around a small actor hierarchy:
 Module facades should export stable public types while keeping actor internals private to the crate.
 Domain types such as torrent state, storage strategy, exported snapshots, tracker model types, and tracker stats live outside actor files so actors can focus on orchestration.
 
+## Runtime Boundary
+
+`libtortillas` is intentionally tied to Tokio. The crate uses Tokio for actor
+task execution, TCP and UDP sockets, timers, cancellation, channels, and
+filesystem work. HTTP fetching is also part of the library runtime path through
+`reqwest`.
+
+Frontend applications should treat Tokio as the runtime boundary. A frontend,
+including the planned Tortillas TUI, should create one Tokio runtime at process
+startup and run `Engine` plus all torrent handle operations on that runtime. If
+the UI layer has blocking terminal rendering or input loops, those should be
+isolated from async torrent work with channels, a dedicated UI thread, or
+`tokio::task::spawn_blocking`.
+
+Runtime independence is not a current API promise. The public facade should not
+claim support for custom async runtimes, injected HTTP clients, injected clocks,
+custom network listeners, or non-Tokio storage executors unless those extension
+points are added explicitly.
+
 ## Torrent Lifecycle
 
 `TorrentState` is the frontend-facing lifecycle contract exported in torrent snapshots.

@@ -78,6 +78,19 @@ Libtortillas is the library that powers the frontend TUI application. It is a li
 ```bash
 cargo add --git https://github.com/artrixdotdev/tortillas libtortillas
 ```
+
+#### Runtime Contract
+
+`libtortillas` is a Tokio-first library. Applications that use it must run
+engine and torrent operations inside a Tokio runtime.
+
+For the Tortillas TUI, the binary should own a single application runtime,
+typically through `#[tokio::main]`, and create `libtortillas::engine::Engine`
+inside that runtime. UI rendering or terminal input that blocks should run on a
+dedicated thread or through Tokio blocking tasks, then send commands into async
+engine tasks. The library does not currently support swapping in a different
+async runtime, HTTP client, clock, listener, or storage executor.
+
 ## 🤝 Contributing
 
 We welcome contributions! If you'd like to help improve `tortillas`, please check out our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and tips.
