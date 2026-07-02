@@ -47,6 +47,12 @@ pub(super) enum PieceManagerProxy {
    Default(FilePieceManager),
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(super) struct TrackerAnnounceProgress {
+   pub(super) downloaded: usize,
+   pub(super) left: usize,
+}
+
 impl Display for PieceManagerProxy {
    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
       match self {
@@ -211,12 +217,15 @@ impl TorrentActor {
          return;
       }
 
+      self.sync_tracker_announce_progress().await;
+
       if self.is_full() {
          self.state = TorrentState::Seeding;
          info!(id = %self.info_hash(), "Torrent is now seeding");
          self
-            .update_trackers(TrackerUpdate::Event(Event::Completed))
+            .update_trackers(TrackerUpdate::Event(Event::Empty))
             .await;
+         self.broadcast_to_trackers(Announce).await;
       } else {
          self.state = TorrentState::Downloading;
          info!(id = %self.info_hash(), "Torrent is now downloading");
@@ -347,6 +356,29 @@ impl TorrentActor {
       }
 
       Some(total_bytes)
+   }
+
+   pub(super) fn tracker_announce_progress(&self) -> Option<TrackerAnnounceProgress> {
+      let info = self.info_dict()?;
+      let total_length = info.total_length();
+      let downloaded = self.total_bytes_downloaded()?.min(total_length);
+      Some(TrackerAnnounceProgress {
+         downloaded,
+         left: total_length.saturating_sub(downloaded),
+      })
+   }
+
+   pub(super) async fn sync_tracker_announce_progress(&mut self) {
+      let Some(progress) = self.tracker_announce_progress() else {
+         return;
+      };
+
+      self
+         .update_trackers(TrackerUpdate::Downloaded(progress.downloaded))
+         .await;
+      self
+         .update_trackers(TrackerUpdate::Left(progress.left))
+         .await;
    }
 
    pub fn export(&self) -> TorrentExport {
@@ -484,32 +516,6 @@ impl Actor for TorrentActor {
          .spawn()
          .await;
 
-      // Create tracker actors
-      let tracker_list = metainfo.announce_list();
-      let mut trackers = HashMap::new();
-      for tracker in tracker_list {
-         let actor = TrackerActor::supervise(
-            &us,
-            TrackerActorArgs {
-               tracker: tracker.clone(),
-               peer_id,
-               server: tracker_server.clone(),
-               socket_addr: primary_addr,
-               supervisor: us.clone(),
-               scheduler: scheduler.clone(),
-               settings: settings.tracker.clone(),
-            },
-         )
-         .restart_policy(RestartPolicy::Transient)
-         .restart_limit(
-            settings.torrent.tracker_restart.limit,
-            settings.torrent.tracker_restart.period,
-         )
-         .spawn()
-         .await;
-
-         trackers.insert(tracker, actor);
-      }
       let info = match &metainfo {
          MetaInfo::Torrent(t) => Some(t.info.clone()),
          _ => None,
@@ -529,6 +535,35 @@ impl Actor for TorrentActor {
          TorrentState::ResolvingMetadata
       };
       let bitfield = BitVec::repeat(false, piece_count);
+      let initial_left = info.as_ref().map(Info::total_length);
+
+      // Create tracker actors
+      let tracker_list = metainfo.announce_list();
+      let mut trackers = HashMap::new();
+      for tracker in tracker_list {
+         let actor = TrackerActor::supervise(
+            &us,
+            TrackerActorArgs {
+               tracker: tracker.clone(),
+               peer_id,
+               server: tracker_server.clone(),
+               socket_addr: primary_addr,
+               initial_left,
+               supervisor: us.clone(),
+               scheduler: scheduler.clone(),
+               settings: settings.tracker.clone(),
+            },
+         )
+         .restart_policy(RestartPolicy::Transient)
+         .restart_limit(
+            settings.torrent.tracker_restart.limit,
+            settings.torrent.tracker_restart.period,
+         )
+         .spawn()
+         .await;
+
+         trackers.insert(tracker, actor);
+      }
       let default_manager = FilePieceManager(base_path, info.clone());
       let piece_store = PieceStoreActor::supervise(&us, ())
          .restart_policy(RestartPolicy::Permanent)
@@ -983,6 +1018,17 @@ mod tests {
 
       let partial_entry = export.block_map.get(&partial_piece_index).unwrap();
       assert_eq!(partial_entry.count_ones(), partial_blocks_received);
+
+      let announce_progress = test_actor
+         .tracker_announce_progress()
+         .expect("tracker progress should be available with an info dict");
+      let expected_downloaded = (fake_completed * info_dict.piece_length as usize)
+         + (partial_blocks_received * BLOCK_SIZE);
+      assert_eq!(announce_progress.downloaded, expected_downloaded);
+      assert_eq!(
+         announce_progress.left,
+         info_dict.total_length() - expected_downloaded
+      );
 
       match &export.piece_storage {
          PieceStorageStrategy::Disk(p) => assert_eq!(p, &piece_path),
