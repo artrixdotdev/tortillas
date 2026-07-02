@@ -26,6 +26,7 @@ use crate::{
    errors::TrackerActorError,
    hashes::InfoHash,
    peer::{Peer, PeerId},
+   settings::TrackerSettings,
    tracker::{Event, TrackerBase, TrackerStats, TrackerUpdate},
 };
 
@@ -39,6 +40,11 @@ type AtomicConnectionId = AtomicU64;
 type TransactionId = u32;
 /// A type alias for all Results in this file, for convenience.
 type Result<T> = anyhow::Result<T, TrackerActorError>;
+
+fn duration_millis(duration: Duration) -> u64 {
+   duration.as_millis().min(u64::MAX as u128) as u64
+}
+
 /// A magic constant for the UDP tracker protocol. needed in
 /// [TrackerRequest::Connect]
 const MAGIC_CONSTANT: ConnectionId = 0x41727101980;
@@ -48,13 +54,8 @@ const MIN_CONNECT_RESPONSE_SIZE: usize = 16;
 const MIN_ANNOUNCE_RESPONSE_SIZE: usize = 20;
 /// Minimum error response size, in bytes
 const MIN_ERROR_RESPONSE_SIZE: usize = 8;
-/// The maximum amount of time a connect message can take to respond.
-/// This hard-caps the retries regardless of [MESSAGE_TIMEOUT]
-const CONNECTION_TIMEOUT: Duration = Duration::from_secs(3);
 /// The size of each peer returned from a tracker, in bytes
 const PEER_SIZE: usize = 6;
-/// The maximum amount of time a message can take to respond.
-const MESSAGE_TIMEOUT: Duration = Duration::from_millis(300);
 
 /// Tracker request variants with binary layouts.
 #[derive(Debug)]
@@ -355,9 +356,21 @@ impl UdpServer {
    /// trackers with a singular [UdpSocket]
    ///
    /// Only fails if the `addr` is in use
-   pub async fn new(addr: Option<SocketAddr>) -> Self {
+   pub async fn new(addr: Option<SocketAddr>) -> Result<Self> {
+      Self::new_with_receive_buffer_size(addr, TrackerSettings::default().udp_receive_buffer_size)
+         .await
+   }
+
+   /// Creates a new UDP Server with a custom receive buffer size.
+   pub async fn new_with_receive_buffer_size(
+      addr: Option<SocketAddr>, receive_buffer_size: usize,
+   ) -> Result<Self> {
       let addr = addr.unwrap_or(SocketAddr::from_str("0.0.0.0:0").unwrap());
-      let socket = Arc::new(UdpSocket::bind(addr).await.unwrap());
+      let socket = Arc::new(
+         UdpSocket::bind(addr)
+            .await
+            .map_err(TrackerActorError::Network)?,
+      );
 
       let receiver = UdpServer {
          response_channels: Arc::new(DashMap::new()),
@@ -365,8 +378,8 @@ impl UdpServer {
       };
 
       // Start the message receiving task
-      receiver.start_receiver_task().await;
-      receiver
+      receiver.start_receiver_task(receive_buffer_size).await;
+      Ok(receiver)
    }
 
    pub fn local_addr(&self) -> SocketAddr {
@@ -374,24 +387,22 @@ impl UdpServer {
    }
 
    /// Register a transaction ID with a response channel
-   async fn register_transaction(
+   fn register_transaction(
       &self, transaction_id: TransactionId, sender: mpsc::UnboundedSender<(usize, TrackerResponse)>,
    ) {
       self.response_channels.insert(transaction_id, sender);
    }
 
    /// Unregister a transaction ID
-   pub async fn unregister_transaction(&self, transaction_id: &TransactionId) {
+   pub fn unregister_transaction(&self, transaction_id: &TransactionId) {
       self.response_channels.remove(transaction_id);
    }
 
    /// Start the background task that receives messages and routes them to
    /// correct channels
-   async fn start_receiver_task(&self) {
+   async fn start_receiver_task(&self, receive_buffer_size: usize) {
       let receiver = self.clone();
-      // UDP tracker messages are typically small (< 1500 bytes for MTU)
-      // Largest expected response is announce with many peers
-      let mut buf = vec![0u8; 8192]; // 8KB should be sufficient for tracker responses
+      let mut buf = vec![0u8; receive_buffer_size.max(1)];
 
       let response_channels = self.response_channels.clone();
       tokio::spawn(async move {
@@ -448,6 +459,35 @@ impl UdpServer {
          })?;
 
       Ok(())
+   }
+}
+
+struct TransactionRegistration {
+   server: UdpServer,
+   transaction_id: TransactionId,
+   active: bool,
+}
+
+impl TransactionRegistration {
+   fn new(server: UdpServer, transaction_id: TransactionId) -> Self {
+      Self {
+         server,
+         transaction_id,
+         active: true,
+      }
+   }
+
+   fn unregister(mut self) {
+      self.server.unregister_transaction(&self.transaction_id);
+      self.active = false;
+   }
+}
+
+impl Drop for TransactionRegistration {
+   fn drop(&mut self) {
+      if self.active {
+         self.server.unregister_transaction(&self.transaction_id);
+      }
    }
 }
 
@@ -527,6 +567,8 @@ pub struct UdpTracker {
    stats: TrackerStats,
    /// Parameters for announce request. See [AnnounceParams].
    announce_params: Arc<RwLock<AnnounceParams>>,
+   /// Runtime tracker settings.
+   settings: TrackerSettings,
 }
 
 impl UdpTracker {
@@ -543,6 +585,25 @@ impl UdpTracker {
    pub async fn new(
       uri: String, server: Option<UdpServer>, info_hash: InfoHash, peer_info: (PeerId, SocketAddr),
    ) -> Result<UdpTracker> {
+      Self::new_with_settings(
+         uri,
+         server,
+         info_hash,
+         peer_info,
+         TrackerSettings::default(),
+      )
+      .await
+   }
+
+   #[instrument(skip(info_hash, peer_info, server, settings), fields(
+        tracker_uri = %uri,
+        torrent_id = %info_hash,
+        server_addr = ?server.clone().map(|s| s.local_addr())
+    ))]
+   pub async fn new_with_settings(
+      uri: String, server: Option<UdpServer>, info_hash: InfoHash, peer_info: (PeerId, SocketAddr),
+      settings: TrackerSettings,
+   ) -> Result<UdpTracker> {
       let (peer_id, peer_addr) = peer_info;
       let addrs = lookup_host(&uri.replace("udp://", ""))
          .await
@@ -558,7 +619,9 @@ impl UdpTracker {
       // Create or use existing message receiver
       let server = match server {
          Some(receiver) => receiver,
-         None => UdpServer::new(None).await,
+         None => {
+            UdpServer::new_with_receive_buffer_size(None, settings.udp_receive_buffer_size).await?
+         }
       };
 
       debug!("Started new UDP tracker");
@@ -575,6 +638,7 @@ impl UdpTracker {
          peer_addr,
          stats: TrackerStats::default(),
          announce_params: Arc::new(RwLock::new(AnnounceParams::default())),
+         settings,
       })
    }
 
@@ -614,7 +678,8 @@ impl UdpTracker {
       response_rx: &mut mpsc::UnboundedReceiver<ServerMessage>,
    ) -> anyhow::Result<TrackerResponse, RetryError<TrackerActorError>> {
       // Create a timeout for the response
-      let timeout_result = timeout(MESSAGE_TIMEOUT, response_rx.recv()).await;
+      let message_timeout = self.settings.udp_message_timeout;
+      let timeout_result = timeout(message_timeout, response_rx.recv()).await;
 
       match timeout_result {
          Ok(Some((size, response))) => {
@@ -635,7 +700,7 @@ impl UdpTracker {
             );
             return Err(RetryError::Transient {
                err: TrackerActorError::RequestTimeout {
-                  seconds: MESSAGE_TIMEOUT.as_secs().max(1),
+                  seconds: message_timeout.as_secs().max(1),
                },
                retry_after: None,
             });
@@ -643,12 +708,12 @@ impl UdpTracker {
          Err(_) => {
             trace!(
                 transaction_id = transaction_id,
-                elapsed = ?MESSAGE_TIMEOUT,
+                elapsed = ?message_timeout,
                 "Tracker timed out"
             );
             return Err(RetryError::Transient {
                err: TrackerActorError::RequestTimeout {
-                  seconds: MESSAGE_TIMEOUT.as_secs().max(1),
+                  seconds: message_timeout.as_secs().max(1),
                },
                retry_after: None,
             });
@@ -671,14 +736,14 @@ impl UdpTracker {
 
       self
          .server
-         .register_transaction(*transaction_id, response_tx)
-         .await;
+         .register_transaction(*transaction_id, response_tx);
+      let registration = TransactionRegistration::new(self.server.clone(), *transaction_id);
 
       // Send the message through the shared message receiver
       let send_result = self.server.send_message(&message_bytes, self.addr).await;
 
       if let Err(err) = send_result {
-         self.server.unregister_transaction(transaction_id).await;
+         registration.unregister();
          return Err(RetryError::Permanent(err));
       }
 
@@ -690,22 +755,13 @@ impl UdpTracker {
           "Sent message to tracker"
       );
 
-      let response = self
+      self
          .recv_registered_response(transaction_id, &mut response_rx)
-         .await;
-      self.server.unregister_transaction(transaction_id).await;
-      response
+         .await
    }
 
-   /// Sends a message with exponential backoff to a tracker. The following
-   /// refers to the exponential backoff settings used in this function:
-   ///
-   /// ```ignore
-   /// let retry_strategy = ExponentialBackoff::from_millis(15 * 1000)
-   ///    .factor(2)
-   ///    .max_delay_millis(3840 * 1000)
-   ///    .take(8);
-   /// ```
+   /// Sends a message with exponential backoff to a tracker. Retry timing is
+   /// controlled by [`TrackerSettings`].
    ///
    /// The following refers to the reasoning of why exponential backoff is
    /// utilized, from BEP 0015.
@@ -729,10 +785,11 @@ impl UdpTracker {
          transaction_id = transaction_id,
          "Transaction ID for tracker"
       );
-      let retry_strategy = ExponentialBackoff::from_millis(15 * 1000)
-         .factor(2)
-         .max_delay_millis(3840 * 1000)
-         .take(8);
+      let retry_strategy =
+         ExponentialBackoff::from_millis(duration_millis(self.settings.udp_retry_initial_delay))
+            .factor(self.settings.udp_retry_factor)
+            .max_delay_millis(duration_millis(self.settings.udp_retry_max_delay))
+            .take(self.settings.udp_retry_attempts);
 
       fn log_retry(err: &TrackerActorError, elapsed: Duration) {
          tracing::warn!(error = ?err, elapsed = ?elapsed, "Tracker message failed, retrying...");
@@ -757,10 +814,11 @@ impl UdpTracker {
       let transaction_id: TransactionId = rand::random();
 
       let request = TrackerRequest::Connect(MAGIC_CONSTANT, Action::Connect, transaction_id);
-      let response = timeout(CONNECTION_TIMEOUT, self.send_and_wait(request)).await;
+      let connect_timeout = self.settings.udp_connect_timeout;
+      let response = timeout(connect_timeout, self.send_and_wait(request)).await;
 
       let response = response.map_err(|_| TrackerActorError::RequestTimeout {
-         seconds: CONNECTION_TIMEOUT.as_secs().max(1),
+         seconds: connect_timeout.as_secs().max(1),
       })??;
 
       match response {
@@ -828,7 +886,8 @@ impl TrackerBase for UdpTracker {
 
       self.stats.increment_announce_attempts();
 
-      for attempt in 0..2 {
+      let connection_id_retry_attempts = self.settings.udp_connection_id_retry_attempts.max(1);
+      for attempt in 0..connection_id_retry_attempts {
          let transaction_id: TransactionId = rand::random();
 
          let (downloaded, left, uploaded, event) = {
@@ -850,9 +909,9 @@ impl TrackerBase for UdpTracker {
             left,
             uploaded,
             event,
-            ip_address: 0,
-            key: 0,
-            num_want: -1,
+            ip_address: self.settings.udp_announce_ip_address,
+            key: self.settings.udp_announce_key,
+            num_want: self.settings.udp_num_want,
             port: self.peer_addr.port(),
          };
 
@@ -895,7 +954,9 @@ impl TrackerBase for UdpTracker {
                transaction_id,
                ..
             } => {
-               if attempt == 0 && message.to_ascii_lowercase().contains("connection id") {
+               if attempt + 1 < connection_id_retry_attempts
+                  && message.to_ascii_lowercase().contains("connection id")
+               {
                   warn!(
                      error_message = %message,
                      transaction_id = transaction_id,

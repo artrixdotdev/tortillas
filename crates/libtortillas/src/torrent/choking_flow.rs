@@ -1,4 +1,4 @@
-use std::{collections::HashSet, time::Duration};
+use std::collections::HashSet;
 
 use futures::{StreamExt, stream};
 use kameo::actor::ActorRef;
@@ -13,9 +13,6 @@ use crate::{
    },
    torrent::TorrentState,
 };
-
-const PEER_STATS_CONCURRENCY: usize = 32;
-const PEER_STATS_TIMEOUT: Duration = Duration::from_millis(250);
 
 impl TorrentActor {
    pub(super) async fn rechoke_peers(&mut self) {
@@ -54,6 +51,8 @@ impl TorrentActor {
    }
 
    async fn peer_stats(&self) -> Vec<PeerStats> {
+      let peer_stats_timeout = self.settings.torrent.peer_stats_timeout;
+      let peer_stats_concurrency = self.settings.torrent.peer_stats_concurrency.max(1);
       let actor_refs: Vec<(crate::peer::PeerId, ActorRef<PeerActor>)> = self
          .peers
          .iter()
@@ -63,7 +62,7 @@ impl TorrentActor {
 
       stream::iter(actor_refs)
          .map(|(peer_id, actor)| async move {
-            match timeout(PEER_STATS_TIMEOUT, actor.ask(Stats)).await {
+            match timeout(peer_stats_timeout, actor.ask(Stats)).await {
                Ok(Ok(Some(stats))) => Some(stats),
                Ok(Ok(None)) => {
                   trace!(%peer_id, "Peer stats unavailable");
@@ -79,7 +78,7 @@ impl TorrentActor {
                }
             }
          })
-         .buffer_unordered(PEER_STATS_CONCURRENCY)
+         .buffer_unordered(peer_stats_concurrency)
          .filter_map(std::future::ready)
          .collect()
          .await

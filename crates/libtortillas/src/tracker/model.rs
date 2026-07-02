@@ -17,6 +17,7 @@ use super::{
 use crate::{
    hashes::InfoHash,
    peer::{Peer, PeerId},
+   settings::TrackerSettings,
 };
 
 /// An Announce URI from a torrent file or magnet URI.
@@ -36,17 +37,36 @@ impl Tracker {
    pub async fn to_base(
       &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
    ) -> Result<Box<dyn TrackerBase>> {
+      self
+         .to_base_with_settings(info_hash, peer_id, port, server, TrackerSettings::default())
+         .await
+   }
+
+   pub async fn to_base_with_settings(
+      &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
+      settings: TrackerSettings,
+   ) -> Result<Box<dyn TrackerBase>> {
       let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
       match self {
          Self::Http(uri) => {
-            let tracker =
-               HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
+            let tracker = HttpTracker::new_with_settings(
+               uri.clone(),
+               info_hash,
+               Some(peer_id),
+               Some(socket_addr),
+               settings,
+            );
             Ok(Box::new(tracker))
          }
          Self::Udp(uri) => {
-            let tracker =
-               UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
-                  .await?;
+            let tracker = UdpTracker::new_with_settings(
+               uri.clone(),
+               Some(server),
+               info_hash,
+               (peer_id, socket_addr),
+               settings,
+            )
+            .await?;
             Ok(Box::new(tracker))
          }
          Self::Websocket(uri) => anyhow::bail!("websocket trackers are not supported: {uri}"),
@@ -56,17 +76,36 @@ impl Tracker {
    pub async fn to_instance(
       &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
    ) -> Result<TrackerInstance> {
+      self
+         .to_instance_with_settings(info_hash, peer_id, port, server, TrackerSettings::default())
+         .await
+   }
+
+   pub async fn to_instance_with_settings(
+      &self, info_hash: InfoHash, peer_id: PeerId, port: u16, server: UdpServer,
+      settings: TrackerSettings,
+   ) -> Result<TrackerInstance> {
       let socket_addr = SocketAddr::from(([0, 0, 0, 0], port));
       match self {
          Self::Http(uri) => {
-            let tracker =
-               HttpTracker::new(uri.clone(), info_hash, Some(peer_id), Some(socket_addr));
+            let tracker = HttpTracker::new_with_settings(
+               uri.clone(),
+               info_hash,
+               Some(peer_id),
+               Some(socket_addr),
+               settings,
+            );
             Ok(TrackerInstance::Http(tracker))
          }
          Self::Udp(uri) => {
-            let tracker =
-               UdpTracker::new(uri.clone(), Some(server), info_hash, (peer_id, socket_addr))
-                  .await?;
+            let tracker = UdpTracker::new_with_settings(
+               uri.clone(),
+               Some(server),
+               info_hash,
+               (peer_id, socket_addr),
+               settings,
+            )
+            .await?;
             Ok(TrackerInstance::Udp(tracker))
          }
          Self::Websocket(uri) => anyhow::bail!("websocket trackers are not supported: {uri}"),

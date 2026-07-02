@@ -1,13 +1,8 @@
-use std::time::Duration;
-
 use crate::{
    peer::{PeerId, PeerStats},
+   settings::Settings,
    torrent::TorrentState,
 };
-
-pub(crate) const DEFAULT_UPLOAD_SLOTS: usize = 4;
-pub(crate) const RECHOKE_INTERVAL: Duration = Duration::from_secs(10);
-pub(crate) const OPTIMISTIC_UNCHOKE_ROUNDS: usize = 3;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ChokingScheduler {
@@ -19,7 +14,11 @@ pub(crate) struct ChokingScheduler {
 
 impl Default for ChokingScheduler {
    fn default() -> Self {
-      Self::new(DEFAULT_UPLOAD_SLOTS, OPTIMISTIC_UNCHOKE_ROUNDS)
+      let settings = Settings::default();
+      Self::new(
+         settings.torrent.upload_slots,
+         settings.torrent.optimistic_unchoke_rounds,
+      )
    }
 }
 
@@ -155,8 +154,8 @@ mod tests {
       not_interested.interested = false;
       let peers = [stats(1), not_interested, stats(3)];
 
-      let decision =
-         select_unchoked_peers(&peers, TorrentState::Downloading, DEFAULT_UPLOAD_SLOTS, 0);
+      let upload_slots = Settings::default().torrent.upload_slots;
+      let decision = select_unchoked_peers(&peers, TorrentState::Downloading, upload_slots, 0);
 
       assert_eq!(decision.unchoked, vec![peer_id(1), peer_id(3)]);
       assert_eq!(decision.optimistic, None);
@@ -166,10 +165,10 @@ mod tests {
    fn selector_respects_upload_slot_limit() {
       let peers = [stats(1), stats(2), stats(3), stats(4), stats(5)];
 
-      let decision =
-         select_unchoked_peers(&peers, TorrentState::Downloading, DEFAULT_UPLOAD_SLOTS, 0);
+      let upload_slots = Settings::default().torrent.upload_slots;
+      let decision = select_unchoked_peers(&peers, TorrentState::Downloading, upload_slots, 0);
 
-      assert_eq!(decision.unchoked.len(), DEFAULT_UPLOAD_SLOTS);
+      assert_eq!(decision.unchoked.len(), upload_slots);
       assert_eq!(decision.optimistic, Some(peer_id(4)));
       assert_eq!(
          decision.unchoked,

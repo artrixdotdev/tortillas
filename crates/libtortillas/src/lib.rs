@@ -5,6 +5,7 @@ pub mod metainfo;
 pub mod peer;
 pub mod pieces;
 pub mod protocol;
+pub mod settings;
 pub mod torrent;
 pub mod tracker;
 
@@ -92,7 +93,7 @@ pub(crate) mod testing {
    }
 
    pub(crate) async fn udp_server() -> UdpServer {
-      UdpServer::new(None).await
+      UdpServer::new(None).await.unwrap()
    }
 
    pub(crate) fn init_tracing() {
@@ -119,6 +120,7 @@ pub mod prelude {
       hashes::InfoHash,
       metainfo::*,
       peer::{Peer, PeerId},
+      settings::*,
       torrent::*,
       tracker::Tracker,
    };

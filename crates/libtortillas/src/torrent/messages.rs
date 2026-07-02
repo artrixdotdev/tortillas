@@ -23,8 +23,6 @@ use crate::{
    tracker::Tracker,
 };
 
-const MAX_IN_FLIGHT_PER_PEER: usize = 32;
-
 pub(crate) mod events {
    use super::*;
 
@@ -129,7 +127,7 @@ pub(crate) mod events {
             && self.is_ready()
          {
             self
-               .request_blocks_from_peer(id, MAX_IN_FLIGHT_PER_PEER)
+               .request_blocks_from_peer(id, self.settings.torrent.max_in_flight_per_peer)
                .await;
             trace!(peer_id = %id, "Filled peer request window");
          } else {
