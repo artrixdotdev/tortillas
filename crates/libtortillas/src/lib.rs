@@ -109,6 +109,7 @@ pub(crate) mod testing {
       Hash::from_bytes(hasher.finalize().into())
    }
 
+   /// Creates an isolated temporary storage root and removes it on drop.
    pub(crate) async fn storage_fixture(prefix: &str) -> io::Result<StorageFixture> {
       let root = torrent_temp_path().join(prefix);
       create_dir_all(&root).await?;
@@ -135,6 +136,7 @@ pub(crate) mod testing {
       }
    }
 
+   /// Minimal self-hosted HTTP tracker for deterministic announce tests.
    pub(crate) struct LocalHttpTracker {
       addr: SocketAddr,
       requests: Arc<Mutex<Vec<String>>>,
@@ -142,6 +144,7 @@ pub(crate) mod testing {
    }
 
    impl LocalHttpTracker {
+      /// Starts a tracker that returns the given IPv4 peers in compact form.
       pub(crate) async fn start(peers: impl IntoIterator<Item = Peer>) -> io::Result<Self> {
          let peers = Arc::new(peers.into_iter().collect::<Vec<_>>());
          let requests = Arc::new(Mutex::new(Vec::new()));
@@ -246,6 +249,8 @@ pub(crate) mod testing {
       bytes
    }
 
+   /// Scriptable TCP peer that performs a BitTorrent handshake and writes
+   /// messages.
    pub(crate) struct LocalPeer {
       addr: SocketAddr,
       handshakes: Arc<Mutex<Vec<Handshake>>>,
@@ -253,6 +258,7 @@ pub(crate) mod testing {
    }
 
    impl LocalPeer {
+      /// Starts a peer that replies with `peer_id` and then sends `messages`.
       pub(crate) async fn start(peer_id: PeerId, messages: Vec<PeerMessages>) -> io::Result<Self> {
          let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
          let addr = listener.local_addr()?;

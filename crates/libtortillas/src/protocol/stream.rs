@@ -478,7 +478,12 @@ mod tests {
    use tracing_test::traced_test;
 
    use super::*;
-   use crate::{errors::PeerActorError, hashes::Hash, protocol::messages::Handshake};
+   use crate::{
+      errors::PeerActorError,
+      hashes::Hash,
+      protocol::messages::Handshake,
+      testing::{self, LocalPeer},
+   };
 
    #[tokio::test]
    #[traced_test]
@@ -514,6 +519,38 @@ mod tests {
       client.await.expect("client task should not panic");
 
       assert_eq!(incoming_id, client_id);
+   }
+
+   #[tokio::test]
+   async fn peer_stream_when_local_peer_is_available_then_completes_handshake() {
+      let remote_peer_id = PeerId::new();
+      let local_peer = LocalPeer::start(remote_peer_id, vec![PeerMessages::KeepAlive])
+         .await
+         .unwrap();
+      let mut stream = PeerStream::connect(local_peer.peer().socket_addr(), None)
+         .await
+         .unwrap();
+      let info_hash = Arc::new(testing::test_info_hash());
+      let client_id = PeerId::new();
+
+      stream
+         .send_handshake(client_id, info_hash.clone())
+         .await
+         .unwrap();
+      let (received_peer_id, _) = timeout(Duration::from_secs(1), stream.recv_handshake())
+         .await
+         .expect("handshake should arrive before timeout")
+         .unwrap();
+      let message = timeout(Duration::from_secs(1), stream.recv())
+         .await
+         .expect("message should arrive before timeout")
+         .unwrap();
+
+      assert_eq!(received_peer_id, remote_peer_id);
+      assert_eq!(message, PeerMessages::KeepAlive);
+      let handshakes = local_peer.handshakes().await;
+      assert_eq!(handshakes[0].peer_id, client_id);
+      assert_eq!(handshakes[0].info_hash, info_hash);
    }
 
    #[tokio::test]
