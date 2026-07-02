@@ -652,6 +652,9 @@ mod tests {
    use librqbit_utp::UtpSocket;
    use tokio::{
       fs,
+      io::{AsyncReadExt, AsyncWriteExt},
+      net::TcpListener,
+      sync::oneshot,
       time::{sleep, timeout},
    };
    use tracing::trace;
@@ -665,7 +668,102 @@ mod tests {
          BLOCK_SIZE, Torrent, TorrentExport,
          commands::{ExportState, GetState, HasInfoDict, SetState},
       },
+      tracker::Tracker,
    };
+
+   async fn one_shot_http_tracker() -> (Tracker, oneshot::Receiver<String>) {
+      let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+      let addr = listener.local_addr().unwrap();
+      let (query_tx, query_rx) = oneshot::channel();
+
+      tokio::spawn(async move {
+         let (mut stream, _) = listener.accept().await.unwrap();
+         let mut buf = [0; 4096];
+         let read = stream.read(&mut buf).await.unwrap();
+         let request = String::from_utf8_lossy(&buf[..read]);
+         let request_target = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .unwrap_or_default();
+         let query = request_target
+            .split_once('?')
+            .map(|(_, query)| query.to_string())
+            .unwrap_or_default();
+         let _ = query_tx.send(query);
+
+         let body = b"d8:intervali60e5:peers0:e";
+         let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+         );
+         stream.write_all(response.as_bytes()).await.unwrap();
+         stream.write_all(body).await.unwrap();
+      });
+
+      (Tracker::Http(format!("http://{addr}/announce")), query_rx)
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn torrent_actor_when_started_then_announces_started_with_current_progress() {
+      testing::init_tracing();
+      let (tracker, query_rx) = one_shot_http_tracker().await;
+      let mut metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
+      let info = match &mut metainfo {
+         MetaInfo::Torrent(file) => {
+            file.announce = tracker;
+            file.announce_list = None;
+            file.info.clone()
+         }
+         _ => unreachable!(),
+      };
+      let info_hash = info.hash().unwrap();
+      let peer_id = testing::peer_id();
+      let piece_path = testing::torrent_temp_path();
+      let file_path = piece_path.join("files");
+      let udp_server = testing::udp_server().await;
+      let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
+         .await
+         .unwrap();
+      let mut settings = Settings::default();
+      settings.tracker.initial_announce_delay = Duration::from_secs(60);
+
+      let actor = TorrentActor::spawn(TorrentActorArgs {
+         peer_id,
+         metainfo,
+         utp_server,
+         tracker_server: udp_server,
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::default(),
+         autostart: Some(false),
+         sufficient_peers: Some(usize::MAX),
+         base_path: Some(file_path),
+         settings,
+      });
+      actor
+         .tell(SetState {
+            state: TorrentState::Downloading,
+         })
+         .await
+         .unwrap();
+
+      let query = timeout(Duration::from_secs(5), query_rx)
+         .await
+         .expect("tracker should receive a start announce")
+         .expect("tracker query should be captured");
+
+      assert!(query.contains("event=started"));
+      assert!(query.contains("uploaded=0"));
+      assert!(query.contains("downloaded=0"));
+      assert!(query.contains(&format!("left={}", info.total_length())));
+      assert!(query.contains("compact=0"));
+
+      let export = actor.ask(ExportState).await.unwrap();
+      assert_eq!(export.info_hash, info_hash);
+      assert_eq!(export.state, TorrentState::Downloading);
+
+      actor.stop_gracefully().await.unwrap();
+   }
 
    #[tokio::test(flavor = "multi_thread")]
    #[ignore = "external-network test: reaches public trackers and peers"]
