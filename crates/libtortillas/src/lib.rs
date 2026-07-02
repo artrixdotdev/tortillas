@@ -1,3 +1,20 @@
+//! Async BitTorrent engine for building Tortillas frontends.
+//!
+//! # Runtime boundary
+//!
+//! `libtortillas` is intentionally a Tokio-based library. Public handles such
+//! as [`engine::Engine`] and [`torrent::Torrent`] expose async methods that
+//! must be driven inside a Tokio runtime, and the crate uses Tokio tasks,
+//! sockets, timers, channels, and filesystem APIs internally.
+//!
+//! Frontends should create one application-level Tokio runtime and keep the
+//! engine plus all torrent handles on work scheduled by that runtime. The crate
+//! does not promise runtime independence, HTTP client injection, clock
+//! injection, listener injection, or storage runtime abstraction.
+//!
+//! A TUI can use `#[tokio::main]` on its binary entry point, or create an
+//! explicit Tokio runtime before initializing `Engine`.
+
 pub mod engine;
 pub mod errors;
 pub mod hashes;

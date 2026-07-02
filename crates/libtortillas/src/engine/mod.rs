@@ -14,6 +14,13 @@
 //! - Each torrent is represented by a [`Torrent`] handle, which can be used to
 //!   interact with the torrent session.
 //!
+//! ## Runtime
+//!
+//! The engine is Tokio-only. Construct and use [`Engine`] from tasks running on
+//! a Tokio runtime, such as a TUI binary with `#[tokio::main]`. `Engine` starts
+//! actor tasks, binds Tokio TCP and uTP sockets, uses Tokio timers, and
+//! performs async filesystem and HTTP work through the same runtime.
+//!
 //! ## Example
 //!
 //! ```no_run
@@ -61,6 +68,10 @@ use crate::{
 /// - Spawning and supervising the lower level `EngineActor`
 /// - Adding new [torrents](Torrent) from different sources
 /// - Managing peer connections and tracker communication
+///
+/// `Engine` must be created and used from a Tokio runtime. Applications should
+/// create one runtime at the frontend boundary and run all engine and torrent
+/// operations on that runtime.
 ///
 /// Typically, you create a single `Engine` instance per application and attach
 /// multiple [`Torrent`] instances to it.
