@@ -1,5 +1,6 @@
 pub mod engine;
 pub mod errors;
+pub mod facade;
 pub mod hashes;
 pub mod metainfo;
 pub mod peer;
@@ -117,6 +118,7 @@ pub mod prelude {
    pub use crate::{
       engine::*,
       errors::*,
+      facade::*,
       hashes::InfoHash,
       metainfo::*,
       peer::{Peer, PeerId},
