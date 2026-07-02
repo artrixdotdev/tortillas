@@ -11,15 +11,32 @@ pub mod tracker;
 
 #[cfg(test)]
 pub(crate) mod testing {
-   use std::{env, net::SocketAddr, path::PathBuf, process, str::FromStr};
+   use std::{
+      env, io,
+      net::{IpAddr, Ipv4Addr, SocketAddr},
+      path::{Path, PathBuf},
+      process,
+      str::FromStr,
+      sync::Arc,
+   };
 
    use rand::random_range;
-   use tokio::fs::read_to_string;
+   use tokio::{
+      fs::{create_dir_all, read_to_string},
+      io::{AsyncReadExt, AsyncWriteExt},
+      net::{TcpListener, TcpStream},
+      sync::Mutex,
+      task::JoinHandle,
+   };
 
    use crate::{
-      hashes::Hash,
+      hashes::{Hash, InfoHash},
       metainfo::{MagnetUri, MetaInfo, TorrentFile},
-      peer::PeerId,
+      peer::{Peer, PeerId},
+      protocol::{
+         messages::{Handshake, PeerMessages},
+         stream::PeerStream,
+      },
       tracker::udp::UdpServer,
    };
 
@@ -92,6 +109,218 @@ pub(crate) mod testing {
       Hash::from_bytes(hasher.finalize().into())
    }
 
+   pub(crate) async fn storage_fixture(prefix: &str) -> io::Result<StorageFixture> {
+      let root = torrent_temp_path().join(prefix);
+      create_dir_all(&root).await?;
+      Ok(StorageFixture { root })
+   }
+
+   pub(crate) struct StorageFixture {
+      root: PathBuf,
+   }
+
+   impl StorageFixture {
+      pub(crate) fn path(&self) -> &Path {
+         &self.root
+      }
+
+      pub(crate) fn child(&self, relative_path: &str) -> PathBuf {
+         self.root.join(relative_path)
+      }
+   }
+
+   impl Drop for StorageFixture {
+      fn drop(&mut self) {
+         let _ = std::fs::remove_dir_all(&self.root);
+      }
+   }
+
+   pub(crate) struct LocalHttpTracker {
+      addr: SocketAddr,
+      requests: Arc<Mutex<Vec<String>>>,
+      task: JoinHandle<()>,
+   }
+
+   impl LocalHttpTracker {
+      pub(crate) async fn start(peers: impl IntoIterator<Item = Peer>) -> io::Result<Self> {
+         let peers = Arc::new(peers.into_iter().collect::<Vec<_>>());
+         let requests = Arc::new(Mutex::new(Vec::new()));
+         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+         let addr = listener.local_addr()?;
+         let task = tokio::spawn(run_http_tracker(listener, peers, requests.clone()));
+
+         Ok(Self {
+            addr,
+            requests,
+            task,
+         })
+      }
+
+      pub(crate) fn uri(&self) -> String {
+         format!("http://{}", self.addr)
+      }
+
+      pub(crate) async fn requests(&self) -> Vec<String> {
+         self.requests.lock().await.clone()
+      }
+   }
+
+   impl Drop for LocalHttpTracker {
+      fn drop(&mut self) {
+         self.task.abort();
+      }
+   }
+
+   async fn run_http_tracker(
+      listener: TcpListener, peers: Arc<Vec<Peer>>, requests: Arc<Mutex<Vec<String>>>,
+   ) {
+      while let Ok((stream, _)) = listener.accept().await {
+         let peers = peers.clone();
+         let requests = requests.clone();
+         tokio::spawn(async move {
+            let _ = handle_http_tracker_connection(stream, peers, requests).await;
+         });
+      }
+   }
+
+   async fn handle_http_tracker_connection(
+      mut stream: TcpStream, peers: Arc<Vec<Peer>>, requests: Arc<Mutex<Vec<String>>>,
+   ) -> io::Result<()> {
+      let mut buf = Vec::new();
+      let mut chunk = [0; 1024];
+
+      loop {
+         let read = stream.read(&mut chunk).await?;
+         if read == 0 {
+            break;
+         }
+         buf.extend_from_slice(&chunk[..read]);
+         if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+         }
+      }
+
+      if let Some(path) = request_path(&buf) {
+         requests.lock().await.push(path);
+      }
+
+      let body = tracker_response_body(&peers);
+      let response = format!(
+         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+         body.len()
+      );
+
+      stream.write_all(response.as_bytes()).await?;
+      stream.write_all(&body).await?;
+      Ok(())
+   }
+
+   fn request_path(request: &[u8]) -> Option<String> {
+      let request = String::from_utf8_lossy(request);
+      let line = request.lines().next()?;
+      let mut parts = line.split_whitespace();
+      let method = parts.next()?;
+      if method != "GET" {
+         return None;
+      }
+      parts.next().map(ToOwned::to_owned)
+   }
+
+   fn tracker_response_body(peers: &[Peer]) -> Vec<u8> {
+      let compact_peers = compact_peer_bytes(peers);
+      let mut response = format!("d8:intervali1800e5:peers{}:", compact_peers.len()).into_bytes();
+      response.extend_from_slice(&compact_peers);
+      response.extend_from_slice(b"e");
+      response
+   }
+
+   fn compact_peer_bytes(peers: &[Peer]) -> Vec<u8> {
+      let mut bytes = Vec::with_capacity(peers.len() * 6);
+      for peer in peers {
+         let IpAddr::V4(ip) = peer.ip else {
+            continue;
+         };
+         bytes.extend_from_slice(&ip.octets());
+         bytes.extend_from_slice(&peer.port.to_be_bytes());
+      }
+      bytes
+   }
+
+   pub(crate) struct LocalPeer {
+      addr: SocketAddr,
+      handshakes: Arc<Mutex<Vec<Handshake>>>,
+      task: JoinHandle<()>,
+   }
+
+   impl LocalPeer {
+      pub(crate) async fn start(peer_id: PeerId, messages: Vec<PeerMessages>) -> io::Result<Self> {
+         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+         let addr = listener.local_addr()?;
+         let handshakes = Arc::new(Mutex::new(Vec::new()));
+         let task = tokio::spawn(run_local_peer(
+            listener,
+            peer_id,
+            Arc::new(messages),
+            handshakes.clone(),
+         ));
+
+         Ok(Self {
+            addr,
+            handshakes,
+            task,
+         })
+      }
+
+      pub(crate) fn peer(&self) -> Peer {
+         Peer::from_socket_addr(self.addr)
+      }
+
+      pub(crate) async fn handshakes(&self) -> Vec<Handshake> {
+         self.handshakes.lock().await.clone()
+      }
+   }
+
+   impl Drop for LocalPeer {
+      fn drop(&mut self) {
+         self.task.abort();
+      }
+   }
+
+   async fn run_local_peer(
+      listener: TcpListener, peer_id: PeerId, messages: Arc<Vec<PeerMessages>>,
+      handshakes: Arc<Mutex<Vec<Handshake>>>,
+   ) {
+      while let Ok((stream, _)) = listener.accept().await {
+         let messages = messages.clone();
+         let handshakes = handshakes.clone();
+         tokio::spawn(async move {
+            let _ = handle_local_peer_connection(stream, peer_id, messages, handshakes).await;
+         });
+      }
+   }
+
+   async fn handle_local_peer_connection(
+      stream: TcpStream, peer_id: PeerId, messages: Arc<Vec<PeerMessages>>,
+      handshakes: Arc<Mutex<Vec<Handshake>>>,
+   ) -> Result<(), crate::errors::PeerActorError> {
+      let mut stream = PeerStream::tcp(stream);
+      let handshake = stream.recv_handshake_message().await?;
+      handshakes.lock().await.push(handshake.clone());
+
+      let response = Handshake::new(handshake.info_hash.clone(), peer_id);
+      stream.write_all(&response.to_bytes()).await?;
+
+      for message in messages.iter() {
+         stream.write_all(&message.to_bytes()?).await?;
+      }
+
+      Ok(())
+   }
+
+   pub(crate) fn test_info_hash() -> InfoHash {
+      piece_hash(b"deterministic test info hash")
+   }
+
    pub(crate) async fn udp_server() -> UdpServer {
       UdpServer::new(None).await.unwrap()
    }
@@ -102,6 +331,71 @@ pub(crate) mod testing {
          .with_env_filter("libtortillas=trace,off")
          .pretty()
          .try_init();
+   }
+
+   #[cfg(test)]
+   mod tests {
+      use std::{net::Ipv4Addr, sync::Arc};
+
+      use tokio::time::{Duration, timeout};
+
+      use super::*;
+      use crate::{protocol::stream::PeerRecv, tracker::TrackerBase};
+
+      #[tokio::test]
+      async fn local_http_tracker_returns_compact_peers_and_records_requests() {
+         let peer = Peer::from_ipv4(Ipv4Addr::LOCALHOST, 6881);
+         let tracker = LocalHttpTracker::start([peer.clone()]).await.unwrap();
+         let http_tracker =
+            crate::tracker::http::HttpTracker::new(tracker.uri(), test_info_hash(), None, None);
+
+         let peers = http_tracker.announce().await.unwrap();
+
+         assert_eq!(peers, vec![peer]);
+         let requests = tracker.requests().await;
+         assert_eq!(requests.len(), 1);
+         assert!(requests[0].contains("info_hash="));
+         assert!(requests[0].contains("peer_id="));
+      }
+
+      #[tokio::test]
+      async fn local_peer_completes_handshake_and_sends_scripted_messages() {
+         let remote_peer_id = peer_id();
+         let local_peer = LocalPeer::start(remote_peer_id, vec![PeerMessages::Unchoke])
+            .await
+            .unwrap();
+
+         let mut stream = PeerStream::connect(local_peer.peer().socket_addr(), None)
+            .await
+            .unwrap();
+         let info_hash = Arc::new(test_info_hash());
+         stream
+            .send_handshake(peer_id(), info_hash.clone())
+            .await
+            .unwrap();
+
+         let (received_peer_id, _) = stream.recv_handshake().await.unwrap();
+         let message = timeout(Duration::from_secs(1), stream.recv())
+            .await
+            .unwrap();
+
+         assert_eq!(received_peer_id, remote_peer_id);
+         assert_eq!(message.unwrap(), PeerMessages::Unchoke);
+         assert_eq!(local_peer.handshakes().await[0].info_hash, info_hash);
+      }
+
+      #[tokio::test]
+      async fn storage_fixture_creates_and_removes_temp_directory() {
+         let fixture = storage_fixture("piece-store").await.unwrap();
+         let child = fixture.child("piece-0");
+
+         tokio::fs::write(&child, b"piece").await.unwrap();
+         assert_eq!(tokio::fs::read(&child).await.unwrap(), b"piece");
+
+         let root = fixture.path().to_path_buf();
+         drop(fixture);
+         assert!(!root.exists());
+      }
    }
 }
 
