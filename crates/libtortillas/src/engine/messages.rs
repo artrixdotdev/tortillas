@@ -3,7 +3,7 @@ use kameo::{actor::Spawn, mailbox, messages, prelude::ActorRef, supervision::Res
 use tokio::time::timeout;
 use tracing::{error, warn};
 
-use super::{EngineActor, EngineExport, EngineSnapshot, EngineStatus};
+use super::{EngineActor, EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
    metainfo::MetaInfo,
@@ -135,31 +135,6 @@ pub(crate) mod commands {
 
          self.torrents.insert(info_hash, torrent_ref.clone());
          Ok(torrent_ref)
-      }
-
-      /// Exports the current state of the engine.
-      #[message]
-      pub(crate) async fn export_engine(&self) -> Result<EngineExport, EngineError> {
-         let futures = self
-            .torrents
-            .iter()
-            .map(|torrent| {
-               let torrent = torrent.clone();
-               async move {
-                  torrent
-                     .ask(torrent::commands::ExportState)
-                     .await
-                     .map(|export| *export)
-                     .map_err(|err| {
-                        EngineError::Other(anyhow!("failed to get torrent export: {err}"))
-                     })
-               }
-            })
-            .collect::<Vec<_>>();
-
-         let torrents = try_join_all(futures).await?;
-
-         Ok(EngineExport { torrents })
       }
 
       /// Snapshots the current state of the engine for frontends.

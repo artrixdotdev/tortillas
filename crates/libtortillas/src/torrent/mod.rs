@@ -13,7 +13,7 @@ mod swarm;
 
 pub(crate) use actor::{TorrentActor, TorrentActorArgs};
 pub use block::{BLOCK_SIZE, BlockMap};
-pub use export::TorrentExport;
+pub(crate) use export::TorrentExport;
 pub use handle::Torrent;
 pub(crate) use messages::*;
 pub use snapshot::{TorrentProgressSnapshot, TorrentSnapshot, TorrentTransferSnapshot};

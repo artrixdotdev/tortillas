@@ -44,17 +44,16 @@ pub(crate) use actor::*;
 use bon;
 use kameo::actor::{ActorRef, Spawn};
 pub(crate) use messages::*;
-use serde::{Deserialize, Serialize};
 use tracing::error;
 
-use self::commands::{CreateTorrent, ExportEngine, SnapshotEngine, StartAll};
+use self::commands::{CreateTorrent, SnapshotEngine, StartAll};
 pub use self::snapshot::{EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
    metainfo::{MetaInfo, TorrentFile},
    peer::PeerId,
    settings::Settings,
-   torrent::{PieceStorageStrategy, Torrent, TorrentExport},
+   torrent::{PieceStorageStrategy, Torrent},
 };
 
 /// The main entry point for managing torrents.
@@ -301,14 +300,9 @@ impl Engine {
       Ok(())
    }
 
-   /// Exports the current state of the engine.
-   /// See [`Torrent::export`] for more information.
-   pub async fn export(&self) -> Result<EngineExport, EngineError> {
-      self
-         .actor()
-         .ask(ExportEngine)
-         .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))
+   /// Exports the current engine state with frontend-ready torrent snapshots.
+   pub async fn export(&self) -> Result<EngineSnapshot, EngineError> {
+      self.snapshot().await
    }
 
    /// Snapshots the current engine state with frontend-ready torrent views.
@@ -325,11 +319,6 @@ impl Default for Engine {
    fn default() -> Self {
       Self::builder().build()
    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EngineExport {
-   pub torrents: Vec<TorrentExport>,
 }
 
 #[cfg(test)]
