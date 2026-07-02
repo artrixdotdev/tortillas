@@ -15,6 +15,28 @@ use crate::{
 /// [`Engine::add_torrent`](super::Engine::add_torrent). That keeps UI intent
 /// separate from parsing and avoids guessing whether a string is a URL, path,
 /// or magnet URI.
+///
+/// ```
+/// use std::path::PathBuf;
+///
+/// use libtortillas::prelude::TorrentSource;
+///
+/// enum UserTorrentInput {
+///    PastedMagnet(String),
+///    PickedTorrentFile(PathBuf),
+///    DroppedTorrentFile(Vec<u8>),
+///    RemoteTorrentUrl(String),
+/// }
+///
+/// fn source_for(input: UserTorrentInput) -> TorrentSource {
+///    match input {
+///       UserTorrentInput::PastedMagnet(uri) => TorrentSource::magnet(uri),
+///       UserTorrentInput::PickedTorrentFile(path) => TorrentSource::torrent_file_path(path),
+///       UserTorrentInput::DroppedTorrentFile(bytes) => TorrentSource::torrent_file_bytes(bytes),
+///       UserTorrentInput::RemoteTorrentUrl(url) => TorrentSource::remote_torrent_url(url),
+///    }
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub enum TorrentSource {
    /// A `magnet:` URI entered or pasted by the user.
@@ -28,18 +50,26 @@ pub enum TorrentSource {
 }
 
 impl TorrentSource {
+   /// Creates a source from a `magnet:` URI.
+   #[must_use]
    pub fn magnet(uri: impl Into<String>) -> Self {
       Self::Magnet(uri.into())
    }
 
+   /// Creates a source from a local `.torrent` file path.
+   #[must_use]
    pub fn torrent_file_path(path: impl Into<PathBuf>) -> Self {
       Self::TorrentFilePath(path.into())
    }
 
+   /// Creates a source from already-loaded `.torrent` file bytes.
+   #[must_use]
    pub fn torrent_file_bytes(bytes: impl Into<Bytes>) -> Self {
       Self::TorrentFileBytes(bytes.into())
    }
 
+   /// Creates a source from an HTTP or HTTPS URL to a remote `.torrent` file.
+   #[must_use]
    pub fn remote_torrent_url(url: impl Into<String>) -> Self {
       Self::RemoteTorrentUrl(url.into())
    }
