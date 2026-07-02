@@ -292,3 +292,41 @@ impl Default for Engine {
 pub struct EngineExport {
    pub torrents: Vec<TorrentExport>,
 }
+
+#[cfg(test)]
+mod tests {
+   use crate::{
+      engine::{Engine, TorrentSource},
+      errors::EngineError,
+      testing::{BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_TORRENT_FILE, torrent_fixture_path},
+   };
+
+   #[tokio::test]
+   async fn engine_when_torrent_source_is_file_path_then_adds_torrent() {
+      let engine = Engine::builder().autostart(false).build();
+      let source =
+         TorrentSource::torrent_file_path(torrent_fixture_path(BIG_BUCK_BUNNY_TORRENT_FILE));
+
+      let torrent = engine.add_torrent(source).await.unwrap();
+      let export = engine.export().await.unwrap();
+
+      assert_eq!(torrent.info_hash().to_hex(), BIG_BUCK_BUNNY_INFO_HASH);
+      assert_eq!(export.torrents.len(), 1);
+   }
+
+   #[tokio::test]
+   async fn engine_when_torrent_source_type_does_not_match_then_returns_typed_error() {
+      let engine = Engine::builder().autostart(false).build();
+      let source = TorrentSource::remote_torrent_url("magnet:?xt=urn:btih:not-a-url");
+
+      let error = engine.add_torrent(source).await.unwrap_err();
+
+      assert!(matches!(
+         error,
+         EngineError::InvalidTorrentSource {
+            source_type: "remote URL",
+            ..
+         }
+      ));
+   }
+}
