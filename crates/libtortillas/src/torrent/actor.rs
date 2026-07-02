@@ -628,7 +628,7 @@ mod tests {
       testing,
       torrent::{
          BLOCK_SIZE, Torrent, TorrentExport,
-         commands::{ExportState, HasInfoDict},
+         commands::{ExportState, GetState, HasInfoDict, SetState},
       },
    };
 
@@ -710,6 +710,90 @@ mod tests {
          }
          sleep(Duration::from_millis(100)).await;
       }
+
+      actor.stop_gracefully().await.expect("Failed to stop");
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn torrent_actor_when_metadata_is_ready_without_autostart_then_reports_ready() {
+      testing::init_tracing();
+      let metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
+
+      let actor = TorrentActor::spawn(TorrentActorArgs {
+         peer_id: testing::peer_id(),
+         metainfo,
+         utp_server: UtpSocket::new_udp(testing::ephemeral_socket_addr())
+            .await
+            .unwrap(),
+         tracker_server: testing::udp_server().await,
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::default(),
+         autostart: Some(false),
+         sufficient_peers: Some(0),
+         base_path: None,
+         settings: Settings::default(),
+      });
+
+      assert_eq!(actor.ask(GetState).await.unwrap(), TorrentState::Ready);
+
+      actor.stop_gracefully().await.expect("Failed to stop");
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn torrent_actor_when_metadata_is_missing_then_reports_resolving_metadata() {
+      testing::init_tracing();
+
+      let actor = TorrentActor::spawn(TorrentActorArgs {
+         peer_id: testing::peer_id(),
+         metainfo: testing::big_buck_bunny_magnet(),
+         utp_server: UtpSocket::new_udp(testing::ephemeral_socket_addr())
+            .await
+            .unwrap(),
+         tracker_server: testing::udp_server().await,
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::default(),
+         autostart: Some(false),
+         sufficient_peers: Some(0),
+         base_path: None,
+         settings: Settings::default(),
+      });
+
+      assert_eq!(
+         actor.ask(GetState).await.unwrap(),
+         TorrentState::ResolvingMetadata
+      );
+
+      actor.stop_gracefully().await.expect("Failed to stop");
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn torrent_actor_when_paused_then_does_not_report_ready() {
+      testing::init_tracing();
+      let metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
+
+      let actor = TorrentActor::spawn(TorrentActorArgs {
+         peer_id: testing::peer_id(),
+         metainfo,
+         utp_server: UtpSocket::new_udp(testing::ephemeral_socket_addr())
+            .await
+            .unwrap(),
+         tracker_server: testing::udp_server().await,
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::default(),
+         autostart: Some(false),
+         sufficient_peers: Some(0),
+         base_path: None,
+         settings: Settings::default(),
+      });
+
+      actor
+         .tell(SetState {
+            state: TorrentState::Paused,
+         })
+         .await
+         .unwrap();
+
+      assert_eq!(actor.ask(GetState).await.unwrap(), TorrentState::Paused);
 
       actor.stop_gracefully().await.expect("Failed to stop");
    }

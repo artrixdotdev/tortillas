@@ -63,3 +63,40 @@ impl TorrentState {
       )
    }
 }
+
+#[cfg(test)]
+mod tests {
+   use super::TorrentState;
+
+   #[test]
+   fn torrent_state_only_treats_transfer_states_as_active() {
+      assert!(TorrentState::Downloading.is_transfer_active());
+      assert!(TorrentState::Seeding.is_transfer_active());
+
+      assert!(!TorrentState::Added.is_transfer_active());
+      assert!(!TorrentState::Ready.is_transfer_active());
+      assert!(!TorrentState::Paused.is_transfer_active());
+      assert!(!TorrentState::Stopped.is_transfer_active());
+   }
+
+   #[test]
+   fn torrent_state_distinguishes_ready_candidates_from_paused_torrents() {
+      assert!(TorrentState::Added.can_become_ready());
+      assert!(TorrentState::ResolvingMetadata.can_become_ready());
+      assert!(TorrentState::Ready.can_become_ready());
+
+      assert!(!TorrentState::Paused.can_become_ready());
+      assert!(!TorrentState::Downloading.can_become_ready());
+      assert!(!TorrentState::Failed.can_become_ready());
+   }
+
+   #[test]
+   fn torrent_state_allows_manual_start_from_paused() {
+      assert!(TorrentState::Paused.can_start());
+
+      assert!(!TorrentState::Downloading.can_start());
+      assert!(!TorrentState::Seeding.can_start());
+      assert!(!TorrentState::Stopping.can_start());
+      assert!(!TorrentState::Stopped.can_start());
+   }
+}
