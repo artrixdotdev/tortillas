@@ -211,9 +211,9 @@ pub(crate) mod commands {
       /// pieces/seeding.
       #[message]
       pub(crate) async fn set_state(&mut self, state: TorrentState) {
-         self.state = state;
-         if let TorrentState::Downloading = state {
-            self.start().await;
+         match state {
+            TorrentState::Downloading | TorrentState::Seeding => self.start().await,
+            TorrentState::Inactive => self.stop_transfer().await,
          }
       }
 

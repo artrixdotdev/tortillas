@@ -28,7 +28,7 @@ use crate::{
    errors::TorrentError,
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
-   peer::{PeerActor, PeerId},
+   peer::{PeerActor, PeerId, commands::SetChoked},
    pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
    settings::Settings,
    torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentExport, TorrentState},
@@ -191,6 +191,14 @@ impl TorrentActor {
    }
 
    pub async fn start(&mut self) {
+      if matches!(
+         self.state,
+         TorrentState::Downloading | TorrentState::Seeding
+      ) {
+         trace!(state = ?self.state, "Ignoring duplicate start request");
+         return;
+      }
+
       self.send_ready_hooks();
 
       let Some(info) = self.info.clone() else {
@@ -247,6 +255,34 @@ impl TorrentActor {
 
       self.rechoke_peers().await;
       self.schedule_next_rechoke().await;
+   }
+
+   pub async fn stop_transfer(&mut self) {
+      if !matches!(
+         self.state,
+         TorrentState::Downloading | TorrentState::Seeding
+      ) {
+         trace!(state = ?self.state, "Ignoring duplicate stop request");
+         return;
+      }
+
+      self.state = TorrentState::Inactive;
+      self.start_time = None;
+
+      if let Some(next_rechoke) = self.next_rechoke.take() {
+         next_rechoke.abort();
+      }
+
+      self.broadcast_to_peers(SetChoked { choked: true }).await;
+      self
+         .update_trackers(TrackerUpdate::Event(Event::Stopped))
+         .await;
+      self.broadcast_to_trackers(Announce).await;
+      self
+         .update_trackers(TrackerUpdate::Event(Event::Empty))
+         .await;
+
+      info!(id = %self.info_hash(), "Stopped torrenting process");
    }
 
    pub(super) async fn schedule_next_rechoke(&mut self) {
@@ -910,5 +946,84 @@ mod tests {
       trace!("Export: {export_str}");
 
       actor_ref.stop_gracefully().await.unwrap();
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn torrent_actor_when_stopped_then_returns_to_inactive_state() {
+      testing::init_tracing();
+      let metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
+      let info_dict = match &metainfo {
+         MetaInfo::Torrent(file) => file.info.clone(),
+         _ => unreachable!(),
+      };
+      let piece_count = info_dict.piece_count();
+
+      let peer_id = testing::peer_id();
+      let udp_server = testing::udp_server().await;
+      let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
+         .await
+         .unwrap();
+      let piece_path = testing::torrent_temp_path();
+      let file_path = piece_path.join("files");
+
+      let actor_ref = TorrentActor::spawn(TorrentActorArgs {
+         peer_id,
+         metainfo: metainfo.clone(),
+         utp_server: utp_server.clone(),
+         tracker_server: udp_server.clone(),
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::Disk(piece_path.clone()),
+         autostart: Some(false),
+         sufficient_peers: Some(usize::MAX),
+         base_path: Some(file_path.clone()),
+         settings: Settings::default(),
+      });
+
+      let mut actor = TorrentActor {
+         peers: HashMap::new(),
+         trackers: HashMap::new(),
+         bitfield: BitVec::repeat(false, piece_count),
+         id: peer_id,
+         info: Some(info_dict.clone()),
+         metainfo,
+         tracker_server: udp_server,
+         scheduler: Scheduler::spawn(Scheduler::new()),
+         utp_server,
+         actor_ref: actor_ref.clone(),
+         piece_storage: PieceStorageStrategy::Disk(piece_path.clone()),
+         piece_store: PieceStoreActor::spawn(()),
+         piece_manager: PieceManagerProxy::Default(FilePieceManager(
+            Some(file_path),
+            Some(info_dict),
+         )),
+         state: TorrentState::Inactive,
+         piece_scheduler: PieceScheduler::new(piece_count),
+         choking_scheduler: ChokingScheduler::default(),
+         next_rechoke: None,
+         start_time: None,
+         sufficient_peers: 6,
+         autostart: false,
+         pending_start: false,
+         ready_hook: Vec::new(),
+         settings: Settings::default(),
+      };
+
+      actor.start().await;
+      assert_eq!(actor.state, TorrentState::Downloading);
+      assert!(actor.next_rechoke.is_some());
+
+      actor.start().await;
+      assert_eq!(actor.state, TorrentState::Downloading);
+
+      actor.stop_transfer().await;
+      assert_eq!(actor.state, TorrentState::Inactive);
+      assert!(actor.next_rechoke.is_none());
+
+      actor.stop_transfer().await;
+      assert_eq!(actor.state, TorrentState::Inactive);
+
+      actor_ref.stop_gracefully().await.unwrap();
+      actor.piece_store.kill();
+      actor.scheduler.kill();
    }
 }

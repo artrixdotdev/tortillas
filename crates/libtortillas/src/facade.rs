@@ -70,8 +70,12 @@ pub enum CoreCommand {
    StartAll,
    /// Start one torrent.
    StartTorrent { torrent: InfoHash },
+   /// Resume one torrent.
+   ResumeTorrent { torrent: InfoHash },
    /// Pause one torrent.
    PauseTorrent { torrent: InfoHash },
+   /// Stop one torrent.
+   StopTorrent { torrent: InfoHash },
    /// Change the output folder for one torrent.
    SetTorrentOutputPath { torrent: InfoHash, path: PathBuf },
    /// Enable or disable autostart for one torrent.

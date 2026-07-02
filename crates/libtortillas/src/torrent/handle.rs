@@ -89,6 +89,38 @@ impl Torrent {
       Ok(())
    }
 
+   pub async fn resume(&self) -> Result<()> {
+      self.start().await
+   }
+
+   pub async fn pause(&self) -> Result<()> {
+      let msg = SetState {
+         state: TorrentState::Inactive,
+      };
+
+      self
+         .actor()
+         .tell(msg)
+         .await
+         .inspect_err(|e| error!(error = %e, "Failed to pause torrent"))?;
+
+      Ok(())
+   }
+
+   pub async fn stop(&self) -> Result<()> {
+      let msg = SetState {
+         state: TorrentState::Inactive,
+      };
+
+      self
+         .actor()
+         .tell(msg)
+         .await
+         .inspect_err(|e| error!(error = %e, "Failed to stop torrent"))?;
+
+      Ok(())
+   }
+
    pub async fn state(&self) -> Result<TorrentState> {
       Ok(self.actor().ask(GetState).await?)
    }
