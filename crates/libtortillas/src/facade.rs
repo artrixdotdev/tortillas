@@ -20,9 +20,10 @@
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use crate::{
-   engine::Engine,
+   engine::{Engine, EngineExport},
    hashes::InfoHash,
-   torrent::{Torrent, TorrentState},
+   metainfo::{Info, MetaInfo},
+   torrent::{Torrent, TorrentExport, TorrentState},
 };
 
 /// Stable handle used by frontends to manage the torrent engine.
@@ -105,6 +106,25 @@ pub struct EngineSnapshot {
    pub torrents: Vec<TorrentSnapshot>,
 }
 
+impl EngineSnapshot {
+   /// Builds a frontend snapshot from the current lower-level engine export.
+   pub fn from_export(export: EngineExport) -> Self {
+      export.into()
+   }
+}
+
+impl From<EngineExport> for EngineSnapshot {
+   fn from(export: EngineExport) -> Self {
+      Self {
+         torrents: export
+            .torrents
+            .into_iter()
+            .map(TorrentSnapshot::from)
+            .collect(),
+      }
+   }
+}
+
 /// Frontend snapshot of a torrent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TorrentSnapshot {
@@ -122,6 +142,50 @@ pub struct TorrentSnapshot {
    pub trackers: Vec<TrackerSnapshot>,
    /// Effective output folder for this torrent, when configured.
    pub output_path: Option<PathBuf>,
+}
+
+impl TorrentSnapshot {
+   /// Builds a frontend snapshot from the current lower-level torrent export.
+   pub fn from_export(export: TorrentExport) -> Self {
+      export.into()
+   }
+}
+
+impl From<TorrentExport> for TorrentSnapshot {
+   fn from(export: TorrentExport) -> Self {
+      let info = snapshot_info(&export.metainfo, export.info_dict.as_ref());
+      let total_bytes = info.map_or(0, |info| info.total_length() as u64);
+      let piece_length = info.map_or(0, |info| info.piece_length);
+      let verified_bytes = (export.bitfield.count_ones() as u64)
+         .saturating_mul(piece_length)
+         .min(total_bytes);
+
+      Self {
+         info_hash: export.info_hash,
+         name: info.map(|info| info.name.clone()),
+         state: export.state,
+         progress: TorrentProgressSnapshot {
+            verified_bytes,
+            total_bytes,
+            download_rate_bytes_per_second: 0,
+            upload_rate_bytes_per_second: 0,
+            eta: None,
+         },
+         peers: Vec::new(),
+         trackers: export
+            .metainfo
+            .announce_list()
+            .into_iter()
+            .map(|tracker| TrackerSnapshot {
+               announce_url: tracker.uri(),
+               status: TrackerStatus::Pending,
+               peers_returned: None,
+               last_error: None,
+            })
+            .collect(),
+         output_path: export.output_path,
+      }
+   }
 }
 
 /// Frontend-friendly progress and transfer metrics for a torrent.
@@ -178,4 +242,11 @@ pub enum TrackerStatus {
    Degraded,
    /// The tracker is unsupported or permanently unusable.
    Unusable,
+}
+
+fn snapshot_info<'a>(metainfo: &'a MetaInfo, info_dict: Option<&'a Info>) -> Option<&'a Info> {
+   info_dict.or(match metainfo {
+      MetaInfo::Torrent(torrent_file) => Some(&torrent_file.info),
+      MetaInfo::MagnetUri(_) => None,
+   })
 }
