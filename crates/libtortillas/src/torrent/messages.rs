@@ -10,7 +10,7 @@ use sha1::{Digest, Sha1};
 use tracing::{info, instrument, trace, warn};
 
 use super::{
-   BLOCK_SIZE, PieceStorageStrategy, TorrentActor, TorrentExport, TorrentState,
+   BLOCK_SIZE, PieceStorageStrategy, TorrentActor, TorrentExport, TorrentSnapshot, TorrentState,
    actor::{PieceManagerProxy, ReadyHookSender},
    util,
 };
@@ -410,6 +410,11 @@ pub(crate) mod commands {
       #[message]
       pub(crate) fn export_state(&self) -> Box<TorrentExport> {
          Box::new(self.export())
+      }
+
+      #[message]
+      pub(crate) fn snapshot_state(&self) -> Box<TorrentSnapshot> {
+         Box::new(self.snapshot())
       }
    }
 }

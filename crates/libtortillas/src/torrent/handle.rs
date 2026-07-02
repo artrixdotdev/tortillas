@@ -6,10 +6,10 @@ use tokio::sync::oneshot;
 use tracing::error;
 
 use super::{
-   PieceStorageStrategy, TorrentActor, TorrentExport, TorrentState,
+   PieceStorageStrategy, TorrentActor, TorrentExport, TorrentSnapshot, TorrentState,
    commands::{
       ExportState, GetState, ReadyHook, SetAutoStart, SetOutputPath, SetPieceManager,
-      SetPieceStorage, SetState, SetSufficientPeers,
+      SetPieceStorage, SetState, SetSufficientPeers, SnapshotState,
    },
 };
 use crate::{hashes::InfoHash, pieces::PieceManager};
@@ -95,6 +95,10 @@ impl Torrent {
 
    pub async fn export(&self) -> Result<TorrentExport> {
       Ok(*self.actor().ask(ExportState).await?)
+   }
+
+   pub async fn snapshot(&self) -> Result<TorrentSnapshot> {
+      Ok(*self.actor().ask(SnapshotState).await?)
    }
 
    pub async fn set_auto_start(&self, auto: bool) -> Result<()> {

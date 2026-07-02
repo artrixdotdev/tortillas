@@ -6,6 +6,7 @@ mod export;
 mod handle;
 mod messages;
 mod piece_flow;
+mod snapshot;
 mod state;
 mod storage;
 mod swarm;
@@ -15,6 +16,7 @@ pub use block::{BLOCK_SIZE, BlockMap};
 pub use export::TorrentExport;
 pub use handle::Torrent;
 pub(crate) use messages::*;
+pub use snapshot::{TorrentProgressSnapshot, TorrentSnapshot, TorrentTransferSnapshot};
 pub use state::TorrentState;
 pub use storage::PieceStorageStrategy;
 
