@@ -458,4 +458,22 @@ mod tests {
          );
       }
    }
+
+   #[tokio::test]
+   async fn file_piece_manager_when_writing_unsafe_path_then_does_not_create_output_file() {
+      let base_path = testing::torrent_temp_path();
+      let escape_path = testing::torrent_temp_path().with_extension("escape");
+      let mut info = single_file_info();
+      info.name = escape_path.to_string_lossy().into_owned();
+      let manager = FilePieceManager(Some(base_path.clone()), Some(info));
+
+      let err = manager
+         .write_block(0, 0, Bytes::from_static(b"ab"))
+         .await
+         .unwrap_err();
+
+      assert!(err.downcast_ref::<TorrentError>().is_some());
+      assert!(!tokio::fs::try_exists(&escape_path).await.unwrap());
+      assert!(!tokio::fs::try_exists(&base_path).await.unwrap());
+   }
 }
