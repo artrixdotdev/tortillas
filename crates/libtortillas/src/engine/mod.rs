@@ -36,6 +36,7 @@
 
 mod actor;
 mod messages;
+mod snapshot;
 
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -46,7 +47,8 @@ pub(crate) use messages::*;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
-use self::commands::{CreateTorrent, ExportEngine, StartAll};
+use self::commands::{CreateTorrent, ExportEngine, SnapshotEngine, StartAll};
+pub use self::snapshot::{EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
    metainfo::{MetaInfo, TorrentFile},
@@ -308,6 +310,15 @@ impl Engine {
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))
    }
+
+   /// Snapshots the current engine state with frontend-ready torrent views.
+   pub async fn snapshot(&self) -> Result<EngineSnapshot, EngineError> {
+      self
+         .actor()
+         .ask(SnapshotEngine)
+         .await
+         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))
+   }
 }
 
 impl Default for Engine {
@@ -319,4 +330,37 @@ impl Default for Engine {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineExport {
    pub torrents: Vec<TorrentExport>,
+}
+
+#[cfg(test)]
+mod tests {
+   use serde_json::{from_str, to_string};
+
+   use super::*;
+   use crate::testing;
+
+   #[tokio::test]
+   async fn engine_when_torrent_is_added_then_snapshots_frontend_state() {
+      let engine = Engine::default();
+      let torrent_path = testing::torrent_fixture_path(testing::BIG_BUCK_BUNNY_TORRENT_FILE);
+
+      let torrent = engine
+         .add_torrent(torrent_path.to_string_lossy())
+         .await
+         .unwrap();
+      let snapshot = engine.snapshot().await.unwrap();
+
+      assert_eq!(snapshot.status, EngineStatus::Running);
+      assert_eq!(snapshot.torrent_count, 1);
+      assert_eq!(snapshot.torrents.len(), 1);
+      assert_eq!(snapshot.torrents[0].info_hash, torrent.info_hash());
+      assert_eq!(snapshot.torrents[0].name, testing::BIG_BUCK_BUNNY_NAME);
+      assert!(snapshot.torrents[0].progress.total_pieces > 0);
+      assert!(snapshot.torrents[0].has_metadata);
+
+      let snapshot_str = to_string(&snapshot).unwrap();
+      let from_snapshot: EngineSnapshot = from_str(&snapshot_str).unwrap();
+
+      assert_eq!(snapshot, from_snapshot);
+   }
 }

@@ -3,7 +3,7 @@ use kameo::{actor::Spawn, mailbox, messages, prelude::ActorRef, supervision::Res
 use tokio::time::timeout;
 use tracing::{error, warn};
 
-use super::{EngineActor, EngineExport};
+use super::{EngineActor, EngineExport, EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
    metainfo::MetaInfo,
@@ -160,6 +160,35 @@ pub(crate) mod commands {
          let torrents = try_join_all(futures).await?;
 
          Ok(EngineExport { torrents })
+      }
+
+      /// Snapshots the current state of the engine for frontends.
+      #[message]
+      pub(crate) async fn snapshot_engine(&self) -> Result<EngineSnapshot, EngineError> {
+         let futures = self
+            .torrents
+            .iter()
+            .map(|torrent| {
+               let torrent = torrent.clone();
+               async move {
+                  torrent
+                     .ask(torrent::commands::SnapshotState)
+                     .await
+                     .map(|snapshot| *snapshot)
+                     .map_err(|err| {
+                        EngineError::Other(anyhow!("failed to get torrent snapshot: {err}"))
+                     })
+               }
+            })
+            .collect::<Vec<_>>();
+
+         let torrents = try_join_all(futures).await?;
+
+         Ok(EngineSnapshot {
+            status: EngineStatus::Running,
+            torrent_count: torrents.len(),
+            torrents,
+         })
       }
    }
 }
