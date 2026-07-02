@@ -464,11 +464,12 @@ mod tests {
    use crate::{
       errors::TrackerActorError,
       metainfo::MetaInfo,
-      peer::PeerId,
+      peer::{Peer, PeerId},
       testing::{
-         KNOPPIX_TORRENT_FILE, init_tracing, random_port, read_torrent_fixture, udp_server,
+         KNOPPIX_TORRENT_FILE, LocalHttpTracker, init_tracing, random_port, read_torrent_fixture,
+         test_info_hash, udp_server,
       },
-      tracker::TrackerBase,
+      tracker::{Tracker, TrackerBase},
    };
 
    #[test]
@@ -509,6 +510,42 @@ mod tests {
       assert_eq!(peer.ip, IpAddr::V4(Ipv4Addr::new(192, 0, 2, 254)));
       assert_eq!(peer.port, 51413);
       assert_eq!(peer.id, None);
+   }
+
+   #[tokio::test]
+   async fn http_tracker_when_local_tracker_is_available_then_returns_ipv4_peer() {
+      let expected_peer = Peer::from_ipv4(Ipv4Addr::LOCALHOST, 6881);
+      let local_tracker = LocalHttpTracker::start([expected_peer.clone()])
+         .await
+         .unwrap();
+      let http_tracker = HttpTracker::new(local_tracker.uri(), test_info_hash(), None, None);
+
+      let peers = http_tracker.announce().await.unwrap();
+
+      assert_eq!(peers, vec![expected_peer]);
+      assert_eq!(http_tracker.interval(), 1800);
+   }
+
+   #[tokio::test]
+   async fn http_tracker_instance_when_local_tracker_is_available_then_returns_peers() {
+      let expected_peer = Peer::from_ipv4(Ipv4Addr::LOCALHOST, 51413);
+      let local_tracker = LocalHttpTracker::start([expected_peer.clone()])
+         .await
+         .unwrap();
+      let tracker = Tracker::Http(local_tracker.uri())
+         .to_instance(
+            test_info_hash(),
+            PeerId::new(),
+            random_port(),
+            udp_server().await,
+         )
+         .await
+         .unwrap();
+
+      let peers = tracker.announce().await.unwrap();
+
+      assert_eq!(peers, vec![expected_peer]);
+      assert_eq!(tracker.interval(), 1800);
    }
 
    #[tokio::test]
