@@ -81,18 +81,26 @@ use crate::{
 /// use std::net::SocketAddr;
 ///
 /// use libtortillas::prelude::*;
-/// // Create an engine with no explicit addresses
-/// let engine = Engine::builder()
-///    // Optionally provide addresses for our sockets to listen on
-///    .tcp_addr("127.0.0.1:6881".parse::<SocketAddr>().unwrap())
-///    .utp_addr("127.0.0.1:6882".parse::<SocketAddr>().unwrap())
-///    .udp_addr("127.0.0.1:6883".parse::<SocketAddr>().unwrap())
-///    .build();
+///
+/// #[tokio::main]
+/// async fn main() {
+///    // Create an engine with no explicit addresses
+///    let engine = Engine::builder()
+///       // Optionally provide addresses for our sockets to listen on
+///       .tcp_addr("127.0.0.1:6881".parse::<SocketAddr>().unwrap())
+///       .utp_addr("127.0.0.1:6882".parse::<SocketAddr>().unwrap())
+///       .udp_addr("127.0.0.1:6883".parse::<SocketAddr>().unwrap())
+///       .build();
+/// }
 /// ```
 /// Or with all default settings
 /// ```no_run
 /// use libtortillas::prelude::*;
-/// let engine = Engine::default();
+///
+/// #[tokio::main]
+/// async fn main() {
+///    let engine = Engine::default();
+/// }
 /// ```
 #[derive(Debug, Clone)]
 pub struct Engine(ActorRef<EngineActor>);
