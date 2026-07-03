@@ -21,8 +21,10 @@ Frontend applications should treat Tokio as the runtime boundary. A frontend,
 including the planned Tortillas TUI, should create one Tokio runtime at process
 startup and run `Engine` plus all torrent handle operations on that runtime. If
 the UI layer has blocking terminal rendering or input loops, those should be
-isolated from async torrent work with channels, a dedicated UI thread, or
-`tokio::task::spawn_blocking`.
+isolated from async torrent work with channels and a dedicated UI thread.
+`tokio::task::spawn_blocking` is suitable for bounded blocking operations, but
+not a long-lived input loop: a blocking task cannot be aborted after it starts
+and can delay runtime shutdown.
 
 Runtime independence is not a current API promise. The public facade should not
 claim support for custom async runtimes, injected HTTP clients, injected clocks,

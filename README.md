@@ -87,9 +87,11 @@ engine and torrent operations inside a Tokio runtime.
 For the Tortillas TUI, the binary should own a single application runtime,
 typically through `#[tokio::main]`, and create `libtortillas::engine::Engine`
 inside that runtime. UI rendering or terminal input that blocks should run on a
-dedicated thread or through Tokio blocking tasks, then send commands into async
-engine tasks. The library does not currently support swapping in a different
-async runtime, HTTP client, clock, listener, or storage executor.
+dedicated thread or, for bounded work, through Tokio blocking tasks, then send
+commands into async engine tasks. Long-lived input loops should use a dedicated
+thread because `spawn_blocking` tasks cannot be aborted once they start. The
+library does not currently support swapping in a different async runtime, HTTP
+client, clock, listener, or storage executor.
 
 ## 🤝 Contributing
 
