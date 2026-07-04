@@ -316,8 +316,13 @@ mod tests {
       let addr = listener.local_addr().unwrap();
       let server = tokio::spawn(async move {
          let (mut socket, _) = listener.accept().await.unwrap();
-         let mut request = [0; 1024];
-         socket.read(&mut request).await.unwrap();
+         let mut request = Vec::new();
+         let mut chunk = [0; 1024];
+         while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket.read(&mut chunk).await.unwrap();
+            assert!(read > 0, "client closed before sending request headers");
+            request.extend_from_slice(&chunk[..read]);
+         }
 
          match body {
             TestBody::Bytes(body) => {
