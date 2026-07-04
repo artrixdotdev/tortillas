@@ -14,6 +14,13 @@
 //! - Each torrent is represented by a [`Torrent`] handle, which can be used to
 //!   interact with the torrent session.
 //!
+//! ## Runtime
+//!
+//! The engine is Tokio-only. Construct and use [`Engine`] from tasks running on
+//! a Tokio runtime, such as a TUI binary with `#[tokio::main]`. `Engine` starts
+//! actor tasks, binds Tokio TCP and uTP sockets, uses Tokio timers, and
+//! performs async filesystem and HTTP work through the same runtime.
+//!
 //! ## Example
 //!
 //! ```no_run
@@ -62,6 +69,10 @@ use crate::{
 /// - Adding new [torrents](Torrent) from different sources
 /// - Managing peer connections and tracker communication
 ///
+/// `Engine` must be created and used from a Tokio runtime. Applications should
+/// create one runtime at the frontend boundary and run all engine and torrent
+/// operations on that runtime.
+///
 /// Typically, you create a single `Engine` instance per application and attach
 /// multiple [`Torrent`] instances to it.
 ///
@@ -70,18 +81,26 @@ use crate::{
 /// use std::net::SocketAddr;
 ///
 /// use libtortillas::prelude::*;
-/// // Create an engine with no explicit addresses
-/// let engine = Engine::builder()
-///    // Optionally provide addresses for our sockets to listen on
-///    .tcp_addr("127.0.0.1:6881".parse::<SocketAddr>().unwrap())
-///    .utp_addr("127.0.0.1:6882".parse::<SocketAddr>().unwrap())
-///    .udp_addr("127.0.0.1:6883".parse::<SocketAddr>().unwrap())
-///    .build();
+///
+/// #[tokio::main]
+/// async fn main() {
+///    // Create an engine with no explicit addresses
+///    let engine = Engine::builder()
+///       // Optionally provide addresses for our sockets to listen on
+///       .tcp_addr("127.0.0.1:6881".parse::<SocketAddr>().unwrap())
+///       .utp_addr("127.0.0.1:6882".parse::<SocketAddr>().unwrap())
+///       .udp_addr("127.0.0.1:6883".parse::<SocketAddr>().unwrap())
+///       .build();
+/// }
 /// ```
 /// Or with all default settings
 /// ```no_run
 /// use libtortillas::prelude::*;
-/// let engine = Engine::default();
+///
+/// #[tokio::main]
+/// async fn main() {
+///    let engine = Engine::default();
+/// }
 /// ```
 #[derive(Debug, Clone)]
 pub struct Engine(ActorRef<EngineActor>);
