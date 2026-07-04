@@ -228,13 +228,7 @@ impl TorrentActor {
          self.start_time = Some(Instant::now());
       };
 
-      self
-         .update_trackers(TrackerUpdate::Event(Event::Started))
-         .await;
-      self.broadcast_to_trackers(Announce).await;
-      self
-         .update_trackers(TrackerUpdate::Event(Event::Empty))
-         .await;
+      self.announce_tracker_event(Event::Started).await;
 
       if self.state == TorrentState::Downloading {
          let peer_ids: Vec<_> = self.peers.keys().copied().collect();
@@ -374,6 +368,14 @@ impl TorrentActor {
          .await;
       self
          .update_trackers(TrackerUpdate::Left(progress.left))
+         .await;
+   }
+
+   pub(super) async fn announce_tracker_event(&mut self, event: Event) {
+      self.update_trackers(TrackerUpdate::Event(event)).await;
+      self.broadcast_to_trackers(Announce).await;
+      self
+         .update_trackers(TrackerUpdate::Event(Event::Empty))
          .await;
    }
 
@@ -650,7 +652,7 @@ mod tests {
       fs,
       io::{AsyncReadExt, AsyncWriteExt},
       net::TcpListener,
-      sync::oneshot,
+      sync::mpsc,
       time::{sleep, timeout},
    };
    use tracing::trace;
@@ -664,19 +666,15 @@ mod tests {
       torrent::{
          BLOCK_SIZE, Torrent, TorrentExport,
          commands::{ExportState, GetState, HasInfoDict, SetState},
+         events::IncomingPiece,
       },
       tracker::Tracker,
    };
 
    fn empty_torrent(tracker: Tracker) -> MetaInfo {
-      MetaInfo::Torrent(TorrentFile {
-         announce: tracker,
-         announce_list: None,
-         comment: None,
-         created_by: None,
-         creation_date: None,
-         encoding: None,
-         info: Info {
+      torrent_with_info(
+         tracker,
+         Info {
             name: "empty".to_string(),
             piece_length: BLOCK_SIZE as u64,
             pieces: HashVec::new(),
@@ -689,38 +687,71 @@ mod tests {
             publisher_url: None,
             source: None,
          },
+      )
+   }
+
+   fn single_piece_torrent(tracker: Tracker) -> MetaInfo {
+      torrent_with_info(
+         tracker,
+         Info {
+            name: "data.bin".to_string(),
+            piece_length: 4,
+            pieces: HashVec::from(vec![testing::piece_hash(b"data")]),
+            file: InfoKeys::Single {
+               length: 4,
+               md5sum: None,
+            },
+            is_private: None,
+            publisher: None,
+            publisher_url: None,
+            source: None,
+         },
+      )
+   }
+
+   fn torrent_with_info(tracker: Tracker, info: Info) -> MetaInfo {
+      MetaInfo::Torrent(TorrentFile {
+         announce: tracker,
+         announce_list: None,
+         comment: None,
+         created_by: None,
+         creation_date: None,
+         encoding: None,
+         info,
          url_list: None,
       })
    }
 
-   async fn one_shot_http_tracker() -> (Tracker, oneshot::Receiver<String>) {
+   async fn http_tracker(expected_requests: usize) -> (Tracker, mpsc::Receiver<String>) {
       let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
       let addr = listener.local_addr().unwrap();
-      let (query_tx, query_rx) = oneshot::channel();
+      let (query_tx, query_rx) = mpsc::channel(expected_requests);
 
       tokio::spawn(async move {
-         let (mut stream, _) = listener.accept().await.unwrap();
-         let mut buf = [0; 4096];
-         let read = stream.read(&mut buf).await.unwrap();
-         let request = String::from_utf8_lossy(&buf[..read]);
-         let request_target = request
-            .lines()
-            .next()
-            .and_then(|line| line.split_whitespace().nth(1))
-            .unwrap_or_default();
-         let query = request_target
-            .split_once('?')
-            .map(|(_, query)| query.to_string())
-            .unwrap_or_default();
-         let _ = query_tx.send(query);
+         for _ in 0..expected_requests {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = [0; 4096];
+            let read = stream.read(&mut buf).await.unwrap();
+            let request = String::from_utf8_lossy(&buf[..read]);
+            let request_target = request
+               .lines()
+               .next()
+               .and_then(|line| line.split_whitespace().nth(1))
+               .unwrap_or_default();
+            let query = request_target
+               .split_once('?')
+               .map(|(_, query)| query.to_string())
+               .unwrap_or_default();
+            query_tx.send(query).await.unwrap();
 
-         let body = b"d8:intervali60e5:peers0:e";
-         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-         );
-         stream.write_all(response.as_bytes()).await.unwrap();
-         stream.write_all(body).await.unwrap();
+            let body = b"d8:intervali0e5:peers0:e";
+            let response = format!(
+               "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+               body.len()
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+         }
       });
 
       (Tracker::Http(format!("http://{addr}/announce")), query_rx)
@@ -729,7 +760,7 @@ mod tests {
    #[tokio::test(flavor = "multi_thread")]
    async fn torrent_actor_when_started_then_announces_started_with_current_progress() {
       testing::init_tracing();
-      let (tracker, query_rx) = one_shot_http_tracker().await;
+      let (tracker, mut query_rx) = http_tracker(1).await;
       let mut metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
       let info = match &mut metainfo {
          MetaInfo::Torrent(file) => {
@@ -769,7 +800,7 @@ mod tests {
          .await
          .unwrap();
 
-      let query = timeout(Duration::from_secs(5), query_rx)
+      let query = timeout(Duration::from_secs(5), query_rx.recv())
          .await
          .expect("tracker should receive a start announce")
          .expect("tracker query should be captured");
@@ -790,7 +821,7 @@ mod tests {
    #[tokio::test(flavor = "multi_thread")]
    async fn torrent_actor_when_initial_data_is_complete_then_announces_started_as_seeder() {
       testing::init_tracing();
-      let (tracker, query_rx) = one_shot_http_tracker().await;
+      let (tracker, mut query_rx) = http_tracker(1).await;
       let metainfo = empty_torrent(tracker);
       let peer_id = testing::peer_id();
       let udp_server = testing::udp_server().await;
@@ -819,7 +850,7 @@ mod tests {
          .await
          .unwrap();
 
-      let query = timeout(Duration::from_secs(5), query_rx)
+      let query = timeout(Duration::from_secs(5), query_rx.recv())
          .await
          .expect("tracker should receive a start announce")
          .expect("tracker query should be captured");
@@ -830,6 +861,81 @@ mod tests {
       assert_eq!(actor.ask(GetState).await.unwrap(), TorrentState::Seeding);
 
       actor.stop_gracefully().await.unwrap();
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn torrent_actor_when_download_completes_then_clears_completed_event() {
+      testing::init_tracing();
+      let (tracker, mut query_rx) = http_tracker(4).await;
+      let metainfo = single_piece_torrent(tracker);
+      let peer_id = testing::peer_id();
+      let udp_server = testing::udp_server().await;
+      let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
+         .await
+         .unwrap();
+      let base_path = testing::torrent_temp_path();
+      fs::create_dir_all(&base_path).await.unwrap();
+      let mut settings = Settings::default();
+      settings.tracker.initial_announce_delay = Duration::from_secs(60);
+
+      let actor = TorrentActor::spawn(TorrentActorArgs {
+         peer_id,
+         metainfo,
+         utp_server,
+         tracker_server: udp_server,
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::InFile,
+         autostart: Some(false),
+         sufficient_peers: Some(usize::MAX),
+         base_path: Some(base_path.clone()),
+         settings,
+      });
+      actor
+         .tell(SetState {
+            state: TorrentState::Downloading,
+         })
+         .await
+         .unwrap();
+
+      let started = timeout(Duration::from_secs(5), query_rx.recv())
+         .await
+         .expect("tracker should receive a start announce")
+         .expect("started query should be captured");
+      assert!(started.contains("event=started"));
+
+      actor
+         .tell(IncomingPiece {
+            peer_id,
+            index: 0,
+            offset: 0,
+            block: Bytes::from_static(b"data"),
+         })
+         .await
+         .unwrap();
+
+      let completed = timeout(Duration::from_secs(5), query_rx.recv())
+         .await
+         .expect("tracker should receive a completion announce")
+         .expect("completed query should be captured");
+      assert!(completed.contains("event=completed"));
+      assert!(completed.contains("downloaded=4"));
+      assert!(completed.contains("left=0"));
+
+      let periodic = timeout(Duration::from_secs(5), query_rx.recv())
+         .await
+         .expect("tracker should receive a periodic announce")
+         .expect("periodic query should be captured");
+      assert!(!periodic.contains("event="));
+      assert_eq!(actor.ask(GetState).await.unwrap(), TorrentState::Seeding);
+
+      actor.stop_gracefully().await.unwrap();
+      let stopped = timeout(Duration::from_secs(5), query_rx.recv())
+         .await
+         .expect("tracker should receive a stop announce")
+         .expect("stopped query should be captured");
+      assert!(stopped.contains("event=stopped"));
+
+      fs::remove_dir_all(base_path).await.unwrap();
    }
 
    #[tokio::test(flavor = "multi_thread")]

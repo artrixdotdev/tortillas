@@ -13,7 +13,7 @@ use crate::{
    peer::commands::{CancelPiece, Have, NeedPiece},
    pieces::{PieceManager, ValidateAndRead, WriteBlock},
    torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentState, actor::PieceManagerProxy},
-   tracker::{Announce, Event, TrackerUpdate},
+   tracker::Event,
 };
 
 impl TorrentActor {
@@ -241,10 +241,7 @@ impl TorrentActor {
 
       if self.piece_scheduler.next_piece() >= piece_count {
          self.state = TorrentState::Seeding;
-         self
-            .update_trackers(TrackerUpdate::Event(Event::Completed))
-            .await;
-         self.broadcast_to_trackers(Announce).await;
+         self.announce_tracker_event(Event::Completed).await;
          info!("Torrenting process completed, switching to seeding mode");
          self.rechoke_peers().await;
          self.schedule_next_rechoke().await;
