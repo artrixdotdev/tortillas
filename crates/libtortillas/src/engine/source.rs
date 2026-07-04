@@ -128,17 +128,13 @@ async fn metainfo_from_remote_url(url: String) -> Result<MetaInfo, EngineError> 
       .build()
       .map_err(EngineError::MetaInfoFetchError)?;
 
-   let response = client
+   let mut response = client
       .get(&url)
       .send()
       .await
+      .map_err(EngineError::MetaInfoFetchError)?
+      .error_for_status()
       .map_err(EngineError::MetaInfoFetchError)?;
-
-   if !response.status().is_success() {
-      return Err(EngineError::MetaInfoFetchError(
-         reqwest::Error::from(response.error_for_status().unwrap_err()),
-      ));
-   }
 
    let content_length = response.content_length().unwrap_or(0);
    if content_length > MAX_TORRENT_FILE_SIZE as u64 {
@@ -152,11 +148,11 @@ async fn metainfo_from_remote_url(url: String) -> Result<MetaInfo, EngineError> 
    }
 
    let mut torrent_file_bytes = Vec::new();
-   let mut stream = response.bytes_stream();
-   use futures::StreamExt;
-
-   while let Some(chunk) = stream.next().await {
-      let chunk = chunk.map_err(EngineError::MetaInfoFetchError)?;
+   while let Some(chunk) = response
+      .chunk()
+      .await
+      .map_err(EngineError::MetaInfoFetchError)?
+   {
       if torrent_file_bytes.len() + chunk.len() > MAX_TORRENT_FILE_SIZE {
          return Err(EngineError::InvalidTorrentSource {
             source_type: "remote URL",
@@ -191,7 +187,11 @@ fn validate_remote_torrent_url(url: &str) -> Result<(), EngineError> {
 
 #[cfg(test)]
 mod tests {
-   use tokio::fs;
+   use tokio::{
+      fs,
+      io::{AsyncReadExt, AsyncWriteExt},
+      net::TcpListener,
+   };
 
    use super::*;
    use crate::{
@@ -262,43 +262,83 @@ mod tests {
 
    #[tokio::test]
    async fn torrent_source_when_remote_url_is_valid_http_then_downloads_and_loads_metainfo() {
-      use tokio::io::{AsyncReadExt, AsyncWriteExt};
-      use tokio::net::TcpListener;
-
-      // Read the torrent file bytes
       let torrent_bytes = fs::read(torrent_fixture_path(BIG_BUCK_BUNNY_TORRENT_FILE))
          .await
          .unwrap();
-
-      // Spin up a simple HTTP server
-      let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-      let addr = listener.local_addr().unwrap();
-      let url = format!("http://{}/test.torrent", addr);
-
-      // Spawn server task
-      tokio::spawn(async move {
-         let (mut socket, _) = listener.accept().await.unwrap();
-         let mut buf = vec![0u8; 1024];
-         let _ = socket.read(&mut buf).await.unwrap();
-
-         // Send HTTP response with torrent file
-         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/x-bittorrent\r\n\r\n",
-            torrent_bytes.len()
-         );
-         socket.write_all(response.as_bytes()).await.unwrap();
-         socket.write_all(&torrent_bytes).await.unwrap();
-         socket.flush().await.unwrap();
-      });
-
-      // Give the server a moment to start
-      tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-
-      // Test the remote URL source
+      let (url, server) = serve_response(TestBody::Bytes(torrent_bytes)).await;
       let source = TorrentSource::remote_torrent_url(url);
+
       let metainfo = source.into_metainfo().await.unwrap();
 
       assert_info_hash(metainfo);
+      server.await.unwrap();
+   }
+
+   #[tokio::test]
+   async fn torrent_source_when_remote_response_exceeds_limit_then_returns_typed_error() {
+      let (url, server) = serve_response(TestBody::OversizedChunked).await;
+      let source = TorrentSource::remote_torrent_url(url);
+
+      let error = source.into_metainfo().await.unwrap_err();
+
+      assert!(matches!(
+         error,
+         EngineError::InvalidTorrentSource {
+            source_type: "remote URL",
+            ..
+         }
+      ));
+      server.await.unwrap();
+   }
+
+   enum TestBody {
+      Bytes(Vec<u8>),
+      OversizedChunked,
+   }
+
+   async fn serve_response(body: TestBody) -> (String, tokio::task::JoinHandle<()>) {
+      let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+      let addr = listener.local_addr().unwrap();
+      let server = tokio::spawn(async move {
+         let (mut socket, _) = listener.accept().await.unwrap();
+         let mut request = [0; 1024];
+         socket.read(&mut request).await.unwrap();
+
+         match body {
+            TestBody::Bytes(body) => {
+               let headers = format!(
+                  "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                  body.len()
+               );
+               socket.write_all(headers.as_bytes()).await.unwrap();
+               socket.write_all(&body).await.unwrap();
+            }
+            TestBody::OversizedChunked => {
+               socket
+                  .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n")
+                  .await
+                  .unwrap();
+               let chunk = [0; 64 * 1024];
+               for _ in 0..=(MAX_TORRENT_FILE_SIZE / chunk.len()) {
+                  if socket
+                     .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                     .await
+                     .is_err()
+                  {
+                     return;
+                  }
+                  if socket.write_all(&chunk).await.is_err()
+                     || socket.write_all(b"\r\n").await.is_err()
+                  {
+                     return;
+                  }
+               }
+               let _ = socket.write_all(b"0\r\n\r\n").await;
+            }
+         }
+      });
+
+      (format!("http://{addr}/test.torrent"), server)
    }
 
    fn assert_info_hash(metainfo: MetaInfo) {
