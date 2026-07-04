@@ -45,7 +45,7 @@ use bon;
 use kameo::actor::{ActorRef, Spawn};
 pub(crate) use messages::*;
 use serde::{Deserialize, Serialize};
-pub use source::*;
+pub use source::TorrentSource;
 
 use self::commands::{CreateTorrent, ExportEngine, StartAll};
 use crate::{
