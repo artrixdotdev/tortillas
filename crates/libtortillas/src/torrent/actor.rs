@@ -222,23 +222,19 @@ impl TorrentActor {
       if self.is_full() {
          self.state = TorrentState::Seeding;
          info!(id = %self.info_hash(), "Torrent is now seeding");
-         self
-            .update_trackers(TrackerUpdate::Event(Event::Empty))
-            .await;
-         self.broadcast_to_trackers(Announce).await;
       } else {
          self.state = TorrentState::Downloading;
          info!(id = %self.info_hash(), "Torrent is now downloading");
-
-         self
-            .update_trackers(TrackerUpdate::Event(Event::Started))
-            .await;
-         self.broadcast_to_trackers(Announce).await;
-         self
-            .update_trackers(TrackerUpdate::Event(Event::Empty))
-            .await;
          self.start_time = Some(Instant::now());
       };
+
+      self
+         .update_trackers(TrackerUpdate::Event(Event::Started))
+         .await;
+      self.broadcast_to_trackers(Announce).await;
+      self
+         .update_trackers(TrackerUpdate::Event(Event::Empty))
+         .await;
 
       if self.state == TorrentState::Downloading {
          let peer_ids: Vec<_> = self.peers.keys().copied().collect();
@@ -661,7 +657,8 @@ mod tests {
 
    use super::*;
    use crate::{
-      metainfo::MetaInfo,
+      hashes::HashVec,
+      metainfo::{InfoKeys, MetaInfo, TorrentFile},
       settings::Settings,
       testing,
       torrent::{
@@ -670,6 +667,31 @@ mod tests {
       },
       tracker::Tracker,
    };
+
+   fn empty_torrent(tracker: Tracker) -> MetaInfo {
+      MetaInfo::Torrent(TorrentFile {
+         announce: tracker,
+         announce_list: None,
+         comment: None,
+         created_by: None,
+         creation_date: None,
+         encoding: None,
+         info: Info {
+            name: "empty".to_string(),
+            piece_length: BLOCK_SIZE as u64,
+            pieces: HashVec::new(),
+            file: InfoKeys::Single {
+               length: 0,
+               md5sum: None,
+            },
+            is_private: None,
+            publisher: None,
+            publisher_url: None,
+            source: None,
+         },
+         url_list: None,
+      })
+   }
 
    async fn one_shot_http_tracker() -> (Tracker, oneshot::Receiver<String>) {
       let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -761,6 +783,51 @@ mod tests {
       let export = actor.ask(ExportState).await.unwrap();
       assert_eq!(export.info_hash, info_hash);
       assert_eq!(export.state, TorrentState::Downloading);
+
+      actor.stop_gracefully().await.unwrap();
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn torrent_actor_when_initial_data_is_complete_then_announces_started_as_seeder() {
+      testing::init_tracing();
+      let (tracker, query_rx) = one_shot_http_tracker().await;
+      let metainfo = empty_torrent(tracker);
+      let peer_id = testing::peer_id();
+      let udp_server = testing::udp_server().await;
+      let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
+         .await
+         .unwrap();
+      let mut settings = Settings::default();
+      settings.tracker.initial_announce_delay = Duration::from_secs(60);
+
+      let actor = TorrentActor::spawn(TorrentActorArgs {
+         peer_id,
+         metainfo,
+         utp_server,
+         tracker_server: udp_server,
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::default(),
+         autostart: Some(false),
+         sufficient_peers: Some(usize::MAX),
+         base_path: Some(testing::torrent_temp_path()),
+         settings,
+      });
+      actor
+         .tell(SetState {
+            state: TorrentState::Downloading,
+         })
+         .await
+         .unwrap();
+
+      let query = timeout(Duration::from_secs(5), query_rx)
+         .await
+         .expect("tracker should receive a start announce")
+         .expect("tracker query should be captured");
+
+      assert!(query.contains("event=started"));
+      assert!(query.contains("downloaded=0"));
+      assert!(query.contains("left=0"));
+      assert_eq!(actor.ask(GetState).await.unwrap(), TorrentState::Seeding);
 
       actor.stop_gracefully().await.unwrap();
    }
