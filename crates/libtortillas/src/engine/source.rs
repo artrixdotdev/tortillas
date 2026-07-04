@@ -246,6 +246,21 @@ mod tests {
    }
 
    #[tokio::test]
+   async fn torrent_source_when_magnet_uri_is_malformed_then_returns_typed_error() {
+      let source = TorrentSource::magnet("magnet:?xt=not-an-info-hash");
+
+      let error = source.into_metainfo().await.unwrap_err();
+
+      assert!(matches!(
+         error,
+         EngineError::InvalidTorrentSource {
+            source_type: "magnet URI",
+            ..
+         }
+      ));
+   }
+
+   #[tokio::test]
    async fn torrent_source_when_remote_url_is_not_http_then_returns_typed_error() {
       let source = TorrentSource::remote_torrent_url("file:///tmp/example.torrent");
 

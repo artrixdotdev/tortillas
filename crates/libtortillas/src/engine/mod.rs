@@ -298,7 +298,10 @@ mod tests {
    use crate::{
       engine::{Engine, TorrentSource},
       errors::EngineError,
-      testing::{BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_TORRENT_FILE, torrent_fixture_path},
+      testing::{
+         BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_MAGNET, BIG_BUCK_BUNNY_TORRENT_FILE,
+         torrent_fixture_path,
+      },
    };
 
    #[tokio::test]
@@ -306,6 +309,18 @@ mod tests {
       let engine = Engine::builder().autostart(false).build();
       let source =
          TorrentSource::torrent_file_path(torrent_fixture_path(BIG_BUCK_BUNNY_TORRENT_FILE));
+
+      let torrent = engine.add_torrent(source).await.unwrap();
+      let export = engine.export().await.unwrap();
+
+      assert_eq!(torrent.info_hash().to_hex(), BIG_BUCK_BUNNY_INFO_HASH);
+      assert_eq!(export.torrents.len(), 1);
+   }
+
+   #[tokio::test]
+   async fn engine_when_torrent_source_is_magnet_uri_then_adds_torrent() {
+      let engine = Engine::builder().autostart(false).build();
+      let source = TorrentSource::magnet(BIG_BUCK_BUNNY_MAGNET);
 
       let torrent = engine.add_torrent(source).await.unwrap();
       let export = engine.export().await.unwrap();
