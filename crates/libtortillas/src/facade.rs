@@ -17,7 +17,7 @@
 //! };
 //! ```
 
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{collections::HashSet, net::SocketAddr, path::PathBuf, time::Duration};
 
 use crate::{
    engine::{Engine, EngineExport},
@@ -167,6 +167,7 @@ impl From<TorrentExport> for TorrentSnapshot {
             total_bytes.saturating_sub(piece_start).min(piece_length)
          })
          .fold(0_u64, u64::saturating_add);
+      let mut tracker_urls = HashSet::new();
 
       Self {
          info_hash: export.info_hash,
@@ -184,11 +185,16 @@ impl From<TorrentExport> for TorrentSnapshot {
             .metainfo
             .announce_list()
             .into_iter()
-            .map(|tracker| TrackerSnapshot {
-               announce_url: tracker.uri(),
-               status: TrackerStatus::Pending,
-               peers_returned: None,
-               last_error: None,
+            .filter_map(|tracker| {
+               let announce_url = tracker.uri();
+               tracker_urls
+                  .insert(announce_url.clone())
+                  .then_some(TrackerSnapshot {
+                     announce_url,
+                     status: TrackerStatus::Pending,
+                     peers_returned: None,
+                     last_error: None,
+                  })
             })
             .collect(),
          output_path: export.output_path,

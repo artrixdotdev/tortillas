@@ -78,6 +78,22 @@ fn facade_torrent_snapshot_counts_the_short_final_piece_exactly() {
    assert_eq!(snapshot.progress.verified_bytes, 145_691);
 }
 
+#[test]
+fn facade_torrent_snapshot_deduplicates_tracker_urls() {
+   let mut export = torrent_export();
+   let MetaInfo::Torrent(torrent_file) = &mut export.metainfo else {
+      panic!("expected torrent fixture");
+   };
+   torrent_file.announce_list = Some(vec![vec![
+      torrent_file.announce.clone(),
+      torrent_file.announce.clone(),
+   ]]);
+
+   let snapshot = TorrentSnapshot::from_export(export);
+
+   assert_eq!(snapshot.trackers.len(), 1);
+}
+
 fn torrent_export() -> TorrentExport {
    let metainfo = TorrentFile::parse(include_bytes!("torrents/big-buck-bunny.torrent")).unwrap();
    let info_hash = metainfo.info_hash().unwrap();
