@@ -26,7 +26,7 @@ pub(crate) mod testing {
       io::{AsyncReadExt, AsyncWriteExt},
       net::{TcpListener, TcpStream},
       sync::Mutex,
-      task::JoinHandle,
+      task::{JoinHandle, JoinSet},
    };
 
    use crate::{
@@ -191,12 +191,21 @@ pub(crate) mod testing {
    async fn run_http_tracker(
       listener: TcpListener, peers: Arc<Vec<Peer>>, requests: Arc<Mutex<Vec<String>>>,
    ) {
-      while let Ok((stream, _)) = listener.accept().await {
-         let peers = peers.clone();
-         let requests = requests.clone();
-         tokio::spawn(async move {
-            let _ = handle_http_tracker_connection(stream, peers, requests).await;
-         });
+      let mut connections = JoinSet::new();
+      loop {
+         tokio::select! {
+            result = listener.accept() => {
+               let Ok((stream, _)) = result else {
+                  break;
+               };
+               let peers = peers.clone();
+               let requests = requests.clone();
+               connections.spawn(async move {
+                  let _ = handle_http_tracker_connection(stream, peers, requests).await;
+               });
+            }
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
+         }
       }
    }
 
@@ -310,12 +319,21 @@ pub(crate) mod testing {
       listener: TcpListener, peer_id: PeerId, messages: Arc<Vec<PeerMessages>>,
       handshakes: Arc<Mutex<Vec<Handshake>>>,
    ) {
-      while let Ok((stream, _)) = listener.accept().await {
-         let messages = messages.clone();
-         let handshakes = handshakes.clone();
-         tokio::spawn(async move {
-            let _ = handle_local_peer_connection(stream, peer_id, messages, handshakes).await;
-         });
+      let mut connections = JoinSet::new();
+      loop {
+         tokio::select! {
+            result = listener.accept() => {
+               let Ok((stream, _)) = result else {
+                  break;
+               };
+               let messages = messages.clone();
+               let handshakes = handshakes.clone();
+               connections.spawn(async move {
+                  let _ = handle_local_peer_connection(stream, peer_id, messages, handshakes).await;
+               });
+            }
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
+         }
       }
    }
 
@@ -402,6 +420,23 @@ pub(crate) mod testing {
          assert_eq!(received_peer_id, remote_peer_id);
          assert_eq!(message.unwrap(), PeerMessages::Unchoke);
          assert_eq!(local_peer.handshakes().await[0].info_hash, info_hash);
+      }
+
+      #[tokio::test]
+      async fn local_peer_drop_closes_idle_connections() {
+         let local_peer = LocalPeer::start(peer_id(), Vec::new()).await.unwrap();
+         let mut stream = TcpStream::connect(local_peer.peer().socket_addr())
+            .await
+            .unwrap();
+         tokio::task::yield_now().await;
+
+         drop(local_peer);
+
+         let mut byte = [0];
+         let read = timeout(Duration::from_secs(1), stream.read(&mut byte))
+            .await
+            .expect("fixture connection should close before timeout");
+         assert!(matches!(read, Ok(0) | Err(_)));
       }
 
       #[tokio::test]
