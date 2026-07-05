@@ -66,6 +66,18 @@ fn facade_engine_snapshot_maps_torrent_exports() {
    assert_eq!(snapshot.torrents[0].name.as_deref(), Some("Big Buck Bunny"));
 }
 
+#[test]
+fn facade_torrent_snapshot_counts_the_short_final_piece_exactly() {
+   let mut export = torrent_export();
+   let last_piece = export.bitfield.len() - 1;
+   export.bitfield.fill(false);
+   export.bitfield.set_aliased(last_piece, true);
+
+   let snapshot = TorrentSnapshot::from_export(export);
+
+   assert_eq!(snapshot.progress.verified_bytes, 145_691);
+}
+
 fn torrent_export() -> TorrentExport {
    let metainfo = TorrentFile::parse(include_bytes!("torrents/big-buck-bunny.torrent")).unwrap();
    let info_hash = metainfo.info_hash().unwrap();

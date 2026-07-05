@@ -156,9 +156,17 @@ impl From<TorrentExport> for TorrentSnapshot {
       let info = snapshot_info(&export.metainfo, export.info_dict.as_ref());
       let total_bytes = info.map_or(0, |info| info.total_length() as u64);
       let piece_length = info.map_or(0, |info| info.piece_length);
-      let verified_bytes = (export.bitfield.count_ones() as u64)
-         .saturating_mul(piece_length)
-         .min(total_bytes);
+      let verified_bytes = export
+         .bitfield
+         .iter()
+         .by_vals()
+         .enumerate()
+         .filter(|(_, is_verified)| *is_verified)
+         .map(|(piece_index, _)| {
+            let piece_start = (piece_index as u64).saturating_mul(piece_length);
+            total_bytes.saturating_sub(piece_start).min(piece_length)
+         })
+         .fold(0_u64, u64::saturating_add);
 
       Self {
          info_hash: export.info_hash,
