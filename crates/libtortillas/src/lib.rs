@@ -14,7 +14,7 @@ pub(crate) mod testing {
    use std::{
       env, io,
       net::{IpAddr, Ipv4Addr, SocketAddr},
-      path::{Path, PathBuf},
+      path::{Component, Path, PathBuf},
       process,
       str::FromStr,
       sync::Arc,
@@ -111,6 +111,20 @@ pub(crate) mod testing {
 
    /// Creates an isolated temporary storage root and removes it on drop.
    pub(crate) async fn storage_fixture(prefix: &str) -> io::Result<StorageFixture> {
+      let mut components = Path::new(prefix).components();
+      let Some(Component::Normal(prefix)) = components.next() else {
+         return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "storage fixture prefix must be a single path component",
+         ));
+      };
+      if components.next().is_some() {
+         return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "storage fixture prefix must be a single path component",
+         ));
+      }
+
       let root = torrent_temp_path().join(prefix);
       create_dir_all(&root).await?;
       Ok(StorageFixture { root })
@@ -401,6 +415,15 @@ pub(crate) mod testing {
          let root = fixture.path().to_path_buf();
          drop(fixture);
          assert!(!root.exists());
+      }
+
+      #[tokio::test]
+      async fn storage_fixture_rejects_prefixes_outside_its_temp_root() {
+         let parent_path = storage_fixture("../shared").await.err().unwrap();
+         let absolute_path = storage_fixture("/tmp/shared").await.err().unwrap();
+
+         assert_eq!(parent_path.kind(), io::ErrorKind::InvalidInput);
+         assert_eq!(absolute_path.kind(), io::ErrorKind::InvalidInput);
       }
    }
 }
