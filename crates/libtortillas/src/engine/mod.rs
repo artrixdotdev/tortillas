@@ -33,7 +33,7 @@
 //!
 //!    // Add a torrent from a magnet URI
 //!    let torrent = engine
-//!       .add_torrent("magnet:?xt=urn:btih:...")
+//!       .add_torrent(TorrentSource::magnet("magnet:?xt=urn:btih:..."))
 //!       .await
 //!       .expect("Failed to add torrent");
 //!
@@ -43,6 +43,7 @@
 
 mod actor;
 mod messages;
+mod source;
 
 use std::{net::SocketAddr, path::PathBuf};
 
@@ -51,12 +52,11 @@ use bon;
 use kameo::actor::{ActorRef, Spawn};
 pub(crate) use messages::*;
 use serde::{Deserialize, Serialize};
-use tracing::error;
+pub use source::TorrentSource;
 
 use self::commands::{CreateTorrent, ExportEngine, StartAll};
 use crate::{
    errors::EngineError,
-   metainfo::{MetaInfo, TorrentFile},
    peer::PeerId,
    settings::Settings,
    torrent::{PieceStorageStrategy, Torrent, TorrentExport},
@@ -224,15 +224,8 @@ impl Engine {
    /// automatically contacts trackers and connects to peers. The spawned
    /// [Torrent Actor](Torrent) will be controlled by the [Engine].
    ///
-   /// This function accepts the following as input:
-   /// - A remote URL to a torrent file over HTTP/HTTPS
-   /// - The path, either absolute or relative, to a local torrent file
-   /// - A magnet URI
-   ///
-   /// If the inputted value is a remote url to a torrent file, this function
-   /// requests the bytes and deserializes them into a [TorrentFile]. If
-   /// it isn't, we assume that it is either a magnet URI or a path to a
-   /// torrent file, and pass the string to [MetaInfo::new].
+   /// This function accepts a typed [`TorrentSource`] so frontends can pass
+   /// explicit user intent instead of relying on string-prefix detection.
    ///
    ///
    /// # Examples
@@ -246,7 +239,7 @@ impl Engine {
    ///    let engine = Engine::default();
    ///    let torrent_link = "https://example.com/example.torrent";
    ///    let torrent = engine
-   ///       .add_torrent(torrent_link)
+   ///       .add_torrent(TorrentSource::remote_torrent_url(torrent_link))
    ///       .await
    ///       .expect("Failed to add torrent");
    ///
@@ -263,36 +256,15 @@ impl Engine {
    ///    let engine = Engine::default();
    ///    let magnet_uri = "magnet:?xt=?????";
    ///    let torrent = engine
-   ///       .add_torrent(magnet_uri)
+   ///       .add_torrent(TorrentSource::magnet(magnet_uri))
    ///       .await
    ///       .expect("Failed to add torrent");
    ///
    ///    println!("Started torrenting: {}", torrent.key());
    /// }
    /// ```
-   pub async fn add_torrent(&self, metainfo: impl ToString) -> Result<Torrent, EngineError> {
-      let metainfo = metainfo.to_string();
-      // File paths should either start with "/" or "./", and magnet URIs start
-      // with "magnet:", so a check like this should be entirely appropriate.
-      let metainfo = if metainfo.starts_with("http") {
-         let torrent_file_bytes = reqwest::get(&metainfo)
-            .await
-            .map_err(EngineError::MetaInfoFetchError)?
-            .bytes()
-            .await
-            .map_err(EngineError::MetaInfoFetchError)?;
-         let torrent_file = TorrentFile::parse(&torrent_file_bytes);
-         torrent_file.map_err(|_| {
-            error!(remote_url = metainfo);
-            EngineError::MetaInfoDeserializeError
-         })?
-      } else {
-         MetaInfo::new(metainfo.clone()).await.map_err(|_| {
-            error!(magnet_uri_or_file = metainfo);
-            EngineError::MetaInfoDeserializeError
-         })?
-      };
-
+   pub async fn add_torrent(&self, source: TorrentSource) -> Result<Torrent, EngineError> {
+      let metainfo = source.into_metainfo().await?;
       let info_hash = metainfo.info_hash()?;
 
       let torrent_ref = self
@@ -338,4 +310,57 @@ impl Default for Engine {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineExport {
    pub torrents: Vec<TorrentExport>,
+}
+
+#[cfg(test)]
+mod tests {
+   use crate::{
+      engine::{Engine, TorrentSource},
+      errors::EngineError,
+      testing::{
+         BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_MAGNET, BIG_BUCK_BUNNY_TORRENT_FILE,
+         torrent_fixture_path,
+      },
+   };
+
+   #[tokio::test]
+   async fn engine_when_torrent_source_is_file_path_then_adds_torrent() {
+      let engine = Engine::builder().autostart(false).build();
+      let source =
+         TorrentSource::torrent_file_path(torrent_fixture_path(BIG_BUCK_BUNNY_TORRENT_FILE));
+
+      let torrent = engine.add_torrent(source).await.unwrap();
+      let export = engine.export().await.unwrap();
+
+      assert_eq!(torrent.info_hash().to_hex(), BIG_BUCK_BUNNY_INFO_HASH);
+      assert_eq!(export.torrents.len(), 1);
+   }
+
+   #[tokio::test]
+   async fn engine_when_torrent_source_is_magnet_uri_then_adds_torrent() {
+      let engine = Engine::builder().autostart(false).build();
+      let source = TorrentSource::magnet(BIG_BUCK_BUNNY_MAGNET);
+
+      let torrent = engine.add_torrent(source).await.unwrap();
+      let export = engine.export().await.unwrap();
+
+      assert_eq!(torrent.info_hash().to_hex(), BIG_BUCK_BUNNY_INFO_HASH);
+      assert_eq!(export.torrents.len(), 1);
+   }
+
+   #[tokio::test]
+   async fn engine_when_torrent_source_type_does_not_match_then_returns_typed_error() {
+      let engine = Engine::builder().autostart(false).build();
+      let source = TorrentSource::remote_torrent_url("magnet:?xt=urn:btih:not-a-url");
+
+      let error = engine.add_torrent(source).await.unwrap_err();
+
+      assert!(matches!(
+         error,
+         EngineError::InvalidTorrentSource {
+            source_type: "remote URL",
+            ..
+         }
+      ));
+   }
 }

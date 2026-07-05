@@ -48,6 +48,13 @@ pub enum EngineError {
    #[error("Failed to deserialize meta info")]
    MetaInfoDeserializeError,
 
+   /// A typed torrent source was invalid for its declared source type.
+   #[error("Invalid {source_type} torrent source: {reason}")]
+   InvalidTorrentSource {
+      source_type: &'static str,
+      reason: String,
+   },
+
    /// Tried to start torrenting, but a torrent with the same info hash already
    /// exists
    #[error("Torrent already exists: {0}")]
