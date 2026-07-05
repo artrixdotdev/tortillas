@@ -40,6 +40,7 @@ pub(crate) struct TrackerActorArgs {
    pub(crate) peer_id: PeerId,
    pub(crate) server: UdpServer,
    pub(crate) socket_addr: SocketAddr,
+   pub(crate) initial_left: Option<usize>,
    pub(crate) supervisor: ActorRef<TorrentActor>,
    pub(crate) scheduler: ActorRef<Scheduler>,
    pub(crate) settings: TrackerSettings,
@@ -55,6 +56,7 @@ impl Actor for TrackerActor {
          peer_id,
          server,
          socket_addr,
+         initial_left,
          supervisor,
          scheduler,
          settings,
@@ -107,6 +109,10 @@ impl Actor for TrackerActor {
             });
          }
       };
+
+      if let Some(left) = initial_left {
+         tracker.update(TrackerUpdate::Left(left)).await?;
+      }
 
       let next_announce = scheduler
          .ask(SetTimeout::new(

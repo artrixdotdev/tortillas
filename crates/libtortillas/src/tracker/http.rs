@@ -118,8 +118,8 @@ impl TrackerRequest {
          port,
          uploaded: 0,
          downloaded: 0,
-         left: Some(0),
-         event: Event::Stopped,
+         left: None,
+         event: Event::Empty,
          compact,
       }
    }
@@ -456,11 +456,14 @@ where
 #[cfg(test)]
 mod tests {
 
-   use std::net::{IpAddr, Ipv4Addr};
+   use std::{
+      net::{IpAddr, Ipv4Addr, SocketAddr},
+      str::FromStr,
+   };
 
    use tracing_test::traced_test;
 
-   use super::{HttpTracker, TrackerResponse, parse_tracker_response};
+   use super::{HttpTracker, TrackerRequest, TrackerResponse, parse_tracker_response};
    use crate::{
       errors::TrackerActorError,
       metainfo::MetaInfo,
@@ -468,8 +471,42 @@ mod tests {
       testing::{
          KNOPPIX_TORRENT_FILE, init_tracing, random_port, read_torrent_fixture, udp_server,
       },
-      tracker::TrackerBase,
+      tracker::{TrackerBase, TrackerUpdate},
    };
+
+   #[test]
+   fn tracker_request_when_created_then_omits_unknown_left_and_lifecycle_event() {
+      let default_peer_addr = "0.0.0.0:6881".parse().unwrap();
+      let tracker_request = TrackerRequest::new(None, default_peer_addr, true);
+
+      let query = tracker_request.to_string();
+
+      assert!(query.contains("port=6881"));
+      assert!(query.contains("uploaded=0"));
+      assert!(query.contains("downloaded=0"));
+      assert!(!query.contains("left="));
+      assert!(!query.contains("event="));
+   }
+
+   #[test]
+   fn tracker_request_when_updated_with_lifecycle_state_then_serializes_values() {
+      let peer_addr = SocketAddr::from_str("192.0.2.10:51413").unwrap();
+      let mut tracker_request = TrackerRequest::new(Some(peer_addr), peer_addr, false);
+      tracker_request.uploaded = 21;
+      tracker_request.downloaded = 34;
+      tracker_request.left = Some(55);
+      tracker_request.event = crate::tracker::Event::Started;
+
+      let query = tracker_request.to_string();
+
+      assert!(query.contains("ip=192.0.2.10"));
+      assert!(query.contains("port=51413"));
+      assert!(query.contains("uploaded=21"));
+      assert!(query.contains("downloaded=34"));
+      assert!(query.contains("left=55"));
+      assert!(query.contains("event=started"));
+      assert!(query.contains("compact=0"));
+   }
 
    #[test]
    fn parse_tracker_response_when_failure_reason_is_present_then_returns_tracker_error() {
@@ -526,6 +563,10 @@ mod tests {
             // An HTTP tracker
             let announce_uri = announce_list[1].uri();
             let http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None, None);
+            http_tracker
+               .update(TrackerUpdate::Left(file.info.total_length()))
+               .await
+               .unwrap();
 
             // Spawn a task to re-fetch the latest list of peers at a given interval
             let peers = http_tracker.announce().await.unwrap();
@@ -558,6 +599,10 @@ mod tests {
 
             let tracker = announce_url
                .to_instance(info_hash, peer_id, port, server)
+               .await
+               .unwrap();
+            tracker
+               .update(TrackerUpdate::Left(torrent.info.total_length()))
                .await
                .unwrap();
 

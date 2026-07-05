@@ -13,7 +13,7 @@ use crate::{
    peer::commands::{CancelPiece, Have, NeedPiece},
    pieces::{PieceManager, ValidateAndRead, WriteBlock},
    torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentState, actor::PieceManagerProxy},
-   tracker::{Announce, Event, TrackerUpdate},
+   tracker::Event,
 };
 
 impl TorrentActor {
@@ -218,7 +218,6 @@ impl TorrentActor {
          .info_dict()
          .expect("Can't receive piece without info dict");
       let piece_count = info_dict.piece_count();
-      let total_length = info_dict.total_length();
 
       if !self
          .validate_and_send_piece(peer_id, index, previous_blocks)
@@ -238,19 +237,11 @@ impl TorrentActor {
 
       self.broadcast_to_peers(Have { piece: index }).await;
 
-      if let Some(total_downloaded) = self.total_bytes_downloaded() {
-         let total_bytes_left = total_length - total_downloaded;
-         self
-            .update_trackers(TrackerUpdate::Left(total_bytes_left))
-            .await;
-      }
+      self.sync_tracker_announce_progress().await;
 
       if self.piece_scheduler.next_piece() >= piece_count {
          self.state = TorrentState::Seeding;
-         self
-            .update_trackers(TrackerUpdate::Event(Event::Completed))
-            .await;
-         self.broadcast_to_trackers(Announce).await;
+         self.announce_tracker_event(Event::Completed).await;
          info!("Torrenting process completed, switching to seeding mode");
          self.rechoke_peers().await;
          self.schedule_next_rechoke().await;
