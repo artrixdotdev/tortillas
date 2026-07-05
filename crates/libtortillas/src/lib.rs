@@ -14,9 +14,39 @@
 //!
 //! A TUI can use `#[tokio::main]` on its binary entry point, or create an
 //! explicit Tokio runtime before initializing `Engine`.
+//!
+//! # Frontend facade
+//!
+//! Frontends should prefer [`facade`] or [`prelude`] imports. The facade names
+//! the stable concepts a TUI or other UI needs: [`facade::EngineHandle`],
+//! [`facade::TorrentHandle`], [`facade::TorrentSource`],
+//! [`facade::CoreCommand`], [`facade::CoreEvent`], and snapshot types for
+//! engine, torrent, peer, and tracker views.
+//!
+//! ```no_run
+//! use libtortillas::prelude::{CoreCommand, EngineHandle, TorrentSource};
+//!
+//! let _engine = EngineHandle::default();
+//! let _command = CoreCommand::AddTorrent {
+//!    source: TorrentSource::MagnetUri("magnet:?xt=urn:btih:...".to_string()),
+//! };
+//! ```
+//!
+//! # Advanced APIs
+//!
+//! The lower-level [`engine`], [`torrent`], [`metainfo`], [`peer`],
+//! [`tracker`], [`pieces`], and [`protocol`] modules remain public for advanced
+//! integrations, tests, and protocol-level work. Frontend code should avoid
+//! depending on actor messages, raw peer streams, tracker clients, or storage
+//! internals when an equivalent facade type exists.
+//!
+//! Follow-up work will narrow the prelude and connect more commands, events,
+//! snapshots, and typed errors to the facade without requiring frontend callers
+//! to import implementation modules.
 
 pub mod engine;
 pub mod errors;
+pub mod facade;
 pub mod hashes;
 pub mod metainfo;
 pub mod peer;
@@ -134,6 +164,7 @@ pub mod prelude {
    pub use crate::{
       engine::*,
       errors::*,
+      facade::*,
       hashes::InfoHash,
       metainfo::*,
       peer::{Peer, PeerId},
