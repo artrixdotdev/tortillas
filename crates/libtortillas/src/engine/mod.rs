@@ -41,7 +41,10 @@ use std::{net::SocketAddr, path::PathBuf};
 
 pub(crate) use actor::*;
 use bon;
-use kameo::actor::{ActorRef, Spawn};
+use kameo::{
+   actor::{ActorRef, Spawn},
+   error::SendError,
+};
 pub(crate) use messages::*;
 use serde::{Deserialize, Serialize};
 use tracing::error;
@@ -302,16 +305,17 @@ impl Engine {
 
    /// Removes a torrent from the engine and stops its actor gracefully.
    pub async fn remove_torrent(&self, info_hash: InfoHash) -> Result<(), EngineError> {
-      let torrent = self
-         .actor()
-         .ask(RemoveTorrent { info_hash })
-         .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+      let torrent = match self.actor().ask(RemoveTorrent { info_hash }).await {
+         Ok(torrent) => torrent,
+         Err(SendError::HandlerError(err)) => return Err(err),
+         Err(err) => return Err(EngineError::Other(anyhow::anyhow!(err.to_string()))),
+      };
 
       torrent
          .stop_gracefully()
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+      torrent.wait_for_shutdown().await;
 
       Ok(())
    }

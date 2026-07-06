@@ -7,6 +7,7 @@ use std::{
 
 use libtortillas::{
    engine::Engine,
+   errors::EngineError,
    hashes::{Hash, HashVec, InfoHash},
    metainfo::{Info, InfoKeys, TorrentFile},
    settings::Settings,
@@ -30,9 +31,13 @@ async fn engine_remove_torrent_drops_it_from_exports() {
 
    engine.remove_torrent(info_hash).await.unwrap();
    assert!(engine.export().await.unwrap().torrents.is_empty());
+   assert!(torrent.state().await.is_err());
 
    let err = engine.remove_torrent(info_hash).await.unwrap_err();
-   assert!(err.to_string().contains("Torrent not found"));
+   assert!(matches!(
+      err,
+      EngineError::TorrentNotFound(missing_hash) if missing_hash == info_hash
+   ));
 
    engine.shutdown().await.unwrap();
    let _ = fs::remove_file(path).await;

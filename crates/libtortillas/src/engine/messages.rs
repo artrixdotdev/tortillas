@@ -129,7 +129,7 @@ pub(crate) mod commands {
                settings: self.settings.clone(),
             },
          )
-         .restart_policy(RestartPolicy::Permanent)
+         .restart_policy(RestartPolicy::Transient)
          .restart_limit(
             self.settings.engine.torrent_restart.limit,
             self.settings.engine.torrent_restart.period,
