@@ -10,6 +10,7 @@ use libtortillas::{
    hashes::{Hash, HashVec, InfoHash},
    metainfo::{Info, InfoKeys, TorrentFile},
    settings::Settings,
+   torrent::TorrentState,
    tracker::Tracker,
 };
 use tokio::fs;
@@ -51,6 +52,32 @@ async fn engine_shutdown_stops_managed_torrents() {
    engine.shutdown().await.unwrap();
    assert!(torrent.state().await.is_err());
 
+   let _ = fs::remove_file(path).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn torrent_controls_complete_their_state_transitions() {
+   let (path, _) = write_http_torrent_fixture().await;
+   let engine = Engine::builder()
+      .settings(test_settings())
+      .autostart(false)
+      .sufficient_peers(usize::MAX)
+      .build();
+   let torrent = engine.add_torrent(path.to_string_lossy()).await.unwrap();
+
+   torrent.resume().await.unwrap();
+   assert_eq!(torrent.state().await.unwrap(), TorrentState::Downloading);
+
+   torrent.pause().await.unwrap();
+   assert_eq!(torrent.state().await.unwrap(), TorrentState::Inactive);
+   torrent.pause().await.unwrap();
+
+   torrent.resume().await.unwrap();
+   torrent.stop().await.unwrap();
+   assert_eq!(torrent.state().await.unwrap(), TorrentState::Inactive);
+   torrent.stop().await.unwrap();
+
+   engine.shutdown().await.unwrap();
    let _ = fs::remove_file(path).await;
 }
 

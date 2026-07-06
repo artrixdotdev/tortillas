@@ -76,47 +76,32 @@ impl Torrent {
    }
 
    pub async fn start(&self) -> Result<()> {
-      let msg = SetState {
-         state: TorrentState::Downloading,
-      };
-
-      self
-         .actor()
-         .tell(msg)
-         .await
-         .inspect_err(|e| error!(error = %e, "Failed to start torrent"))?;
-
-      Ok(())
+      self.set_state(TorrentState::Downloading, "start").await
    }
 
+   /// Resumes downloading or seeding this torrent.
    pub async fn resume(&self) -> Result<()> {
       self.start().await
    }
 
+   /// Pauses this torrent while preserving its downloaded data and metadata.
    pub async fn pause(&self) -> Result<()> {
-      let msg = SetState {
-         state: TorrentState::Inactive,
-      };
-
-      self
-         .actor()
-         .tell(msg)
-         .await
-         .inspect_err(|e| error!(error = %e, "Failed to pause torrent"))?;
-
-      Ok(())
+      self.set_state(TorrentState::Inactive, "pause").await
    }
 
+   /// Stops this torrent's active transfers.
    pub async fn stop(&self) -> Result<()> {
-      let msg = SetState {
-         state: TorrentState::Inactive,
-      };
+      self.set_state(TorrentState::Inactive, "stop").await
+   }
+
+   async fn set_state(&self, state: TorrentState, operation: &'static str) -> Result<()> {
+      let msg = SetState { state };
 
       self
          .actor()
-         .tell(msg)
+         .ask(msg)
          .await
-         .inspect_err(|e| error!(error = %e, "Failed to stop torrent"))?;
+         .inspect_err(|e| error!(error = %e, operation, "Failed to change torrent state"))?;
 
       Ok(())
    }
