@@ -215,13 +215,8 @@ pub(crate) mod commands {
       #[message]
       pub(crate) async fn set_state(&mut self, state: TorrentState) {
          match state {
-            TorrentState::Downloading => self.start().await,
-            TorrentState::Paused => {
-               if let Some(next_rechoke) = self.next_rechoke.take() {
-                  next_rechoke.abort();
-               }
-               self.state = TorrentState::Paused;
-            }
+            TorrentState::Downloading | TorrentState::Seeding => self.start().await,
+            TorrentState::Paused => self.stop_transfer().await,
             state => self.state = state,
          }
       }

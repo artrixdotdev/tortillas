@@ -224,4 +224,24 @@ impl Actor for EngineActor {
          },
       })
    }
+
+   async fn on_stop(
+      &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
+   ) -> Result<(), Self::Error> {
+      let torrents = self
+         .torrents
+         .iter()
+         .map(|torrent| (*torrent.key(), torrent.value().clone()))
+         .collect::<Vec<_>>();
+
+      for (info_hash, torrent) in torrents {
+         if let Err(err) = torrent.stop_gracefully().await {
+            error!(error = %err, %info_hash, "Failed to stop torrent during engine shutdown");
+         }
+         torrent.wait_for_shutdown().await;
+         self.torrents.remove(&info_hash);
+      }
+
+      Ok(())
+   }
 }

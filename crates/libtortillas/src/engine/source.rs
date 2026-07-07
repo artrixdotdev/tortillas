@@ -42,10 +42,10 @@ const MAX_TORRENT_FILE_SIZE: usize = 10 * 1024 * 1024;
 ///    }
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TorrentSource {
    /// A `magnet:` URI entered or pasted by the user.
-   Magnet(String),
+   MagnetUri(String),
    /// A local `.torrent` file path selected by the user.
    TorrentFilePath(PathBuf),
    /// Raw bytes of a `.torrent` file already loaded by the frontend.
@@ -58,7 +58,7 @@ impl TorrentSource {
    /// Creates a source from a `magnet:` URI.
    #[must_use]
    pub fn magnet(uri: impl Into<String>) -> Self {
-      Self::Magnet(uri.into())
+      Self::MagnetUri(uri.into())
    }
 
    /// Creates a source from a local `.torrent` file path.
@@ -81,7 +81,7 @@ impl TorrentSource {
 
    pub(crate) async fn into_metainfo(self) -> Result<MetaInfo, EngineError> {
       match self {
-         Self::Magnet(uri) => metainfo_from_magnet(uri),
+         Self::MagnetUri(uri) => metainfo_from_magnet(uri),
          Self::TorrentFilePath(path) => metainfo_from_path(path).await,
          Self::TorrentFileBytes(bytes) => metainfo_from_bytes(&bytes),
          Self::RemoteTorrentUrl(url) => metainfo_from_remote_url(url).await,

@@ -37,6 +37,21 @@ fn command_variants_identify_torrents_by_info_hash() {
    let command = CoreCommand::StartTorrent { torrent };
 
    assert_eq!(command, CoreCommand::StartTorrent { torrent });
+
+   let command = CoreCommand::PauseTorrent { torrent };
+   assert_eq!(command, CoreCommand::PauseTorrent { torrent });
+
+   let command = CoreCommand::ResumeTorrent { torrent };
+   assert_eq!(command, CoreCommand::ResumeTorrent { torrent });
+
+   let command = CoreCommand::StopTorrent { torrent };
+   assert_eq!(command, CoreCommand::StopTorrent { torrent });
+
+   let command = CoreCommand::RemoveTorrent { torrent };
+   assert_eq!(command, CoreCommand::RemoveTorrent { torrent });
+
+   let command = CoreCommand::Shutdown;
+   assert_eq!(command, CoreCommand::Shutdown);
 }
 
 #[test]

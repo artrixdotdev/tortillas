@@ -13,12 +13,13 @@
 //!
 //! let engine = EngineHandle::default();
 //! let command = CoreCommand::AddTorrent {
-//!    source: TorrentSource::MagnetUri("magnet:?xt=urn:btih:...".to_string()),
+//!    source: TorrentSource::magnet("magnet:?xt=urn:btih:..."),
 //! };
 //! ```
 
 use std::{collections::HashSet, net::SocketAddr, path::PathBuf, time::Duration};
 
+pub use crate::engine::TorrentSource;
 use crate::{
    engine::{Engine, EngineExport},
    hashes::InfoHash,
@@ -40,23 +41,6 @@ pub type EngineHandle = Engine;
 /// into the torrent module directly.
 pub type TorrentHandle = Torrent;
 
-/// Explicit torrent sources accepted by frontend commands.
-///
-/// Runtime support for every variant is implemented by follow-up work. This
-/// type is the stable contract a frontend can use instead of guessing source
-/// kind from an arbitrary string.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TorrentSource {
-   /// A BitTorrent magnet URI.
-   MagnetUri(String),
-   /// A local `.torrent` file path selected by the frontend.
-   TorrentFilePath(PathBuf),
-   /// Raw bytes from a `.torrent` file provided by the frontend.
-   TorrentFileBytes(Vec<u8>),
-   /// A remote HTTP or HTTPS `.torrent` URL.
-   RemoteTorrentUrl(String),
-}
-
 /// Commands a frontend can model before sending work to the engine.
 ///
 /// The existing handle methods remain the runtime API today. This enum gives
@@ -70,8 +54,16 @@ pub enum CoreCommand {
    StartAll,
    /// Start one torrent.
    StartTorrent { torrent: InfoHash },
+   /// Resume one torrent.
+   ResumeTorrent { torrent: InfoHash },
    /// Pause one torrent.
    PauseTorrent { torrent: InfoHash },
+   /// Stop one torrent.
+   StopTorrent { torrent: InfoHash },
+   /// Remove one torrent from the engine.
+   RemoveTorrent { torrent: InfoHash },
+   /// Gracefully shut down the engine.
+   Shutdown,
    /// Change the output folder for one torrent.
    SetTorrentOutputPath { torrent: InfoHash, path: PathBuf },
    /// Enable or disable autostart for one torrent.

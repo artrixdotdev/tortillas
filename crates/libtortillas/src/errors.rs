@@ -60,6 +60,10 @@ pub enum EngineError {
    #[error("Torrent already exists: {0}")]
    TorrentAlreadyExists(InfoHash),
 
+   /// Tried to operate on a torrent the engine does not manage.
+   #[error("Torrent not found: {0}")]
+   TorrentNotFound(InfoHash),
+
    /// Any other engine-level error wrapped in [`anyhow::Error`]
    #[error(transparent)]
    Other(#[from] anyhow::Error),

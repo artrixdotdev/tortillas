@@ -28,7 +28,7 @@
 //!
 //! let _engine = EngineHandle::default();
 //! let _command = CoreCommand::AddTorrent {
-//!    source: TorrentSource::MagnetUri("magnet:?xt=urn:btih:...".to_string()),
+//!    source: TorrentSource::magnet("magnet:?xt=urn:btih:..."),
 //! };
 //! ```
 //!
