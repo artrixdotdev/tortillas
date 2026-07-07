@@ -400,7 +400,7 @@ impl TorrentActor {
          name: self.display_name().to_string(),
          state: self.state,
          has_metadata: info.is_some(),
-         is_ready: self.is_ready(),
+         is_ready: self.state == TorrentState::Ready && self.is_ready(),
          auto_start: self.autostart,
          sufficient_peers: self.sufficient_peers,
          peer_count: self.peers.len(),
@@ -1122,7 +1122,7 @@ mod tests {
       let mut piece_scheduler = PieceScheduler::new(piece_count);
       piece_scheduler.set_piece_blocks(partial_piece_index, blocks);
 
-      let test_actor = TorrentActor {
+      let mut test_actor = TorrentActor {
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield,
@@ -1139,12 +1139,12 @@ mod tests {
             Some(file_path.clone()),
             Some(info_dict.clone()),
          )),
-         state: TorrentState::Inactive,
+         state: TorrentState::Ready,
          piece_scheduler,
          choking_scheduler: ChokingScheduler::default(),
          next_rechoke: None,
          start_time: None,
-         sufficient_peers: 6,
+         sufficient_peers: 0,
          autostart: false,
          pending_start: false,
          ready_hook: Vec::new(),
@@ -1155,10 +1155,11 @@ mod tests {
 
       assert_eq!(snapshot.info_hash, info_hash);
       assert_eq!(snapshot.name, testing::BIG_BUCK_BUNNY_NAME);
-      assert_eq!(snapshot.state, TorrentState::Inactive);
+      assert_eq!(snapshot.state, TorrentState::Ready);
       assert!(snapshot.has_metadata);
+      assert!(snapshot.is_ready);
       assert!(!snapshot.auto_start);
-      assert_eq!(snapshot.sufficient_peers, 6);
+      assert_eq!(snapshot.sufficient_peers, 0);
       assert_eq!(snapshot.output_path, Some(file_path));
       assert_eq!(
          snapshot.progress.total_bytes,
@@ -1178,6 +1179,9 @@ mod tests {
       let from_snapshot: TorrentSnapshot = serde_json::from_str(&snapshot_str).unwrap();
 
       assert_eq!(snapshot, from_snapshot);
+
+      test_actor.state = TorrentState::Paused;
+      assert!(!test_actor.snapshot().is_ready);
 
       actor_ref.stop_gracefully().await.unwrap();
    }
