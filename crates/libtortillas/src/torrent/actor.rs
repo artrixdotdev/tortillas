@@ -372,8 +372,8 @@ impl TorrentActor {
 
    pub fn snapshot(&self) -> TorrentSnapshot {
       let info = self.info_dict();
-      let total_bytes = info.map(Info::total_length);
-      let downloaded_bytes = self.total_bytes_downloaded().unwrap_or(0);
+      let total_bytes = info.map(Info::total_length).map(Self::snapshot_u64);
+      let downloaded_bytes = Self::snapshot_u64(self.total_bytes_downloaded().unwrap_or(0));
       let bytes_remaining =
          total_bytes.map(|bytes| bytes.saturating_sub(downloaded_bytes.min(bytes)));
       let progress_fraction = total_bytes.map(|bytes| {
@@ -402,9 +402,9 @@ impl TorrentActor {
          has_metadata: info.is_some(),
          is_ready: self.state == TorrentState::Ready && self.is_ready(),
          auto_start: self.autostart,
-         sufficient_peers: self.sufficient_peers,
-         peer_count: self.peers.len(),
-         tracker_count: self.trackers.len(),
+         sufficient_peers: Self::snapshot_u64(self.sufficient_peers),
+         peer_count: Self::snapshot_u64(self.peers.len()),
+         tracker_count: Self::snapshot_u64(self.trackers.len()),
          output_path: match &self.piece_manager {
             PieceManagerProxy::Default(manager) => manager.path().cloned(),
             PieceManagerProxy::Custom(_) => None,
@@ -414,9 +414,9 @@ impl TorrentActor {
             downloaded_bytes,
             bytes_remaining,
             progress_fraction,
-            completed_pieces,
-            partial_pieces,
-            total_pieces,
+            completed_pieces: Self::snapshot_u64(completed_pieces),
+            partial_pieces: Self::snapshot_u64(partial_pieces),
+            total_pieces: Self::snapshot_u64(total_pieces),
          },
          transfer: TorrentTransferSnapshot {
             download_rate_bytes_per_second: None,
@@ -424,6 +424,10 @@ impl TorrentActor {
             eta_seconds: None,
          },
       }
+   }
+
+   fn snapshot_u64(value: usize) -> u64 {
+      u64::try_from(value).unwrap_or(u64::MAX)
    }
 
    fn display_name(&self) -> &str {
@@ -1163,13 +1167,22 @@ mod tests {
       assert_eq!(snapshot.output_path, Some(file_path));
       assert_eq!(
          snapshot.progress.total_bytes,
-         Some(info_dict.total_length())
+         Some(u64::try_from(info_dict.total_length()).unwrap())
       );
-      assert_eq!(snapshot.progress.completed_pieces, completed_pieces);
+      assert_eq!(
+         snapshot.progress.completed_pieces,
+         u64::try_from(completed_pieces).unwrap()
+      );
       assert_eq!(snapshot.progress.partial_pieces, 1);
-      assert_eq!(snapshot.progress.total_pieces, piece_count);
+      assert_eq!(
+         snapshot.progress.total_pieces,
+         u64::try_from(piece_count).unwrap()
+      );
       assert!(snapshot.progress.downloaded_bytes > 0);
-      assert!(snapshot.progress.bytes_remaining.unwrap() < info_dict.total_length());
+      assert!(
+         snapshot.progress.bytes_remaining.unwrap()
+            < u64::try_from(info_dict.total_length()).unwrap()
+      );
       assert!(snapshot.progress.progress_fraction.unwrap() > 0.0);
       assert_eq!(snapshot.transfer.download_rate_bytes_per_second, None);
       assert_eq!(snapshot.transfer.upload_rate_bytes_per_second, None);

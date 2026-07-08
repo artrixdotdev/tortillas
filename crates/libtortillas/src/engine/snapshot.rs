@@ -6,7 +6,7 @@ use crate::torrent::TorrentSnapshot;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EngineSnapshot {
    pub status: EngineStatus,
-   pub torrent_count: usize,
+   pub torrent_count: u64,
    pub torrents: Vec<TorrentSnapshot>,
 }
 

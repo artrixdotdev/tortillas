@@ -161,7 +161,7 @@ pub(crate) mod commands {
 
          Ok(EngineSnapshot {
             status: EngineStatus::Running,
-            torrent_count: torrents.len(),
+            torrent_count: u64::try_from(torrents.len()).unwrap_or(u64::MAX),
             torrents,
          })
       }

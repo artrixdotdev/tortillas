@@ -14,9 +14,9 @@ pub struct TorrentSnapshot {
    pub has_metadata: bool,
    pub is_ready: bool,
    pub auto_start: bool,
-   pub sufficient_peers: usize,
-   pub peer_count: usize,
-   pub tracker_count: usize,
+   pub sufficient_peers: u64,
+   pub peer_count: u64,
+   pub tracker_count: u64,
    pub output_path: Option<PathBuf>,
    pub progress: TorrentProgressSnapshot,
    pub transfer: TorrentTransferSnapshot,
@@ -25,13 +25,13 @@ pub struct TorrentSnapshot {
 /// Display-ready torrent progress fields.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TorrentProgressSnapshot {
-   pub total_bytes: Option<usize>,
-   pub downloaded_bytes: usize,
-   pub bytes_remaining: Option<usize>,
+   pub total_bytes: Option<u64>,
+   pub downloaded_bytes: u64,
+   pub bytes_remaining: Option<u64>,
    pub progress_fraction: Option<f64>,
-   pub completed_pieces: usize,
-   pub partial_pieces: usize,
-   pub total_pieces: usize,
+   pub completed_pieces: u64,
+   pub partial_pieces: u64,
+   pub total_pieces: u64,
 }
 
 /// Transfer-rate fields reserved for frontend displays.
