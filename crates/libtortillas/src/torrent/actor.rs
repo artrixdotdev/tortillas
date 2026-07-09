@@ -31,7 +31,10 @@ use crate::{
    peer::{PeerActor, PeerId, commands::SetChoked},
    pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
    settings::Settings,
-   torrent::{BLOCK_SIZE, PieceStorageStrategy, TorrentExport, TorrentState},
+   torrent::{
+      BLOCK_SIZE, PieceStorageStrategy, TorrentExport, TorrentProgressSnapshot, TorrentSnapshot,
+      TorrentState, TorrentTransferSnapshot,
+   },
    tracker::{
       Announce, Event, Tracker, TrackerActor, TrackerActorArgs, TrackerUpdate, udp::UdpServer,
    },
@@ -427,6 +430,73 @@ impl TorrentActor {
       }
    }
 
+   pub fn snapshot(&self) -> TorrentSnapshot {
+      let info = self.info_dict();
+      let total_bytes = info.map(Info::total_length).map(Self::snapshot_u64);
+      let downloaded_bytes = Self::snapshot_u64(self.total_bytes_downloaded().unwrap_or(0));
+      let bytes_remaining =
+         total_bytes.map(|bytes| bytes.saturating_sub(downloaded_bytes.min(bytes)));
+      let progress_fraction = total_bytes.map(|bytes| {
+         if bytes == 0 {
+            1.0
+         } else {
+            downloaded_bytes.min(bytes) as f64 / bytes as f64
+         }
+      });
+      let completed_pieces = self.bitfield.count_ones();
+      let total_pieces = self.bitfield.len();
+      let partial_pieces = self
+         .piece_scheduler
+         .block_map_export()
+         .iter()
+         .filter(|entry| {
+            let piece_idx = *entry.key();
+            piece_idx < total_pieces && !self.bitfield[piece_idx] && entry.value().count_ones() > 0
+         })
+         .count();
+
+      TorrentSnapshot {
+         info_hash: self.info_hash(),
+         name: self.display_name().to_string(),
+         state: self.state,
+         has_metadata: info.is_some(),
+         is_ready: self.state == TorrentState::Ready && self.is_ready(),
+         auto_start: self.autostart,
+         sufficient_peers: Self::snapshot_u64(self.sufficient_peers),
+         peer_count: Self::snapshot_u64(self.peers.len()),
+         tracker_count: Self::snapshot_u64(self.trackers.len()),
+         output_path: match &self.piece_manager {
+            PieceManagerProxy::Default(manager) => manager.path().cloned(),
+            PieceManagerProxy::Custom(_) => None,
+         },
+         progress: TorrentProgressSnapshot {
+            total_bytes,
+            downloaded_bytes,
+            bytes_remaining,
+            progress_fraction,
+            completed_pieces: Self::snapshot_u64(completed_pieces),
+            partial_pieces: Self::snapshot_u64(partial_pieces),
+            total_pieces: Self::snapshot_u64(total_pieces),
+         },
+         transfer: TorrentTransferSnapshot {
+            download_rate_bytes_per_second: None,
+            upload_rate_bytes_per_second: None,
+            eta_seconds: None,
+         },
+      }
+   }
+
+   fn snapshot_u64(value: usize) -> u64 {
+      u64::try_from(value).unwrap_or(u64::MAX)
+   }
+
+   fn display_name(&self) -> &str {
+      match &self.metainfo {
+         MetaInfo::Torrent(torrent) => &torrent.info.name,
+         MetaInfo::MagnetUri(magnet) => &magnet.name,
+      }
+   }
+
    pub fn is_full(&self) -> bool {
       self.bitfield.count_ones() == self.bitfield.len()
    }
@@ -694,7 +764,7 @@ mod tests {
       settings::Settings,
       testing,
       torrent::{
-         BLOCK_SIZE, Torrent, TorrentExport,
+         BLOCK_SIZE, Torrent, TorrentExport, TorrentSnapshot,
          commands::{ExportState, GetState, HasInfoDict, SetState},
          events::IncomingPiece,
       },
@@ -1355,6 +1425,146 @@ mod tests {
    }
 
    #[tokio::test(flavor = "multi_thread")]
+   async fn torrent_actor_when_pieces_are_marked_complete_then_snapshots_progress_correctly() {
+      testing::init_tracing();
+      let mut metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
+      if let MetaInfo::Torrent(torrent_file) = &mut metainfo {
+         let tracker = torrent_file.announce.clone();
+         torrent_file.announce_list = Some(vec![vec![tracker.clone(), tracker]]);
+      }
+      let info_dict = match &metainfo {
+         MetaInfo::Torrent(file) => file.info.clone(),
+         _ => unreachable!(),
+      };
+      let info_hash = info_dict.hash().unwrap();
+
+      let piece_path = testing::torrent_temp_path();
+      let file_path = piece_path.join("files");
+
+      let peer_id = testing::peer_id();
+      let udp_server = testing::udp_server().await;
+      let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
+         .await
+         .unwrap();
+      let actor_ref = TorrentActor::spawn(TorrentActorArgs {
+         peer_id,
+         metainfo: metainfo.clone(),
+         utp_server: utp_server.clone(),
+         tracker_server: udp_server.clone(),
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::Disk(piece_path),
+         autostart: Some(false),
+         sufficient_peers: Some(usize::MAX),
+         base_path: Some(file_path.clone()),
+         settings: Settings::default(),
+      });
+      let live_snapshot = Torrent::new(info_hash, actor_ref.clone())
+         .snapshot()
+         .await
+         .unwrap();
+      assert_eq!(live_snapshot.tracker_count, 1);
+
+      let piece_count = info_dict.piece_count();
+      let bitfield: BitVec<AtomicU8> = BitVec::repeat(false, piece_count);
+      let completed_pieces = 3;
+      for index in 0..completed_pieces {
+         bitfield.set_aliased(index, true);
+      }
+
+      let partial_piece_index = completed_pieces;
+      let total_blocks = (info_dict.piece_length as usize).div_ceil(BLOCK_SIZE);
+      let mut blocks = BitVec::<usize>::repeat(false, total_blocks);
+      let partial_blocks_received = 2;
+      for index in 0..partial_blocks_received {
+         blocks.set(index, true);
+      }
+      let mut piece_scheduler = PieceScheduler::new(piece_count);
+      piece_scheduler.set_piece_blocks(partial_piece_index, blocks);
+
+      let mut test_actor = TorrentActor {
+         peers: HashMap::new(),
+         trackers: HashMap::new(),
+         bitfield,
+         id: peer_id,
+         info: Some(info_dict.clone()),
+         metainfo: metainfo.clone(),
+         tracker_server: udp_server,
+         scheduler: Scheduler::spawn(Scheduler::new()),
+         utp_server,
+         actor_ref: actor_ref.clone(),
+         piece_storage: PieceStorageStrategy::InFile,
+         piece_store: PieceStoreActor::spawn(()),
+         piece_manager: PieceManagerProxy::Default(FilePieceManager(
+            Some(file_path.clone()),
+            Some(info_dict.clone()),
+         )),
+         state: TorrentState::Ready,
+         piece_scheduler,
+         choking_scheduler: ChokingScheduler::default(),
+         next_rechoke: None,
+         start_time: None,
+         sufficient_peers: 0,
+         autostart: false,
+         pending_start: false,
+         ready_hook: Vec::new(),
+         settings: Settings::default(),
+      };
+
+      let snapshot = test_actor.snapshot();
+
+      assert_eq!(snapshot.info_hash, info_hash);
+      assert_eq!(snapshot.name, testing::BIG_BUCK_BUNNY_NAME);
+      assert_eq!(snapshot.state, TorrentState::Ready);
+      assert!(snapshot.has_metadata);
+      assert!(snapshot.is_ready);
+      assert!(!snapshot.auto_start);
+      assert_eq!(snapshot.sufficient_peers, 0);
+      assert_eq!(snapshot.output_path, Some(file_path));
+      assert_eq!(
+         snapshot.progress.total_bytes,
+         Some(u64::try_from(info_dict.total_length()).unwrap())
+      );
+      assert_eq!(
+         snapshot.progress.completed_pieces,
+         u64::try_from(completed_pieces).unwrap()
+      );
+      assert_eq!(snapshot.progress.partial_pieces, 1);
+      assert_eq!(
+         snapshot.progress.total_pieces,
+         u64::try_from(piece_count).unwrap()
+      );
+      assert!(snapshot.progress.downloaded_bytes > 0);
+      assert!(
+         snapshot.progress.bytes_remaining.unwrap()
+            < u64::try_from(info_dict.total_length()).unwrap()
+      );
+      assert!(snapshot.progress.progress_fraction.unwrap() > 0.0);
+      assert_eq!(snapshot.transfer.download_rate_bytes_per_second, None);
+      assert_eq!(snapshot.transfer.upload_rate_bytes_per_second, None);
+      assert_eq!(snapshot.transfer.eta_seconds, None);
+
+      let snapshot_str = serde_json::to_string(&snapshot).unwrap();
+      let from_snapshot: TorrentSnapshot = serde_json::from_str(&snapshot_str).unwrap();
+
+      assert_eq!(snapshot, from_snapshot);
+
+      test_actor.state = TorrentState::Paused;
+      assert!(!test_actor.snapshot().is_ready);
+
+      test_actor.bitfield.fill(false);
+      test_actor.bitfield.set_aliased(piece_count - 1, true);
+      test_actor.piece_scheduler = PieceScheduler::new(piece_count);
+      let last_piece_bytes = info_dict.total_length()
+         - ((piece_count - 1) * usize::try_from(info_dict.piece_length).unwrap());
+      assert_eq!(
+         test_actor.snapshot().progress.downloaded_bytes,
+         u64::try_from(last_piece_bytes).unwrap()
+      );
+
+      actor_ref.stop_gracefully().await.unwrap();
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
    async fn torrent_actor_when_stopped_then_returns_to_paused_state() {
       testing::init_tracing();
       let metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
@@ -1396,7 +1606,7 @@ mod tests {
          scheduler: Scheduler::spawn(Scheduler::new()),
          utp_server,
          actor_ref: actor_ref.clone(),
-         piece_storage: PieceStorageStrategy::Disk(piece_path.clone()),
+         piece_storage: PieceStorageStrategy::Disk(piece_path),
          piece_store: PieceStoreActor::spawn(()),
          piece_manager: PieceManagerProxy::Default(FilePieceManager(
             Some(file_path),

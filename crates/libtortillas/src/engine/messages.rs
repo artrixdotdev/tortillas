@@ -3,7 +3,7 @@ use kameo::{actor::Spawn, mailbox, messages, prelude::ActorRef, supervision::Res
 use tokio::time::timeout;
 use tracing::{error, warn};
 
-use super::{EngineActor, EngineExport};
+use super::{EngineActor, EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
    hashes::InfoHash,
@@ -150,9 +150,9 @@ pub(crate) mod commands {
          Ok(torrent_ref)
       }
 
-      /// Exports the current state of the engine.
+      /// Snapshots the current state of the engine for frontends.
       #[message]
-      pub(crate) async fn export_engine(&self) -> Result<EngineExport, EngineError> {
+      pub(crate) async fn snapshot_engine(&self) -> Result<EngineSnapshot, EngineError> {
          let futures = self
             .torrents
             .iter()
@@ -160,11 +160,11 @@ pub(crate) mod commands {
                let torrent = torrent.clone();
                async move {
                   torrent
-                     .ask(torrent::commands::ExportState)
+                     .ask(torrent::commands::SnapshotState)
                      .await
-                     .map(|export| *export)
+                     .map(|snapshot| *snapshot)
                      .map_err(|err| {
-                        EngineError::Other(anyhow!("failed to get torrent export: {err}"))
+                        EngineError::Other(anyhow!("failed to get torrent snapshot: {err}"))
                      })
                }
             })
@@ -172,7 +172,11 @@ pub(crate) mod commands {
 
          let torrents = try_join_all(futures).await?;
 
-         Ok(EngineExport { torrents })
+         Ok(EngineSnapshot {
+            status: EngineStatus::Running,
+            torrent_count: u64::try_from(torrents.len()).unwrap_or(u64::MAX),
+            torrents,
+         })
       }
    }
 }

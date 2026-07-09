@@ -43,6 +43,7 @@
 
 mod actor;
 mod messages;
+mod snapshot;
 mod source;
 
 use std::{net::SocketAddr, path::PathBuf};
@@ -54,16 +55,16 @@ use kameo::{
    error::SendError,
 };
 pub(crate) use messages::*;
-use serde::{Deserialize, Serialize};
 pub use source::TorrentSource;
 
-use self::commands::{CreateTorrent, ExportEngine, RemoveTorrent, StartAll};
+use self::commands::{CreateTorrent, RemoveTorrent, SnapshotEngine, StartAll};
+pub use self::snapshot::{EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
    hashes::InfoHash,
    peer::PeerId,
    settings::Settings,
-   torrent::{PieceStorageStrategy, Torrent, TorrentExport},
+   torrent::{PieceStorageStrategy, Torrent},
 };
 
 /// The main entry point for managing torrents.
@@ -323,12 +324,16 @@ impl Engine {
       Ok(())
    }
 
-   /// Exports the current state of the engine.
-   /// See [`Torrent::export`] for more information.
-   pub async fn export(&self) -> Result<EngineExport, EngineError> {
+   /// Exports the current engine state with frontend-ready torrent snapshots.
+   pub async fn export(&self) -> Result<EngineSnapshot, EngineError> {
+      self.snapshot().await
+   }
+
+   /// Snapshots the current engine state with frontend-ready torrent views.
+   pub async fn snapshot(&self) -> Result<EngineSnapshot, EngineError> {
       self
          .actor()
-         .ask(ExportEngine)
+         .ask(SnapshotEngine)
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))
    }
@@ -340,9 +345,37 @@ impl Default for Engine {
    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct EngineExport {
-   pub torrents: Vec<TorrentExport>,
+#[cfg(test)]
+mod snapshot_tests {
+   use serde_json::{from_str, to_string};
+
+   use super::*;
+   use crate::testing;
+
+   #[tokio::test]
+   async fn engine_when_torrent_is_added_then_snapshots_frontend_state() {
+      let engine = Engine::default();
+      let torrent_path = testing::torrent_fixture_path(testing::BIG_BUCK_BUNNY_TORRENT_FILE);
+
+      let torrent = engine
+         .add_torrent(TorrentSource::torrent_file_path(torrent_path))
+         .await
+         .unwrap();
+      let snapshot = engine.snapshot().await.unwrap();
+
+      assert_eq!(snapshot.status, EngineStatus::Running);
+      assert_eq!(snapshot.torrent_count, 1);
+      assert_eq!(snapshot.torrents.len(), 1);
+      assert_eq!(snapshot.torrents[0].info_hash, torrent.info_hash());
+      assert_eq!(snapshot.torrents[0].name, testing::BIG_BUCK_BUNNY_NAME);
+      assert!(snapshot.torrents[0].progress.total_pieces > 0);
+      assert!(snapshot.torrents[0].has_metadata);
+
+      let snapshot_str = to_string(&snapshot).unwrap();
+      let from_snapshot: EngineSnapshot = from_str(&snapshot_str).unwrap();
+
+      assert_eq!(snapshot, from_snapshot);
+   }
 }
 
 #[cfg(test)]

@@ -17,14 +17,12 @@
 //! };
 //! ```
 
-use std::{collections::HashSet, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{net::SocketAddr, path::PathBuf};
 
-pub use crate::engine::TorrentSource;
-use crate::{
-   engine::{Engine, EngineExport},
-   hashes::InfoHash,
-   metainfo::{Info, MetaInfo},
-   torrent::{Torrent, TorrentExport, TorrentState},
+use crate::{engine::Engine, hashes::InfoHash, torrent::Torrent};
+pub use crate::{
+   engine::{EngineSnapshot, EngineStatus, TorrentSource},
+   torrent::{TorrentProgressSnapshot, TorrentSnapshot, TorrentTransferSnapshot},
 };
 
 /// Stable handle used by frontends to manage the torrent engine.
@@ -73,7 +71,7 @@ pub enum CoreCommand {
 }
 
 /// Events a frontend can subscribe to without depending on actor messages.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
    /// The engine has an updated aggregate snapshot.
    EngineUpdated(EngineSnapshot),
@@ -85,128 +83,6 @@ pub enum CoreEvent {
    TorrentRemoved { torrent: InfoHash },
    /// A frontend-relevant error occurred.
    Error { message: String },
-}
-
-/// Frontend snapshot of the engine.
-///
-/// This intentionally contains only stable frontend concepts. Internal actor
-/// references, raw protocol streams, tracker clients, and storage managers do
-/// not belong here.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct EngineSnapshot {
-   /// Torrent snapshots currently known to the engine.
-   pub torrents: Vec<TorrentSnapshot>,
-}
-
-impl EngineSnapshot {
-   /// Builds a frontend snapshot from the current lower-level engine export.
-   pub fn from_export(export: EngineExport) -> Self {
-      export.into()
-   }
-}
-
-impl From<EngineExport> for EngineSnapshot {
-   fn from(export: EngineExport) -> Self {
-      Self {
-         torrents: export
-            .torrents
-            .into_iter()
-            .map(TorrentSnapshot::from)
-            .collect(),
-      }
-   }
-}
-
-/// Frontend snapshot of a torrent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TorrentSnapshot {
-   /// Stable torrent identifier.
-   pub info_hash: InfoHash,
-   /// Display name from torrent metadata, when available.
-   pub name: Option<String>,
-   /// Current torrent lifecycle state.
-   pub state: TorrentState,
-   /// Download progress and transfer-rate data.
-   pub progress: TorrentProgressSnapshot,
-   /// Known peers for this torrent.
-   pub peers: Vec<PeerSnapshot>,
-   /// Known trackers for this torrent.
-   pub trackers: Vec<TrackerSnapshot>,
-   /// Effective output folder for this torrent, when configured.
-   pub output_path: Option<PathBuf>,
-}
-
-impl TorrentSnapshot {
-   /// Builds a frontend snapshot from the current lower-level torrent export.
-   pub fn from_export(export: TorrentExport) -> Self {
-      export.into()
-   }
-}
-
-impl From<TorrentExport> for TorrentSnapshot {
-   fn from(export: TorrentExport) -> Self {
-      let info = snapshot_info(&export.metainfo, export.info_dict.as_ref());
-      let total_bytes = info.map_or(0, |info| info.total_length() as u64);
-      let piece_length = info.map_or(0, |info| info.piece_length);
-      let verified_bytes = export
-         .bitfield
-         .iter()
-         .by_vals()
-         .enumerate()
-         .filter(|(_, is_verified)| *is_verified)
-         .map(|(piece_index, _)| {
-            let piece_start = (piece_index as u64).saturating_mul(piece_length);
-            total_bytes.saturating_sub(piece_start).min(piece_length)
-         })
-         .fold(0_u64, u64::saturating_add);
-      let mut tracker_urls = HashSet::new();
-
-      Self {
-         info_hash: export.info_hash,
-         name: info.map(|info| info.name.clone()),
-         state: export.state,
-         progress: TorrentProgressSnapshot {
-            verified_bytes,
-            total_bytes,
-            download_rate_bytes_per_second: 0,
-            upload_rate_bytes_per_second: 0,
-            eta: None,
-         },
-         peers: Vec::new(),
-         trackers: export
-            .metainfo
-            .announce_list()
-            .into_iter()
-            .filter_map(|tracker| {
-               let announce_url = tracker.uri();
-               tracker_urls
-                  .insert(announce_url.clone())
-                  .then_some(TrackerSnapshot {
-                     announce_url,
-                     status: TrackerStatus::Pending,
-                     peers_returned: None,
-                     last_error: None,
-                  })
-            })
-            .collect(),
-         output_path: export.output_path,
-      }
-   }
-}
-
-/// Frontend-friendly progress and transfer metrics for a torrent.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TorrentProgressSnapshot {
-   /// Number of bytes verified and available locally.
-   pub verified_bytes: u64,
-   /// Total bytes expected for the torrent.
-   pub total_bytes: u64,
-   /// Current download rate in bytes per second.
-   pub download_rate_bytes_per_second: u64,
-   /// Current upload rate in bytes per second.
-   pub upload_rate_bytes_per_second: u64,
-   /// Estimated time until completion.
-   pub eta: Option<Duration>,
 }
 
 /// Frontend snapshot of a connected or discovered peer.
@@ -248,11 +124,4 @@ pub enum TrackerStatus {
    Degraded,
    /// The tracker is unsupported or permanently unusable.
    Unusable,
-}
-
-fn snapshot_info<'a>(metainfo: &'a MetaInfo, info_dict: Option<&'a Info>) -> Option<&'a Info> {
-   info_dict.or(match metainfo {
-      MetaInfo::Torrent(torrent_file) => Some(&torrent_file.info),
-      MetaInfo::MagnetUri(_) => None,
-   })
 }
