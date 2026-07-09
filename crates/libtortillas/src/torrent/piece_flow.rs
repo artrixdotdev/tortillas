@@ -529,6 +529,7 @@ mod tests {
    async fn torrent_actor_when_using_disk_storage_then_keeps_piece_cache_and_writes_output_file() {
       let piece_path = testing::torrent_temp_path();
       let base_path = testing::torrent_temp_path();
+      tokio::fs::create_dir_all(&piece_path).await.unwrap();
       let mut actor = test_actor(
          PieceStorageStrategy::Disk(piece_path.clone()),
          base_path.clone(),
