@@ -262,6 +262,10 @@ pub enum TorrentError {
    #[error("File I/O error: {operation} - {reason}")]
    FileIoError { operation: String, reason: String },
 
+   /// Torrent metadata contains an unsafe output path.
+   #[error("Unsafe torrent output path: {path}")]
+   UnsafeOutputPath { path: String },
+
    /// Bitfield operation failed
    #[error("Bitfield operation failed: {reason}")]
    BitfieldError { reason: String },
