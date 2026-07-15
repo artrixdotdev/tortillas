@@ -182,7 +182,7 @@ impl TorrentActor {
             trace!("Autostarting torrent");
             self.start().await;
          } else {
-            // Torrent is ready, but auto-start is disabled
+            self.state = TorrentState::Ready;
             self.send_ready_hooks();
          }
       }
@@ -191,15 +191,22 @@ impl TorrentActor {
    }
 
    pub async fn start(&mut self) {
+      if !self.state.can_start() {
+         trace!(state = ?self.state, "Ignoring start while torrent cannot start");
+         return;
+      }
+
       self.send_ready_hooks();
 
       let Some(info) = self.info.clone() else {
+         self.state = TorrentState::ResolvingMetadata;
          warn!(id = %self.info_hash(), "Start requested before info dict is available; deferring");
          return;
       };
 
       // Pre-start the piece manager before transitioning state
       if let Err(err) = self.piece_manager.pre_start(info.clone()).await {
+         self.state = TorrentState::Failed;
          error!(?err, "Failed to pre-start piece manager; aborting start");
          return;
       }
@@ -250,10 +257,7 @@ impl TorrentActor {
    }
 
    pub(super) async fn schedule_next_rechoke(&mut self) {
-      if !matches!(
-         self.state,
-         TorrentState::Downloading | TorrentState::Seeding
-      ) {
+      if !self.state.is_transfer_active() {
          return;
       }
 
@@ -372,7 +376,7 @@ impl TorrentActor {
    }
 
    pub fn is_ready_to_start(&self) -> bool {
-      self.is_ready() && self.state == TorrentState::Inactive
+      self.is_ready() && self.state.can_become_ready()
    }
 }
 
@@ -519,6 +523,11 @@ impl Actor for TorrentActor {
       } else {
          0
       };
+      let initial_state = if info.is_some() {
+         TorrentState::Added
+      } else {
+         TorrentState::ResolvingMetadata
+      };
       let bitfield = BitVec::repeat(false, piece_count);
       let default_manager = FilePieceManager(base_path, info.clone());
       let piece_store = PieceStoreActor::supervise(&us, ())
@@ -543,7 +552,7 @@ impl Actor for TorrentActor {
          actor_ref: us,
          piece_storage,
          piece_store,
-         state: TorrentState::default(),
+         state: initial_state,
          piece_scheduler: PieceScheduler::new(piece_count),
          choking_scheduler: ChokingScheduler::new(
             settings.torrent.upload_slots,
@@ -573,6 +582,7 @@ impl Actor for TorrentActor {
    async fn on_stop(
       &mut self, _: WeakActorRef<Self>, reason: ActorStopReason,
    ) -> Result<(), Self::Error> {
+      self.state = TorrentState::Stopping;
       info!(reason = %reason, "Torrent stopped");
       for peer in self.peers.values() {
          peer.kill();
@@ -585,6 +595,7 @@ impl Actor for TorrentActor {
       }
       self.piece_store.kill();
       self.scheduler.kill();
+      self.state = TorrentState::Stopped;
 
       Ok(())
    }
@@ -617,7 +628,7 @@ mod tests {
       testing,
       torrent::{
          BLOCK_SIZE, Torrent, TorrentExport,
-         commands::{ExportState, HasInfoDict},
+         commands::{ExportState, GetState, HasInfoDict, SetState},
       },
    };
 
@@ -699,6 +710,90 @@ mod tests {
          }
          sleep(Duration::from_millis(100)).await;
       }
+
+      actor.stop_gracefully().await.expect("Failed to stop");
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn torrent_actor_when_metadata_is_ready_without_autostart_then_reports_ready() {
+      testing::init_tracing();
+      let metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
+
+      let actor = TorrentActor::spawn(TorrentActorArgs {
+         peer_id: testing::peer_id(),
+         metainfo,
+         utp_server: UtpSocket::new_udp(testing::ephemeral_socket_addr())
+            .await
+            .unwrap(),
+         tracker_server: testing::udp_server().await,
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::default(),
+         autostart: Some(false),
+         sufficient_peers: Some(0),
+         base_path: None,
+         settings: Settings::default(),
+      });
+
+      assert_eq!(actor.ask(GetState).await.unwrap(), TorrentState::Ready);
+
+      actor.stop_gracefully().await.expect("Failed to stop");
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn torrent_actor_when_metadata_is_missing_then_reports_resolving_metadata() {
+      testing::init_tracing();
+
+      let actor = TorrentActor::spawn(TorrentActorArgs {
+         peer_id: testing::peer_id(),
+         metainfo: testing::big_buck_bunny_magnet(),
+         utp_server: UtpSocket::new_udp(testing::ephemeral_socket_addr())
+            .await
+            .unwrap(),
+         tracker_server: testing::udp_server().await,
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::default(),
+         autostart: Some(false),
+         sufficient_peers: Some(0),
+         base_path: None,
+         settings: Settings::default(),
+      });
+
+      assert_eq!(
+         actor.ask(GetState).await.unwrap(),
+         TorrentState::ResolvingMetadata
+      );
+
+      actor.stop_gracefully().await.expect("Failed to stop");
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn torrent_actor_when_paused_then_does_not_report_ready() {
+      testing::init_tracing();
+      let metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
+
+      let actor = TorrentActor::spawn(TorrentActorArgs {
+         peer_id: testing::peer_id(),
+         metainfo,
+         utp_server: UtpSocket::new_udp(testing::ephemeral_socket_addr())
+            .await
+            .unwrap(),
+         tracker_server: testing::udp_server().await,
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::default(),
+         autostart: Some(false),
+         sufficient_peers: Some(0),
+         base_path: None,
+         settings: Settings::default(),
+      });
+
+      actor
+         .tell(SetState {
+            state: TorrentState::Paused,
+         })
+         .await
+         .unwrap();
+
+      assert_eq!(actor.ask(GetState).await.unwrap(), TorrentState::Paused);
 
       actor.stop_gracefully().await.expect("Failed to stop");
    }
@@ -862,7 +957,7 @@ mod tests {
             Some(file_path),
             Some(info_dict.clone()),
          )),
-         state: TorrentState::Inactive,
+         state: TorrentState::Added,
          piece_scheduler,
          choking_scheduler: ChokingScheduler::default(),
          next_rechoke: None,
@@ -878,7 +973,7 @@ mod tests {
 
       // Verify export contents
       assert_eq!(export.info_hash, info_hash);
-      assert_eq!(export.state, TorrentState::Inactive);
+      assert_eq!(export.state, TorrentState::Added);
       assert!(!export.auto_start);
       assert_eq!(export.sufficient_peers, 6);
       assert!(export.info_dict.is_some(), "Info dict should be present");

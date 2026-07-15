@@ -116,7 +116,13 @@ fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> usize {
    match torrent_state {
       TorrentState::Downloading => peer.download_rate,
       TorrentState::Seeding => peer.upload_rate,
-      TorrentState::Inactive => 0,
+      TorrentState::Added
+      | TorrentState::ResolvingMetadata
+      | TorrentState::Ready
+      | TorrentState::Paused
+      | TorrentState::Stopping
+      | TorrentState::Stopped
+      | TorrentState::Failed => 0,
    }
 }
 

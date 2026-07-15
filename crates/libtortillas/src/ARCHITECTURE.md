@@ -10,6 +10,16 @@ The library is organized around a small actor hierarchy:
 Module facades should export stable public types while keeping actor internals private to the crate.
 Domain types such as torrent state, storage strategy, exported snapshots, tracker model types, and tracker stats live outside actor files so actors can focus on orchestration.
 
+## Torrent Lifecycle
+
+`TorrentState` is the frontend-facing lifecycle contract exported in torrent snapshots.
+New torrents start as `Added` when metadata is already available, or `ResolvingMetadata` when a source such as a magnet URI still needs an info dict.
+Once metadata and the configured peer threshold are available, a torrent becomes `Ready` if autostart is disabled, or moves directly into `Downloading` when autostart/manual start begins transfer.
+
+Completed downloads transition to `Seeding`.
+`Paused` is distinct from `Ready` and is not eligible for autostart, so frontends can intentionally hold a torrent without it being treated as merely inactive.
+Shutdown and failure paths report `Stopping`, `Stopped`, or `Failed` instead of collapsing those cases into the same state as a paused or newly added torrent.
+
 ## Choking
 
 `TorrentActor` owns the BEP 3 choking scheduler for its swarm. Active torrents run a rechoke round every 10 seconds, collect peer-local transfer stats from `PeerActor`, and keep at most four interested peers unchoked.
