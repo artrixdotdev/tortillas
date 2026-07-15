@@ -6,6 +6,8 @@ use std::{net::SocketAddr, time::Duration};
 /// near the protocol code that depends on them.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Settings {
+   /// Mainline DHT discovery settings.
+   pub dht: DhtSettings,
    /// Engine actor and incoming socket settings.
    pub engine: EngineSettings,
    /// Per-torrent actor settings.
@@ -14,6 +16,49 @@ pub struct Settings {
    pub peer: PeerSettings,
    /// Tracker actor and tracker protocol settings.
    pub tracker: TrackerSettings,
+}
+
+/// Mainline DHT (BEP 5) networking and lookup settings.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DhtSettings {
+   /// Whether the engine participates in the mainline DHT.
+   pub enabled: bool,
+   /// UDP address used for DHT queries and replies.
+   pub bind_addr: SocketAddr,
+   /// Bootstrap routers contacted when the routing table is empty.
+   pub bootstrap_nodes: Vec<String>,
+   /// Number of contacts retained in each Kademlia bucket.
+   pub bucket_size: usize,
+   /// Maximum number of in-flight queries during a lookup.
+   pub lookup_concurrency: usize,
+   /// Maximum number of peers requested for one torrent lookup.
+   pub lookup_peer_limit: usize,
+   /// Time allowed for a DHT query response.
+   pub query_timeout: Duration,
+   /// Time between peer lookups for registered torrents.
+   pub lookup_interval: Duration,
+   /// Lifetime of announce tokens and stored peer records.
+   pub record_ttl: Duration,
+}
+
+impl Default for DhtSettings {
+   fn default() -> Self {
+      Self {
+         enabled: true,
+         bind_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+         bootstrap_nodes: vec![
+            "router.bittorrent.com:6881".to_string(),
+            "router.utorrent.com:6881".to_string(),
+            "dht.transmissionbt.com:6881".to_string(),
+         ],
+         bucket_size: 8,
+         lookup_concurrency: 3,
+         lookup_peer_limit: 50,
+         query_timeout: Duration::from_secs(5),
+         lookup_interval: Duration::from_secs(15 * 60),
+         record_ttl: Duration::from_secs(30 * 60),
+      }
+   }
 }
 
 /// Restart supervision settings for actors.

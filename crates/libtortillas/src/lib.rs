@@ -44,6 +44,7 @@
 //! snapshots, and typed errors to the facade without requiring frontend callers
 //! to import implementation modules.
 
+pub mod dht;
 pub mod engine;
 pub mod errors;
 pub mod facade;
