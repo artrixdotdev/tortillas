@@ -6,6 +6,8 @@
 
 mod compact;
 mod id;
+mod message;
 
 pub use compact::{Contact, decode_nodes, decode_peers, encode_nodes, encode_peers};
 pub use id::{Distance, NodeId};
+pub use message::{DhtError, Message, Query, Response};
