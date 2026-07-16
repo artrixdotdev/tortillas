@@ -4,6 +4,8 @@
 //! without a tracker. The engine owns one DHT service and shares it across all
 //! torrents.
 
+mod compact;
 mod id;
 
+pub use compact::{Contact, decode_nodes, decode_peers, encode_nodes, encode_peers};
 pub use id::{Distance, NodeId};
