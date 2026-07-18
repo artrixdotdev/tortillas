@@ -50,7 +50,7 @@ impl<const N: usize> Hash<N> {
    ///
    /// let hash = Hash::new([1, 2, 3, 4, 5]);
    /// ```
-   pub fn new(bytes: [u8; N]) -> Self {
+   pub const fn new(bytes: [u8; N]) -> Self {
       Hash(bytes)
    }
 
@@ -64,7 +64,7 @@ impl<const N: usize> Hash<N> {
    ///
    /// let hash = Hash::from_bytes([1, 2, 3, 4, 5]);
    /// ```
-   pub fn from_bytes(bytes: [u8; N]) -> Self {
+   pub const fn from_bytes(bytes: [u8; N]) -> Self {
       Hash(bytes)
    }
 
@@ -78,7 +78,7 @@ impl<const N: usize> Hash<N> {
    /// let hash = Hash::new([1, 2, 3, 4, 5]);
    /// assert_eq!(hash.as_bytes(), &[1, 2, 3, 4, 5]);
    /// ```
-   pub fn as_bytes(&self) -> &[u8; N] {
+   pub const fn as_bytes(&self) -> &[u8; N] {
       &self.0
    }
 

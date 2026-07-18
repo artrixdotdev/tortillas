@@ -2,10 +2,12 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use anyhow::{Result, bail};
 
-use super::NodeId;
+use super::{DHT_ID_LEN, NodeId};
 
-const COMPACT_NODE_LEN: usize = 26;
-const COMPACT_PEER_LEN: usize = 6;
+const IPV4_LEN: usize = 4;
+const PORT_LEN: usize = 2;
+pub(super) const COMPACT_NODE_LEN: usize = DHT_ID_LEN + IPV4_LEN + PORT_LEN;
+const COMPACT_PEER_LEN: usize = IPV4_LEN + PORT_LEN;
 
 /// A DHT routing contact and its UDP endpoint.
 ///
@@ -48,9 +50,16 @@ pub fn decode_nodes(bytes: &[u8]) -> Result<Vec<Contact>> {
    bytes
       .chunks_exact(COMPACT_NODE_LEN)
       .map(|node| {
-         let id = NodeId::try_from(&node[..20])?;
-         let ip = Ipv4Addr::new(node[20], node[21], node[22], node[23]);
-         let port = u16::from_be_bytes([node[24], node[25]]);
+         let id = NodeId::try_from(&node[..DHT_ID_LEN])?;
+         let ip_offset = DHT_ID_LEN;
+         let port_offset = ip_offset + IPV4_LEN;
+         let ip = Ipv4Addr::new(
+            node[ip_offset],
+            node[ip_offset + 1],
+            node[ip_offset + 2],
+            node[ip_offset + 3],
+         );
+         let port = u16::from_be_bytes([node[port_offset], node[port_offset + 1]]);
          Ok(Contact::new(id, SocketAddr::from((ip, port))))
       })
       .collect()
@@ -95,11 +104,11 @@ mod tests {
    fn compact_nodes_when_ipv4_contacts_are_encoded_then_round_trips() {
       let contacts = vec![
          Contact::new(
-            NodeId::from_bytes([1; 20]),
+            NodeId::from_bytes([1; DHT_ID_LEN]),
             "127.0.0.1:6881".parse().unwrap(),
          ),
          Contact::new(
-            NodeId::from_bytes([2; 20]),
+            NodeId::from_bytes([2; DHT_ID_LEN]),
             "10.0.0.2:51413".parse().unwrap(),
          ),
       ];

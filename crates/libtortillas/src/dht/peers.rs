@@ -4,6 +4,8 @@ use std::{
    time::{Duration, Instant},
 };
 
+#[cfg(test)]
+use super::DHT_ID_LEN;
 use super::NodeId;
 
 /// Time-bounded storage for peers announced to this DHT node.
@@ -69,7 +71,7 @@ mod tests {
    #[test]
    fn peer_store_when_peer_is_announced_then_returns_endpoint() {
       let mut store = PeerStore::new(Duration::from_secs(60));
-      let info_hash = NodeId::from_bytes([1; 20]);
+      let info_hash = NodeId::from_bytes([1; DHT_ID_LEN]);
       let peer = "192.0.2.1:6881".parse().unwrap();
 
       assert!(store.announce(info_hash, peer));
@@ -79,7 +81,7 @@ mod tests {
    #[test]
    fn peer_store_when_record_expires_then_removes_endpoint() {
       let mut store = PeerStore::new(Duration::from_secs(60));
-      let info_hash = NodeId::from_bytes([1; 20]);
+      let info_hash = NodeId::from_bytes([1; DHT_ID_LEN]);
       let peer = "192.0.2.1:6881".parse().unwrap();
       store.announce(info_hash, peer);
       *store
@@ -96,7 +98,7 @@ mod tests {
    #[test]
    fn peer_store_when_endpoint_is_unusable_then_rejects_announcement() {
       let mut store = PeerStore::new(Duration::from_secs(60));
-      let info_hash = NodeId::from_bytes([1; 20]);
+      let info_hash = NodeId::from_bytes([1; DHT_ID_LEN]);
 
       assert!(!store.announce(info_hash, "0.0.0.0:6881".parse().unwrap()));
       assert!(!store.announce(info_hash, "192.0.2.1:0".parse().unwrap()));

@@ -1,44 +1,52 @@
-use std::{fmt, ops::BitXor};
+use std::fmt;
 
-use rand::random;
+use crate::hashes::{Hash, InfoHash};
 
-use crate::hashes::InfoHash;
+/// Byte width of DHT node IDs and info hashes defined by BEP 5.
+pub const DHT_ID_LEN: usize = 20;
 
-/// The 160-bit identifier of a mainline DHT node.
+/// A DHT node identifier backed by the project's canonical 20-byte hash type.
 ///
-/// A node ID shares the info-hash keyspace for Kademlia distance calculations,
-/// but is deliberately distinct from the peer ID sent in BitTorrent
-/// handshakes. See [BEP 5 routing].
+/// The wrapper prevents accidentally using a node ID as the peer ID sent in a
+/// BitTorrent handshake while sharing the same byte representation and
+/// conversion code as info hashes. See [BEP 5 routing].
 ///
 /// [BEP 5 routing]: https://www.bittorrent.org/beps/bep_0005.html#routing-table
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub struct NodeId([u8; 20]);
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct NodeId(Hash<DHT_ID_LEN>);
 
 impl NodeId {
    /// Generates an identifier suitable for a new ephemeral DHT node.
    pub fn random() -> Self {
-      Self(random())
+      Self(Hash::from_bytes(rand::random()))
    }
 
    /// Creates an identifier from its wire representation.
-   pub const fn from_bytes(bytes: [u8; 20]) -> Self {
-      Self(bytes)
+   pub const fn from_bytes(bytes: [u8; DHT_ID_LEN]) -> Self {
+      Self(Hash::from_bytes(bytes))
    }
 
    /// Returns the wire representation of this identifier.
-   pub const fn as_bytes(&self) -> &[u8; 20] {
-      &self.0
+   pub const fn as_bytes(&self) -> &[u8; DHT_ID_LEN] {
+      self.0.as_bytes()
    }
 
    /// Returns the XOR distance from another DHT key.
-   pub fn distance(self, other: impl Into<Self>) -> Distance {
-      self ^ other.into()
+   pub fn distance(self, other: Self) -> Distance {
+      let mut bytes = [0; DHT_ID_LEN];
+      for (output, (left, right)) in bytes
+         .iter_mut()
+         .zip(self.as_bytes().iter().zip(other.as_bytes()))
+      {
+         *output = left ^ right;
+      }
+      Distance(bytes)
    }
 }
 
 impl From<InfoHash> for NodeId {
    fn from(info_hash: InfoHash) -> Self {
-      Self(*info_hash.as_bytes())
+      Self(info_hash)
    }
 }
 
@@ -46,40 +54,19 @@ impl TryFrom<&[u8]> for NodeId {
    type Error = anyhow::Error;
 
    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-      let bytes = bytes
-         .try_into()
-         .map_err(|_| anyhow::anyhow!("DHT node IDs must contain exactly 20 bytes"))?;
-      Ok(Self(bytes))
-   }
-}
-
-impl fmt::Debug for NodeId {
-   fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-      write!(f, "NodeId({})", hex::encode(self.0))
+      Ok(Self(Hash::try_from(bytes.to_vec())?))
    }
 }
 
 impl fmt::Display for NodeId {
    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-      write!(f, "{}", hex::encode(self.0))
-   }
-}
-
-impl BitXor for NodeId {
-   type Output = Distance;
-
-   fn bitxor(self, rhs: Self) -> Self::Output {
-      let mut bytes = [0; 20];
-      for (output, (left, right)) in bytes.iter_mut().zip(self.0.iter().zip(rhs.0)) {
-         *output = left ^ right;
-      }
-      Distance(bytes)
+      write!(f, "{}", self.0)
    }
 }
 
 /// XOR distance between two 160-bit DHT keys.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct Distance([u8; 20]);
+pub struct Distance([u8; DHT_ID_LEN]);
 
 impl Distance {
    /// Returns the Kademlia bucket index, with zero representing the nearest
@@ -88,7 +75,7 @@ impl Distance {
       for (byte_index, byte) in self.0.iter().enumerate() {
          if *byte != 0 {
             let significant_bit = 7 - byte.leading_zeros() as usize;
-            return Some((19 - byte_index) * 8 + significant_bit);
+            return Some((DHT_ID_LEN - 1 - byte_index) * u8::BITS as usize + significant_bit);
          }
       }
       None
@@ -101,10 +88,10 @@ mod tests {
 
    #[test]
    fn distance_when_keys_differ_then_orders_by_xor_value() {
-      let origin = NodeId::from_bytes([0; 20]);
-      let mut near = [0; 20];
-      near[19] = 1;
-      let mut far = [0; 20];
+      let origin = NodeId::from_bytes([0; DHT_ID_LEN]);
+      let mut near = [0; DHT_ID_LEN];
+      near[DHT_ID_LEN - 1] = 1;
+      let mut far = [0; DHT_ID_LEN];
       far[0] = 0x80;
 
       assert!(origin.distance(NodeId::from_bytes(near)) < origin.distance(NodeId::from_bytes(far)));
@@ -120,13 +107,15 @@ mod tests {
 
    #[test]
    fn distance_when_keys_match_then_has_no_bucket() {
-      let node = NodeId::from_bytes([42; 20]);
+      let node = NodeId::from_bytes([42; DHT_ID_LEN]);
 
       assert_eq!(node.distance(node).bucket_index(), None);
    }
 
    #[test]
-   fn node_id_when_wire_length_is_invalid_then_rejects_value() {
-      assert!(NodeId::try_from([0; 19].as_slice()).is_err());
+   fn node_id_when_info_hash_is_supplied_then_reuses_hash_storage() {
+      let hash = Hash::from_bytes([7; DHT_ID_LEN]);
+
+      assert_eq!(NodeId::from(hash).as_bytes(), hash.as_bytes());
    }
 }

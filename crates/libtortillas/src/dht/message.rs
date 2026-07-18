@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use serde_bytes::ByteBuf;
 
 use super::NodeId;
+#[cfg(test)]
+use super::{DHT_ID_LEN, compact::COMPACT_NODE_LEN};
+
+const KRPC_PROTOCOL_ERROR: i64 = 203;
 
 /// A decoded BEP 5 message using the bencoded [KRPC protocol] envelope.
 ///
@@ -87,7 +91,7 @@ pub struct DhtError {
 impl DhtError {
    pub fn protocol(message: impl Into<String>) -> Self {
       Self {
-         code: 203,
+         code: KRPC_PROTOCOL_ERROR,
          message: message.into(),
       }
    }
@@ -333,7 +337,7 @@ mod tests {
    use super::*;
 
    fn id(value: u8) -> NodeId {
-      NodeId::from_bytes([value; 20])
+      NodeId::from_bytes([value; DHT_ID_LEN])
    }
 
    #[test]
@@ -355,7 +359,7 @@ mod tests {
          transaction_id: b"gp".to_vec(),
          response: Response {
             id: id(2),
-            nodes: Some(vec![3; 26]),
+            nodes: Some(vec![3; COMPACT_NODE_LEN]),
             token: Some(vec![4; 8]),
             values: Some(vec![vec![127, 0, 0, 1, 0x1a, 0xe1]]),
          },

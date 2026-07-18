@@ -6,6 +6,8 @@ use std::{
 use rand::random;
 use sha1::{Digest, Sha1};
 
+use super::DHT_ID_LEN;
+
 const TOKEN_LEN: usize = 8;
 
 /// Generates short-lived tokens that bind `announce_peer` requests to the
@@ -17,8 +19,8 @@ const TOKEN_LEN: usize = 8;
 /// [BEP 5 token check]: https://www.bittorrent.org/beps/bep_0005.html#token
 #[derive(Debug)]
 pub struct TokenManager {
-   current_secret: [u8; 20],
-   previous_secret: [u8; 20],
+   current_secret: [u8; DHT_ID_LEN],
+   previous_secret: [u8; DHT_ID_LEN],
    rotated_at: Instant,
    rotation_interval: Duration,
 }
@@ -53,7 +55,7 @@ impl TokenManager {
    }
 }
 
-fn token(secret: &[u8; 20], ip: IpAddr) -> Vec<u8> {
+fn token(secret: &[u8; DHT_ID_LEN], ip: IpAddr) -> Vec<u8> {
    let mut hasher = Sha1::new();
    hasher.update(secret);
    match ip {

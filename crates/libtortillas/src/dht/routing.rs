@@ -1,8 +1,9 @@
 use std::{collections::VecDeque, time::Instant};
 
-use super::{Contact, NodeId};
+use super::{Contact, DHT_ID_LEN, NodeId};
 
 const FAILURE_LIMIT: u8 = 2;
+const BUCKET_COUNT: usize = DHT_ID_LEN * u8::BITS as usize;
 
 #[derive(Clone, Copy, Debug)]
 struct RoutingEntry {
@@ -29,7 +30,7 @@ impl RoutingTable {
       Self {
          local_id,
          bucket_size,
-         buckets: (0..160).map(|_| VecDeque::new()).collect(),
+         buckets: (0..BUCKET_COUNT).map(|_| VecDeque::new()).collect(),
       }
    }
 
@@ -125,7 +126,7 @@ mod tests {
 
    use super::*;
 
-   fn contact(id: [u8; 20], port: u16) -> Contact {
+   fn contact(id: [u8; DHT_ID_LEN], port: u16) -> Contact {
       Contact::new(
          NodeId::from_bytes(id),
          SocketAddr::from(([127, 0, 0, 1], port)),
@@ -134,41 +135,41 @@ mod tests {
 
    #[test]
    fn routing_table_when_contacts_are_added_then_returns_closest_first() {
-      let mut table = RoutingTable::new(NodeId::from_bytes([0; 20]), 8);
-      let mut near = [0; 20];
-      near[19] = 1;
-      let mut far = [0; 20];
+      let mut table = RoutingTable::new(NodeId::from_bytes([0; DHT_ID_LEN]), 8);
+      let mut near = [0; DHT_ID_LEN];
+      near[DHT_ID_LEN - 1] = 1;
+      let mut far = [0; DHT_ID_LEN];
       far[0] = 0x80;
       table.insert(contact(far, 1));
       table.insert(contact(near, 2));
 
       assert_eq!(
-         table.closest(NodeId::from_bytes([0; 20]), 2),
+         table.closest(NodeId::from_bytes([0; DHT_ID_LEN]), 2),
          vec![contact(near, 2), contact(far, 1)]
       );
    }
 
    #[test]
    fn routing_table_when_bucket_is_full_then_retains_responsive_contacts() {
-      let mut table = RoutingTable::new(NodeId::from_bytes([0; 20]), 1);
-      let mut first = [0; 20];
-      first[19] = 2;
-      let mut second = [0; 20];
-      second[19] = 3;
+      let mut table = RoutingTable::new(NodeId::from_bytes([0; DHT_ID_LEN]), 1);
+      let mut first = [0; DHT_ID_LEN];
+      first[DHT_ID_LEN - 1] = 2;
+      let mut second = [0; DHT_ID_LEN];
+      second[DHT_ID_LEN - 1] = 3;
 
       assert!(table.insert(contact(first, 1)));
       assert!(!table.insert(contact(second, 2)));
       assert_eq!(
-         table.closest(NodeId::from_bytes([0; 20]), 2),
+         table.closest(NodeId::from_bytes([0; DHT_ID_LEN]), 2),
          vec![contact(first, 1)]
       );
    }
 
    #[test]
    fn routing_table_when_contact_repeatedly_fails_then_removes_it() {
-      let mut table = RoutingTable::new(NodeId::from_bytes([0; 20]), 8);
-      let mut id = [0; 20];
-      id[19] = 1;
+      let mut table = RoutingTable::new(NodeId::from_bytes([0; DHT_ID_LEN]), 8);
+      let mut id = [0; DHT_ID_LEN];
+      id[DHT_ID_LEN - 1] = 1;
       let node = contact(id, 1);
       table.insert(node);
 
