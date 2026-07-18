@@ -4,7 +4,9 @@ use serde_bytes::ByteBuf;
 
 use super::NodeId;
 
-/// A decoded BEP 5 message.
+/// A decoded BEP 5 message using the bencoded [KRPC protocol] envelope.
+///
+/// [KRPC protocol]: https://www.bittorrent.org/beps/bep_0005.html#krpc-protocol
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Message {
    Query {

@@ -10,6 +10,11 @@ const TOKEN_LEN: usize = 8;
 
 /// Generates short-lived tokens that bind `announce_peer` requests to the
 /// address that previously issued `get_peers`.
+///
+/// This [BEP 5 token check] prevents a sender from using a spoofed source
+/// address to insert an unrelated peer into the store.
+///
+/// [BEP 5 token check]: https://www.bittorrent.org/beps/bep_0005.html#token
 #[derive(Debug)]
 pub struct TokenManager {
    current_secret: [u8; 20],

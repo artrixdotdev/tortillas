@@ -8,6 +8,11 @@ const COMPACT_NODE_LEN: usize = 26;
 const COMPACT_PEER_LEN: usize = 6;
 
 /// A DHT routing contact and its UDP endpoint.
+///
+/// BEP 5 uses the compact form to keep UDP replies small enough to avoid
+/// fragmentation. See [Compact node info].
+///
+/// [Compact node info]: https://www.bittorrent.org/beps/bep_0005.html#compact-node-info
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Contact {
    pub id: NodeId,

@@ -11,7 +11,12 @@ struct RoutingEntry {
    failures: u8,
 }
 
-/// A 160-bucket Kademlia routing table.
+/// A 160-bucket [Kademlia routing table].
+///
+/// Buckets retain recently responsive nodes because long-lived contacts make
+/// the distributed routing graph more stable than constantly replacing them.
+///
+/// [Kademlia routing table]: https://www.bittorrent.org/beps/bep_0005.html#routing-table
 #[derive(Debug)]
 pub struct RoutingTable {
    local_id: NodeId,

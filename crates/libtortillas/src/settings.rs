@@ -18,7 +18,9 @@ pub struct Settings {
    pub tracker: TrackerSettings,
 }
 
-/// Mainline DHT (BEP 5) networking and lookup settings.
+/// Mainline [BEP 5] DHT networking and lookup settings.
+///
+/// [BEP 5]: https://www.bittorrent.org/beps/bep_0005.html
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DhtSettings {
    /// Whether the engine participates in the mainline DHT.

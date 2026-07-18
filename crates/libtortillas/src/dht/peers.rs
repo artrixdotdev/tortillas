@@ -7,6 +7,11 @@ use std::{
 use super::NodeId;
 
 /// Time-bounded storage for peers announced to this DHT node.
+///
+/// BEP 5 requires announced peers to expire; otherwise nodes would return
+/// endpoints long after clients leave a swarm. See [`announce_peer`].
+///
+/// [`announce_peer`]: https://www.bittorrent.org/beps/bep_0005.html#announce-peer
 #[derive(Debug)]
 pub struct PeerStore {
    peers: HashMap<NodeId, HashMap<SocketAddr, Instant>>,

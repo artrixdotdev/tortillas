@@ -5,6 +5,12 @@ use rand::random;
 use crate::hashes::InfoHash;
 
 /// The 160-bit identifier of a mainline DHT node.
+///
+/// A node ID shares the info-hash keyspace for Kademlia distance calculations,
+/// but is deliberately distinct from the peer ID sent in BitTorrent
+/// handshakes. See [BEP 5 routing].
+///
+/// [BEP 5 routing]: https://www.bittorrent.org/beps/bep_0005.html#routing-table
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct NodeId([u8; 20]);
 
