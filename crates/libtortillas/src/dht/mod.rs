@@ -11,6 +11,7 @@ mod id;
 mod message;
 mod peers;
 mod routing;
+mod state;
 mod token;
 mod transaction;
 
@@ -19,5 +20,6 @@ pub use id::{DHT_ID_LEN, Distance, NodeId};
 pub use message::{DhtError, Message, Query, Response};
 pub use peers::PeerStore;
 pub use routing::RoutingTable;
+pub use state::DhtState;
 pub use token::TokenManager;
 pub use transaction::{TransactionResult, TransactionTable};
