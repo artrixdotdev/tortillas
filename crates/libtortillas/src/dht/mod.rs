@@ -14,6 +14,7 @@ mod routing;
 mod state;
 mod token;
 mod transaction;
+mod transport;
 
 pub use compact::{Contact, decode_nodes, decode_peers, encode_nodes, encode_peers};
 pub use id::{DHT_ID_LEN, Distance, NodeId};
@@ -23,3 +24,4 @@ pub use routing::RoutingTable;
 pub use state::DhtState;
 pub use token::TokenManager;
 pub use transaction::{TransactionResult, TransactionTable};
+pub use transport::DhtTransport;

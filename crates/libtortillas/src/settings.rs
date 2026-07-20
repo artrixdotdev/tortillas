@@ -35,6 +35,8 @@ pub struct DhtSettings {
    pub lookup_concurrency: usize,
    /// Maximum number of peers requested for one torrent lookup.
    pub lookup_peer_limit: usize,
+   /// Maximum accepted KRPC datagram size in bytes.
+   pub receive_buffer_size: usize,
    /// Time allowed for a DHT query response.
    pub query_timeout: Duration,
    /// Time between peer lookups for registered torrents.
@@ -56,6 +58,7 @@ impl Default for DhtSettings {
          bucket_size: 8,
          lookup_concurrency: 3,
          lookup_peer_limit: 50,
+         receive_buffer_size: 4096,
          query_timeout: Duration::from_secs(5),
          lookup_interval: Duration::from_secs(15 * 60),
          record_ttl: Duration::from_secs(30 * 60),
