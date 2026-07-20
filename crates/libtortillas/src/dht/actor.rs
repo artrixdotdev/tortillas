@@ -7,15 +7,20 @@ use kameo::{
    mailbox::{MailboxReceiver, Signal},
    supervision::SupervisionStrategy,
 };
-use tracing::{error, warn};
+use tokio::{
+   net::lookup_host,
+   task::{AbortHandle, JoinSet},
+};
+use tracing::{debug, error, warn};
 
-use super::{DhtState, DhtTransport, NodeId, messages::events::IncomingDatagram};
+use super::{DhtState, DhtTransport, NodeId, Query, messages::events::IncomingDatagram};
 use crate::settings::DhtSettings;
 
 /// Engine-owned actor for DHT routing state and inbound KRPC traffic.
 pub(crate) struct DhtActor {
    pub(super) state: DhtState,
    pub(super) transport: DhtTransport,
+   bootstrap_task: Option<AbortHandle>,
 }
 
 #[derive(Clone, Debug)]
@@ -40,7 +45,19 @@ impl Actor for DhtActor {
       )
       .await?;
       let state = DhtState::new(args.id.unwrap_or_else(NodeId::random), &args.settings);
-      Ok(Self { state, transport })
+      let bootstrap_task = (!args.settings.bootstrap_nodes.is_empty()).then(|| {
+         tokio::spawn(bootstrap(
+            transport.clone(),
+            args.settings.bootstrap_nodes,
+            state.id(),
+         ))
+         .abort_handle()
+      });
+      Ok(Self {
+         state,
+         transport,
+         bootstrap_task,
+      })
    }
 
    async fn next(
@@ -77,5 +94,40 @@ impl Actor for DhtActor {
    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
       error!(?id, ?reason, "Linked DHT child died");
       Ok(ControlFlow::Continue(()))
+   }
+
+   async fn on_stop(
+      &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
+   ) -> Result<(), Self::Error> {
+      if let Some(task) = self.bootstrap_task.take() {
+         task.abort();
+      }
+      Ok(())
+   }
+}
+
+async fn bootstrap(transport: DhtTransport, routers: Vec<String>, id: NodeId) {
+   let mut queries = JoinSet::new();
+   for router in routers {
+      match lookup_host(&router).await {
+         Ok(addresses) => {
+            for addr in addresses {
+               let transport = transport.clone();
+               queries.spawn(async move {
+                  transport
+                     .query(addr, Query::FindNode { id, target: id })
+                     .await
+               });
+            }
+         }
+         Err(err) => warn!(error = %err, %router, "Failed to resolve DHT bootstrap router"),
+      }
+   }
+   while let Some(result) = queries.join_next().await {
+      match result {
+         Ok(Ok(response)) => debug!(node_id = %response.id, "DHT bootstrap node responded"),
+         Ok(Err(err)) => debug!(error = %err, "DHT bootstrap query failed"),
+         Err(err) => debug!(error = %err, "DHT bootstrap task failed"),
+      }
    }
 }

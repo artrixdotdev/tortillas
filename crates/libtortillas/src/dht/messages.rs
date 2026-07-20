@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use kameo::messages;
 use tracing::{trace, warn};
 
-use super::{Contact, DhtActor, Message};
+use super::{DhtActor, Message};
 
 pub(crate) mod events {
    use super::*;
@@ -35,16 +35,15 @@ pub(crate) mod events {
                transaction_id,
                response,
             } => {
-               let contact_id = response.id;
+               let learned_response = response.clone();
                let message = Message::Response {
                   transaction_id,
                   response,
                };
                if self.transport.complete(&message, addr).await {
-                  self
-                     .state
-                     .routing_mut()
-                     .insert(Contact::new(contact_id, addr));
+                  if let Err(err) = self.state.learn_response(&learned_response, addr) {
+                     warn!(error = %err, %addr, "Ignored invalid nodes in DHT response");
+                  }
                } else {
                   trace!(%addr, "Ignored unmatched DHT response");
                }
@@ -76,6 +75,11 @@ pub(crate) mod commands {
       pub(crate) fn local_addr(&self) -> std::io::Result<SocketAddr> {
          self.transport.local_addr()
       }
+
+      #[message]
+      pub(crate) fn routing_len(&self) -> usize {
+         self.state.routing().len()
+      }
    }
 }
 
@@ -84,12 +88,14 @@ mod tests {
    use std::time::Duration;
 
    use kameo::actor::Spawn;
+   use tokio::time::{sleep, timeout};
 
    use super::*;
    use crate::{
       dht::{
-         DHT_ID_LEN, DhtTransport, NodeId, Query, Response, actor::DhtActorArgs,
-         messages::commands::LocalAddr,
+         DHT_ID_LEN, DhtTransport, NodeId, Query, Response,
+         actor::DhtActorArgs,
+         messages::commands::{LocalAddr, RoutingLen},
       },
       settings::DhtSettings,
    };
@@ -136,5 +142,48 @@ mod tests {
       assert_eq!(response, Response::pong(actor_id));
       receive_task.await.unwrap();
       actor.kill();
+   }
+
+   #[tokio::test]
+   async fn dht_actor_when_bootstrap_node_is_available_then_learns_contact() {
+      const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+      let bootstrap_settings = DhtSettings {
+         bind_addr: "127.0.0.1:0".parse().unwrap(),
+         bootstrap_nodes: Vec::new(),
+         query_timeout: Duration::from_secs(1),
+         receive_buffer_size: TEST_BUFFER_SIZE,
+         ..DhtSettings::default()
+      };
+      let bootstrap = DhtActor::spawn(DhtActorArgs {
+         id: Some(NodeId::from_bytes([1; DHT_ID_LEN])),
+         settings: bootstrap_settings,
+      });
+      let bootstrap_addr = bootstrap.ask(LocalAddr).await.unwrap();
+      let client_settings = DhtSettings {
+         bind_addr: "127.0.0.1:0".parse().unwrap(),
+         bootstrap_nodes: vec![bootstrap_addr.to_string()],
+         query_timeout: Duration::from_secs(1),
+         receive_buffer_size: TEST_BUFFER_SIZE,
+         ..DhtSettings::default()
+      };
+      let client = DhtActor::spawn(DhtActorArgs {
+         id: Some(NodeId::from_bytes([2; DHT_ID_LEN])),
+         settings: client_settings,
+      });
+
+      timeout(Duration::from_secs(1), async {
+         loop {
+            if client.ask(RoutingLen).await.unwrap() > 0 {
+               break;
+            }
+            sleep(POLL_INTERVAL).await;
+         }
+      })
+      .await
+      .unwrap();
+
+      client.kill();
+      bootstrap.kill();
    }
 }

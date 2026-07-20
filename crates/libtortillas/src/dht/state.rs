@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 
 use super::{
-   Contact, DhtError, NodeId, PeerStore, Query, Response, RoutingTable, TokenManager, encode_nodes,
-   encode_peers,
+   Contact, DhtError, NodeId, PeerStore, Query, Response, RoutingTable, TokenManager, decode_nodes,
+   encode_nodes, encode_peers,
 };
 use crate::settings::DhtSettings;
 
@@ -36,6 +36,16 @@ impl DhtState {
 
    pub fn routing_mut(&mut self) -> &mut RoutingTable {
       &mut self.routing
+   }
+
+   pub fn learn_response(&mut self, response: &Response, source: SocketAddr) -> anyhow::Result<()> {
+      self.routing.insert(Contact::new(response.id, source));
+      if let Some(nodes) = &response.nodes {
+         for contact in decode_nodes(nodes)? {
+            self.routing.insert(contact);
+         }
+      }
+      Ok(())
    }
 
    /// Applies one BEP 5 query and builds the matching response dictionary.
