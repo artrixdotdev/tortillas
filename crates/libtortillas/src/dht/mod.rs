@@ -9,6 +9,7 @@
 mod actor;
 mod compact;
 mod id;
+mod lookup;
 mod message;
 mod messages;
 mod peers;
@@ -21,6 +22,7 @@ mod transport;
 pub(crate) use actor::{DhtActor, DhtActorArgs};
 pub use compact::{Contact, decode_nodes, decode_peers, encode_nodes, encode_peers};
 pub use id::{DHT_ID_LEN, Distance, NodeId};
+pub use lookup::{LookupResult, lookup_peers};
 pub use message::{DhtError, Message, Query, Response};
 pub use peers::PeerStore;
 pub use routing::RoutingTable;

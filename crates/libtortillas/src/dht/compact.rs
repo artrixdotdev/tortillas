@@ -15,7 +15,7 @@ const COMPACT_PEER_LEN: usize = IPV4_LEN + PORT_LEN;
 /// fragmentation. See [Compact node info].
 ///
 /// [Compact node info]: https://www.bittorrent.org/beps/bep_0005.html#compact-node-info
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Contact {
    pub id: NodeId,
    pub addr: SocketAddr,
