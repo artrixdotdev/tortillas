@@ -43,6 +43,8 @@ pub struct DhtSettings {
    pub lookup_interval: Duration,
    /// Lifetime of announce tokens and stored peer records.
    pub record_ttl: Duration,
+   /// Restart supervision policy for the engine-owned DHT actor.
+   pub restart: RestartPolicySettings,
 }
 
 impl Default for DhtSettings {
@@ -62,6 +64,7 @@ impl Default for DhtSettings {
          query_timeout: Duration::from_secs(5),
          lookup_interval: Duration::from_secs(15 * 60),
          record_ttl: Duration::from_secs(30 * 60),
+         restart: RestartPolicySettings::new(3, Duration::from_secs(60)),
       }
    }
 }

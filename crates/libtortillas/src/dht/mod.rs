@@ -6,9 +6,11 @@
 //!
 //! [BEP 5]: https://www.bittorrent.org/beps/bep_0005.html
 
+mod actor;
 mod compact;
 mod id;
 mod message;
+mod messages;
 mod peers;
 mod routing;
 mod state;
@@ -16,6 +18,7 @@ mod token;
 mod transaction;
 mod transport;
 
+pub(crate) use actor::{DhtActor, DhtActorArgs};
 pub use compact::{Contact, decode_nodes, decode_peers, encode_nodes, encode_peers};
 pub use id::{DHT_ID_LEN, Distance, NodeId};
 pub use message::{DhtError, Message, Query, Response};
