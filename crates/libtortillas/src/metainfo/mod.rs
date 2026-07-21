@@ -50,7 +50,10 @@ impl MetaInfo {
 
    pub fn clear_announce_list(&mut self) {
       match self {
-         MetaInfo::Torrent(file) => file.announce_list = None,
+         MetaInfo::Torrent(file) => {
+            file.announce = None;
+            file.announce_list = None;
+         }
          MetaInfo::MagnetUri(magnet) => magnet.announce_list = None,
       };
    }

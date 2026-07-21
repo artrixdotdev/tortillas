@@ -15,8 +15,9 @@ use crate::{
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TorrentFile {
-   /// The primary announce URI for the torrent.
-   pub announce: Tracker,
+   /// The primary announce URI for the torrent. Trackerless torrents omit this
+   /// key as specified by [BEP 5](https://www.bittorrent.org/beps/bep_0005.html#torrent-file-extensions).
+   pub announce: Option<Tracker>,
    /// Secondary announce URIs for different trackers, and protocols. Also can
    /// be used as a backup
    #[serde(rename(deserialize = "announce-list"))]
@@ -39,7 +40,7 @@ impl TorrentFile {
    }
 
    pub fn announce_list(&self) -> Vec<Tracker> {
-      let mut announce_list = vec![self.announce.clone()];
+      let mut announce_list: Vec<Tracker> = self.announce.clone().into_iter().collect();
       if let Some(list) = self.announce_list.clone() {
          for tracker in list.into_iter().flatten() {
             announce_list.push(tracker);
@@ -168,5 +169,17 @@ mod tests {
          }
          _ => panic!("Expected Torrent"),
       }
+   }
+
+   #[tokio::test]
+   async fn torrent_file_when_trackerless_then_parses_without_announce_uri() {
+      let metainfo = testing::read_torrent_fixture(testing::ARCH_LINUX_TORRENT_FILE).await;
+      let MetaInfo::Torrent(torrent) = metainfo else {
+         panic!("Expected Torrent");
+      };
+
+      assert_eq!(torrent.info.name, testing::ARCH_LINUX_NAME);
+      assert!(torrent.announce.is_none());
+      assert!(torrent.announce_list().is_empty());
    }
 }

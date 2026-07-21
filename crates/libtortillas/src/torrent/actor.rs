@@ -811,7 +811,7 @@ mod tests {
 
    fn torrent_with_info(tracker: Tracker, info: Info) -> MetaInfo {
       MetaInfo::Torrent(TorrentFile {
-         announce: tracker,
+         announce: Some(tracker),
          announce_list: None,
          comment: None,
          created_by: None,
@@ -864,7 +864,7 @@ mod tests {
       let mut metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
       let info = match &mut metainfo {
          MetaInfo::Torrent(file) => {
-            file.announce = tracker;
+            file.announce = Some(tracker);
             file.announce_list = None;
             file.info.clone()
          }
@@ -1429,7 +1429,7 @@ mod tests {
       testing::init_tracing();
       let mut metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
       if let MetaInfo::Torrent(torrent_file) = &mut metainfo {
-         let tracker = torrent_file.announce.clone();
+         let tracker = torrent_file.announce.clone().unwrap();
          torrent_file.announce_list = Some(vec![vec![tracker.clone(), tracker]]);
       }
       let info_dict = match &metainfo {
