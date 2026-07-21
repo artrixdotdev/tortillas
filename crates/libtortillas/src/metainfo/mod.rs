@@ -54,6 +54,14 @@ impl MetaInfo {
          MetaInfo::MagnetUri(magnet) => magnet.announce_list = None,
       };
    }
+
+   /// Whether peer discovery must be limited to the metainfo's trackers.
+   pub fn is_private(&self) -> bool {
+      match self {
+         Self::Torrent(file) => file.info.is_private.unwrap_or(false),
+         Self::MagnetUri(_) => false,
+      }
+   }
 }
 
 #[cfg(test)]
@@ -110,5 +118,17 @@ mod tests {
       let torrent_info_hash = file.info_hash().unwrap();
 
       assert_eq!(info_hash, torrent_info_hash);
+   }
+
+   #[tokio::test]
+   async fn metainfo_when_private_flag_is_set_then_disables_public_discovery() {
+      let mut metainfo = read_torrent_fixture(BIG_BUCK_BUNNY_TORRENT_FILE).await;
+      let MetaInfo::Torrent(file) = &mut metainfo else {
+         panic!("expected torrent fixture");
+      };
+      file.info.is_private = Some(true);
+
+      assert!(metainfo.is_private());
+      assert!(!big_buck_bunny_magnet().is_private());
    }
 }

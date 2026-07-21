@@ -112,6 +112,7 @@ pub(crate) mod commands {
             error!(error = %e, "Failed to unwrap info hash");
             EngineError::Other(e)
          })?;
+         let is_private = metainfo.is_private();
 
          if self.torrents.contains_key(&info_hash) {
             error!(
@@ -154,7 +155,9 @@ pub(crate) mod commands {
          .await;
 
          self.torrents.insert(info_hash, torrent_ref.clone());
-         if let Some(dht) = &self.dht {
+         // BEP 27 requires private torrents to use only their declared trackers:
+         // https://www.bittorrent.org/beps/bep_0027.html
+         if !is_private && let Some(dht) = &self.dht {
             let port = self
                .tcp_socket
                .local_addr()
