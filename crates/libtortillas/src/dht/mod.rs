@@ -12,7 +12,7 @@ mod compact;
 mod id;
 mod lookup;
 mod message;
-mod messages;
+pub(crate) mod messages;
 mod peers;
 mod routing;
 mod state;

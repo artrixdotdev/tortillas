@@ -1,9 +1,14 @@
 use std::net::SocketAddr;
 
-use kameo::messages;
+use kameo::{actor::ActorRef, messages};
 use tracing::{trace, warn};
 
-use super::{DhtActor, Message};
+use super::{DhtActor, LookupResult, Message, NodeId, actor::DhtTorrent, announce_peer};
+use crate::{
+   hashes::InfoHash,
+   peer::Peer,
+   torrent::{TorrentActor, events::Announce},
+};
 
 pub(crate) mod events {
    use super::*;
@@ -62,11 +67,98 @@ pub(crate) mod events {
             }
          }
       }
+
+      #[message]
+      pub(crate) async fn lookup_finished(&mut self, info_hash: InfoHash, result: LookupResult) {
+         self.lookup_tasks.remove(&info_hash);
+         let Some(torrent) = self.torrents.get(&info_hash).cloned() else {
+            return;
+         };
+         let peers = result
+            .peers
+            .into_iter()
+            .map(Peer::from_socket_addr)
+            .collect::<Vec<_>>();
+         if !peers.is_empty()
+            && let Err(err) = torrent.actor.tell(Announce { peers }).await
+         {
+            warn!(error = %err, %info_hash, "Failed to forward DHT peers to torrent");
+            self.torrents.remove(&info_hash);
+            return;
+         }
+
+         let transport = self.transport.clone();
+         let id = self.state.id();
+         let concurrency = self.settings.lookup_concurrency;
+         if let Some(task) = self.announce_tasks.remove(&info_hash) {
+            task.abort();
+         }
+         let announce_task = tokio::spawn(async move {
+            announce_peer(
+               transport,
+               id,
+               NodeId::from(info_hash),
+               torrent.port,
+               result.announce_candidates,
+               concurrency,
+            )
+            .await;
+         });
+         self
+            .announce_tasks
+            .insert(info_hash, announce_task.abort_handle());
+         self.schedule_lookup(info_hash);
+      }
+   }
+}
+
+pub(crate) mod commands {
+   use super::*;
+
+   #[messages]
+   impl DhtActor {
+      #[message]
+      pub(crate) fn register_torrent(
+         &mut self, info_hash: InfoHash, torrent: ActorRef<TorrentActor>, port: u16,
+      ) {
+         self.torrents.insert(
+            info_hash,
+            DhtTorrent {
+               actor: torrent,
+               port,
+            },
+         );
+         self.start_lookup(info_hash);
+      }
+
+      #[message]
+      pub(crate) fn unregister_torrent(&mut self, info_hash: InfoHash) {
+         self.torrents.remove(&info_hash);
+         if let Some(task) = self.lookup_tasks.remove(&info_hash) {
+            task.abort();
+         }
+         if let Some(task) = self.announce_tasks.remove(&info_hash) {
+            task.abort();
+         }
+      }
+
+      #[message]
+      pub(crate) fn lookup_torrent(&mut self, info_hash: InfoHash) {
+         self.start_lookup(info_hash);
+      }
+
+      #[message]
+      pub(crate) fn refresh_torrents(&mut self) {
+         let info_hashes = self.torrents.keys().copied().collect::<Vec<_>>();
+         for info_hash in info_hashes {
+            self.start_lookup(info_hash);
+         }
+      }
    }
 }
 
 #[cfg(test)]
-pub(crate) mod commands {
+pub(crate) mod test_commands {
    use super::*;
 
    #[messages]
@@ -95,7 +187,7 @@ mod tests {
       dht::{
          DHT_ID_LEN, DhtTransport, NodeId, Query, Response,
          actor::DhtActorArgs,
-         messages::commands::{LocalAddr, RoutingLen},
+         messages::test_commands::{LocalAddr, RoutingLen},
       },
       settings::DhtSettings,
    };

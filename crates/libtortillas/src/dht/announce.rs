@@ -49,7 +49,8 @@ mod tests {
    use super::*;
    use crate::{
       dht::{
-         DHT_ID_LEN, DhtActor, actor::DhtActorArgs, decode_peers, messages::commands::LocalAddr,
+         DHT_ID_LEN, DhtActor, actor::DhtActorArgs, decode_peers,
+         messages::test_commands::LocalAddr,
       },
       settings::DhtSettings,
    };

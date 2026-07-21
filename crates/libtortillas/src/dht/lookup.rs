@@ -100,7 +100,7 @@ mod tests {
 
    use super::*;
    use crate::{
-      dht::{DHT_ID_LEN, DhtActor, actor::DhtActorArgs, messages::commands::LocalAddr},
+      dht::{DHT_ID_LEN, DhtActor, actor::DhtActorArgs, messages::test_commands::LocalAddr},
       settings::DhtSettings,
    };
 

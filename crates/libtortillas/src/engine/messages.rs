@@ -5,6 +5,7 @@ use tracing::{error, warn};
 
 use super::{EngineActor, EngineSnapshot, EngineStatus};
 use crate::{
+   dht::messages::commands::{RegisterTorrent, UnregisterTorrent},
    errors::EngineError,
    hashes::InfoHash,
    metainfo::MetaInfo,
@@ -93,6 +94,12 @@ pub(crate) mod commands {
             return Err(EngineError::TorrentNotFound(info_hash));
          };
 
+         if let Some(dht) = &self.dht
+            && let Err(err) = dht.tell(UnregisterTorrent { info_hash }).await
+         {
+            warn!(error = %err, %info_hash, "Failed to unregister torrent from DHT");
+         }
+
          Ok(torrent)
       }
 
@@ -147,6 +154,25 @@ pub(crate) mod commands {
          .await;
 
          self.torrents.insert(info_hash, torrent_ref.clone());
+         if let Some(dht) = &self.dht {
+            let port = self
+               .tcp_socket
+               .local_addr()
+               .map_err(|error| {
+                  EngineError::NetworkSetupFailed(format!("tcp local address: {error}"))
+               })?
+               .port();
+            if let Err(err) = dht
+               .tell(RegisterTorrent {
+                  info_hash,
+                  torrent: torrent_ref.clone(),
+                  port,
+               })
+               .await
+            {
+               warn!(error = %err, %info_hash, "Failed to register torrent with DHT");
+            }
+         }
          Ok(torrent_ref)
       }
 
