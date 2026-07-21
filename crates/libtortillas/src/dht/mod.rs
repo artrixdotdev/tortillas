@@ -7,6 +7,7 @@
 //! [BEP 5]: https://www.bittorrent.org/beps/bep_0005.html
 
 mod actor;
+mod announce;
 mod compact;
 mod id;
 mod lookup;
@@ -20,6 +21,7 @@ mod transaction;
 mod transport;
 
 pub(crate) use actor::{DhtActor, DhtActorArgs};
+pub use announce::announce_peer;
 pub use compact::{Contact, decode_nodes, decode_peers, encode_nodes, encode_peers};
 pub use id::{DHT_ID_LEN, Distance, NodeId};
 pub use lookup::{LookupResult, lookup_peers};
