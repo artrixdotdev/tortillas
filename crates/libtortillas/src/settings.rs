@@ -41,8 +41,10 @@ pub struct DhtSettings {
    pub query_timeout: Duration,
    /// Time between peer lookups for registered torrents.
    pub lookup_interval: Duration,
-   /// Lifetime of announce tokens and stored peer records.
-   pub record_ttl: Duration,
+   /// Interval between announce-token secret rotations.
+   pub token_rotation_interval: Duration,
+   /// Lifetime of peers stored from valid announcements.
+   pub peer_record_ttl: Duration,
    /// Restart supervision policy for the engine-owned DHT actor.
    pub restart: RestartPolicySettings,
 }
@@ -63,7 +65,8 @@ impl Default for DhtSettings {
          receive_buffer_size: 4096,
          query_timeout: Duration::from_secs(5),
          lookup_interval: Duration::from_secs(15 * 60),
-         record_ttl: Duration::from_secs(30 * 60),
+         token_rotation_interval: Duration::from_secs(5 * 60),
+         peer_record_ttl: Duration::from_secs(30 * 60),
          restart: RestartPolicySettings::new(3, Duration::from_secs(60)),
       }
    }

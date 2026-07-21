@@ -13,6 +13,7 @@ use super::{Contact, DhtTransport, NodeId, Query, decode_nodes, decode_peers};
 pub struct LookupResult {
    pub peers: Vec<SocketAddr>,
    pub announce_candidates: Vec<(Contact, Vec<u8>)>,
+   pub failed_nodes: Vec<NodeId>,
 }
 
 /// Performs the iterative lookup described by [BEP 5 `get_peers`].
@@ -31,6 +32,7 @@ pub async fn lookup_peers(
    let mut queried = HashSet::new();
    let mut peers = HashSet::new();
    let mut tokens = HashMap::new();
+   let mut failed_nodes = HashSet::new();
 
    loop {
       candidates.sort_unstable_by_key(|contact| info_hash.distance(contact.id));
@@ -63,8 +65,12 @@ pub async fn lookup_peers(
          .await;
 
       for (contact, response) in responses {
-         let Ok(response) = response else {
-            continue;
+         let response = match response {
+            Ok(response) => response,
+            Err(_) => {
+               failed_nodes.insert(contact.id);
+               continue;
+            }
          };
          if let Some(token) = response.token {
             tokens.insert(contact, token);
@@ -89,6 +95,7 @@ pub async fn lookup_peers(
    LookupResult {
       peers,
       announce_candidates,
+      failed_nodes: failed_nodes.into_iter().collect(),
    }
 }
 

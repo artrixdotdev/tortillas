@@ -19,8 +19,8 @@ impl DhtState {
    pub fn new(id: NodeId, settings: &DhtSettings) -> Self {
       Self {
          routing: RoutingTable::new(id, settings.bucket_size),
-         tokens: TokenManager::new(settings.record_ttl),
-         peers: PeerStore::new(settings.record_ttl),
+         tokens: TokenManager::new(settings.token_rotation_interval),
+         peers: PeerStore::new(settings.peer_record_ttl),
          peer_limit: settings.lookup_peer_limit,
          bucket_size: settings.bucket_size,
       }
@@ -102,7 +102,8 @@ mod tests {
 
    fn state() -> DhtState {
       let settings = DhtSettings {
-         record_ttl: Duration::from_secs(60),
+         token_rotation_interval: Duration::from_secs(60),
+         peer_record_ttl: Duration::from_secs(60),
          ..DhtSettings::default()
       };
       DhtState::new(NodeId::from_bytes([1; DHT_ID_LEN]), &settings)

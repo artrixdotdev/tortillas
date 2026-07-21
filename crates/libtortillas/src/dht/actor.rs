@@ -186,6 +186,16 @@ impl DhtActor {
       });
       self.lookup_tasks.insert(info_hash, task.abort_handle());
    }
+
+   pub(super) fn remove_torrent_registration(&mut self, info_hash: InfoHash) {
+      self.torrents.remove(&info_hash);
+      if let Some(task) = self.lookup_tasks.remove(&info_hash) {
+         task.abort();
+      }
+      if let Some(task) = self.announce_tasks.remove(&info_hash) {
+         task.abort();
+      }
+   }
 }
 
 async fn bootstrap(

@@ -7,7 +7,7 @@ use super::{DhtActor, LookupResult, Message, NodeId, actor::DhtTorrent, announce
 use crate::{
    hashes::InfoHash,
    peer::Peer,
-   torrent::{TorrentActor, events::Announce},
+   torrent::{TorrentActor, commands::HasInfoDict, events::Announce},
 };
 
 pub(crate) mod events {
@@ -71,6 +71,9 @@ pub(crate) mod events {
       #[message]
       pub(crate) async fn lookup_finished(&mut self, info_hash: InfoHash, result: LookupResult) {
          self.lookup_tasks.remove(&info_hash);
+         for node in &result.failed_nodes {
+            self.state.routing_mut().record_failure(*node);
+         }
          let Some(torrent) = self.torrents.get(&info_hash).cloned() else {
             return;
          };
@@ -133,18 +136,24 @@ pub(crate) mod commands {
 
       #[message]
       pub(crate) fn unregister_torrent(&mut self, info_hash: InfoHash) {
-         self.torrents.remove(&info_hash);
-         if let Some(task) = self.lookup_tasks.remove(&info_hash) {
-            task.abort();
-         }
-         if let Some(task) = self.announce_tasks.remove(&info_hash) {
-            task.abort();
-         }
+         self.remove_torrent_registration(info_hash);
       }
 
       #[message]
-      pub(crate) fn lookup_torrent(&mut self, info_hash: InfoHash) {
-         self.start_lookup(info_hash);
+      pub(crate) async fn lookup_torrent(&mut self, info_hash: InfoHash) {
+         let Some(torrent) = self.torrents.get(&info_hash).cloned() else {
+            return;
+         };
+         match torrent.actor.ask(HasInfoDict).await {
+            Ok(Some(info)) if info.is_private.unwrap_or(false) => {
+               self.remove_torrent_registration(info_hash);
+            }
+            Ok(_) => self.start_lookup(info_hash),
+            Err(err) => {
+               warn!(error = %err, %info_hash, "Stopped DHT lookup for unavailable torrent");
+               self.remove_torrent_registration(info_hash);
+            }
+         }
       }
 
       #[message]
