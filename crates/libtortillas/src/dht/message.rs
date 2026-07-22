@@ -7,6 +7,7 @@ use super::NodeId;
 use super::{DHT_ID_LEN, compact::COMPACT_NODE_LEN};
 
 const KRPC_PROTOCOL_ERROR: i64 = 203;
+const CLIENT_VERSION: &[u8] = b"TO00";
 
 /// A decoded BEP 5 message using the bencoded [KRPC protocol] envelope.
 ///
@@ -131,6 +132,10 @@ struct WireMessage {
    response: Option<WireResponse>,
    #[serde(rename = "e", skip_serializing_if = "Option::is_none")]
    error: Option<(i64, String)>,
+   /// BEP 5 recommends identifying clients with the four-byte BEP 20 layout:
+   /// <https://www.bittorrent.org/beps/bep_0005.html#krpc-protocol>
+   #[serde(rename = "v", skip_serializing_if = "Option::is_none")]
+   version: Option<ByteBuf>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -200,6 +205,7 @@ impl From<&Message> for WireMessage {
                arguments: Some(arguments),
                response: None,
                error: None,
+               version: Some(ByteBuf::from(CLIENT_VERSION)),
             }
          }
          Message::Response {
@@ -212,6 +218,7 @@ impl From<&Message> for WireMessage {
             arguments: None,
             response: Some(WireResponse::from(response)),
             error: None,
+            version: Some(ByteBuf::from(CLIENT_VERSION)),
          },
          Message::Error {
             transaction_id,
@@ -223,6 +230,7 @@ impl From<&Message> for WireMessage {
             arguments: None,
             response: None,
             error: Some((error.code, error.message.clone())),
+            version: Some(ByteBuf::from(CLIENT_VERSION)),
          },
       }
    }
@@ -347,10 +355,11 @@ mod tests {
          query: Query::Ping { id: id(1) },
       };
 
-      assert_eq!(
-         Message::decode(&message.encode().unwrap()).unwrap(),
-         message
-      );
+      let encoded = message.encode().unwrap();
+      let wire: WireMessage = serde_bencode::from_bytes(&encoded).unwrap();
+
+      assert_eq!(wire.version.unwrap().as_ref(), CLIENT_VERSION);
+      assert_eq!(Message::decode(&encoded).unwrap(), message);
    }
 
    #[test]
