@@ -158,22 +158,22 @@ pub(crate) mod commands {
          // BEP 27 requires private torrents to use only their declared trackers:
          // https://www.bittorrent.org/beps/bep_0027.html
          if !is_private && let Some(dht) = &self.dht {
-            let port = self
-               .tcp_socket
-               .local_addr()
-               .map_err(|error| {
-                  EngineError::NetworkSetupFailed(format!("tcp local address: {error}"))
-               })?
-               .port();
-            if let Err(err) = dht
-               .tell(RegisterTorrent {
-                  info_hash,
-                  torrent: torrent_ref.clone(),
-                  port,
-               })
-               .await
-            {
-               warn!(error = %err, %info_hash, "Failed to register torrent with DHT");
+            match self.tcp_socket.local_addr() {
+               Ok(addr) => {
+                  if let Err(err) = dht
+                     .tell(RegisterTorrent {
+                        info_hash,
+                        torrent: torrent_ref.clone(),
+                        port: addr.port(),
+                     })
+                     .await
+                  {
+                     warn!(error = %err, %info_hash, "Failed to register torrent with DHT");
+                  }
+               }
+               Err(err) => {
+                  warn!(error = %err, %info_hash, "Failed to resolve local port for DHT registration");
+               }
             }
          }
          Ok(torrent_ref)
