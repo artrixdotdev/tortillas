@@ -23,6 +23,7 @@ impl NodeId {
    }
 
    /// Creates an identifier from its wire representation.
+   #[cfg(test)]
    pub const fn from_bytes(bytes: [u8; DHT_ID_LEN]) -> Self {
       Self(Hash::from_bytes(bytes))
    }

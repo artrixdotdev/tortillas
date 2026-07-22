@@ -99,6 +99,7 @@ impl DhtError {
 }
 
 impl Message {
+   #[cfg(test)]
    pub fn transaction_id(&self) -> &[u8] {
       match self {
          Self::Query { transaction_id, .. }

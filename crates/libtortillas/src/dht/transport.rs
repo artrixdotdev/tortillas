@@ -30,6 +30,7 @@ impl DhtTransport {
       })
    }
 
+   #[cfg(test)]
    pub fn local_addr(&self) -> io::Result<SocketAddr> {
       self.socket.local_addr()
    }

@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, time::Instant};
+use std::collections::VecDeque;
 
 use super::{Contact, DHT_ID_LEN, NodeId};
 
@@ -8,7 +8,6 @@ const BUCKET_COUNT: usize = DHT_ID_LEN * u8::BITS as usize;
 #[derive(Clone, Copy, Debug)]
 struct RoutingEntry {
    contact: Contact,
-   last_seen: Instant,
    failures: u8,
 }
 
@@ -38,10 +37,12 @@ impl RoutingTable {
       self.local_id
    }
 
+   #[cfg(test)]
    pub fn len(&self) -> usize {
       self.buckets.iter().map(VecDeque::len).sum()
    }
 
+   #[cfg(test)]
    pub fn is_empty(&self) -> bool {
       self.len() == 0
    }
@@ -60,7 +61,6 @@ impl RoutingTable {
          bucket.remove(position);
          bucket.push_back(RoutingEntry {
             contact,
-            last_seen: Instant::now(),
             failures: 0,
          });
          return true;
@@ -74,7 +74,6 @@ impl RoutingTable {
       }
       bucket.push_back(RoutingEntry {
          contact,
-         last_seen: Instant::now(),
          failures: 0,
       });
       true
@@ -106,17 +105,6 @@ impl RoutingTable {
       contacts.sort_unstable_by_key(|contact| target.distance(contact.id));
       contacts.truncate(limit);
       contacts
-   }
-
-   /// Returns contacts that have not responded since the supplied instant.
-   pub fn stale(&self, before: Instant) -> Vec<Contact> {
-      self
-         .buckets
-         .iter()
-         .flat_map(|bucket| bucket.iter())
-         .filter(|entry| entry.last_seen < before)
-         .map(|entry| entry.contact)
-         .collect()
    }
 }
 
