@@ -31,7 +31,7 @@ pub(crate) mod events {
    impl TorrentActor {
       /// A message from an announce actor containing new peers.
       #[message(derive(Debug))]
-      #[instrument(skip(self, peers), fields(torrent_id = %self.info_hash(), announce_from = ?from))]
+      #[instrument(skip(self, peers, from), fields(torrent_id = %self.info_hash(), announce_from = from.kind()))]
       pub(crate) fn announce(&mut self, peers: Vec<Peer>, from: AnnounceFrom) {
          trace!(peer_count = peers.len(), "Received announce message");
          for peer in peers {
