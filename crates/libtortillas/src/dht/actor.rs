@@ -150,6 +150,7 @@ impl DhtActor {
          .routing()
          .closest(target, self.settings.bucket_size);
       if seeds.is_empty() {
+         self.schedule_lookup(info_hash);
          return;
       }
       let transport = self.transport.clone();
