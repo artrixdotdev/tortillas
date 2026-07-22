@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::io;
 use std::net::SocketAddr;
 
 use kameo::{actor::ActorRef, messages};
@@ -173,7 +175,7 @@ pub(crate) mod test_commands {
    #[messages]
    impl DhtActor {
       #[message]
-      pub(crate) fn local_addr(&self) -> std::io::Result<SocketAddr> {
+      pub(crate) fn local_addr(&self) -> io::Result<SocketAddr> {
          self.transport.local_addr()
       }
 

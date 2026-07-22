@@ -10,6 +10,7 @@ use kameo::{
 use tokio::{
    net::lookup_host,
    task::{AbortHandle, JoinSet},
+   time::sleep,
 };
 use tracing::{debug, error, warn};
 
@@ -179,7 +180,7 @@ impl DhtActor {
       let actor_ref = self.actor_ref.clone();
       let interval = self.settings.lookup_interval;
       let task = tokio::spawn(async move {
-         tokio::time::sleep(interval).await;
+         sleep(interval).await;
          if let Err(err) = actor_ref.tell(LookupTorrent { info_hash }).await {
             warn!(error = %err, %info_hash, "Failed to schedule DHT lookup");
          }

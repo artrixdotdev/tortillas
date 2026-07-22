@@ -1,5 +1,21 @@
 use std::{net::SocketAddr, time::Duration};
 
+const DEFAULT_DHT_BOOTSTRAP_NODES: [&str; 3] = [
+   "router.bittorrent.com:6881",
+   "router.utorrent.com:6881",
+   "dht.transmissionbt.com:6881",
+];
+const DEFAULT_DHT_BUCKET_SIZE: usize = 8;
+const DEFAULT_DHT_LOOKUP_CONCURRENCY: usize = 3;
+const DEFAULT_DHT_PEER_LIMIT: usize = 50;
+const DEFAULT_DHT_RECEIVE_BUFFER_SIZE: usize = 4096;
+const DEFAULT_DHT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_DHT_LOOKUP_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const DEFAULT_DHT_TOKEN_ROTATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const DEFAULT_DHT_PEER_RECORD_TTL: Duration = Duration::from_secs(30 * 60);
+const DEFAULT_DHT_RESTART_LIMIT: u32 = 3;
+const DEFAULT_DHT_RESTART_PERIOD: Duration = Duration::from_secs(60);
+
 /// Runtime settings for client-tunable behavior.
 ///
 /// Wire-format constants and BEP-mandated protocol values intentionally remain
@@ -54,20 +70,16 @@ impl Default for DhtSettings {
       Self {
          enabled: true,
          bind_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
-         bootstrap_nodes: vec![
-            "router.bittorrent.com:6881".to_string(),
-            "router.utorrent.com:6881".to_string(),
-            "dht.transmissionbt.com:6881".to_string(),
-         ],
-         bucket_size: 8,
-         lookup_concurrency: 3,
-         lookup_peer_limit: 50,
-         receive_buffer_size: 4096,
-         query_timeout: Duration::from_secs(5),
-         lookup_interval: Duration::from_secs(15 * 60),
-         token_rotation_interval: Duration::from_secs(5 * 60),
-         peer_record_ttl: Duration::from_secs(30 * 60),
-         restart: RestartPolicySettings::new(3, Duration::from_secs(60)),
+         bootstrap_nodes: DEFAULT_DHT_BOOTSTRAP_NODES.map(str::to_owned).to_vec(),
+         bucket_size: DEFAULT_DHT_BUCKET_SIZE,
+         lookup_concurrency: DEFAULT_DHT_LOOKUP_CONCURRENCY,
+         lookup_peer_limit: DEFAULT_DHT_PEER_LIMIT,
+         receive_buffer_size: DEFAULT_DHT_RECEIVE_BUFFER_SIZE,
+         query_timeout: DEFAULT_DHT_QUERY_TIMEOUT,
+         lookup_interval: DEFAULT_DHT_LOOKUP_INTERVAL,
+         token_rotation_interval: DEFAULT_DHT_TOKEN_ROTATION_INTERVAL,
+         peer_record_ttl: DEFAULT_DHT_PEER_RECORD_TTL,
+         restart: RestartPolicySettings::new(DEFAULT_DHT_RESTART_LIMIT, DEFAULT_DHT_RESTART_PERIOD),
       }
    }
 }

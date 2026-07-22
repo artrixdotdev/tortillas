@@ -1,3 +1,5 @@
+use std::future::ready;
+
 use futures::{StreamExt, stream};
 
 use super::{Contact, DhtTransport, NodeId, Query};
@@ -35,7 +37,7 @@ pub async fn announce_peer(
          }
       })
       .buffer_unordered(concurrency.max(1))
-      .filter(|announced| std::future::ready(*announced))
+      .filter(|announced| ready(*announced))
       .count()
       .await
 }

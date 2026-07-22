@@ -1,9 +1,10 @@
-use std::{env, process, time::Duration};
+use std::{env, path::PathBuf, process, time::Duration};
 
 use libtortillas::{
    engine::{Engine, TorrentSource},
    settings::Settings,
 };
+use rand::random;
 use tokio::{
    fs,
    time::{sleep, timeout},
@@ -16,13 +17,13 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires internet access and the public BitTorrent DHT"]
 async fn arch_linux_torrent_when_public_dht_is_available_then_downloads_data() {
-   let torrent_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+   let torrent_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
       .join("tests/torrents")
       .join(ARCH_LINUX_TORRENT);
    let output_root = env::temp_dir().join(format!(
       "tortillas-arch-dht-{}-{}",
       process::id(),
-      rand::random::<u64>()
+      random::<u64>()
    ));
    fs::create_dir_all(&output_root).await.unwrap();
 

@@ -11,7 +11,7 @@ use kameo::{
 };
 use librqbit_utp::UtpSocketUdp;
 use tokio::net::TcpListener;
-use tracing::{error, instrument};
+use tracing::{Span, error, instrument};
 
 use super::commands;
 use crate::{
@@ -121,9 +121,7 @@ impl Actor for EngineActor {
    /// [on_start](kameo::Actor::on_start) function itself.
    ///
    /// Initializes the TCP listener, uTP socket, UDP server, and peer ID.
-   async fn on_start(
-      args: Self::Args, actor_ref: kameo::prelude::ActorRef<Self>,
-   ) -> Result<Self, Self::Error> {
+   async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
       let EngineActorArgs {
          tcp_addr,
          utp_addr,
@@ -212,7 +210,7 @@ impl Actor for EngineActor {
                    reply: None,
                    sent_within_actor: true,
                    message_name: "IncomingPeer",
-                   caller_span: tracing::Span::current(),
+                   caller_span: Span::current(),
                 })
             }
             Err(err) => {
@@ -235,7 +233,7 @@ impl Actor for EngineActor {
                    reply: None,
                    sent_within_actor: true,
                    message_name: "IncomingPeer",
-                   caller_span: tracing::Span::current(),
+                   caller_span: Span::current(),
                 })
             }
             Err(err) => {

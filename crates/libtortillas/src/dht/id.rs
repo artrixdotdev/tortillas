@@ -13,7 +13,7 @@ pub const DHT_ID_LEN: usize = 20;
 ///
 /// [BEP 5 routing]: https://www.bittorrent.org/beps/bep_0005.html#routing-table
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct NodeId(Hash<DHT_ID_LEN>);
+pub struct NodeId(Hash<20>);
 
 impl NodeId {
    /// Generates an identifier suitable for a new ephemeral DHT node.
