@@ -53,21 +53,11 @@ peer discovery to declared trackers.
 
 The DHT actor bootstraps its routing table, performs iterative `get_peers`
 lookups, and forwards results to the torrent through the same `Announce` event
-used by tracker actors. This keeps connection filtering, deduplication, and
-`PeerActor` creation in `TorrentActor` regardless of where an endpoint was
+used by tracker actors. Its `AnnounceFrom` value retains whether peers came
+from DHT or a specific tracker. This keeps connection filtering, deduplication,
+and `PeerActor` creation in `TorrentActor` regardless of where an endpoint was
 discovered. Valid lookup tokens are used to announce the engine's peer port
 back to the closest DHT nodes.
-
-`NodeId` and `PeerId` remain distinct types even though both use the shared
-`Hash<20>` storage. BEP 5 distinguishes a DHT node, identified for UDP routing,
-from a BitTorrent peer, identified on peer-wire connections. Keeping newtypes
-prevents accidentally sending a peer ID in a KRPC field while still reusing the
-same fixed-size hash implementation.
-
-The DHT actor owns its mutable routing and torrent maps, so ordinary `HashMap`
-storage is sufficient there. Outbound lookup tasks share only the UDP transport
-and its small synchronized transaction table; they return results to the actor
-instead of mutating actor state concurrently.
 
 [BEP 5]: https://www.bittorrent.org/beps/bep_0005.html
 [BEP 27]: https://www.bittorrent.org/beps/bep_0027.html

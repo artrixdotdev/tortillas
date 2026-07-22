@@ -7,11 +7,12 @@ pub const DHT_ID_LEN: usize = 20;
 
 /// A DHT node identifier backed by the project's canonical 20-byte hash type.
 ///
-/// The wrapper prevents accidentally using a node ID as the peer ID sent in a
-/// BitTorrent handshake while sharing the same byte representation and
-/// conversion code as info hashes. See [BEP 5 routing].
+/// [BEP 5 terminology] distinguishes a DHT node, identified for UDP routing,
+/// from a BitTorrent peer, identified on peer-wire connections. The wrapper
+/// prevents accidentally sending a peer ID in a KRPC field while sharing the
+/// same [`struct@Hash<20>`] storage and conversion code as info hashes.
 ///
-/// [BEP 5 routing]: https://www.bittorrent.org/beps/bep_0005.html#routing-table
+/// [BEP 5 terminology]: https://www.bittorrent.org/beps/bep_0005.html
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct NodeId(Hash<20>);
 

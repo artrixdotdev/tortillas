@@ -26,6 +26,7 @@ use crate::{
 
 /// The actor that handles all communication with a given tracker.
 pub(crate) struct TrackerActor {
+   source: Tracker,
    tracker: TrackerInstance,
    supervisor: ActorRef<TorrentActor>,
    scheduler: ActorRef<Scheduler>,
@@ -67,6 +68,7 @@ impl Actor for TrackerActor {
          .await
          .map_err(|e| TrackerActorError::SupervisorCommunicationFailed(e.to_string()))?;
 
+      let source = tracker.clone();
       let tracker_uri = tracker.uri();
       let tracker = match tracker {
          Tracker::Udp(uri) => {
@@ -124,6 +126,7 @@ impl Actor for TrackerActor {
          .map_err(|e| TrackerActorError::SupervisorCommunicationFailed(e.to_string()))?;
 
       Ok(Self {
+         source,
          tracker,
          supervisor,
          scheduler,
@@ -184,7 +187,10 @@ impl TrackerActor {
          Ok(peers) => {
             if let Err(e) = self
                .supervisor
-               .tell(torrent::events::Announce { peers })
+               .tell(torrent::events::Announce {
+                  peers,
+                  from: torrent::AnnounceFrom::Tracker(self.source.clone()),
+               })
                .await
             {
                error!(error = %e, "Failed to send announce to supervisor");

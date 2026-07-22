@@ -9,7 +9,7 @@ use super::{DhtActor, LookupResult, Message, NodeId, actor::DhtTorrent, announce
 use crate::{
    hashes::InfoHash,
    peer::Peer,
-   torrent::{TorrentActor, commands::HasInfoDict, events::Announce},
+   torrent::{AnnounceFrom, TorrentActor, commands::HasInfoDict, events::Announce},
 };
 
 pub(crate) mod events {
@@ -85,7 +85,13 @@ pub(crate) mod events {
             .map(Peer::from_socket_addr)
             .collect::<Vec<_>>();
          if !peers.is_empty()
-            && let Err(err) = torrent.actor.tell(Announce { peers }).await
+            && let Err(err) = torrent
+               .actor
+               .tell(Announce {
+                  peers,
+                  from: AnnounceFrom::Dht,
+               })
+               .await
          {
             warn!(error = %err, %info_hash, "Failed to forward DHT peers to torrent");
             self.torrents.remove(&info_hash);
