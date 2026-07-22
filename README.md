@@ -13,6 +13,7 @@ See our roadmap [here](https://github.com/users/artrixdotdev/projects/6).
 - Parsing and handling `.torrent` files
 - uTP and TCP peer connections
 - Full implementation of the BitTorrent protocol
+- Mainline DHT peer discovery for public and trackerless torrents
 
 ### 🔄 In Development
 - Completion of [libtortillas](crates/libtortillas) library
@@ -42,7 +43,14 @@ cargo nextest run --workspace
 Tests that intentionally exercise public BitTorrent infrastructure are marked `#[ignore]` and should only be run explicitly:
 
 ```bash
-cargo nextest run --workspace --run-ignored only
+cargo nextest run --workspace --run-ignored ignored-only
+```
+
+The Arch Linux fixture exercises a trackerless torrent through the public DHT
+and passes only after downloading real ISO data:
+
+```bash
+cargo nextest run -p libtortillas --test dht_network --run-ignored ignored-only
 ```
 
 Test names use this convention:
