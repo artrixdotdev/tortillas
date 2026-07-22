@@ -356,7 +356,10 @@ mod snapshot_tests {
    async fn engine_when_torrent_is_added_then_snapshots_frontend_state() {
       let mut settings = Settings::default();
       settings.dht.enabled = false;
-      let engine = Engine::builder().settings(settings).build();
+      let engine = Engine::builder()
+         .settings(settings)
+         .autostart(false)
+         .build();
       let torrent_path = testing::torrent_fixture_path(testing::BIG_BUCK_BUNNY_TORRENT_FILE);
 
       let torrent = engine
