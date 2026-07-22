@@ -38,10 +38,13 @@ impl DhtState {
       &mut self.routing
    }
 
-   pub fn learn_response(&mut self, response: &Response, source: SocketAddr) -> anyhow::Result<()> {
+   pub fn learn_response(
+      &mut self, response: &Response, source: SocketAddr,
+   ) -> Result<(), DhtError> {
       self.routing.insert(Contact::new(response.id, source));
       if let Some(nodes) = &response.nodes {
-         for contact in decode_nodes(nodes)? {
+         let contacts = decode_nodes(nodes).map_err(|err| DhtError::protocol(err.to_string()))?;
+         for contact in contacts {
             self.routing.insert(contact);
          }
       }
@@ -213,5 +216,22 @@ mod tests {
          result.unwrap_err().code,
          DhtError::protocol("expected code").code
       );
+   }
+
+   #[test]
+   fn state_when_response_contains_invalid_nodes_then_returns_protocol_error() {
+      let mut state = state();
+      let response = Response {
+         id: NodeId::from_bytes([2; DHT_ID_LEN]),
+         nodes: Some(vec![0]),
+         token: None,
+         values: None,
+      };
+
+      let error = state
+         .learn_response(&response, "192.0.2.1:6881".parse().unwrap())
+         .unwrap_err();
+
+      assert_eq!(error.code, DhtError::protocol("expected code").code);
    }
 }

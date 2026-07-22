@@ -98,6 +98,14 @@ impl DhtError {
    }
 }
 
+impl std::fmt::Display for DhtError {
+   fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+      write!(formatter, "DHT error {}: {}", self.code, self.message)
+   }
+}
+
+impl std::error::Error for DhtError {}
+
 impl Message {
    #[cfg(test)]
    pub fn transaction_id(&self) -> &[u8] {
