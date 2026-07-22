@@ -97,6 +97,7 @@ async fn torrent_controls_complete_their_state_transitions() {
 
 fn test_settings() -> Settings {
    let mut settings = Settings::default();
+   settings.dht.enabled = false;
    settings.tracker.stop_timeout = Duration::from_millis(20);
    settings.tracker.http_stop_timeout = Duration::from_millis(20);
    settings

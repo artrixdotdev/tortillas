@@ -350,11 +350,13 @@ mod snapshot_tests {
    use serde_json::{from_str, to_string};
 
    use super::*;
-   use crate::testing;
+   use crate::{settings::Settings, testing};
 
    #[tokio::test]
    async fn engine_when_torrent_is_added_then_snapshots_frontend_state() {
-      let engine = Engine::default();
+      let mut settings = Settings::default();
+      settings.dht.enabled = false;
+      let engine = Engine::builder().settings(settings).build();
       let torrent_path = testing::torrent_fixture_path(testing::BIG_BUCK_BUNNY_TORRENT_FILE);
 
       let torrent = engine
@@ -402,9 +404,18 @@ mod tests {
    const DHT_TEST_BUFFER_SIZE: usize = 2048;
    const DHT_TEST_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+   fn deterministic_settings() -> Settings {
+      let mut settings = Settings::default();
+      settings.dht.enabled = false;
+      settings
+   }
+
    #[tokio::test]
    async fn engine_when_torrent_source_is_file_path_then_adds_torrent() {
-      let engine = Engine::builder().autostart(false).build();
+      let engine = Engine::builder()
+         .settings(deterministic_settings())
+         .autostart(false)
+         .build();
       let source =
          TorrentSource::torrent_file_path(torrent_fixture_path(BIG_BUCK_BUNNY_TORRENT_FILE));
 
@@ -417,7 +428,10 @@ mod tests {
 
    #[tokio::test]
    async fn engine_when_torrent_source_is_magnet_uri_then_adds_torrent() {
-      let engine = Engine::builder().autostart(false).build();
+      let engine = Engine::builder()
+         .settings(deterministic_settings())
+         .autostart(false)
+         .build();
       let source = TorrentSource::magnet(BIG_BUCK_BUNNY_MAGNET);
 
       let torrent = engine.add_torrent(source).await.unwrap();
@@ -429,7 +443,10 @@ mod tests {
 
    #[tokio::test]
    async fn engine_when_torrent_source_type_does_not_match_then_returns_typed_error() {
-      let engine = Engine::builder().autostart(false).build();
+      let engine = Engine::builder()
+         .settings(deterministic_settings())
+         .autostart(false)
+         .build();
       let source = TorrentSource::remote_torrent_url("magnet:?xt=urn:btih:not-a-url");
 
       let error = engine.add_torrent(source).await.unwrap_err();
