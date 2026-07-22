@@ -9,6 +9,7 @@ use sha1::{Digest, Sha1};
 use super::DHT_ID_LEN;
 
 const TOKEN_LEN: usize = 8;
+const RETAINED_TOKEN_GENERATIONS: u32 = 2;
 
 /// Generates short-lived tokens that bind `announce_peer` requests to the
 /// address that previously issued `get_peers`.
@@ -46,10 +47,19 @@ impl TokenManager {
    }
 
    fn rotate_if_needed(&mut self) {
-      if self.rotated_at.elapsed() < self.rotation_interval {
+      let elapsed = self.rotated_at.elapsed();
+      if elapsed < self.rotation_interval {
          return;
       }
-      self.previous_secret = self.current_secret;
+      self.previous_secret = if elapsed
+         < self
+            .rotation_interval
+            .saturating_mul(RETAINED_TOKEN_GENERATIONS)
+      {
+         self.current_secret
+      } else {
+         random()
+      };
       self.current_secret = random();
       self.rotated_at = Instant::now();
    }
@@ -69,9 +79,11 @@ fn token(secret: &[u8; DHT_ID_LEN], ip: IpAddr) -> Vec<u8> {
 mod tests {
    use super::*;
 
+   const TEST_ROTATION_INTERVAL: Duration = Duration::from_secs(60);
+
    #[test]
    fn token_when_generated_for_address_then_verifies_only_for_that_address() {
-      let mut manager = TokenManager::new(Duration::from_secs(60));
+      let mut manager = TokenManager::new(TEST_ROTATION_INTERVAL);
       let ip = "192.0.2.10".parse().unwrap();
       let candidate = manager.generate(ip);
 
@@ -81,14 +93,25 @@ mod tests {
 
    #[test]
    fn token_when_secret_rotates_then_accepts_previous_generation() {
-      let mut manager = TokenManager::new(Duration::from_secs(60));
+      let mut manager = TokenManager::new(TEST_ROTATION_INTERVAL);
       let ip = "198.51.100.5".parse().unwrap();
       let candidate = manager.generate(ip);
-      manager.rotated_at = Instant::now() - Duration::from_secs(61);
+      manager.rotated_at = Instant::now() - TEST_ROTATION_INTERVAL;
 
       let replacement = manager.generate(ip);
 
       assert_ne!(candidate, replacement);
       assert!(manager.verify(&candidate, ip));
+   }
+
+   #[test]
+   fn token_when_multiple_generations_elapse_then_rejects_old_secret() {
+      let mut manager = TokenManager::new(TEST_ROTATION_INTERVAL);
+      let ip = "203.0.113.8".parse().unwrap();
+      let candidate = manager.generate(ip);
+      manager.rotated_at =
+         Instant::now() - TEST_ROTATION_INTERVAL.saturating_mul(RETAINED_TOKEN_GENERATIONS);
+
+      assert!(!manager.verify(&candidate, ip));
    }
 }
