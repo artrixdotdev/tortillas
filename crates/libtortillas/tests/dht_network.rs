@@ -2,6 +2,7 @@ use std::{env, path::PathBuf, process, time::Duration};
 
 use libtortillas::{
    engine::{Engine, TorrentSource},
+   metainfo::{MetaInfo, TorrentFile},
    settings::Settings,
 };
 use rand::random;
@@ -20,6 +21,12 @@ async fn arch_linux_torrent_when_public_dht_is_available_then_downloads_data() {
    let torrent_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
       .join("tests/torrents")
       .join(ARCH_LINUX_TORRENT);
+   let torrent_bytes = fs::read(torrent_path).await.unwrap();
+   let MetaInfo::Torrent(mut torrent_file) = TorrentFile::parse(&torrent_bytes).unwrap() else {
+      panic!("Arch Linux fixture must be a torrent file");
+   };
+   torrent_file.url_list = None;
+   let dht_only_torrent = serde_bencode::to_bytes(&torrent_file).unwrap();
    let output_root = env::temp_dir().join(format!(
       "tortillas-arch-dht-{}-{}",
       process::id(),
@@ -34,7 +41,7 @@ async fn arch_linux_torrent_when_public_dht_is_available_then_downloads_data() {
       .output_path(output_root.clone())
       .build();
    let torrent = engine
-      .add_torrent(TorrentSource::torrent_file_path(torrent_path))
+      .add_torrent(TorrentSource::torrent_file_bytes(dht_only_torrent))
       .await
       .unwrap();
 
