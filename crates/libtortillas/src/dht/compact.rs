@@ -48,7 +48,9 @@ pub fn decode_nodes(bytes: &[u8]) -> Result<Vec<Contact>> {
    }
 
    bytes
-      .chunks_exact(COMPACT_NODE_LEN)
+      .as_chunks::<COMPACT_NODE_LEN>()
+      .0
+      .iter()
       .map(|node| {
          let id = NodeId::try_from(&node[..DHT_ID_LEN])?;
          let ip_offset = DHT_ID_LEN;
