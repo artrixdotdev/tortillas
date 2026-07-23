@@ -1,11 +1,29 @@
 use std::{net::SocketAddr, time::Duration};
 
+const DEFAULT_DHT_BOOTSTRAP_NODES: [&str; 3] = [
+   "router.bittorrent.com:6881",
+   "router.utorrent.com:6881",
+   "dht.transmissionbt.com:6881",
+];
+const DEFAULT_DHT_BUCKET_SIZE: usize = 8;
+const DEFAULT_DHT_LOOKUP_CONCURRENCY: usize = 3;
+const DEFAULT_DHT_PEER_LIMIT: usize = 50;
+const DEFAULT_DHT_RECEIVE_BUFFER_SIZE: usize = 4096;
+const DEFAULT_DHT_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_DHT_LOOKUP_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const DEFAULT_DHT_TOKEN_ROTATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const DEFAULT_DHT_PEER_RECORD_TTL: Duration = Duration::from_secs(30 * 60);
+const DEFAULT_DHT_RESTART_LIMIT: u32 = 3;
+const DEFAULT_DHT_RESTART_PERIOD: Duration = Duration::from_secs(60);
+
 /// Runtime settings for client-tunable behavior.
 ///
 /// Wire-format constants and BEP-mandated protocol values intentionally remain
 /// near the protocol code that depends on them.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Settings {
+   /// Mainline DHT discovery settings.
+   pub dht: DhtSettings,
    /// Engine actor and incoming socket settings.
    pub engine: EngineSettings,
    /// Per-torrent actor settings.
@@ -14,6 +32,56 @@ pub struct Settings {
    pub peer: PeerSettings,
    /// Tracker actor and tracker protocol settings.
    pub tracker: TrackerSettings,
+}
+
+/// Mainline [BEP 5] DHT networking and lookup settings.
+///
+/// [BEP 5]: https://www.bittorrent.org/beps/bep_0005.html
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DhtSettings {
+   /// Whether the engine participates in the mainline DHT.
+   pub enabled: bool,
+   /// UDP address used for DHT queries and replies.
+   pub bind_addr: SocketAddr,
+   /// Bootstrap routers contacted when the routing table is empty.
+   pub bootstrap_nodes: Vec<String>,
+   /// Number of contacts retained in each Kademlia bucket.
+   pub bucket_size: usize,
+   /// Maximum number of in-flight queries during a lookup.
+   pub lookup_concurrency: usize,
+   /// Maximum number of peers requested for one torrent lookup.
+   pub lookup_peer_limit: usize,
+   /// Maximum accepted KRPC datagram size in bytes.
+   pub receive_buffer_size: usize,
+   /// Time allowed for a DHT query response.
+   pub query_timeout: Duration,
+   /// Time between peer lookups for registered torrents.
+   pub lookup_interval: Duration,
+   /// Interval between announce-token secret rotations.
+   pub token_rotation_interval: Duration,
+   /// Lifetime of peers stored from valid announcements.
+   pub peer_record_ttl: Duration,
+   /// Restart supervision policy for the engine-owned DHT actor.
+   pub restart: RestartPolicySettings,
+}
+
+impl Default for DhtSettings {
+   fn default() -> Self {
+      Self {
+         enabled: true,
+         bind_addr: SocketAddr::from(([0, 0, 0, 0], 0)),
+         bootstrap_nodes: DEFAULT_DHT_BOOTSTRAP_NODES.map(str::to_owned).to_vec(),
+         bucket_size: DEFAULT_DHT_BUCKET_SIZE,
+         lookup_concurrency: DEFAULT_DHT_LOOKUP_CONCURRENCY,
+         lookup_peer_limit: DEFAULT_DHT_PEER_LIMIT,
+         receive_buffer_size: DEFAULT_DHT_RECEIVE_BUFFER_SIZE,
+         query_timeout: DEFAULT_DHT_QUERY_TIMEOUT,
+         lookup_interval: DEFAULT_DHT_LOOKUP_INTERVAL,
+         token_rotation_interval: DEFAULT_DHT_TOKEN_ROTATION_INTERVAL,
+         peer_record_ttl: DEFAULT_DHT_PEER_RECORD_TTL,
+         restart: RestartPolicySettings::new(DEFAULT_DHT_RESTART_LIMIT, DEFAULT_DHT_RESTART_PERIOD),
+      }
+   }
 }
 
 /// Restart supervision settings for actors.

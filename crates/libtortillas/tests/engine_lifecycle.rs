@@ -97,6 +97,7 @@ async fn torrent_controls_complete_their_state_transitions() {
 
 fn test_settings() -> Settings {
    let mut settings = Settings::default();
+   settings.dht.enabled = false;
    settings.tracker.stop_timeout = Duration::from_millis(20);
    settings.tracker.http_stop_timeout = Duration::from_millis(20);
    settings
@@ -119,7 +120,7 @@ async fn write_http_torrent_fixture() -> (PathBuf, InfoHash) {
       source: None,
    };
    let torrent = TorrentFile {
-      announce: Tracker::Http("http://127.0.0.1:9/announce".to_string()),
+      announce: Some(Tracker::Http("http://127.0.0.1:9/announce".to_string())),
       announce_list: None,
       comment: None,
       created_by: Some("libtortillas-test".to_string()),

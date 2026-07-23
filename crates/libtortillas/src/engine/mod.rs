@@ -350,11 +350,16 @@ mod snapshot_tests {
    use serde_json::{from_str, to_string};
 
    use super::*;
-   use crate::testing;
+   use crate::{settings::Settings, testing};
 
    #[tokio::test]
    async fn engine_when_torrent_is_added_then_snapshots_frontend_state() {
-      let engine = Engine::default();
+      let mut settings = Settings::default();
+      settings.dht.enabled = false;
+      let engine = Engine::builder()
+         .settings(settings)
+         .autostart(false)
+         .build();
       let torrent_path = testing::torrent_fixture_path(testing::BIG_BUCK_BUNNY_TORRENT_FILE);
 
       let torrent = engine
@@ -380,18 +385,40 @@ mod snapshot_tests {
 
 #[cfg(test)]
 mod tests {
+   use std::time::Duration;
+
+   use kameo::actor::Spawn;
+   use tokio::time::{sleep, timeout};
+
    use crate::{
+      dht::{
+         DHT_ID_LEN, DhtActor, DhtActorArgs, DhtTransport, NodeId, Query,
+         messages::test_commands::LocalAddr,
+      },
       engine::{Engine, TorrentSource},
       errors::EngineError,
+      settings::{DhtSettings, Settings},
       testing::{
-         BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_MAGNET, BIG_BUCK_BUNNY_TORRENT_FILE,
-         torrent_fixture_path,
+         BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_MAGNET, BIG_BUCK_BUNNY_TORRENT_FILE, LocalPeer,
+         peer_id, torrent_fixture_path,
       },
    };
 
+   const DHT_TEST_BUFFER_SIZE: usize = 2048;
+   const DHT_TEST_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+   fn deterministic_settings() -> Settings {
+      let mut settings = Settings::default();
+      settings.dht.enabled = false;
+      settings
+   }
+
    #[tokio::test]
    async fn engine_when_torrent_source_is_file_path_then_adds_torrent() {
-      let engine = Engine::builder().autostart(false).build();
+      let engine = Engine::builder()
+         .settings(deterministic_settings())
+         .autostart(false)
+         .build();
       let source =
          TorrentSource::torrent_file_path(torrent_fixture_path(BIG_BUCK_BUNNY_TORRENT_FILE));
 
@@ -404,7 +431,10 @@ mod tests {
 
    #[tokio::test]
    async fn engine_when_torrent_source_is_magnet_uri_then_adds_torrent() {
-      let engine = Engine::builder().autostart(false).build();
+      let engine = Engine::builder()
+         .settings(deterministic_settings())
+         .autostart(false)
+         .build();
       let source = TorrentSource::magnet(BIG_BUCK_BUNNY_MAGNET);
 
       let torrent = engine.add_torrent(source).await.unwrap();
@@ -416,7 +446,10 @@ mod tests {
 
    #[tokio::test]
    async fn engine_when_torrent_source_type_does_not_match_then_returns_typed_error() {
-      let engine = Engine::builder().autostart(false).build();
+      let engine = Engine::builder()
+         .settings(deterministic_settings())
+         .autostart(false)
+         .build();
       let source = TorrentSource::remote_torrent_url("magnet:?xt=urn:btih:not-a-url");
 
       let error = engine.add_torrent(source).await.unwrap_err();
@@ -428,5 +461,100 @@ mod tests {
             ..
          }
       ));
+   }
+
+   #[tokio::test]
+   async fn engine_when_dht_returns_peer_then_connects_torrent_swarm() {
+      let info_hash = crate::hashes::InfoHash::from_hex(BIG_BUCK_BUNNY_INFO_HASH).unwrap();
+      let dht_id = NodeId::from(info_hash);
+      let seed = DhtActor::spawn(DhtActorArgs {
+         id: Some(NodeId::from_bytes([1; DHT_ID_LEN])),
+         settings: DhtSettings {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            bootstrap_nodes: Vec::new(),
+            query_timeout: Duration::from_secs(1),
+            receive_buffer_size: DHT_TEST_BUFFER_SIZE,
+            ..DhtSettings::default()
+         },
+      });
+      let seed_addr = seed.ask(LocalAddr).await.unwrap();
+      let announcer = DhtTransport::bind(
+         "127.0.0.1:0".parse().unwrap(),
+         Duration::from_secs(1),
+         DHT_TEST_BUFFER_SIZE,
+      )
+      .await
+      .unwrap();
+      let receiver = announcer.clone();
+      let receive_task = tokio::spawn(async move {
+         loop {
+            let Ok((message, addr)) = receiver.receive().await else {
+               break;
+            };
+            receiver.complete(&message, addr).await;
+         }
+      });
+      let local_peer = LocalPeer::start(peer_id(), Vec::new()).await.unwrap();
+      let token = announcer
+         .query(
+            seed_addr,
+            Query::GetPeers {
+               id: NodeId::from_bytes([2; DHT_ID_LEN]),
+               info_hash: dht_id,
+            },
+         )
+         .await
+         .unwrap()
+         .token
+         .unwrap();
+      announcer
+         .query(
+            seed_addr,
+            Query::AnnouncePeer {
+               id: NodeId::from_bytes([2; DHT_ID_LEN]),
+               info_hash: dht_id,
+               port: local_peer.peer().port,
+               token,
+               implied_port: false,
+            },
+         )
+         .await
+         .unwrap();
+      let settings = Settings {
+         dht: DhtSettings {
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            bootstrap_nodes: vec![seed_addr.to_string()],
+            query_timeout: Duration::from_secs(1),
+            receive_buffer_size: DHT_TEST_BUFFER_SIZE,
+            ..DhtSettings::default()
+         },
+         ..Settings::default()
+      };
+      let engine = Engine::builder()
+         .settings(settings)
+         .autostart(false)
+         .sufficient_peers(1)
+         .build();
+      let magnet = format!("magnet:?xt=urn:btih:{BIG_BUCK_BUNNY_INFO_HASH}&dn=dht-test");
+
+      engine
+         .add_torrent(TorrentSource::magnet(magnet))
+         .await
+         .unwrap();
+
+      timeout(Duration::from_secs(2), async {
+         loop {
+            if !local_peer.handshakes().await.is_empty() {
+               break;
+            }
+            sleep(DHT_TEST_POLL_INTERVAL).await;
+         }
+      })
+      .await
+      .unwrap();
+
+      engine.shutdown().await.unwrap();
+      receive_task.abort();
+      seed.kill();
    }
 }

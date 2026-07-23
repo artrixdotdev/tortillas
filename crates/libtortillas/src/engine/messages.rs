@@ -5,6 +5,7 @@ use tracing::{error, warn};
 
 use super::{EngineActor, EngineSnapshot, EngineStatus};
 use crate::{
+   dht::messages::commands::{RegisterTorrent, UnregisterTorrent},
    errors::EngineError,
    hashes::InfoHash,
    metainfo::MetaInfo,
@@ -93,6 +94,12 @@ pub(crate) mod commands {
             return Err(EngineError::TorrentNotFound(info_hash));
          };
 
+         if let Some(dht) = &self.dht
+            && let Err(err) = dht.tell(UnregisterTorrent { info_hash }).await
+         {
+            warn!(error = %err, %info_hash, "Failed to unregister torrent from DHT");
+         }
+
          Ok(torrent)
       }
 
@@ -105,6 +112,7 @@ pub(crate) mod commands {
             error!(error = %e, "Failed to unwrap info hash");
             EngineError::Other(e)
          })?;
+         let is_private = metainfo.is_private();
 
          if self.torrents.contains_key(&info_hash) {
             error!(
@@ -147,6 +155,27 @@ pub(crate) mod commands {
          .await;
 
          self.torrents.insert(info_hash, torrent_ref.clone());
+         // BEP 27 requires private torrents to use only their declared trackers:
+         // https://www.bittorrent.org/beps/bep_0027.html
+         if !is_private && let Some(dht) = &self.dht {
+            match self.tcp_socket.local_addr() {
+               Ok(addr) => {
+                  if let Err(err) = dht
+                     .tell(RegisterTorrent {
+                        info_hash,
+                        torrent: torrent_ref.clone(),
+                        port: addr.port(),
+                     })
+                     .await
+                  {
+                     warn!(error = %err, %info_hash, "Failed to register torrent with DHT");
+                  }
+               }
+               Err(err) => {
+                  warn!(error = %err, %info_hash, "Failed to resolve local port for DHT registration");
+               }
+            }
+         }
          Ok(torrent_ref)
       }
 

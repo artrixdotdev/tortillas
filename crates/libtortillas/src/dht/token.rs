@@ -1,0 +1,117 @@
+use std::{
+   net::IpAddr,
+   time::{Duration, Instant},
+};
+
+use rand::random;
+use sha1::{Digest, Sha1};
+
+use super::DHT_ID_LEN;
+
+const TOKEN_LEN: usize = 8;
+const RETAINED_TOKEN_GENERATIONS: u32 = 2;
+
+/// Generates short-lived tokens that bind `announce_peer` requests to the
+/// address that previously issued `get_peers`.
+///
+/// This [BEP 5 token check] prevents a sender from using a spoofed source
+/// address to insert an unrelated peer into the store.
+///
+/// [BEP 5 token check]: https://www.bittorrent.org/beps/bep_0005.html#token
+#[derive(Debug)]
+pub struct TokenManager {
+   current_secret: [u8; DHT_ID_LEN],
+   previous_secret: [u8; DHT_ID_LEN],
+   rotated_at: Instant,
+   rotation_interval: Duration,
+}
+
+impl TokenManager {
+   pub fn new(rotation_interval: Duration) -> Self {
+      Self {
+         current_secret: random(),
+         previous_secret: random(),
+         rotated_at: Instant::now(),
+         rotation_interval,
+      }
+   }
+
+   pub fn generate(&mut self, ip: IpAddr) -> Vec<u8> {
+      self.rotate_if_needed();
+      token(&self.current_secret, ip)
+   }
+
+   pub fn verify(&mut self, candidate: &[u8], ip: IpAddr) -> bool {
+      self.rotate_if_needed();
+      candidate == token(&self.current_secret, ip) || candidate == token(&self.previous_secret, ip)
+   }
+
+   fn rotate_if_needed(&mut self) {
+      let elapsed = self.rotated_at.elapsed();
+      if elapsed < self.rotation_interval {
+         return;
+      }
+      self.previous_secret = if elapsed
+         < self
+            .rotation_interval
+            .saturating_mul(RETAINED_TOKEN_GENERATIONS)
+      {
+         self.current_secret
+      } else {
+         random()
+      };
+      self.current_secret = random();
+      self.rotated_at = Instant::now();
+   }
+}
+
+fn token(secret: &[u8; DHT_ID_LEN], ip: IpAddr) -> Vec<u8> {
+   let mut hasher = Sha1::new();
+   hasher.update(secret);
+   match ip {
+      IpAddr::V4(ip) => hasher.update(ip.octets()),
+      IpAddr::V6(ip) => hasher.update(ip.octets()),
+   }
+   hasher.finalize()[..TOKEN_LEN].to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   const TEST_ROTATION_INTERVAL: Duration = Duration::from_secs(60);
+
+   #[test]
+   fn token_when_generated_for_address_then_verifies_only_for_that_address() {
+      let mut manager = TokenManager::new(TEST_ROTATION_INTERVAL);
+      let ip = "192.0.2.10".parse().unwrap();
+      let candidate = manager.generate(ip);
+
+      assert!(manager.verify(&candidate, ip));
+      assert!(!manager.verify(&candidate, "192.0.2.11".parse().unwrap()));
+   }
+
+   #[test]
+   fn token_when_secret_rotates_then_accepts_previous_generation() {
+      let mut manager = TokenManager::new(TEST_ROTATION_INTERVAL);
+      let ip = "198.51.100.5".parse().unwrap();
+      let candidate = manager.generate(ip);
+      manager.rotated_at = Instant::now() - TEST_ROTATION_INTERVAL;
+
+      let replacement = manager.generate(ip);
+
+      assert_ne!(candidate, replacement);
+      assert!(manager.verify(&candidate, ip));
+   }
+
+   #[test]
+   fn token_when_multiple_generations_elapse_then_rejects_old_secret() {
+      let mut manager = TokenManager::new(TEST_ROTATION_INTERVAL);
+      let ip = "203.0.113.8".parse().unwrap();
+      let candidate = manager.generate(ip);
+      manager.rotated_at =
+         Instant::now() - TEST_ROTATION_INTERVAL.saturating_mul(RETAINED_TOKEN_GENERATIONS);
+
+      assert!(!manager.verify(&candidate, ip));
+   }
+}

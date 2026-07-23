@@ -44,6 +44,7 @@
 //! snapshots, and typed errors to the facade without requiring frontend callers
 //! to import implementation modules.
 
+pub(crate) mod dht;
 pub mod engine;
 pub mod errors;
 pub mod facade;
@@ -89,6 +90,8 @@ pub(crate) mod testing {
 
    pub(crate) const BIG_BUCK_BUNNY_MAGNET: &str =
       include_str!("../tests/magneturis/big-buck-bunny.txt");
+   pub(crate) const ARCH_LINUX_NAME: &str = "archlinux-2026.07.01-x86_64.iso";
+   pub(crate) const ARCH_LINUX_TORRENT_FILE: &str = "archlinux-2026.07.01-x86_64.iso.torrent";
    pub(crate) const BIG_BUCK_BUNNY_MAGNET_FILE: &str = "big-buck-bunny.txt";
    pub(crate) const BIG_BUCK_BUNNY_NAME: &str = "Big Buck Bunny";
    pub(crate) const BIG_BUCK_BUNNY_INFO_HASH: &str = "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c";

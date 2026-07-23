@@ -10,7 +10,8 @@ use sha1::{Digest, Sha1};
 use tracing::{info, instrument, trace, warn};
 
 use super::{
-   BLOCK_SIZE, PieceStorageStrategy, TorrentActor, TorrentExport, TorrentSnapshot, TorrentState,
+   AnnounceFrom, BLOCK_SIZE, PieceStorageStrategy, TorrentActor, TorrentExport, TorrentSnapshot,
+   TorrentState,
    actor::{PieceManagerProxy, ReadyHookSender},
    util,
 };
@@ -30,8 +31,8 @@ pub(crate) mod events {
    impl TorrentActor {
       /// A message from an announce actor containing new peers.
       #[message(derive(Debug))]
-      #[instrument(skip(self, peers), fields(torrent_id = %self.info_hash()))]
-      pub(crate) fn announce(&mut self, peers: Vec<Peer>) {
+      #[instrument(skip(self, peers, from), fields(torrent_id = %self.info_hash(), announce_from = from.kind()))]
+      pub(crate) fn announce(&mut self, peers: Vec<Peer>, from: AnnounceFrom) {
          trace!(peer_count = peers.len(), "Received announce message");
          for peer in peers {
             self.append_peer(peer, None);

@@ -2,6 +2,7 @@ mod actor;
 mod block;
 mod choking;
 mod choking_flow;
+mod discovery;
 mod export;
 mod handle;
 mod messages;
@@ -13,6 +14,7 @@ mod swarm;
 
 pub(crate) use actor::{TorrentActor, TorrentActorArgs};
 pub use block::{BLOCK_SIZE, BlockMap};
+pub use discovery::AnnounceFrom;
 pub(crate) use export::TorrentExport;
 pub use handle::Torrent;
 pub(crate) use messages::*;

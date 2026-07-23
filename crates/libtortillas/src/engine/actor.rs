@@ -3,18 +3,19 @@ use std::{net::SocketAddr, ops::ControlFlow, path::PathBuf, sync::Arc};
 use dashmap::DashMap;
 use kameo::{
    Actor,
-   actor::{ActorId, ActorRef, WeakActorRef},
+   actor::{ActorId, ActorRef, Spawn, WeakActorRef},
    error::ActorStopReason,
    mailbox::Signal,
    prelude::MailboxReceiver,
-   supervision::SupervisionStrategy,
+   supervision::{RestartPolicy, SupervisionStrategy},
 };
 use librqbit_utp::UtpSocketUdp;
 use tokio::net::TcpListener;
-use tracing::{error, instrument};
+use tracing::{Span, error, instrument};
 
 use super::commands;
 use crate::{
+   dht::{DhtActor, DhtActorArgs},
    errors::EngineError,
    hashes::InfoHash,
    peer::PeerId,
@@ -29,6 +30,8 @@ use crate::{
 /// also implements the [Actor] trait, and consequently behaves like an
 /// actor.
 pub struct EngineActor {
+   /// Engine-wide DHT service shared by every torrent.
+   pub(super) dht: Option<ActorRef<DhtActor>>,
    /// Listener to wait for incoming TCP connections from peers
    pub(super) tcp_socket: TcpListener,
    /// Socket to wait for incoming uTP connections from peers
@@ -118,9 +121,7 @@ impl Actor for EngineActor {
    /// [on_start](kameo::Actor::on_start) function itself.
    ///
    /// Initializes the TCP listener, uTP socket, UDP server, and peer ID.
-   async fn on_start(
-      args: Self::Args, actor_ref: kameo::prelude::ActorRef<Self>,
-   ) -> Result<Self, Self::Error> {
+   async fn on_start(args: Self::Args, actor_ref: ActorRef<Self>) -> Result<Self, Self::Error> {
       let EngineActorArgs {
          tcp_addr,
          utp_addr,
@@ -148,8 +149,26 @@ impl Actor for EngineActor {
       .map_err(|e| EngineError::NetworkSetupFailed(format!("udp bind {udp_addr}: {e}")))?;
 
       let peer_id = peer_id.unwrap_or_default();
+      let dht = if settings.dht.enabled {
+         Some(
+            DhtActor::supervise(
+               &actor_ref,
+               DhtActorArgs {
+                  id: None,
+                  settings: settings.dht.clone(),
+               },
+            )
+            .restart_policy(RestartPolicy::Transient)
+            .restart_limit(settings.dht.restart.limit, settings.dht.restart.period)
+            .spawn()
+            .await,
+         )
+      } else {
+         None
+      };
 
       Ok(Self {
+         dht,
          tcp_socket,
          utp_socket,
          udp_server,
@@ -191,7 +210,7 @@ impl Actor for EngineActor {
                    reply: None,
                    sent_within_actor: true,
                    message_name: "IncomingPeer",
-                   caller_span: tracing::Span::current(),
+                   caller_span: Span::current(),
                 })
             }
             Err(err) => {
@@ -214,7 +233,7 @@ impl Actor for EngineActor {
                    reply: None,
                    sent_within_actor: true,
                    message_name: "IncomingPeer",
-                   caller_span: tracing::Span::current(),
+                   caller_span: Span::current(),
                 })
             }
             Err(err) => {
@@ -240,6 +259,11 @@ impl Actor for EngineActor {
          }
          torrent.wait_for_shutdown().await;
          self.torrents.remove(&info_hash);
+      }
+
+      if let Some(dht) = self.dht.take() {
+         dht.kill();
+         dht.wait_for_shutdown().await;
       }
 
       Ok(())

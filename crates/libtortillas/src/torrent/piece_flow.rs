@@ -430,7 +430,7 @@ mod tests {
 
    fn test_metainfo(info: Info) -> MetaInfo {
       MetaInfo::Torrent(TorrentFile {
-         announce: Tracker::Http("http://127.0.0.1/announce".to_string()),
+         announce: Some(Tracker::Http("http://127.0.0.1/announce".to_string())),
          announce_list: None,
          comment: None,
          created_by: None,

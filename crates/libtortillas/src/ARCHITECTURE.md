@@ -2,10 +2,22 @@
 
 The library is organized around a small actor hierarchy:
 
-- `EngineActor` owns global listeners, the shared UDP tracker socket, and the torrent registry.
+- `EngineActor` owns global listeners, the shared UDP tracker socket, the torrent registry, and one optional `DhtActor`.
+- `DhtActor` owns the engine-wide DHT socket, routing table, transaction matching, announce tokens, and scheduled torrent lookups.
 - `TorrentActor` owns per-torrent state and coordinates peers, trackers, piece progress, and exports.
 - `PeerActor` owns one peer connection and peer-local protocol state.
 - `TrackerActor` owns one tracker announce loop and forwards discovered peers to its torrent supervisor.
+
+```text
+EngineActor
+├── DhtActor (one shared instance)
+└── TorrentActor (one per torrent)
+    ├── TrackerActor (one per tracker)
+    └── PeerActor (one per connected peer)
+
+DhtActor ── discovered peers ──> TorrentActor
+TrackerActor ── discovered peers ──> TorrentActor
+```
 
 Module facades should export stable public types while keeping actor internals private to the crate.
 Domain types such as torrent state, storage strategy, exported snapshots, tracker model types, and tracker stats live outside actor files so actors can focus on orchestration.
@@ -30,6 +42,25 @@ Runtime independence is not a current API promise. The public facade should not
 claim support for custom async runtimes, injected HTTP clients, injected clocks,
 custom network listeners, or non-Tokio storage executors unless those extension
 points are added explicitly.
+
+## DHT Peer Discovery
+
+`EngineActor` supervises a single `DhtActor` because [BEP 5] defines a DHT node
+as a client-wide UDP service, rather than one service per torrent. When a public
+torrent is added, the engine registers its info hash and `TorrentActor` with the
+DHT actor. Private torrents are not registered because [BEP 27] limits their
+peer discovery to declared trackers.
+
+The DHT actor bootstraps its routing table, performs iterative `get_peers`
+lookups, and forwards results to the torrent through the same `Announce` event
+used by tracker actors. Its `AnnounceFrom` value retains whether peers came
+from DHT or a specific tracker. This keeps connection filtering, deduplication,
+and `PeerActor` creation in `TorrentActor` regardless of where an endpoint was
+discovered. Valid lookup tokens are used to announce the engine's peer port
+back to the closest DHT nodes.
+
+[BEP 5]: https://www.bittorrent.org/beps/bep_0005.html
+[BEP 27]: https://www.bittorrent.org/beps/bep_0027.html
 
 ## Torrent Lifecycle
 
