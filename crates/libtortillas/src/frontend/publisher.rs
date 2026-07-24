@@ -1,7 +1,7 @@
 use std::{
    collections::HashMap,
    sync::{
-      Arc, RwLock, RwLockReadGuard, RwLockWriteGuard,
+      Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
       atomic::{AtomicU64, Ordering},
    },
 };
@@ -35,6 +35,12 @@ fn write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
       .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+fn mutex_lock<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
+   lock
+      .lock()
+      .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Generic current-state and event publisher for live application APIs.
 ///
 /// The same primitive backs engine, torrent, peer, and tracker listeners. It
@@ -50,6 +56,7 @@ struct LivePublisherInner<V, E> {
    events: broadcast::Sender<Sequenced<E>>,
    view: RwLock<V>,
    sequence: AtomicU64,
+   ordering: Mutex<()>,
 }
 
 impl<V, E> LivePublisher<V, E>
@@ -66,6 +73,7 @@ where
             events,
             view: RwLock::new(initial_view),
             sequence: AtomicU64::new(0),
+            ordering: Mutex::new(()),
          }),
       }
    }
@@ -91,22 +99,46 @@ where
 
    /// Replaces the current view without emitting an event.
    pub fn set_view(&self, view: V) {
+      let _ordering = mutex_lock(&self.inner.ordering);
       *self.write_view() = view;
    }
 
    /// Replaces the current view and emits the corresponding event.
    pub fn update(&self, view: V, event: E) {
-      self.set_view(view);
-      self.publish(event);
+      let _ordering = mutex_lock(&self.inner.ordering);
+      *self.write_view() = view;
+      self.publish_ordered(event);
    }
 
    /// Emits an event using this publisher's monotonic sequence.
    pub fn publish(&self, kind: E) {
+      let _ordering = mutex_lock(&self.inner.ordering);
+      self.publish_ordered(kind);
+   }
+
+   pub(crate) fn edit_and_publish<R>(&self, edit: impl FnOnce(&mut V) -> (R, E)) -> R {
+      let _ordering = mutex_lock(&self.inner.ordering);
+      let (result, event) = edit(&mut self.write_view());
+      self.publish_ordered(event);
+      result
+   }
+
+   pub(crate) fn edit_if_and_publish(&self, edit: impl FnOnce(&mut V) -> bool, event: E) -> bool {
+      let _ordering = mutex_lock(&self.inner.ordering);
+      if !edit(&mut self.write_view()) {
+         return false;
+      }
+      self.publish_ordered(event);
+      true
+   }
+
+   fn publish_ordered(&self, kind: E) {
       let sequence = self.inner.sequence.fetch_add(1, Ordering::Relaxed) + 1;
       let _ = self.inner.events.send(Sequenced { sequence, kind });
    }
 
    pub(crate) fn edit_view<R>(&self, edit: impl FnOnce(&mut V) -> R) -> R {
+      let _ordering = mutex_lock(&self.inner.ordering);
       edit(&mut self.write_view())
    }
 
@@ -187,8 +219,11 @@ impl FrontendPublisher {
    }
 
    pub(crate) fn engine_started(&self) {
-      let view = self.set_engine_status(EngineStatus::Running);
-      self.publish(CoreEventKind::EngineStarted(view));
+      self.live.edit_and_publish(|view| {
+         view.status = EngineStatus::Running;
+         let view = view.clone();
+         ((), CoreEventKind::EngineStarted(view))
+      });
    }
 
    pub(crate) fn engine_stopping(&self) {
@@ -196,8 +231,11 @@ impl FrontendPublisher {
    }
 
    pub(crate) fn engine_stopped(&self) {
-      let view = self.set_engine_status(EngineStatus::Stopped);
-      self.publish(CoreEventKind::Shutdown(view));
+      self.live.edit_and_publish(|view| {
+         view.status = EngineStatus::Stopped;
+         let view = view.clone();
+         ((), CoreEventKind::Shutdown(view))
+      });
    }
 
    pub(crate) fn initialize_torrent(&self, torrent: TorrentView) {
@@ -212,29 +250,28 @@ impl FrontendPublisher {
    }
 
    pub(crate) fn update_torrent(&self, torrent: TorrentView) {
-      if let Some(torrent) = self.publish_torrent(torrent, TorrentEventKind::Updated) {
-         self.publish(CoreEventKind::TorrentUpdated(torrent));
-      }
+      self.publish_torrent(torrent, TorrentEventKind::Updated, |torrent| {
+         CoreEventKind::TorrentUpdated(torrent.clone())
+      });
    }
 
    pub(crate) fn metadata_resolved(&self, torrent: TorrentView) {
-      if let Some(torrent) = self.publish_torrent(torrent, TorrentEventKind::MetadataResolved) {
-         self.publish(CoreEventKind::MetadataResolved(torrent));
-      }
+      self.publish_torrent(torrent, TorrentEventKind::MetadataResolved, |torrent| {
+         CoreEventKind::MetadataResolved(torrent.clone())
+      });
    }
 
    pub(crate) fn progress_changed(&self, torrent: TorrentView) {
       let info_hash = torrent.info_hash;
       let progress = torrent.progress.clone();
-      if self
-         .publish_torrent(torrent, TorrentEventKind::ProgressChanged(progress.clone()))
-         .is_some()
-      {
-         self.publish(CoreEventKind::ProgressChanged {
+      self.publish_torrent(
+         torrent,
+         TorrentEventKind::ProgressChanged(progress.clone()),
+         |_| CoreEventKind::ProgressChanged {
             torrent: info_hash,
             progress,
-         });
-      }
+         },
+      );
    }
 
    pub(crate) fn peer_connected(
@@ -243,15 +280,14 @@ impl FrontendPublisher {
       let info_hash = torrent.info_hash;
       let peer = PeerHandle::new(scope, view, self.clone());
       write_lock(&self.peers).insert(scope, peer.clone());
-      if self
-         .publish_torrent(torrent, TorrentEventKind::PeerConnected(peer.clone()))
-         .is_some()
-      {
-         self.publish(CoreEventKind::PeerConnected {
+      self.publish_torrent(
+         torrent,
+         TorrentEventKind::PeerConnected(peer.clone()),
+         |_| CoreEventKind::PeerConnected {
             torrent: info_hash,
             peer: peer.clone(),
-         });
-      }
+         },
+      );
       peer
    }
 
@@ -360,28 +396,19 @@ impl FrontendPublisher {
    pub(crate) fn torrent_state_changed(&self, previous: TorrentState, torrent: TorrentView) {
       let info_hash = torrent.info_hash;
       let current = torrent.state;
-      if self
-         .publish_torrent(
-            torrent,
-            TorrentEventKind::StateChanged { previous, current },
-         )
-         .is_some()
-      {
-         self.publish(CoreEventKind::TorrentStateChanged {
+      self.publish_torrent(
+         torrent,
+         TorrentEventKind::StateChanged { previous, current },
+         |_| CoreEventKind::TorrentStateChanged {
             torrent: info_hash,
             previous,
             current,
-         });
-      }
+         },
+      );
    }
 
    pub(crate) fn torrent_removed(&self, torrent: InfoHash) {
-      self.live.edit_view(|view| {
-         view
-            .torrents
-            .retain(|candidate| candidate.info_hash != torrent);
-         view.torrent_count = u64::try_from(view.torrents.len()).unwrap_or(u64::MAX);
-      });
+      let removed = self.write_torrents().remove(&torrent);
       let peers = read_lock(&self.peers)
          .values()
          .filter(|peer| peer.torrent() == torrent && peer.live_view().connected)
@@ -400,9 +427,16 @@ impl FrontendPublisher {
          tracker.stopped();
       }
       write_lock(&self.trackers).retain(|scope, _| scope.torrent != torrent);
-      if let Some(torrent) = self.write_torrents().remove(&torrent) {
-         torrent.removed();
-         self.publish(CoreEventKind::TorrentRemoved(torrent));
+      if let Some(handle) = removed {
+         handle.removed();
+         self.live.edit_and_publish(|view| {
+            Self::remove_torrent_view(view, torrent);
+            ((), CoreEventKind::TorrentRemoved(handle))
+         });
+      } else {
+         self
+            .live
+            .edit_view(|view| Self::remove_torrent_view(view, torrent));
       }
    }
 
@@ -434,28 +468,36 @@ impl FrontendPublisher {
       });
    }
 
-   fn update_torrent_entry(&self, torrent: TorrentView) -> Option<Torrent> {
-      let info_hash = torrent.info_hash;
-      let updated = self.live.edit_view(|view| {
-         let Some(current) = view
-            .torrents
-            .iter_mut()
-            .find(|candidate| candidate.info_hash == torrent.info_hash)
-         else {
-            return false;
-         };
-         *current = torrent;
-         true
-      });
-      updated
-         .then(|| self.read_torrents().get(&info_hash).cloned())
-         .flatten()
+   fn publish_torrent(
+      &self, view: TorrentView, event: TorrentEventKind,
+      core_event: impl FnOnce(&Torrent) -> CoreEventKind,
+   ) {
+      let info_hash = view.info_hash;
+      let Some(torrent) = self.read_torrents().get(&info_hash).cloned() else {
+         return;
+      };
+      torrent.publish(view.clone(), event);
+      self.live.edit_if_and_publish(
+         |engine| {
+            let Some(current) = engine
+               .torrents
+               .iter_mut()
+               .find(|candidate| candidate.info_hash == info_hash)
+            else {
+               return false;
+            };
+            *current = view;
+            true
+         },
+         core_event(&torrent),
+      );
    }
 
-   fn publish_torrent(&self, view: TorrentView, event: TorrentEventKind) -> Option<Torrent> {
-      let torrent = self.update_torrent_entry(view.clone())?;
-      torrent.publish(view, event);
-      Some(torrent)
+   fn remove_torrent_view(view: &mut EngineView, torrent: InfoHash) {
+      view
+         .torrents
+         .retain(|candidate| candidate.info_hash != torrent);
+      view.torrent_count = u64::try_from(view.torrents.len()).unwrap_or(u64::MAX);
    }
 
    fn read_torrents(&self) -> RwLockReadGuard<'_, HashMap<InfoHash, Torrent>> {

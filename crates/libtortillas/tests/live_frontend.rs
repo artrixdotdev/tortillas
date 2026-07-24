@@ -94,6 +94,26 @@ async fn generic_live_publisher_implements_async_stream() {
    assert_eq!(listener.view(), 1);
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_live_updates_are_delivered_in_sequence_order() {
+   const UPDATE_COUNT: u64 = 64;
+   let publisher = LivePublisher::new(0_u64, UPDATE_COUNT as usize);
+   let mut events = publisher.subscribe();
+   let updates = (1..=UPDATE_COUNT)
+      .map(|view| {
+         let publisher = publisher.clone();
+         tokio::spawn(async move { publisher.update(view, view) })
+      })
+      .collect::<Vec<_>>();
+
+   for update in updates {
+      update.await.unwrap();
+   }
+   for sequence in 1..=UPDATE_COUNT {
+      assert_eq!(events.recv().await.unwrap().sequence, sequence);
+   }
+}
+
 #[tokio::test]
 async fn tracker_handle_exposes_its_own_live_listener() {
    let engine = deterministic_engine();
