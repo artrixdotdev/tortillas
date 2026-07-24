@@ -64,6 +64,10 @@ pub enum EngineError {
    #[error("Torrent not found: {0}")]
    TorrentNotFound(InfoHash),
 
+   /// A managed torrent command failed.
+   #[error(transparent)]
+   Torrent(#[from] TorrentError),
+
    /// Any other engine-level error wrapped in [`anyhow::Error`]
    #[error(transparent)]
    Other(#[from] anyhow::Error),

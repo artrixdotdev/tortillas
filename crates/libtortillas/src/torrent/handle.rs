@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-use anyhow::Result;
 use kameo::actor::ActorRef;
 use tokio::sync::oneshot;
 use tracing::error;
@@ -13,6 +12,7 @@ use super::{
    },
 };
 use crate::{
+   errors::TorrentError,
    frontend::{EventSubscription, FrontendPublisher, TorrentListener, TorrentView},
    hashes::InfoHash,
    pieces::PieceManager,
@@ -61,99 +61,128 @@ impl Torrent {
       self.info_hash()
    }
 
-   pub async fn set_piece_storage(&self, piece_storage: PieceStorageStrategy) -> Result<()> {
+   pub async fn set_piece_storage(
+      &self, piece_storage: PieceStorageStrategy,
+   ) -> Result<(), TorrentError> {
       self
          .actor()
          .tell(SetPieceStorage {
             strategy: piece_storage,
          })
-         .await?;
+         .await
+         .map_err(Self::communication_error)?;
       Ok(())
    }
 
-   pub async fn with_output_folder(&self, folder: impl Into<PathBuf>) -> Result<()> {
+   pub async fn with_output_folder(&self, folder: impl Into<PathBuf>) -> Result<(), TorrentError> {
       self
          .actor()
          .ask(SetOutputPath {
             path: folder.into(),
          })
-         .await?;
+         .await
+         .map_err(Self::communication_error)?;
       Ok(())
    }
 
    pub async fn with_piece_manager<'a>(
       &'a self, piece_manager: impl PieceManager + 'a + 'static,
-   ) -> Result<()> {
+   ) -> Result<(), TorrentError> {
       self
          .actor()
          .tell(SetPieceManager {
             manager: Box::new(piece_manager),
          })
-         .await?;
+         .await
+         .map_err(Self::communication_error)?;
       Ok(())
    }
 
-   pub async fn start(&self) -> Result<()> {
+   pub async fn start(&self) -> Result<(), TorrentError> {
       self.set_state(TorrentState::Downloading, "start").await
    }
 
    /// Resumes downloading or seeding this torrent.
-   pub async fn resume(&self) -> Result<()> {
+   pub async fn resume(&self) -> Result<(), TorrentError> {
       self.start().await
    }
 
    /// Pauses this torrent while preserving its downloaded data and metadata.
-   pub async fn pause(&self) -> Result<()> {
+   pub async fn pause(&self) -> Result<(), TorrentError> {
       self.set_state(TorrentState::Paused, "pause").await
    }
 
    /// Stops this torrent's active transfers.
-   pub async fn stop(&self) -> Result<()> {
+   pub async fn stop(&self) -> Result<(), TorrentError> {
       self.set_state(TorrentState::Paused, "stop").await
    }
 
-   async fn set_state(&self, state: TorrentState, operation: &'static str) -> Result<()> {
+   async fn set_state(
+      &self, state: TorrentState, operation: &'static str,
+   ) -> Result<(), TorrentError> {
       let msg = SetState { state };
 
       self
          .actor()
          .ask(msg)
          .await
-         .inspect_err(|e| error!(error = %e, operation, "Failed to change torrent state"))?;
+         .inspect_err(|e| error!(error = %e, operation, "Failed to change torrent state"))
+         .map_err(Self::communication_error)?;
 
       Ok(())
    }
 
-   pub async fn state(&self) -> Result<TorrentState> {
-      Ok(self.actor().ask(GetState).await?)
+   pub async fn state(&self) -> Result<TorrentState, TorrentError> {
+      self
+         .actor()
+         .ask(GetState)
+         .await
+         .map_err(Self::communication_error)
    }
 
    /// Returns a stable, frontend-ready snapshot of this torrent.
-   pub async fn export(&self) -> Result<TorrentSnapshot> {
+   pub async fn export(&self) -> Result<TorrentSnapshot, TorrentError> {
       self.snapshot().await
    }
 
-   pub async fn snapshot(&self) -> Result<TorrentSnapshot> {
-      Ok(*self.actor().ask(SnapshotState).await?)
+   pub async fn snapshot(&self) -> Result<TorrentSnapshot, TorrentError> {
+      self
+         .actor()
+         .ask(SnapshotState)
+         .await
+         .map(|snapshot| *snapshot)
+         .map_err(Self::communication_error)
    }
 
-   pub async fn set_auto_start(&self, auto: bool) -> Result<()> {
+   pub async fn set_auto_start(&self, auto: bool) -> Result<(), TorrentError> {
       let msg = SetAutoStart { auto };
-      self.actor().tell(msg).await?;
+      self
+         .actor()
+         .tell(msg)
+         .await
+         .map_err(Self::communication_error)?;
       Ok(())
    }
 
-   pub async fn set_sufficient_peers(&self, peers: usize) -> Result<()> {
+   pub async fn set_sufficient_peers(&self, peers: usize) -> Result<(), TorrentError> {
       let msg = SetSufficientPeers { peers };
-      self.actor().tell(msg).await?;
+      self
+         .actor()
+         .tell(msg)
+         .await
+         .map_err(Self::communication_error)?;
       Ok(())
    }
 
-   pub async fn poll_ready(&self) -> Result<()> {
+   pub async fn poll_ready(&self) -> Result<(), TorrentError> {
       let (hook, hook_rx) = oneshot::channel();
       let msg = ReadyHook { hook };
-      self.actor().tell(msg).await?;
-      hook_rx.await?;
+      self
+         .actor()
+         .tell(msg)
+         .await
+         .map_err(Self::communication_error)?;
+      hook_rx.await.map_err(Self::communication_error)?;
 
       Ok(())
    }
@@ -176,5 +205,12 @@ impl Torrent {
    #[must_use]
    pub fn live_view(&self) -> Option<TorrentView> {
       self.frontend.torrent_view(self.info_hash)
+   }
+
+   fn communication_error(error: impl std::fmt::Display) -> TorrentError {
+      TorrentError::ActorCommunicationFailed {
+         actor_type: "torrent".to_string(),
+         reason: error.to_string(),
+      }
    }
 }
