@@ -1,12 +1,7 @@
-use std::net::SocketAddr;
-
 use serde::{Deserialize, Serialize};
 
-use crate::{
-   engine::EngineSnapshot,
-   hashes::InfoHash,
-   torrent::{TorrentProgressSnapshot, TorrentSnapshot, TorrentState},
-};
+use super::{EngineView, PeerView, TorrentProgress, TorrentView, TrackerView};
+use crate::{hashes::InfoHash, torrent::TorrentState};
 
 /// A sequenced event emitted by the live frontend API.
 ///
@@ -34,9 +29,9 @@ impl CoreEvent {
 #[non_exhaustive]
 pub enum CoreEventKind {
    /// The engine finished starting and is ready for commands.
-   EngineStarted(EngineSnapshot),
+   EngineStarted(EngineView),
    /// A torrent was added to the engine.
-   TorrentAdded(TorrentSnapshot),
+   TorrentAdded(TorrentView),
    /// A torrent was removed from the engine.
    TorrentRemoved { torrent: InfoHash },
    /// A torrent changed lifecycle state.
@@ -46,36 +41,30 @@ pub enum CoreEventKind {
       current: TorrentState,
    },
    /// Metadata for a magnet torrent was resolved.
-   MetadataResolved(TorrentSnapshot),
+   MetadataResolved(TorrentView),
    /// Download progress changed.
    ProgressChanged {
       torrent: InfoHash,
-      progress: TorrentProgressSnapshot,
+      progress: TorrentProgress,
    },
    /// A peer connection became available to a torrent.
-   PeerConnected {
-      torrent: InfoHash,
-      peer: PeerSnapshot,
-   },
+   PeerConnected { torrent: InfoHash, peer: PeerView },
    /// A peer connection was removed from a torrent.
-   PeerDisconnected {
-      torrent: InfoHash,
-      peer: PeerSnapshot,
-   },
+   PeerDisconnected { torrent: InfoHash, peer: PeerView },
    /// A tracker announce completed successfully.
    TrackerAnnounceSucceeded {
       torrent: InfoHash,
-      tracker: TrackerSnapshot,
+      tracker: TrackerView,
    },
    /// A tracker announce failed.
    TrackerAnnounceFailed {
       torrent: InfoHash,
-      tracker: TrackerSnapshot,
+      tracker: TrackerView,
    },
    /// A frontend-relevant health report was emitted.
    Health(FrontendHealth),
    /// The engine and its managed torrents stopped.
-   Shutdown(EngineSnapshot),
+   Shutdown(EngineView),
 }
 
 impl CoreEventKind {
@@ -97,28 +86,6 @@ impl CoreEventKind {
          Self::Health(health) => health.torrent,
       }
    }
-}
-
-/// Frontend snapshot of a connected or recently disconnected peer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PeerSnapshot {
-   /// Network address for the peer, when known.
-   pub address: Option<SocketAddr>,
-   /// Parsed peer-client family, when known.
-   pub client: Option<String>,
-   /// Whether this peer is currently connected.
-   pub connected: bool,
-}
-
-/// Frontend-safe tracker identity and latest announce outcome.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrackerSnapshot {
-   /// Credential-free tracker endpoint label.
-   pub endpoint: String,
-   /// Whether the latest announce succeeded.
-   pub healthy: bool,
-   /// Number of peers returned by the latest successful announce.
-   pub peers_returned: Option<u64>,
 }
 
 /// A recoverable or terminal health report intended for user interfaces.

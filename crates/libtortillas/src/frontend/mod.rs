@@ -6,8 +6,8 @@
 
 mod event;
 mod subscription;
+mod view;
 
-pub use event::{
-   CoreEvent, CoreEventKind, FrontendHealth, FrontendHealthLevel, PeerSnapshot, TrackerSnapshot,
-};
+pub use event::{CoreEvent, CoreEventKind, FrontendHealth, FrontendHealthLevel};
 pub use subscription::{EventStreamError, EventSubscription};
+pub use view::{EngineView, PeerView, TorrentProgress, TorrentTransfer, TorrentView, TrackerView};

@@ -23,8 +23,8 @@ use crate::{engine::Engine, hashes::InfoHash, torrent::Torrent};
 pub use crate::{
    engine::{EngineSnapshot, EngineStatus, TorrentSource},
    frontend::{
-      CoreEvent, CoreEventKind, EventStreamError, EventSubscription, FrontendHealth,
-      FrontendHealthLevel, PeerSnapshot, TrackerSnapshot,
+      CoreEvent, CoreEventKind, EngineView, EventStreamError, EventSubscription, FrontendHealth,
+      FrontendHealthLevel, PeerView, TorrentProgress, TorrentTransfer, TorrentView, TrackerView,
    },
    torrent::{TorrentProgressSnapshot, TorrentSnapshot, TorrentTransferSnapshot},
 };
