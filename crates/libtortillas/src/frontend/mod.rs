@@ -15,10 +15,10 @@ pub use event::{
    CoreEvent, CoreEventKind, FrontendHealth, FrontendHealthLevel, PeerEvent, PeerEventKind,
    Sequenced, TorrentEvent, TorrentEventKind, TrackerEvent, TrackerEventKind,
 };
-pub use handle::{PeerHandle, PeerListener, TrackerHandle, TrackerListener};
-pub(crate) use handle::{PeerScope, TrackerScope};
+pub(crate) use handle::PeerScope;
+pub use handle::{PeerHandle, PeerListener, TrackerHandle, TrackerId, TrackerListener};
 pub use listener::{EngineListener, EventListener, TorrentListener};
-pub(crate) use publisher::FrontendPublisher;
 pub use publisher::{DEFAULT_EVENT_CAPACITY, LivePublisher};
+pub(crate) use publisher::{FrontendHub, FrontendPublisher};
 pub use subscription::{EventStreamError, EventSubscription};
 pub use view::{EngineView, PeerView, TorrentProgress, TorrentTransfer, TorrentView, TrackerView};

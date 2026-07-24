@@ -11,12 +11,13 @@ use tracing::{info, instrument, trace, warn};
 
 use super::{
    AnnounceFrom, BLOCK_SIZE, PieceStorageStrategy, TORRENT_SNAPSHOT_VERSION, TorrentActor,
-   TorrentExport, TorrentSnapshot, TorrentState,
+   TorrentSnapshot, TorrentState,
    actor::{PieceManagerProxy, ReadyHookSender},
    util,
 };
 use crate::{
    errors::TorrentError,
+   frontend::TorrentView,
    hashes::InfoHash,
    metainfo::Info,
    peer::{Peer, PeerId, commands::HaveInfoDict},
@@ -538,8 +539,8 @@ pub(crate) mod commands {
       }
 
       #[message]
-      pub(crate) fn export_state(&self) -> Box<TorrentExport> {
-         Box::new(self.export())
+      pub(crate) fn get_live_view(&self) -> Box<TorrentView> {
+         Box::new(self.live_view())
       }
 
       #[message]

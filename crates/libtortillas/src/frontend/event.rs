@@ -42,47 +42,16 @@ impl Sequenced<CoreEventKind> {
 pub enum CoreEventKind {
    /// The engine finished starting and is ready for operations.
    EngineStarted(EngineView),
-   /// A torrent was added to the engine.
-   TorrentAdded(Torrent),
-   /// A torrent was removed from the engine.
-   TorrentRemoved(Torrent),
-   /// A torrent changed lifecycle state.
-   TorrentStateChanged {
-      torrent: InfoHash,
-      previous: TorrentState,
-      current: TorrentState,
+   /// A change emitted by one managed torrent.
+   ///
+   /// The same canonical event is delivered to both the torrent listener and
+   /// the engine listener, avoiding parallel event vocabularies that can drift
+   /// apart as protocols are added.
+   Torrent {
+      torrent: Torrent,
+      event: TorrentEventKind,
    },
-   /// Display-oriented torrent configuration or counts changed.
-   TorrentUpdated(Torrent),
-   /// Metadata for a magnet torrent was resolved.
-   MetadataResolved(Torrent),
-   /// Download progress changed.
-   ProgressChanged {
-      torrent: InfoHash,
-      progress: TorrentProgress,
-   },
-   /// A peer connection became available to a torrent.
-   PeerConnected { torrent: InfoHash, peer: PeerHandle },
-   /// A connected peer's protocol state or transfer metrics changed.
-   PeerUpdated { torrent: InfoHash, peer: PeerHandle },
-   /// A peer connection was removed from a torrent.
-   PeerDisconnected { torrent: InfoHash, peer: PeerHandle },
-   /// A tracker announce completed successfully.
-   TrackerAnnounceSucceeded {
-      torrent: InfoHash,
-      tracker: TrackerHandle,
-   },
-   /// A tracker announce failed.
-   TrackerAnnounceFailed {
-      torrent: InfoHash,
-      tracker: TrackerHandle,
-   },
-   /// A tracker actor stopped.
-   TrackerStopped {
-      torrent: InfoHash,
-      tracker: TrackerHandle,
-   },
-   /// A frontend-relevant health report was emitted.
+   /// An engine-wide frontend health report was emitted.
    Health(FrontendHealth),
    /// The engine and its managed torrents stopped.
    Shutdown(EngineView),
@@ -92,6 +61,7 @@ pub enum CoreEventKind {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum TorrentEventKind {
+   Added,
    Updated,
    StateChanged {
       previous: TorrentState,
@@ -132,18 +102,7 @@ impl CoreEventKind {
    pub fn torrent(&self) -> Option<InfoHash> {
       match self {
          Self::EngineStarted(_) | Self::Shutdown(_) => None,
-         Self::TorrentAdded(torrent)
-         | Self::TorrentUpdated(torrent)
-         | Self::TorrentRemoved(torrent)
-         | Self::MetadataResolved(torrent) => Some(torrent.info_hash()),
-         Self::TorrentStateChanged { torrent, .. }
-         | Self::ProgressChanged { torrent, .. }
-         | Self::PeerConnected { torrent, .. }
-         | Self::PeerUpdated { torrent, .. }
-         | Self::PeerDisconnected { torrent, .. }
-         | Self::TrackerAnnounceSucceeded { torrent, .. }
-         | Self::TrackerAnnounceFailed { torrent, .. }
-         | Self::TrackerStopped { torrent, .. } => Some(*torrent),
+         Self::Torrent { torrent, .. } => Some(torrent.info_hash()),
          Self::Health(health) => health.torrent,
       }
    }

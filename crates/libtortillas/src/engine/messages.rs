@@ -252,10 +252,20 @@ pub(crate) mod commands {
                "failed to resume restored torrent: {error}"
             )));
          }
+         let initial_view = match torrent_ref.ask(torrent::commands::GetLiveView).await {
+            Ok(view) => *view,
+            Err(error) => {
+               self.discard_restored_torrent(info_hash, &torrent_ref).await;
+               return Err(EngineError::Other(anyhow!(
+                  "failed to initialize torrent frontend: {error}"
+               )));
+            }
+         };
          self.frontend.torrent_added(Torrent::new_with_frontend(
             info_hash,
             torrent_ref.clone(),
-            self.frontend.clone(),
+            &self.frontend,
+            Some(initial_view),
          ));
          Ok(torrent_ref)
       }

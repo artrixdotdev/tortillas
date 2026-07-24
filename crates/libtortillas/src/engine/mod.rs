@@ -731,7 +731,11 @@ mod tests {
       let peer = timeout(Duration::from_secs(2), async {
          loop {
             let event = listener.recv().await.unwrap();
-            if let CoreEventKind::PeerConnected { peer, .. } = event.kind {
+            if let CoreEventKind::Torrent {
+               event: crate::frontend::TorrentEventKind::PeerConnected(peer),
+               ..
+            } = event.kind
+            {
                break peer;
             }
          }

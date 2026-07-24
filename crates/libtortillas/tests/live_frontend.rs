@@ -32,7 +32,13 @@ async fn engine_listener_receives_live_torrent_lifecycle() {
    let added = timeout(Duration::from_secs(2), async {
       loop {
          let event = engine_listener.next().await.unwrap().unwrap();
-         if matches!(event.kind, CoreEventKind::TorrentAdded(_)) {
+         if matches!(
+            event.kind,
+            CoreEventKind::Torrent {
+               event: TorrentEventKind::Added,
+               ..
+            }
+         ) {
             break event;
          }
       }
@@ -40,7 +46,11 @@ async fn engine_listener_receives_live_torrent_lifecycle() {
    .await
    .unwrap();
    assert_eq!(added.torrent(), Some(torrent.info_hash()));
-   let CoreEventKind::TorrentAdded(added_torrent) = added.kind else {
+   let CoreEventKind::Torrent {
+      torrent: added_torrent,
+      event: TorrentEventKind::Added,
+   } = added.kind
+   else {
       unreachable!();
    };
    assert_eq!(added_torrent.info_hash(), torrent.info_hash());
@@ -244,7 +254,13 @@ async fn live_views_are_serde_compatible() {
    timeout(Duration::from_secs(2), async {
       loop {
          let event = listener.recv().await.unwrap();
-         if matches!(event.kind, CoreEventKind::TorrentAdded(_)) {
+         if matches!(
+            event.kind,
+            CoreEventKind::Torrent {
+               event: TorrentEventKind::Added,
+               ..
+            }
+         ) {
             break;
          }
       }

@@ -28,7 +28,7 @@ use crate::{
    errors::TorrentError,
    frontend::{
       FrontendHealthLevel, FrontendPublisher, TorrentProgress, TorrentTransfer, TorrentView,
-      TrackerScope, TrackerView,
+      TrackerView,
    },
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
@@ -36,8 +36,7 @@ use crate::{
    pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
    settings::Settings,
    torrent::{
-      BLOCK_SIZE, PieceStorageStrategy, TORRENT_SNAPSHOT_VERSION, TorrentExport, TorrentSnapshot,
-      TorrentState,
+      BLOCK_SIZE, PieceStorageStrategy, TORRENT_SNAPSHOT_VERSION, TorrentSnapshot, TorrentState,
    },
    tracker::{
       Announce, Event, Tracker, TrackerActor, TrackerActorArgs, TrackerUpdate, udp::UdpServer,
@@ -422,8 +421,8 @@ impl TorrentActor {
          .await;
    }
 
-   pub fn export(&self) -> TorrentExport {
-      TorrentExport {
+   pub fn snapshot(&self) -> TorrentSnapshot {
+      TorrentSnapshot {
          version: TORRENT_SNAPSHOT_VERSION,
          info_hash: self.info_hash(),
          state: self.state,
@@ -439,10 +438,6 @@ impl TorrentActor {
          bitfield: self.bitfield.clone(),
          block_map: self.piece_scheduler.block_map_export(),
       }
-   }
-
-   pub fn snapshot(&self) -> TorrentSnapshot {
-      self.export()
    }
 
    /// Builds the display-oriented state used by live frontend listeners.
@@ -673,10 +668,7 @@ impl Actor for TorrentActor {
       for tracker in tracker_list {
          let endpoint = tracker.frontend_endpoint();
          let tracker_frontend = frontend.tracker(
-            TrackerScope {
-               torrent: torrent_id,
-               endpoint: endpoint.clone(),
-            },
+            torrent_id,
             TrackerView {
                endpoint,
                active: true,
@@ -819,8 +811,8 @@ mod tests {
       settings::Settings,
       testing,
       torrent::{
-         BLOCK_SIZE, Torrent, TorrentExport, TorrentSnapshot,
-         commands::{ExportState, GetState, HasInfoDict, SetState},
+         BLOCK_SIZE, Torrent, TorrentSnapshot,
+         commands::{GetState, HasInfoDict, SetState, SnapshotState},
          events::IncomingPiece,
       },
       tracker::Tracker,
@@ -967,7 +959,7 @@ mod tests {
       assert!(query.contains(&format!("left={}", info.total_length())));
       assert!(query.contains("compact=0"));
 
-      let export = actor.ask(ExportState).await.unwrap();
+      let export = actor.ask(SnapshotState).await.unwrap();
       assert_eq!(export.info_hash, info_hash);
       assert_eq!(export.state, TorrentState::Downloading);
 
@@ -1321,7 +1313,7 @@ mod tests {
 
       let wrote_piece_block = timeout(Duration::from_secs(60), async {
          loop {
-            let export = actor.ask(ExportState).await.unwrap();
+            let export = actor.ask(SnapshotState).await.unwrap();
             let has_persisted_progress = export.bitfield.count_ones() > 0
                || export
                   .block_map
@@ -1441,7 +1433,7 @@ mod tests {
          settings: Settings::default(),
       };
 
-      let export = test_actor.export();
+      let export = test_actor.snapshot();
 
       // Verify export contents
       assert_eq!(export.info_hash, info_hash);
@@ -1468,14 +1460,16 @@ mod tests {
       );
 
       match &export.piece_storage {
-         PieceStorageStrategy::Disk(p) => assert_eq!(p, &piece_path),
+         PieceStorageStrategy::Disk(path) => {
+            assert_eq!(path.as_path(), piece_path.as_path());
+         }
          _ => panic!("Expected Disk storage strategy"),
       }
 
       // Test serialization round-trip
       use serde_json::{from_str, to_string};
       let export_str = to_string(&export).unwrap();
-      let from_export: TorrentExport = from_str(&export_str).unwrap();
+      let from_export: TorrentSnapshot = from_str(&export_str).unwrap();
 
       assert_eq!(export.info_hash, from_export.info_hash);
       assert_eq!(export.state, from_export.state);

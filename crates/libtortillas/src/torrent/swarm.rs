@@ -109,8 +109,7 @@ impl TorrentActor {
          return;
       }
 
-      let peer_frontend = self.frontend.peer_connected(
-         self.live_view(),
+      let peer_frontend = self.frontend.peer(
          PeerScope {
             torrent: info_hash,
             peer: id,
@@ -125,7 +124,7 @@ impl TorrentActor {
             actor_ref,
             info_hash,
             peer_settings,
-            peer_frontend,
+            peer_frontend.clone(),
          ),
          match peer_mailbox_size {
             0 => mailbox::unbounded(),
@@ -133,7 +132,9 @@ impl TorrentActor {
          },
       );
       self.peers.insert(id, peer_actor);
-      self.frontend.update_torrent(self.live_view());
+      self
+         .frontend
+         .peer_connected(self.live_view(), &peer_frontend);
    }
 
    #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]
