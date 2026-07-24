@@ -1,10 +1,10 @@
 use std::{io, path::PathBuf};
 
 use libtortillas::prelude::{
-   CoreCommand, CoreCommandResult, CoreEventKind, Engine, TorrentCommand, TorrentSource,
-   TorrentState,
+   CoreCommand, CoreCommandResult, CoreEventKind, Engine, EventStreamError, TorrentCommand,
+   TorrentSource, TorrentState,
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,8 +30,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                   break;
                }
             }
-            Err(error) => {
-               error!(%error, "frontend listener stopped");
+            Err(EventStreamError::Lagged(events)) => {
+               let view = listener.view();
+               warn!(
+                  events,
+                  torrent_count = view.torrent_count,
+                  "redrawing live state after lag"
+               );
+            }
+            Err(EventStreamError::Closed) => {
+               info!("frontend event stream closed");
                break;
             }
          }
@@ -62,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       }
    };
    info!(sequence = paused.sequence, ?paused.kind, "torrent paused");
-   torrent.send(TorrentCommand::Resume).await?;
+   torrent.send(TorrentCommand::Start).await?;
 
    tokio::signal::ctrl_c().await?;
    let _ = engine.send(CoreCommand::Shutdown).await?;

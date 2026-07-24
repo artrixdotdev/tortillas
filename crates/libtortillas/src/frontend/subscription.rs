@@ -8,7 +8,7 @@ use crate::hashes::InfoHash;
 ///
 /// The stream is bounded so a stalled UI cannot cause unbounded memory use.
 /// If [`Self::recv`] reports [`EventStreamError::Lagged`], redraw from the
-/// latest watched snapshot and continue receiving events.
+/// latest live view and continue receiving events.
 #[derive(Debug)]
 pub struct EventSubscription {
    receiver: broadcast::Receiver<CoreEvent>,

@@ -75,9 +75,9 @@ impl CoreEventKind {
    pub const fn torrent(&self) -> Option<InfoHash> {
       match self {
          Self::EngineStarted(_) | Self::Shutdown(_) => None,
-         Self::TorrentAdded(snapshot)
-         | Self::TorrentUpdated(snapshot)
-         | Self::MetadataResolved(snapshot) => Some(snapshot.info_hash),
+         Self::TorrentAdded(view) | Self::TorrentUpdated(view) | Self::MetadataResolved(view) => {
+            Some(view.info_hash)
+         }
          Self::TorrentRemoved { torrent }
          | Self::TorrentStateChanged { torrent, .. }
          | Self::ProgressChanged { torrent, .. }
