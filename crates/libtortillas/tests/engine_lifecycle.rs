@@ -30,10 +30,10 @@ async fn engine_remove_torrent_drops_it_from_exports() {
       .await
       .unwrap();
    assert_eq!(torrent.info_hash(), info_hash);
-   assert_eq!(engine.export().await.unwrap().torrents.len(), 1);
+   assert_eq!(engine.snapshot().await.unwrap().torrents.len(), 1);
 
    engine.remove_torrent(info_hash).await.unwrap();
-   assert!(engine.export().await.unwrap().torrents.is_empty());
+   assert!(engine.snapshot().await.unwrap().torrents.is_empty());
    assert!(torrent.state().await.is_err());
 
    let err = engine.remove_torrent(info_hash).await.unwrap_err();

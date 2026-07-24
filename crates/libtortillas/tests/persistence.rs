@@ -147,6 +147,30 @@ async fn engine_snapshot_when_version_is_unknown_then_restores_nothing() {
 }
 
 #[tokio::test]
+async fn engine_restore_checks_authoritative_actor_state_before_mutating() {
+   let source_engine = deterministic_engine();
+   source_engine
+      .add_torrent(TorrentSource::torrent_file_bytes(BIG_BUCK_BUNNY))
+      .await
+      .unwrap();
+   let snapshot = source_engine.snapshot().await.unwrap();
+   source_engine.shutdown().await.unwrap();
+
+   let target_engine = deterministic_engine();
+   let existing = target_engine
+      .add_torrent(TorrentSource::torrent_file_bytes(WIRED_CD))
+      .await
+      .unwrap();
+
+   let error = target_engine.restore(snapshot).await.unwrap_err();
+
+   assert!(matches!(error, EngineError::InvalidSnapshot { .. }));
+   assert_eq!(target_engine.live_view().torrent_count, 1);
+   assert!(target_engine.torrent(existing.info_hash()).await.is_ok());
+   target_engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn torrent_snapshot_when_piece_state_is_inconsistent_then_is_rejected_cleanly() {
    let source_engine = deterministic_engine();
    let torrent = source_engine

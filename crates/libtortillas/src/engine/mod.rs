@@ -46,7 +46,7 @@ mod messages;
 mod snapshot;
 mod source;
 
-use std::{collections::HashSet, net::SocketAddr, path::PathBuf};
+use std::{net::SocketAddr, path::PathBuf};
 
 pub(crate) use actor::*;
 use bon;
@@ -57,7 +57,9 @@ use kameo::{
 pub(crate) use messages::*;
 pub use source::TorrentSource;
 
-use self::commands::{CreateTorrent, GetTorrent, RemoveTorrent, SnapshotEngine, StartAll};
+use self::commands::{
+   CreateTorrent, GetTorrent, RemoveTorrent, RestoreEngine, SnapshotEngine, StartAll,
+};
 pub use self::snapshot::{ENGINE_SNAPSHOT_VERSION, EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
@@ -299,28 +301,8 @@ impl Engine {
    pub async fn restore_torrent(
       &self, snapshot: crate::torrent::TorrentSnapshot,
    ) -> Result<Torrent, EngineError> {
-      if snapshot.version != crate::torrent::TORRENT_SNAPSHOT_VERSION {
-         return Err(
-            crate::errors::TorrentError::InvalidSnapshot {
-               reason: format!(
-                  "unsupported version {}; expected {}",
-                  snapshot.version,
-                  crate::torrent::TORRENT_SNAPSHOT_VERSION
-               ),
-            }
-            .into(),
-         );
-      }
+      snapshot.validate()?;
       let info_hash = snapshot.info_hash;
-      let metainfo_hash = snapshot.metainfo.info_hash()?;
-      if metainfo_hash != info_hash {
-         return Err(
-            crate::errors::TorrentError::InvalidSnapshot {
-               reason: "info hash does not match metainfo".to_string(),
-            }
-            .into(),
-         );
-      }
 
       match self
          .actor()
@@ -344,55 +326,15 @@ impl Engine {
    /// method removes the torrents already restored by this call before
    /// returning the error.
    pub async fn restore(&self, snapshot: EngineSnapshot) -> Result<Vec<Torrent>, EngineError> {
-      if snapshot.version != ENGINE_SNAPSHOT_VERSION {
-         return Err(EngineError::InvalidSnapshot {
-            reason: format!(
-               "unsupported version {}; expected {}",
-               snapshot.version, ENGINE_SNAPSHOT_VERSION
-            ),
-         });
-      }
-      if snapshot.torrent_count != u64::try_from(snapshot.torrents.len()).unwrap_or(u64::MAX) {
-         return Err(EngineError::InvalidSnapshot {
-            reason: "torrent count does not match serialized torrent entries".to_string(),
-         });
-      }
-      if self.live_view().torrent_count != 0 {
-         return Err(EngineError::InvalidSnapshot {
-            reason: "target engine already manages torrents".to_string(),
-         });
-      }
-      let mut unique = HashSet::with_capacity(snapshot.torrents.len());
-      if snapshot
-         .torrents
-         .iter()
-         .any(|torrent| !unique.insert(torrent.info_hash))
-      {
-         return Err(EngineError::InvalidSnapshot {
-            reason: "snapshot contains duplicate torrent info hashes".to_string(),
-         });
-      }
-
-      let mut restored = Vec::with_capacity(snapshot.torrents.len());
-      for torrent_snapshot in snapshot.torrents {
-         match self.restore_torrent(torrent_snapshot).await {
-            Ok(torrent) => restored.push(torrent),
-            Err(error) => {
-               for torrent in &restored {
-                  if let Err(remove_error) = self.remove_torrent(torrent.info_hash()).await {
-                     tracing::warn!(
-                        error = %remove_error,
-                        torrent = %torrent.info_hash(),
-                        "Failed to roll back restored torrent"
-                     );
-                  }
-               }
-               return Err(error);
-            }
-         }
-      }
-
-      Ok(restored)
+      let info_hashes = match self.actor().ask(RestoreEngine { snapshot }).await {
+         Ok(info_hashes) => info_hashes,
+         Err(SendError::HandlerError(error)) => return Err(error),
+         Err(error) => return Err(EngineError::Other(anyhow::anyhow!(error.to_string()))),
+      };
+      info_hashes
+         .into_iter()
+         .map(|info_hash| self.frontend_torrent(info_hash))
+         .collect()
    }
    /// Starts all torrents managed by the engine.
    /// See [`Torrent::start`] for more information.
@@ -424,14 +366,10 @@ impl Engine {
          Err(err) => return Err(EngineError::Other(anyhow::anyhow!(err.to_string()))),
       };
 
-      torrent
-         .stop_gracefully()
-         .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+      let stop_result = torrent.stop_gracefully().await;
       torrent.wait_for_shutdown().await;
       self.frontend.torrent_removed(info_hash);
-
-      Ok(())
+      stop_result.map_err(|error| EngineError::Other(anyhow::anyhow!(error.to_string())))
    }
 
    /// Gracefully shuts down the engine and its managed torrent actors.
@@ -444,11 +382,6 @@ impl Engine {
       self.actor().wait_for_shutdown().await;
 
       Ok(())
-   }
-
-   /// Exports the current resumable engine state for application persistence.
-   pub async fn export(&self) -> Result<EngineSnapshot, EngineError> {
-      self.snapshot().await
    }
 
    /// Captures all managed torrent sessions in a Serde-compatible persistence
@@ -527,9 +460,7 @@ mod snapshot_tests {
          .unwrap();
       let snapshot = engine.snapshot().await.unwrap();
 
-      assert_eq!(snapshot.status, EngineStatus::Running);
       assert_eq!(snapshot.version, ENGINE_SNAPSHOT_VERSION);
-      assert_eq!(snapshot.torrent_count, 1);
       assert_eq!(snapshot.torrents.len(), 1);
       assert_eq!(snapshot.torrents[0].info_hash, torrent.info_hash());
       assert_eq!(
@@ -543,8 +474,6 @@ mod snapshot_tests {
       let from_snapshot: EngineSnapshot = from_str(&snapshot_str).unwrap();
 
       assert_eq!(snapshot.version, from_snapshot.version);
-      assert_eq!(snapshot.status, from_snapshot.status);
-      assert_eq!(snapshot.torrent_count, from_snapshot.torrent_count);
       assert_eq!(
          snapshot.torrents[0].info_hash,
          from_snapshot.torrents[0].info_hash
@@ -597,7 +526,7 @@ mod tests {
          TorrentSource::torrent_file_path(torrent_fixture_path(BIG_BUCK_BUNNY_TORRENT_FILE));
 
       let torrent = engine.add_torrent(source).await.unwrap();
-      let export = engine.export().await.unwrap();
+      let export = engine.snapshot().await.unwrap();
 
       assert_eq!(torrent.info_hash().to_hex(), BIG_BUCK_BUNNY_INFO_HASH);
       assert_eq!(export.torrents.len(), 1);
@@ -612,7 +541,7 @@ mod tests {
       let source = TorrentSource::magnet(BIG_BUCK_BUNNY_MAGNET);
 
       let torrent = engine.add_torrent(source).await.unwrap();
-      let export = engine.export().await.unwrap();
+      let export = engine.snapshot().await.unwrap();
 
       assert_eq!(torrent.info_hash().to_hex(), BIG_BUCK_BUNNY_INFO_HASH);
       assert_eq!(export.torrents.len(), 1);

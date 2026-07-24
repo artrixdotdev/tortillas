@@ -3,7 +3,7 @@ use kameo::{actor::Spawn, mailbox, messages, prelude::ActorRef, supervision::Res
 use tokio::time::timeout;
 use tracing::{error, warn};
 
-use super::{ENGINE_SNAPSHOT_VERSION, EngineActor, EngineSnapshot, EngineStatus};
+use super::{ENGINE_SNAPSHOT_VERSION, EngineActor, EngineSnapshot};
 use crate::{
    dht::messages::commands::{RegisterTorrent, UnregisterTorrent},
    errors::EngineError,
@@ -137,6 +137,9 @@ pub(crate) mod commands {
       pub(crate) async fn create_torrent(
          &mut self, metainfo: Box<MetaInfo>, restore: Option<Box<TorrentSnapshot>>,
       ) -> Result<ActorRef<TorrentActor>, EngineError> {
+         if let Some(snapshot) = restore.as_ref() {
+            snapshot.validate()?;
+         }
          let info_hash = metainfo.info_hash().map_err(|e| {
             error!(error = %e, "Failed to unwrap info hash");
             EngineError::Other(e)
@@ -270,6 +273,51 @@ pub(crate) mod commands {
          Ok(torrent_ref)
       }
 
+      /// Atomically validates and restores an engine snapshot against the
+      /// authoritative actor state.
+      #[message]
+      pub(crate) async fn restore_engine(
+         &mut self, snapshot: EngineSnapshot,
+      ) -> Result<Vec<InfoHash>, EngineError> {
+         snapshot.validate()?;
+         if !self.torrents.is_empty() {
+            return Err(EngineError::InvalidSnapshot {
+               reason: "target engine already manages torrents".to_string(),
+            });
+         }
+
+         let mut restored = Vec::with_capacity(snapshot.torrents.len());
+         for torrent in snapshot.torrents {
+            let info_hash = torrent.info_hash;
+            let result = self
+               .create_torrent(Box::new(torrent.metainfo.clone()), Some(Box::new(torrent)))
+               .await;
+            match result {
+               Ok(_) => restored.push(info_hash),
+               Err(error) => {
+                  for info_hash in restored.drain(..) {
+                     match self.remove_torrent(info_hash).await {
+                        Ok(torrent) => {
+                           torrent.kill();
+                           self.frontend.torrent_removed(info_hash);
+                        }
+                        Err(remove_error) => {
+                           warn!(
+                              error = %remove_error,
+                              %info_hash,
+                              "Failed to roll back restored torrent"
+                           );
+                        }
+                     }
+                  }
+                  return Err(error);
+               }
+            }
+         }
+
+         Ok(restored)
+      }
+
       /// Captures resumable state for every managed torrent.
       #[message]
       pub(crate) async fn snapshot_engine(&self) -> Result<EngineSnapshot, EngineError> {
@@ -294,8 +342,6 @@ pub(crate) mod commands {
 
          Ok(EngineSnapshot {
             version: ENGINE_SNAPSHOT_VERSION,
-            status: EngineStatus::Running,
-            torrent_count: u64::try_from(torrents.len()).unwrap_or(u64::MAX),
             torrents,
          })
       }

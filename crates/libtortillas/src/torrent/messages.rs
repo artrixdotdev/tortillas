@@ -10,8 +10,7 @@ use sha1::{Digest, Sha1};
 use tracing::{info, instrument, trace, warn};
 
 use super::{
-   AnnounceFrom, BLOCK_SIZE, PieceStorageStrategy, TORRENT_SNAPSHOT_VERSION, TorrentActor,
-   TorrentSnapshot, TorrentState,
+   AnnounceFrom, BLOCK_SIZE, PieceStorageStrategy, TorrentActor, TorrentSnapshot, TorrentState,
    actor::{PieceManagerProxy, ReadyHookSender},
    util,
 };
@@ -255,90 +254,16 @@ pub(crate) mod commands {
          &mut self, snapshot: TorrentSnapshot,
       ) -> SnapshotRestoreResult {
          let result = (|| -> Result<bool, TorrentError> {
-            if snapshot.version != TORRENT_SNAPSHOT_VERSION {
-               return Err(TorrentError::InvalidSnapshot {
-                  reason: format!(
-                     "unsupported version {}; expected {}",
-                     snapshot.version, TORRENT_SNAPSHOT_VERSION
-                  ),
-               });
-            }
+            snapshot.validate()?;
             if snapshot.info_hash != self.info_hash() {
                return Err(TorrentError::InvalidSnapshot {
                   reason: "info hash does not match metainfo".to_string(),
                });
             }
 
-            if let Some(info) = &snapshot.info_dict {
-               let restored_hash = info.hash().map_err(|error| TorrentError::InvalidSnapshot {
-                  reason: format!("failed to hash restored info dictionary: {error}"),
-               })?;
-               if restored_hash != snapshot.info_hash {
-                  return Err(TorrentError::InvalidSnapshot {
-                     reason: "restored info dictionary does not match the info hash".to_string(),
-                  });
-               }
-            }
-
-            let info = snapshot.info_dict.as_ref().or_else(|| self.info_dict());
-            let piece_count = info.map_or(0, Info::piece_count);
-            if snapshot.bitfield.len() != piece_count {
-               return Err(TorrentError::InvalidSnapshot {
-                  reason: format!(
-                     "bitfield has {} pieces but metadata declares {piece_count}",
-                     snapshot.bitfield.len()
-                  ),
-               });
-            }
-            for entry in &snapshot.block_map {
-               let index = *entry.key();
-               if index >= piece_count {
-                  return Err(TorrentError::InvalidSnapshot {
-                     reason: "partial piece index is outside the metadata piece range".to_string(),
-                  });
-               }
-               if snapshot.bitfield[index] {
-                  return Err(TorrentError::InvalidSnapshot {
-                     reason: "completed piece also contains partial block state".to_string(),
-                  });
-               }
-
-               let Some(info) = info else {
-                  return Err(TorrentError::InvalidSnapshot {
-                     reason: "partial block state requires resolved metadata".to_string(),
-                  });
-               };
-               let piece_length = usize::try_from(info.piece_length).map_err(|_| {
-                  TorrentError::InvalidSnapshot {
-                     reason: "piece length cannot be represented on this platform".to_string(),
-                  }
-               })?;
-               if piece_length == 0 {
-                  return Err(TorrentError::InvalidSnapshot {
-                     reason: "piece length must be greater than zero".to_string(),
-                  });
-               }
-               let last_piece = piece_count.saturating_sub(1);
-               let concrete_length = if index == last_piece {
-                  let remainder = info.total_length() % piece_length;
-                  if remainder == 0 {
-                     piece_length
-                  } else {
-                     remainder
-                  }
-               } else {
-                  piece_length
-               };
-               let expected_blocks = concrete_length.div_ceil(BLOCK_SIZE);
-               if entry.value().len() != expected_blocks {
-                  return Err(TorrentError::InvalidSnapshot {
-                     reason: format!(
-                        "partial piece {index} has {} blocks; expected {expected_blocks}",
-                        entry.value().len()
-                     ),
-                  });
-               }
-            }
+            let piece_count = snapshot
+               .resolved_info()
+               .map_or(0, crate::metainfo::Info::piece_count);
 
             let resume = snapshot.state.is_transfer_active();
             let restored_state = match snapshot.state {
