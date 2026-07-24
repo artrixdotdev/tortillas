@@ -621,6 +621,27 @@ mod tests {
    }
 
    #[tokio::test]
+   async fn buffered_torrent_events_do_not_retain_the_frontend_hub() {
+      let engine = Engine::builder()
+         .settings(deterministic_settings())
+         .autostart(false)
+         .build();
+      let hub = engine.frontend.downgrade();
+      let torrent = engine
+         .add_torrent(TorrentSource::torrent_file_path(torrent_fixture_path(
+            BIG_BUCK_BUNNY_TORRENT_FILE,
+         )))
+         .await
+         .unwrap();
+
+      engine.shutdown().await.unwrap();
+      drop(torrent);
+      drop(engine);
+
+      assert!(hub.upgrade().is_none());
+   }
+
+   #[tokio::test]
    async fn engine_when_dht_returns_peer_then_connects_torrent_swarm() {
       let info_hash = crate::hashes::InfoHash::from_hex(BIG_BUCK_BUNNY_INFO_HASH).unwrap();
       let dht_id = NodeId::from(info_hash);

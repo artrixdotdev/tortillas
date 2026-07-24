@@ -88,6 +88,21 @@ async fn engine_listener_receives_live_torrent_lifecycle() {
    assert_eq!(torrent_listener.view().unwrap().state, TorrentState::Paused);
 
    engine.remove_torrent(torrent.info_hash()).await.unwrap();
+   let removed = timeout(Duration::from_secs(2), async {
+      loop {
+         let event = torrent_listener.recv().await.unwrap();
+         if matches!(event.kind, TorrentEventKind::Removed) {
+            break event;
+         }
+      }
+   })
+   .await
+   .unwrap();
+   assert!(removed.sequence > paused.sequence);
+   assert!(matches!(
+      torrent_listener.recv().await,
+      Err(EventStreamError::Closed)
+   ));
    assert!(torrent_listener.view().is_none());
    assert_eq!(engine_listener.view().torrent_count, 0);
 
@@ -114,7 +129,10 @@ async fn live_listener_closes_when_its_publisher_is_dropped() {
 
    drop(publisher);
 
-   assert_eq!(listener.recv().await, Err(EventStreamError::Closed));
+   assert!(matches!(
+      listener.recv().await,
+      Err(EventStreamError::Closed)
+   ));
    assert_eq!(listener.view(), 0);
 }
 
@@ -127,7 +145,10 @@ async fn closed_live_publisher_rejects_late_updates() {
    assert!(!publisher.update(2, "late"));
 
    assert_eq!(listener.recv().await.unwrap().kind, "closed");
-   assert_eq!(listener.recv().await, Err(EventStreamError::Closed));
+   assert!(matches!(
+      listener.recv().await,
+      Err(EventStreamError::Closed)
+   ));
    assert_eq!(listener.view(), 1);
 }
 
@@ -200,6 +221,10 @@ async fn engine_listener_receives_graceful_shutdown() {
    };
    assert_eq!(view.status, EngineStatus::Stopped);
    assert_eq!(listener.view().status, EngineStatus::Stopped);
+   assert!(matches!(
+      listener.recv().await,
+      Err(EventStreamError::Closed)
+   ));
 }
 
 #[tokio::test]

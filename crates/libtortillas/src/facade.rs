@@ -30,16 +30,8 @@ pub use crate::{
    torrent::TorrentSnapshot,
 };
 
-/// Stable handle used by frontends to manage the torrent engine.
-///
-/// This is currently backed by [`Engine`]. Frontends should import the alias
-/// from the facade so future internal handle changes do not require reaching
-/// into the engine module directly.
+/// Facade-level name for the public [`Engine`] handle.
 pub type EngineHandle = Engine;
 
-/// Stable handle used by frontends to inspect and control one torrent.
-///
-/// This is currently backed by [`Torrent`]. Frontends should import the alias
-/// from the facade so future internal handle changes do not require reaching
-/// into the torrent module directly.
+/// Facade-level name for the public [`Torrent`] handle.
 pub type TorrentHandle = Torrent;

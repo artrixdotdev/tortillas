@@ -21,11 +21,13 @@ typed `TorrentEvent` values for that torrent only, and exposes its latest
 Peers and trackers returned by `Torrent::peers()` and `Torrent::trackers()`
 follow the same pattern. Each `PeerHandle` and `TrackerHandle` owns an
 independent typed listener and current view, including a terminal disconnected
-or stopped view. Engine events carry the public `Torrent`, `PeerHandle`, and
-`TrackerHandle` values so a frontend can descend into more detailed streams
-only when needed.
+or stopped view. Engine listeners receive
+`CoreEventKind::Torrent { torrent, event }`, where `event` uses the same
+`TorrentEventKind` vocabulary as the torrent listener. Peer and tracker
+changes carry their public handles inside that nested event, so a frontend can
+descend into more detailed streams only when needed.
 
-The event channel retains 256 events per listener by default. Slow listeners
+Each publisher's shared event channel retains 256 events by default. Slow listeners
 receive `EventStreamError::Lagged` instead of causing unbounded memory growth.
 After lagging, redraw from `listener.view()` and continue calling `recv()`.
 Sequence numbers are monotonic within each publisher.
@@ -76,6 +78,10 @@ For example, an application can serialize `engine.snapshot().await?` with
 and call `engine.restore(snapshot).await?` in a later process. Use
 `engine.restore_torrent(snapshot).await?` for one torrent. Snapshot schemas are
 versioned so incompatible data returns a typed error.
+
+Engine restore is validated and applied as one engine-actor operation. The
+target must be empty when that operation begins, and a failed multi-torrent
+restore removes everything created by that operation.
 
 Snapshots retain metadata, lifecycle intent, storage paths and strategy,
 verified pieces, and partial blocks. Downloaded bytes remain in the referenced

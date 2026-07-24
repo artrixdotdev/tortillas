@@ -176,7 +176,7 @@ pub(crate) mod commands {
                sufficient_peers: restoring.then_some(usize::MAX),
                base_path,
                settings: self.settings.clone(),
-               frontend: self.frontend.clone(),
+               frontend: self.frontend.weak(),
             },
          )
          .restart_policy(RestartPolicy::Transient)

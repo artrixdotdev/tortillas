@@ -24,11 +24,16 @@ Domain types such as torrent state, storage strategy, exported snapshots, tracke
 
 ## Frontend Boundary
 
-`Engine` and `Torrent` own the stable application boundary. Typed commands are
-routed through their `send` methods, while `listener` combines a bounded event
-subscription with current `EngineView` or `TorrentView` state. The shared
-frontend publisher is independent from tracing and is propagated through the
-engine, torrent, peer, and tracker actor hierarchy.
+`Engine` and `Torrent` own the stable application boundary. Their direct
+methods are the only public command API, while `listener` combines a bounded
+event subscription with current `EngineView` or `TorrentView` state. A shared
+frontend hub coordinates the engine, torrent, peer, and tracker hierarchy.
+Public handles hold weak back-references to that hub, and each scope has an
+irreversible terminal state so actor updates cannot resurrect removed objects.
+
+Engine events project the canonical `TorrentEventKind` hierarchy through
+`CoreEventKind::Torrent`; they do not duplicate every torrent, peer, and
+tracker event in a second vocabulary.
 
 Live views are intentionally distinct from `EngineSnapshot` and
 `TorrentSnapshot`. Views are display-oriented and continuously updated by

@@ -8,12 +8,12 @@ use crate::{
 
 /// A sequenced event emitted by a live publisher.
 ///
-/// Sequence numbers are engine-local and strictly increase for every event.
-/// A frontend can use them to preserve event order or detect a gap after
-/// reconnecting a consumer.
+/// Sequence numbers are local to one publisher and strictly increase for every
+/// event it emits. A frontend can use them to preserve scoped event order or
+/// detect a gap after reconnecting a consumer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sequenced<E> {
-   /// Engine-local sequence number for this event.
+   /// Publisher-local sequence number for this event.
    pub sequence: u64,
    /// The typed change represented by this event.
    pub kind: E,

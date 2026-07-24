@@ -21,7 +21,7 @@ use crate::{
    torrent::{Torrent, TorrentInner, TorrentState},
 };
 
-/// Number of discrete frontend events retained for each listener.
+/// Number of discrete frontend events retained by each live publisher.
 pub const DEFAULT_EVENT_CAPACITY: usize = 256;
 
 fn read_lock<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
@@ -260,10 +260,16 @@ pub(crate) struct FrontendHub {
    next_tracker_id: AtomicU64,
 }
 
-/// Cloneable owner of one frontend hub.
+#[derive(Debug, Clone)]
+enum HubReference {
+   Strong(Arc<FrontendHub>),
+   Weak(Weak<FrontendHub>),
+}
+
+/// Cloneable access to one frontend hub.
 #[derive(Debug, Clone)]
 pub(crate) struct FrontendPublisher {
-   hub: Arc<FrontendHub>,
+   hub: HubReference,
 }
 
 impl FrontendPublisher {
@@ -273,7 +279,7 @@ impl FrontendPublisher {
 
    fn with_event_capacity(event_capacity: usize) -> Self {
       Self {
-         hub: Arc::new(FrontendHub {
+         hub: HubReference::Strong(Arc::new(FrontendHub {
             live: LivePublisher::new(
                EngineView {
                   status: EngineStatus::Starting,
@@ -286,24 +292,44 @@ impl FrontendPublisher {
             peers: ScopeRegistry::new(),
             trackers: ScopeRegistry::new(),
             next_tracker_id: AtomicU64::new(1),
-         }),
+         })),
       }
    }
 
    pub(crate) fn from_hub(hub: Arc<FrontendHub>) -> Self {
-      Self { hub }
+      Self {
+         hub: HubReference::Strong(hub),
+      }
+   }
+
+   pub(crate) fn weak(&self) -> Self {
+      Self {
+         hub: HubReference::Weak(self.downgrade()),
+      }
    }
 
    pub(crate) fn downgrade(&self) -> Weak<FrontendHub> {
-      Arc::downgrade(&self.hub)
+      match &self.hub {
+         HubReference::Strong(hub) => Arc::downgrade(hub),
+         HubReference::Weak(hub) => hub.clone(),
+      }
+   }
+
+   fn hub(&self) -> Arc<FrontendHub> {
+      match &self.hub {
+         HubReference::Strong(hub) => Arc::clone(hub),
+         HubReference::Weak(hub) => hub
+            .upgrade()
+            .expect("frontend hub outlived by its actor hierarchy"),
+      }
    }
 
    pub(crate) fn subscribe(&self) -> EventSubscription {
-      self.hub.live.subscribe()
+      self.hub().live.subscribe()
    }
 
    pub(crate) fn view(&self) -> EngineView {
-      self.hub.live.view()
+      self.hub().live.view()
    }
 
    pub(crate) fn torrent_view(&self, torrent: InfoHash) -> Option<TorrentView> {
@@ -316,7 +342,7 @@ impl FrontendPublisher {
 
    pub(crate) fn torrent_handle(&self, torrent: InfoHash) -> Option<Torrent> {
       self
-         .hub
+         .hub()
          .torrents
          .get(&torrent)
          .map(|inner| Torrent { inner })
@@ -324,7 +350,7 @@ impl FrontendPublisher {
 
    pub(crate) fn peer_handles(&self, torrent: InfoHash) -> Vec<PeerHandle> {
       self
-         .hub
+         .hub()
          .peers
          .values()
          .into_iter()
@@ -335,7 +361,7 @@ impl FrontendPublisher {
 
    pub(crate) fn tracker_handles(&self, torrent: InfoHash) -> Vec<TrackerHandle> {
       self
-         .hub
+         .hub()
          .trackers
          .values()
          .into_iter()
@@ -345,14 +371,14 @@ impl FrontendPublisher {
    }
 
    pub(crate) fn engine_started(&self) {
-      self.hub.live.edit_and_publish(|view| {
+      self.hub().live.edit_and_publish(|view| {
          view.status = EngineStatus::Running;
          CoreEventKind::EngineStarted(view.clone())
       });
    }
 
    pub(crate) fn engine_stopping(&self) {
-      let _ = self.hub.live.edit_view(|view| {
+      let _ = self.hub().live.edit_view(|view| {
          view.status = EngineStatus::Stopping;
       });
    }
@@ -361,13 +387,13 @@ impl FrontendPublisher {
       let mut view = self.view();
       view.status = EngineStatus::Stopped;
       self
-         .hub
+         .hub()
          .live
          .close(view.clone(), CoreEventKind::Shutdown(view));
    }
 
    pub(crate) fn initialize_torrent(&self, torrent: TorrentView) {
-      let _ = self.hub.live.edit_view(|view| {
+      let _ = self.hub().live.edit_view(|view| {
          Self::replace_torrent_view(view, torrent);
       });
    }
@@ -375,11 +401,11 @@ impl FrontendPublisher {
    pub(crate) fn torrent_added(&self, torrent: Torrent) {
       let _routing = torrent.routing_lock();
       self
-         .hub
+         .hub()
          .torrents
          .insert(torrent.info_hash(), &torrent.inner);
       if let Some(view) = torrent.live_view() {
-         self.hub.live.edit_and_publish(|engine| {
+         self.hub().live.edit_and_publish(|engine| {
             Self::replace_torrent_view(engine, view);
             CoreEventKind::Torrent {
                torrent: torrent.clone(),
@@ -404,7 +430,7 @@ impl FrontendPublisher {
 
    pub(crate) fn peer(&self, scope: PeerScope, view: PeerView) -> PeerHandle {
       let peer = PeerHandle::new(scope, view, self.downgrade());
-      self.hub.peers.insert(scope, &peer.inner);
+      self.hub().peers.insert(scope, &peer.inner);
       peer
    }
 
@@ -413,7 +439,7 @@ impl FrontendPublisher {
    }
 
    pub(crate) fn peer_updated(&self, peer: &PeerHandle) {
-      if self.hub.peers.get(&peer.scope()).is_none() {
+      if self.hub().peers.get(&peer.scope()).is_none() {
          return;
       }
       if let Some(view) = self.torrent_view(peer.torrent()) {
@@ -422,7 +448,7 @@ impl FrontendPublisher {
    }
 
    pub(crate) fn peer_disconnected(&self, peer: &PeerHandle, torrent: Option<TorrentView>) {
-      if self.hub.peers.remove(&peer.scope()).is_none() {
+      if self.hub().peers.remove(&peer.scope()).is_none() {
          return;
       }
       if let Some(view) = torrent {
@@ -431,15 +457,15 @@ impl FrontendPublisher {
    }
 
    pub(crate) fn tracker(&self, torrent: InfoHash, view: TrackerView) -> TrackerHandle {
-      let id = TrackerId::new(self.hub.next_tracker_id.fetch_add(1, Ordering::Relaxed));
+      let id = TrackerId::new(self.hub().next_tracker_id.fetch_add(1, Ordering::Relaxed));
       let scope = TrackerScope { torrent, id };
       let tracker = TrackerHandle::new(scope, view, self.downgrade());
-      self.hub.trackers.insert(scope, &tracker.inner);
+      self.hub().trackers.insert(scope, &tracker.inner);
       tracker
    }
 
    pub(crate) fn tracker_event(&self, tracker: &TrackerHandle, event: TrackerEventKind) {
-      if self.hub.trackers.get(&tracker.scope()).is_none() {
+      if self.hub().trackers.get(&tracker.scope()).is_none() {
          return;
       }
       let torrent_event = match event {
@@ -469,7 +495,7 @@ impl FrontendPublisher {
       {
          self.publish_torrent(view, TorrentEventKind::Health(health));
       } else {
-         self.hub.live.publish(CoreEventKind::Health(health));
+         self.hub().live.publish(CoreEventKind::Health(health));
       }
    }
 
@@ -483,7 +509,7 @@ impl FrontendPublisher {
 
    pub(crate) fn torrent_removed(&self, info_hash: InfoHash) {
       let removed = self
-         .hub
+         .hub()
          .torrents
          .remove(&info_hash)
          .map(|inner| Torrent { inner });
@@ -495,7 +521,7 @@ impl FrontendPublisher {
       {
          peer.disconnected(None);
       }
-      self.hub.peers.retain(|scope| scope.torrent != info_hash);
+      self.hub().peers.retain(|scope| scope.torrent != info_hash);
 
       for tracker in self
          .tracker_handles(info_hash)
@@ -504,10 +530,13 @@ impl FrontendPublisher {
       {
          tracker.stopped();
       }
-      self.hub.trackers.retain(|scope| scope.torrent != info_hash);
+      self
+         .hub()
+         .trackers
+         .retain(|scope| scope.torrent != info_hash);
 
       let Some(torrent) = removed else {
-         let _ = self.hub.live.edit_view(|view| {
+         let _ = self.hub().live.edit_view(|view| {
             Self::remove_torrent_view(view, info_hash);
          });
          return;
@@ -515,7 +544,7 @@ impl FrontendPublisher {
 
       let _routing = torrent.routing_lock();
       if torrent.removed() {
-         self.hub.live.edit_and_publish(|view| {
+         self.hub().live.edit_and_publish(|view| {
             Self::remove_torrent_view(view, info_hash);
             CoreEventKind::Torrent {
                torrent: torrent.clone(),
@@ -533,7 +562,7 @@ impl FrontendPublisher {
       if !torrent.publish(view.clone(), event.clone()) {
          return;
       }
-      self.hub.live.edit_if_and_publish(
+      self.hub().live.edit_if_and_publish(
          |engine| {
             let Some(current) = engine
                .torrents
@@ -710,5 +739,33 @@ mod tests {
       assert_ne!(first.id(), second.id());
       assert_ne!(first, second);
       assert_eq!(frontend.tracker_handles(torrent).len(), 2);
+   }
+
+   #[tokio::test]
+   async fn stopped_tracker_rejects_late_announces() {
+      let frontend = FrontendPublisher::new();
+      let tracker = frontend.tracker(
+         InfoHash::from_bytes([3; 20]),
+         TrackerView {
+            endpoint: "https://tracker.example".to_string(),
+            status: super::super::TrackerStatus::Pending,
+            peers_returned: None,
+         },
+      );
+      let mut listener = tracker.listener();
+
+      tracker.stopped();
+      tracker.announce_succeeded(10);
+
+      assert_eq!(
+         listener.recv().await.unwrap().kind,
+         TrackerEventKind::Stopped
+      );
+      assert_eq!(
+         listener.recv().await,
+         Err(super::super::EventStreamError::Closed)
+      );
+      assert_eq!(listener.view().status, super::super::TrackerStatus::Stopped);
+      assert_eq!(listener.view().peers_returned, None);
    }
 }
