@@ -61,7 +61,7 @@ use self::commands::{CreateTorrent, RemoveTorrent, SnapshotEngine, StartAll};
 pub use self::snapshot::{EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
-   frontend::FrontendPublisher,
+   frontend::{EngineView, EventSubscription, FrontendPublisher},
    hashes::InfoHash,
    peer::PeerId,
    settings::Settings,
@@ -286,7 +286,11 @@ impl Engine {
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
 
-      Ok(Torrent::new(info_hash, torrent_ref))
+      Ok(Torrent::new_with_frontend(
+         info_hash,
+         torrent_ref,
+         self.frontend.clone(),
+      ))
       // We don't need to assign link or insert the ref here because its already
       // done by the engine actor
    }
@@ -342,6 +346,23 @@ impl Engine {
          .ask(SnapshotEngine)
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))
+   }
+
+   /// Subscribes to typed engine and torrent events as they happen.
+   ///
+   /// The returned stream is bounded. A lagging frontend can read
+   /// [`Self::live_view`] to rebuild its display state and then continue
+   /// receiving events.
+   #[must_use]
+   pub fn subscribe(&self) -> EventSubscription {
+      self.frontend.subscribe()
+   }
+
+   /// Returns the current display-oriented engine state maintained by the live
+   /// event publisher.
+   #[must_use]
+   pub fn live_view(&self) -> EngineView {
+      self.frontend.view()
    }
 }
 

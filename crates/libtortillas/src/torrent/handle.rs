@@ -12,7 +12,11 @@ use super::{
       SetSufficientPeers, SnapshotState,
    },
 };
-use crate::{hashes::InfoHash, pieces::PieceManager};
+use crate::{
+   frontend::{EventSubscription, FrontendPublisher, TorrentView},
+   hashes::InfoHash,
+   pieces::PieceManager,
+};
 
 /// A handle to a torrent managed by the engine.
 ///
@@ -20,22 +24,36 @@ use crate::{hashes::InfoHash, pieces::PieceManager};
 /// a torrent after it has been added to the [`Engine`](crate::engine::Engine).
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
-pub struct Torrent(InfoHash, ActorRef<TorrentActor>);
+pub struct Torrent {
+   info_hash: InfoHash,
+   actor: ActorRef<TorrentActor>,
+   frontend: FrontendPublisher,
+}
 
 impl Torrent {
    /// Creates a new [`Torrent`] handle from an [`InfoHash`] and a reference
    /// to its underlying [`TorrentActor`].
    pub(crate) fn new(info_hash: InfoHash, actor_ref: ActorRef<TorrentActor>) -> Self {
-      Torrent(info_hash, actor_ref)
+      Self::new_with_frontend(info_hash, actor_ref, FrontendPublisher::default())
+   }
+
+   pub(crate) fn new_with_frontend(
+      info_hash: InfoHash, actor: ActorRef<TorrentActor>, frontend: FrontendPublisher,
+   ) -> Self {
+      Self {
+         info_hash,
+         actor,
+         frontend,
+      }
    }
 
    pub(crate) fn actor(&self) -> &ActorRef<TorrentActor> {
-      &self.1
+      &self.actor
    }
 
    /// Returns the [`InfoHash`] that uniquely identifies this torrent.
    pub fn info_hash(&self) -> InfoHash {
-      self.0
+      self.info_hash
    }
 
    /// Alias for [`Self::info_hash`].
@@ -138,5 +156,19 @@ impl Torrent {
       hook_rx.await?;
 
       Ok(())
+   }
+
+   /// Subscribes to live events for this torrent only.
+   #[must_use]
+   pub fn subscribe(&self) -> EventSubscription {
+      self.frontend.subscribe_torrent(self.info_hash)
+   }
+
+   /// Returns the latest display-oriented state maintained for this torrent.
+   ///
+   /// This returns `None` after the torrent has been removed from its engine.
+   #[must_use]
+   pub fn live_view(&self) -> Option<TorrentView> {
+      self.frontend.torrent_view(self.info_hash)
    }
 }
