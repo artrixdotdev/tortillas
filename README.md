@@ -101,6 +101,11 @@ thread because `spawn_blocking` tasks cannot be aborted once they start. The
 library does not currently support swapping in a different async runtime, HTTP
 client, clock, listener, or storage executor.
 
+Frontends should use the live listeners and typed command API rather than
+polling persistence snapshots. See the
+[frontend integration guide](docs/frontend-integration.md) and the
+[`live_frontend` example](crates/libtortillas/examples/live_frontend.rs).
+
 ## 🤝 Contributing
 
 We welcome contributions! If you'd like to help improve `tortillas`, please check out our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and tips.

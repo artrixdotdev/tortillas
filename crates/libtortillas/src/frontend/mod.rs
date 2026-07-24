@@ -1,8 +1,8 @@
 //! Live, frontend-facing API contracts.
 //!
-//! This module contains the typed events, commands, subscriptions, and
-//! snapshots intended for application and UI integrations. Frontends should
-//! prefer these types over actor messages and protocol internals.
+//! This module contains the typed events, commands, listeners, and live views
+//! intended for application and UI integrations. Frontends should prefer these
+//! types over actor messages, protocol internals, or snapshot polling.
 
 mod command;
 mod event;
