@@ -739,7 +739,7 @@ mod tests {
       .await
       .unwrap();
       assert_eq!(peer.torrent(), info_hash);
-      assert!(peer.live_view().connected);
+      assert!(peer.live_view().address.is_some());
       let _peer_listener = peer.listener();
 
       engine.shutdown().await.unwrap();
