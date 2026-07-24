@@ -33,6 +33,7 @@ pub struct Torrent {
 impl Torrent {
    /// Creates a new [`Torrent`] handle from an [`InfoHash`] and a reference
    /// to its underlying [`TorrentActor`].
+   #[cfg(test)]
    pub(crate) fn new(info_hash: InfoHash, actor_ref: ActorRef<TorrentActor>) -> Self {
       Self::new_with_frontend(info_hash, actor_ref, FrontendPublisher::default())
    }
