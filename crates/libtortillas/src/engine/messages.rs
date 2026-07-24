@@ -11,7 +11,7 @@ use crate::{
    metainfo::MetaInfo,
    peer::Peer,
    protocol::stream::{PeerStream, validate_handshake_protocol},
-   torrent::{self, TorrentActor, TorrentActorArgs, TorrentSnapshot, TorrentState},
+   torrent::{self, Torrent, TorrentActor, TorrentActorArgs, TorrentSnapshot, TorrentState},
 };
 
 pub(crate) mod commands {
@@ -240,6 +240,11 @@ pub(crate) mod commands {
                "failed to resume restored torrent: {error}"
             )));
          }
+         self.frontend.torrent_added(Torrent::new_with_frontend(
+            info_hash,
+            torrent_ref.clone(),
+            self.frontend.clone(),
+         ));
          Ok(torrent_ref)
       }
 

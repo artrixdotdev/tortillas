@@ -28,6 +28,7 @@ use crate::{
    errors::TorrentError,
    frontend::{
       FrontendHealthLevel, FrontendPublisher, TorrentProgress, TorrentTransfer, TorrentView,
+      TrackerScope, TrackerView,
    },
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
@@ -670,6 +671,19 @@ impl Actor for TorrentActor {
       let tracker_list = metainfo.announce_list();
       let mut trackers = HashMap::new();
       for tracker in tracker_list {
+         let endpoint = tracker.frontend_endpoint();
+         let tracker_frontend = frontend.tracker(
+            TrackerScope {
+               torrent: torrent_id,
+               endpoint: endpoint.clone(),
+            },
+            TrackerView {
+               endpoint,
+               active: true,
+               healthy: false,
+               peers_returned: None,
+            },
+         );
          let actor = TrackerActor::supervise(
             &us,
             TrackerActorArgs {
@@ -681,6 +695,7 @@ impl Actor for TorrentActor {
                supervisor: us.clone(),
                scheduler: scheduler.clone(),
                settings: settings.tracker.clone(),
+               frontend: tracker_frontend,
             },
          )
          .restart_policy(RestartPolicy::Transient)
@@ -732,7 +747,7 @@ impl Actor for TorrentActor {
          piece_manager: PieceManagerProxy::Default(default_manager),
          settings,
       };
-      actor.frontend.torrent_added(actor.live_view());
+      actor.frontend.initialize_torrent(actor.live_view());
 
       Ok(actor)
    }

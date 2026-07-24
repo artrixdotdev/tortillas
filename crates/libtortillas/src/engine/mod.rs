@@ -603,6 +603,7 @@ mod tests {
       },
       engine::{Engine, TorrentSource},
       errors::EngineError,
+      frontend::CoreEventKind,
       settings::{DhtSettings, Settings},
       testing::{
          BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_MAGNET, BIG_BUCK_BUNNY_TORRENT_FILE, LocalPeer,
@@ -741,6 +742,7 @@ mod tests {
          .autostart(false)
          .sufficient_peers(1)
          .build();
+      let mut listener = engine.listener();
       let magnet = format!("magnet:?xt=urn:btih:{BIG_BUCK_BUNNY_INFO_HASH}&dn=dht-test");
 
       engine
@@ -759,7 +761,22 @@ mod tests {
       .await
       .unwrap();
 
+      let peer = timeout(Duration::from_secs(2), async {
+         loop {
+            let event = listener.recv().await.unwrap();
+            if let CoreEventKind::PeerConnected { peer, .. } = event.kind {
+               break peer;
+            }
+         }
+      })
+      .await
+      .unwrap();
+      assert_eq!(peer.torrent(), info_hash);
+      assert!(peer.live_view().is_some());
+      let _peer_listener = peer.listener();
+
       engine.shutdown().await.unwrap();
+      assert!(peer.live_view().is_none());
       receive_task.abort();
       seed.kill();
    }

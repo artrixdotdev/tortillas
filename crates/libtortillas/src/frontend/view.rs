@@ -2,7 +2,7 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{engine::EngineStatus, hashes::InfoHash, torrent::TorrentState};
+use crate::{engine::EngineStatus, hashes::InfoHash, peer::Peer, torrent::TorrentState};
 
 /// Current live engine state maintained by a frontend listener.
 ///
@@ -61,6 +61,38 @@ pub struct PeerView {
    pub client: Option<String>,
    /// Whether this peer is currently connected.
    pub connected: bool,
+   pub peer_choking: bool,
+   pub peer_interested: bool,
+   pub client_choking: bool,
+   pub client_interested: bool,
+   pub available_pieces: u64,
+   pub download_rate_bytes_per_second: u64,
+   pub upload_rate_bytes_per_second: u64,
+   pub downloaded_bytes: u64,
+   pub uploaded_bytes: u64,
+}
+
+impl PeerView {
+   pub(crate) fn from_peer(peer: &Peer, connected: bool) -> Self {
+      Self {
+         address: Some(peer.socket_addr()),
+         client: peer.id.map(|id| id.client_name().to_string()),
+         connected,
+         peer_choking: peer.am_choked(),
+         peer_interested: peer.interested(),
+         client_choking: peer.choked(),
+         client_interested: peer.am_interested(),
+         available_pieces: u64::try_from(peer.pieces.count_ones()).unwrap_or(u64::MAX),
+         download_rate_bytes_per_second: u64::try_from(peer.download_rate())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(1024),
+         upload_rate_bytes_per_second: u64::try_from(peer.upload_rate())
+            .unwrap_or(u64::MAX)
+            .saturating_mul(1024),
+         downloaded_bytes: u64::try_from(peer.bytes_downloaded()).unwrap_or(u64::MAX),
+         uploaded_bytes: u64::try_from(peer.bytes_uploaded()).unwrap_or(u64::MAX),
+      }
+   }
 }
 
 /// Frontend-safe live tracker identity and latest announce outcome.
@@ -68,6 +100,8 @@ pub struct PeerView {
 pub struct TrackerView {
    /// Credential-free tracker endpoint label.
    pub endpoint: String,
+   /// Whether the tracker actor is running.
+   pub active: bool,
    /// Whether the latest announce succeeded.
    pub healthy: bool,
    /// Number of peers returned by the latest successful announce.

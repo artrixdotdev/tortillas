@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 
-use super::{EngineView, PeerView, TorrentProgress, TorrentView, TrackerView};
-use crate::{hashes::InfoHash, torrent::TorrentState};
+use super::{EngineView, PeerHandle, TorrentProgress, TrackerHandle};
+use crate::{
+   hashes::InfoHash,
+   torrent::{Torrent, TorrentState},
+};
 
 /// A sequenced event emitted by a live publisher.
 ///
@@ -22,21 +25,21 @@ pub type CoreEvent = Sequenced<CoreEventKind>;
 impl Sequenced<CoreEventKind> {
    /// Returns the torrent associated with this event, when applicable.
    #[must_use]
-   pub const fn torrent(&self) -> Option<InfoHash> {
+   pub fn torrent(&self) -> Option<InfoHash> {
       self.kind.torrent()
    }
 }
 
 /// Typed changes a frontend can react to without actor internals or polling.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum CoreEventKind {
    /// The engine finished starting and is ready for commands.
    EngineStarted(EngineView),
    /// A torrent was added to the engine.
-   TorrentAdded(TorrentView),
+   TorrentAdded(Torrent),
    /// A torrent was removed from the engine.
-   TorrentRemoved { torrent: InfoHash },
+   TorrentRemoved(Torrent),
    /// A torrent changed lifecycle state.
    TorrentStateChanged {
       torrent: InfoHash,
@@ -44,27 +47,34 @@ pub enum CoreEventKind {
       current: TorrentState,
    },
    /// Display-oriented torrent configuration or counts changed.
-   TorrentUpdated(TorrentView),
+   TorrentUpdated(Torrent),
    /// Metadata for a magnet torrent was resolved.
-   MetadataResolved(TorrentView),
+   MetadataResolved(Torrent),
    /// Download progress changed.
    ProgressChanged {
       torrent: InfoHash,
       progress: TorrentProgress,
    },
    /// A peer connection became available to a torrent.
-   PeerConnected { torrent: InfoHash, peer: PeerView },
+   PeerConnected { torrent: InfoHash, peer: PeerHandle },
+   /// A connected peer's protocol state or transfer metrics changed.
+   PeerUpdated { torrent: InfoHash, peer: PeerHandle },
    /// A peer connection was removed from a torrent.
-   PeerDisconnected { torrent: InfoHash, peer: PeerView },
+   PeerDisconnected { torrent: InfoHash, peer: PeerHandle },
    /// A tracker announce completed successfully.
    TrackerAnnounceSucceeded {
       torrent: InfoHash,
-      tracker: TrackerView,
+      tracker: TrackerHandle,
    },
    /// A tracker announce failed.
    TrackerAnnounceFailed {
       torrent: InfoHash,
-      tracker: TrackerView,
+      tracker: TrackerHandle,
+   },
+   /// A tracker actor stopped.
+   TrackerStopped {
+      torrent: InfoHash,
+      tracker: TrackerHandle,
    },
    /// A frontend-relevant health report was emitted.
    Health(FrontendHealth),
@@ -75,21 +85,43 @@ pub enum CoreEventKind {
 impl CoreEventKind {
    /// Returns the torrent associated with this event, when applicable.
    #[must_use]
-   pub const fn torrent(&self) -> Option<InfoHash> {
+   pub fn torrent(&self) -> Option<InfoHash> {
       match self {
          Self::EngineStarted(_) | Self::Shutdown(_) => None,
-         Self::TorrentAdded(view) | Self::TorrentUpdated(view) | Self::MetadataResolved(view) => {
-            Some(view.info_hash)
-         }
-         Self::TorrentRemoved { torrent }
-         | Self::TorrentStateChanged { torrent, .. }
+         Self::TorrentAdded(torrent)
+         | Self::TorrentUpdated(torrent)
+         | Self::TorrentRemoved(torrent)
+         | Self::MetadataResolved(torrent) => Some(torrent.info_hash()),
+         Self::TorrentStateChanged { torrent, .. }
          | Self::ProgressChanged { torrent, .. }
          | Self::PeerConnected { torrent, .. }
+         | Self::PeerUpdated { torrent, .. }
          | Self::PeerDisconnected { torrent, .. }
          | Self::TrackerAnnounceSucceeded { torrent, .. }
-         | Self::TrackerAnnounceFailed { torrent, .. } => Some(*torrent),
+         | Self::TrackerAnnounceFailed { torrent, .. }
+         | Self::TrackerStopped { torrent, .. } => Some(*torrent),
          Self::Health(health) => health.torrent,
       }
+   }
+
+   pub(crate) fn is_peer(&self, scope: super::handle::PeerScope) -> bool {
+      matches!(
+         self,
+         Self::PeerConnected { peer, .. }
+            | Self::PeerUpdated { peer, .. }
+            | Self::PeerDisconnected { peer, .. }
+            if peer.scope() == scope
+      )
+   }
+
+   pub(crate) fn is_tracker(&self, scope: &super::handle::TrackerScope) -> bool {
+      matches!(
+         self,
+         Self::TrackerAnnounceSucceeded { tracker, .. }
+            | Self::TrackerAnnounceFailed { tracker, .. }
+            | Self::TrackerStopped { tracker, .. }
+            if tracker.scope() == scope
+      )
    }
 }
 

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf};
 
 use kameo::actor::ActorRef;
 use tokio::sync::oneshot;
@@ -13,7 +13,10 @@ use super::{
 };
 use crate::{
    errors::TorrentError,
-   frontend::{EventSubscription, FrontendPublisher, TorrentCommand, TorrentListener, TorrentView},
+   frontend::{
+      EventSubscription, FrontendPublisher, PeerHandle, TorrentCommand, TorrentListener,
+      TorrentView, TrackerHandle,
+   },
    hashes::InfoHash,
    pieces::PieceManager,
 };
@@ -23,11 +26,20 @@ use crate::{
 /// This struct acts as the primary interface for controlling and configuring
 /// a torrent after it has been added to the [`Engine`](crate::engine::Engine).
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Torrent {
    info_hash: InfoHash,
    actor: ActorRef<TorrentActor>,
    frontend: FrontendPublisher,
+}
+
+impl fmt::Debug for Torrent {
+   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+      formatter
+         .debug_struct("Torrent")
+         .field("info_hash", &self.info_hash)
+         .finish_non_exhaustive()
+   }
 }
 
 impl Torrent {
@@ -223,6 +235,18 @@ impl Torrent {
    #[must_use]
    pub fn live_view(&self) -> Option<TorrentView> {
       self.frontend.torrent_view(self.info_hash)
+   }
+
+   /// Returns handles for this torrent's currently connected peers.
+   #[must_use]
+   pub fn peers(&self) -> Vec<PeerHandle> {
+      self.frontend.peer_handles(self.info_hash)
+   }
+
+   /// Returns handles for this torrent's configured trackers.
+   #[must_use]
+   pub fn trackers(&self) -> Vec<TrackerHandle> {
+      self.frontend.tracker_handles(self.info_hash)
    }
 
    fn communication_error(error: impl std::fmt::Display) -> TorrentError {

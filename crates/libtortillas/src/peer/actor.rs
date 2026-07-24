@@ -22,6 +22,7 @@ use tracing::{Span, debug, info, instrument, trace, warn};
 
 use crate::{
    errors::PeerActorError,
+   frontend::{PeerHandle, PeerView},
    hashes::InfoHash,
    peer::{Peer, PeerId},
    protocol::{stream::PeerRecv, *},
@@ -70,6 +71,7 @@ pub(crate) struct PeerActor {
    pending_message_requests: VecDeque<PeerMessages>,
    last_rate_sample: RateSample,
    settings: PeerSettings,
+   frontend: PeerHandle,
 }
 
 impl PeerActor {
@@ -356,6 +358,7 @@ impl PeerActor {
          bytes_downloaded,
          bytes_uploaded,
       };
+      self.frontend.update(PeerView::from_peer(&self.peer, true));
 
       Some(PeerStats {
          id,
@@ -376,13 +379,14 @@ impl Actor for PeerActor {
       ActorRef<TorrentActor>,
       InfoHash,
       PeerSettings,
+      PeerHandle,
    );
    type Error = PeerActorError;
 
    /// At this point, the peer has already been handshaked with. No other
    /// messages have been sent or received from the peer.
    async fn on_start(args: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (peer, mut stream, supervisor, info_hash, settings) = args;
+      let (peer, mut stream, supervisor, info_hash, settings, frontend) = args;
 
       info!(peer_id = %peer.id.unwrap(),  peer_addr = %stream, torrent_id = %info_hash, "Peer connected");
       let bitfield = match supervisor.ask(torrent::commands::GetBitfield).await {
@@ -414,12 +418,14 @@ impl Actor for PeerActor {
          pending_block_requests: HashSet::new(),
          pending_message_requests: VecDeque::with_capacity(settings.pending_message_capacity),
          settings,
+         frontend,
       })
    }
 
    async fn on_stop(
       &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
    ) -> Result<(), Self::Error> {
+      self.frontend.disconnected();
       if let Some(peer_id) = self.peer.id
          && let Err(err) = self
             .supervisor
@@ -671,6 +677,7 @@ impl Message<PeerMessages> for PeerActor {
             warn!("Received unexpected handshake from peer");
          }
       }
+      self.frontend.update(PeerView::from_peer(&self.peer, true));
    }
 }
 

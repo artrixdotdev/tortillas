@@ -1,9 +1,13 @@
 use std::time::Duration;
 
+use futures::StreamExt;
 use libtortillas::{
    engine::EngineStatus,
    errors::EngineError,
-   frontend::{CoreCommand, CoreCommandResult, CoreEventKind, EventStreamError, TorrentCommand},
+   frontend::{
+      CoreCommand, CoreCommandResult, CoreEventKind, EventStreamError, LivePublisher,
+      TorrentCommand,
+   },
    prelude::{Engine, Settings, TorrentSource, TorrentState},
 };
 use tokio::time::{sleep, timeout};
@@ -35,7 +39,7 @@ async fn engine_listener_receives_live_torrent_lifecycle() {
 
    let added = timeout(Duration::from_secs(2), async {
       loop {
-         let event = engine_listener.recv().await.unwrap();
+         let event = engine_listener.next().await.unwrap().unwrap();
          if matches!(event.kind, CoreEventKind::TorrentAdded(_)) {
             break event;
          }
@@ -44,6 +48,11 @@ async fn engine_listener_receives_live_torrent_lifecycle() {
    .await
    .unwrap();
    assert_eq!(added.torrent(), Some(torrent.info_hash()));
+   let CoreEventKind::TorrentAdded(added_torrent) = added.kind else {
+      unreachable!();
+   };
+   assert_eq!(added_torrent.info_hash(), torrent.info_hash());
+   assert_eq!(added_torrent.live_view(), torrent.live_view());
    assert_eq!(engine_listener.view().torrent_count, 1);
 
    let mut torrent_listener = torrent.listener();
@@ -83,6 +92,46 @@ async fn engine_listener_receives_live_torrent_lifecycle() {
    assert_eq!(engine_listener.view().torrent_count, 0);
 
    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn generic_live_publisher_implements_async_stream() {
+   let publisher = LivePublisher::new(0_u8, 4);
+   let mut listener = publisher.listener();
+
+   publisher.update(1, "changed");
+
+   let event = listener.next().await.unwrap().unwrap();
+   assert_eq!(event.sequence, 1);
+   assert_eq!(event.kind, "changed");
+   assert_eq!(listener.view(), 1);
+}
+
+#[tokio::test]
+async fn tracker_handle_exposes_its_own_live_listener() {
+   let engine = deterministic_engine();
+   let torrent = engine
+      .add_torrent(TorrentSource::torrent_file_bytes(BIG_BUCK_BUNNY))
+      .await
+      .unwrap();
+   let tracker = torrent.trackers().into_iter().next().unwrap();
+   let mut listener = tracker.listener();
+
+   assert!(tracker.live_view().is_some_and(|view| view.active));
+   engine.shutdown().await.unwrap();
+
+   let stopped = timeout(Duration::from_secs(2), async {
+      loop {
+         let event = listener.recv().await.unwrap();
+         if matches!(event.kind, CoreEventKind::TrackerStopped { .. }) {
+            break event;
+         }
+      }
+   })
+   .await
+   .unwrap();
+   assert_eq!(stopped.torrent(), Some(torrent.info_hash()));
+   assert!(listener.view().is_none());
 }
 
 #[tokio::test]
@@ -168,7 +217,7 @@ async fn lagging_listener_recovers_from_current_live_view() {
 }
 
 #[tokio::test]
-async fn live_views_and_events_are_serde_compatible() {
+async fn live_views_are_serde_compatible() {
    let engine = deterministic_engine();
    let mut listener = engine.listener();
    let _ = engine
@@ -177,20 +226,16 @@ async fn live_views_and_events_are_serde_compatible() {
       })
       .await
       .unwrap();
-   let added = timeout(Duration::from_secs(2), async {
+   timeout(Duration::from_secs(2), async {
       loop {
          let event = listener.recv().await.unwrap();
          if matches!(event.kind, CoreEventKind::TorrentAdded(_)) {
-            break event;
+            break;
          }
       }
    })
    .await
    .unwrap();
-
-   let encoded_event = serde_json::to_string(&added).unwrap();
-   let decoded_event = serde_json::from_str(&encoded_event).unwrap();
-   assert_eq!(added, decoded_event);
 
    let view = listener.view();
    let encoded_view = serde_json::to_string(&view).unwrap();

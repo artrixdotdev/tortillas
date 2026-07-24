@@ -17,7 +17,6 @@ use super::{
 };
 use crate::{
    errors::TorrentError,
-   frontend::{PeerView, TrackerView},
    hashes::InfoHash,
    metainfo::Info,
    peer::{Peer, PeerId, commands::HaveInfoDict},
@@ -39,32 +38,9 @@ pub(crate) mod events {
       #[instrument(skip(self, peers, from), fields(torrent_id = %self.info_hash(), announce_from = from.kind()))]
       pub(crate) fn announce(&mut self, peers: Vec<Peer>, from: AnnounceFrom) {
          trace!(peer_count = peers.len(), "Received announce message");
-         if let AnnounceFrom::Tracker(tracker) = &from {
-            self.frontend.tracker_announce_succeeded(
-               self.live_view(),
-               TrackerView {
-                  endpoint: tracker.frontend_endpoint(),
-                  healthy: true,
-                  peers_returned: Some(u64::try_from(peers.len()).unwrap_or(u64::MAX)),
-               },
-            );
-         }
          for peer in peers {
             self.append_peer(peer, None);
          }
-      }
-
-      /// Reports a failed tracker announce to live frontend listeners.
-      #[message(derive(Debug))]
-      pub(crate) fn tracker_announce_failed(&mut self, tracker: Tracker) {
-         self.frontend.tracker_announce_failed(
-            self.live_view(),
-            TrackerView {
-               endpoint: tracker.frontend_endpoint(),
-               healthy: false,
-               peers_returned: None,
-            },
-         );
       }
 
       /// Sent after an incoming peer initializes a handshake.
@@ -182,14 +158,7 @@ pub(crate) mod commands {
          if let Some(actor) = self.peers.get(&id) {
             actor.kill();
             self.peers.remove(&id);
-            self.frontend.peer_disconnected(
-               self.live_view(),
-               PeerView {
-                  address: None,
-                  client: Some(id.client_name().to_string()),
-                  connected: false,
-               },
-            );
+            self.frontend.update_torrent(self.live_view());
          } else {
             warn!("Received kill peer message for unknown peer");
          }

@@ -22,9 +22,10 @@ pub use crate::{
    engine::{EngineSnapshot, EngineStatus, TorrentSource},
    frontend::{
       CoreCommand, CoreCommandResult, CoreEvent, CoreEventKind, DEFAULT_EVENT_CAPACITY,
-      EngineListener, EngineView, EventStreamError, EventSubscription, FrontendHealth,
-      FrontendHealthLevel, PeerView, TorrentCommand, TorrentListener, TorrentProgress,
-      TorrentTransfer, TorrentView, TrackerView,
+      EngineListener, EngineView, EventListener, EventStreamError, EventSubscription,
+      FrontendHealth, FrontendHealthLevel, LivePublisher, PeerHandle, PeerListener, PeerView,
+      Sequenced, TorrentCommand, TorrentListener, TorrentProgress, TorrentTransfer, TorrentView,
+      TrackerHandle, TrackerListener, TrackerView,
    },
    torrent::TorrentSnapshot,
 };

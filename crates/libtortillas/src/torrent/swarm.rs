@@ -10,7 +10,7 @@ use tracing::{debug, instrument, trace, warn};
 
 use super::TorrentActor;
 use crate::{
-   frontend::PeerView,
+   frontend::{PeerScope, PeerView},
    peer::{Peer, PeerActor, PeerId},
    protocol::{
       messages::{Handshake, PeerMessages},
@@ -105,25 +105,35 @@ impl TorrentActor {
       let info_hash = self.info_hash();
       let peer_settings = self.settings.peer.clone();
       let peer_mailbox_size = self.settings.torrent.peer_mailbox_size;
-      let peer_view = PeerView {
-         address: Some(peer.socket_addr()),
-         client: Some(id.client_name().to_string()),
-         connected: true,
-      };
-
       if self.peers.contains_key(&id) {
          return;
       }
 
+      let peer_frontend = self.frontend.peer_connected(
+         self.live_view(),
+         PeerScope {
+            torrent: info_hash,
+            peer: id,
+         },
+         PeerView::from_peer(&peer, true),
+      );
+
       let peer_actor = PeerActor::spawn_with_mailbox(
-         (peer, stream, actor_ref, info_hash, peer_settings),
+         (
+            peer,
+            stream,
+            actor_ref,
+            info_hash,
+            peer_settings,
+            peer_frontend,
+         ),
          match peer_mailbox_size {
             0 => mailbox::unbounded(),
             size => mailbox::bounded(size),
          },
       );
       self.peers.insert(id, peer_actor);
-      self.frontend.peer_connected(self.live_view(), peer_view);
+      self.frontend.update_torrent(self.live_view());
    }
 
    #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]
@@ -164,14 +174,7 @@ impl TorrentActor {
       }
       for id in dead_peers {
          self.peers.remove(&id);
-         self.frontend.peer_disconnected(
-            self.live_view(),
-            PeerView {
-               address: None,
-               client: Some(id.client_name().to_string()),
-               connected: false,
-            },
-         );
+         self.frontend.update_torrent(self.live_view());
       }
    }
 
