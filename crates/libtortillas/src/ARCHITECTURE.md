@@ -22,6 +22,21 @@ TrackerActor ── discovered peers ──> TorrentActor
 Module facades should export stable public types while keeping actor internals private to the crate.
 Domain types such as torrent state, storage strategy, exported snapshots, tracker model types, and tracker stats live outside actor files so actors can focus on orchestration.
 
+## Frontend Boundary
+
+`Engine` and `Torrent` own the stable application boundary. Typed commands are
+routed through their `send` methods, while `listener` combines a bounded event
+subscription with current `EngineView` or `TorrentView` state. The shared
+frontend publisher is independent from tracing and is propagated through the
+engine, torrent, peer, and tracker actor hierarchy.
+
+Live views are intentionally distinct from `EngineSnapshot` and
+`TorrentSnapshot`. Views are display-oriented and continuously updated by
+events. Snapshots are versioned, Serde-compatible persistence records that
+capture metadata, storage configuration, lifecycle intent, and piece progress
+for later restoration. Frontends must not poll persistence snapshots to render
+live state.
+
 ## Runtime Boundary
 
 `libtortillas` is intentionally tied to Tokio. The crate uses Tokio for actor
@@ -64,7 +79,7 @@ back to the closest DHT nodes.
 
 ## Torrent Lifecycle
 
-`TorrentState` is the frontend-facing lifecycle contract exported in torrent snapshots.
+`TorrentState` is the frontend-facing lifecycle contract carried by live views and persistence snapshots.
 New torrents start as `Added` when metadata is already available, or `ResolvingMetadata` when a source such as a magnet URI still needs an info dict.
 Once metadata and the configured peer threshold are available, a torrent becomes `Ready` if autostart is disabled, or moves directly into `Downloading` when autostart/manual start begins transfer.
 

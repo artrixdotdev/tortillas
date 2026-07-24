@@ -141,11 +141,15 @@ impl Torrent {
          .map_err(Self::communication_error)
    }
 
-   /// Returns a stable, frontend-ready snapshot of this torrent.
+   /// Exports the current resumable torrent state for application persistence.
    pub async fn export(&self) -> Result<TorrentSnapshot, TorrentError> {
       self.snapshot().await
    }
 
+   /// Captures this torrent's metadata, storage configuration, and verified or
+   /// partial piece state in a Serde-compatible persistence snapshot.
+   ///
+   /// Use [`Self::listener`] for live frontend state.
    pub async fn snapshot(&self) -> Result<TorrentSnapshot, TorrentError> {
       self
          .actor()

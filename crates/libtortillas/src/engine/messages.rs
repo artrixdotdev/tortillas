@@ -243,7 +243,7 @@ pub(crate) mod commands {
          Ok(torrent_ref)
       }
 
-      /// Snapshots the current state of the engine for frontends.
+      /// Captures resumable state for every managed torrent.
       #[message]
       pub(crate) async fn snapshot_engine(&self) -> Result<EngineSnapshot, EngineError> {
          let futures = self

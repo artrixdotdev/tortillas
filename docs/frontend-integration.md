@@ -46,6 +46,17 @@ Snapshots are the persistence boundary for serializing resumable engine and
 torrent state in an application-selected Serde format. Frontends should never
 poll snapshots to refresh the UI.
 
+For example, an application can serialize `engine.snapshot().await?` with
+`serde_json`, `postcard`, `rmp-serde`, or another format, then deserialize it
+and call `engine.restore(snapshot).await?` in a later process. Use
+`engine.restore_torrent(snapshot).await?` for one torrent. Snapshot schemas are
+versioned so incompatible data returns a typed error.
+
+Snapshots retain metadata, lifecycle intent, storage paths and strategy,
+verified pieces, and partial blocks. Downloaded bytes remain in the referenced
+storage paths; the snapshot does not duplicate payload data into frontend
+state.
+
 ## Runtime and shutdown
 
 The library is Tokio-based. Keep the engine, torrent handles, command tasks,

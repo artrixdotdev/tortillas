@@ -461,12 +461,16 @@ impl Engine {
       Ok(())
    }
 
-   /// Exports the current engine state with frontend-ready torrent snapshots.
+   /// Exports the current resumable engine state for application persistence.
    pub async fn export(&self) -> Result<EngineSnapshot, EngineError> {
       self.snapshot().await
    }
 
-   /// Snapshots the current engine state with frontend-ready torrent views.
+   /// Captures all managed torrent sessions in a Serde-compatible persistence
+   /// snapshot.
+   ///
+   /// Use [`Self::listener`] for live frontend state. Snapshot frequency is an
+   /// application persistence decision, not a UI refresh mechanism.
    pub async fn snapshot(&self) -> Result<EngineSnapshot, EngineError> {
       self
          .actor()
