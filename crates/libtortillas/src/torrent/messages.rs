@@ -106,7 +106,7 @@ pub(crate) mod events {
             self.bitfield = BitVec::repeat(false, info.piece_count());
             self.info = Some(info);
             if self.state == TorrentState::ResolvingMetadata {
-               self.state = TorrentState::Added;
+               self.transition_state(TorrentState::Added);
             }
             self
                .broadcast_to_peers(HaveInfoDict {
@@ -218,7 +218,7 @@ pub(crate) mod commands {
          match state {
             TorrentState::Downloading | TorrentState::Seeding => self.start().await,
             TorrentState::Paused => self.stop_transfer().await,
-            state => self.state = state,
+            state => self.transition_state(state),
          }
       }
 

@@ -193,7 +193,7 @@ impl TorrentActor {
             trace!("Autostarting torrent");
             self.start().await;
          } else {
-            self.state = TorrentState::Ready;
+            self.transition_state(TorrentState::Ready);
             self.send_ready_hooks();
          }
       }
@@ -210,14 +210,14 @@ impl TorrentActor {
       self.send_ready_hooks();
 
       let Some(info) = self.info.clone() else {
-         self.state = TorrentState::ResolvingMetadata;
+         self.transition_state(TorrentState::ResolvingMetadata);
          warn!(id = %self.info_hash(), "Start requested before info dict is available; deferring");
          return;
       };
 
       // Pre-start the piece manager before transitioning state
       if let Err(err) = self.piece_manager.pre_start(info.clone()).await {
-         self.state = TorrentState::Failed;
+         self.transition_state(TorrentState::Failed);
          error!(?err, "Failed to pre-start piece manager; aborting start");
          return;
       }
@@ -225,10 +225,10 @@ impl TorrentActor {
       self.sync_tracker_announce_progress().await;
 
       if self.is_full() {
-         self.state = TorrentState::Seeding;
+         self.transition_state(TorrentState::Seeding);
          info!(id = %self.info_hash(), "Torrent is now seeding");
       } else {
-         self.state = TorrentState::Downloading;
+         self.transition_state(TorrentState::Downloading);
          info!(id = %self.info_hash(), "Torrent is now downloading");
          self.start_time = Some(Instant::now());
       };
@@ -267,7 +267,7 @@ impl TorrentActor {
       }
 
       let was_active = self.state.is_transfer_active();
-      self.state = TorrentState::Paused;
+      self.transition_state(TorrentState::Paused);
       self.start_time = None;
 
       if let Some(next_rechoke) = self.next_rechoke.take() {
@@ -545,6 +545,18 @@ impl TorrentActor {
       }
    }
 
+   pub(super) fn transition_state(&mut self, state: TorrentState) {
+      let previous = self.state;
+      if previous == state {
+         return;
+      }
+
+      self.state = state;
+      self
+         .frontend
+         .torrent_state_changed(previous, self.live_view());
+   }
+
    fn snapshot_u64(value: usize) -> u64 {
       u64::try_from(value).unwrap_or(u64::MAX)
    }
@@ -782,7 +794,7 @@ impl Actor for TorrentActor {
    async fn on_stop(
       &mut self, _: WeakActorRef<Self>, reason: ActorStopReason,
    ) -> Result<(), Self::Error> {
-      self.state = TorrentState::Stopping;
+      self.transition_state(TorrentState::Stopping);
       info!(reason = %reason, "Torrent stopped");
       for peer in self.peers.values() {
          peer.kill();
@@ -795,7 +807,7 @@ impl Actor for TorrentActor {
       }
       self.piece_store.kill();
       self.scheduler.kill();
-      self.state = TorrentState::Stopped;
+      self.transition_state(TorrentState::Stopped);
 
       Ok(())
    }

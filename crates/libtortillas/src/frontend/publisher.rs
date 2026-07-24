@@ -6,7 +6,7 @@ use std::sync::{
 use tokio::sync::broadcast;
 
 use super::{CoreEvent, CoreEventKind, EngineView, EventSubscription, TorrentView};
-use crate::{engine::EngineStatus, hashes::InfoHash};
+use crate::{engine::EngineStatus, hashes::InfoHash, torrent::TorrentState};
 
 /// Number of discrete frontend events retained for each listener.
 pub const DEFAULT_EVENT_CAPACITY: usize = 256;
@@ -86,6 +86,17 @@ impl FrontendPublisher {
 
    pub(crate) fn update_torrent(&self, torrent: TorrentView) {
       self.replace_torrent(torrent);
+   }
+
+   pub(crate) fn torrent_state_changed(&self, previous: TorrentState, torrent: TorrentView) {
+      let info_hash = torrent.info_hash;
+      let current = torrent.state;
+      self.replace_torrent(torrent);
+      self.publish(CoreEventKind::TorrentStateChanged {
+         torrent: info_hash,
+         previous,
+         current,
+      });
    }
 
    pub(crate) fn torrent_removed(&self, torrent: InfoHash) {

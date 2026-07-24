@@ -242,7 +242,7 @@ impl TorrentActor {
       self.sync_tracker_announce_progress().await;
 
       if self.piece_scheduler.next_piece() >= piece_count {
-         self.state = TorrentState::Seeding;
+         self.transition_state(TorrentState::Seeding);
          self.announce_tracker_event(Event::Completed).await;
          info!("Torrenting process completed, switching to seeding mode");
          self.rechoke_peers().await;
