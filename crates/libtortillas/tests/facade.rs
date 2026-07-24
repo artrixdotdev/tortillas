@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use libtortillas::{
    facade::{EngineSnapshot, TorrentSnapshot},
    hashes::InfoHash,
-   prelude::{CoreCommand, EngineHandle, TorrentSource},
+   prelude::{CoreCommand, EngineHandle, TorrentCommand, TorrentSource},
 };
 
 #[test]
@@ -28,20 +28,20 @@ fn facade_engine_handle_matches_existing_engine_type() {
 }
 
 #[test]
-fn command_variants_identify_torrents_by_info_hash() {
+fn engine_command_routes_the_shared_torrent_command_type() {
    let torrent = InfoHash::from_bytes([7; 20]);
-   let command = CoreCommand::StartTorrent { torrent };
+   let command = CoreCommand::Torrent {
+      torrent,
+      command: TorrentCommand::Pause,
+   };
 
-   assert_eq!(command, CoreCommand::StartTorrent { torrent });
-
-   let command = CoreCommand::PauseTorrent { torrent };
-   assert_eq!(command, CoreCommand::PauseTorrent { torrent });
-
-   let command = CoreCommand::ResumeTorrent { torrent };
-   assert_eq!(command, CoreCommand::ResumeTorrent { torrent });
-
-   let command = CoreCommand::StopTorrent { torrent };
-   assert_eq!(command, CoreCommand::StopTorrent { torrent });
+   assert_eq!(
+      command,
+      CoreCommand::Torrent {
+         torrent,
+         command: TorrentCommand::Pause,
+      }
+   );
 
    let command = CoreCommand::RemoveTorrent { torrent };
    assert_eq!(command, CoreCommand::RemoveTorrent { torrent });

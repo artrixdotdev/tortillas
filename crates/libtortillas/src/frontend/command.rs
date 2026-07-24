@@ -6,17 +6,19 @@ use crate::{engine::TorrentSource, hashes::InfoHash, torrent::Torrent};
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CoreCommand {
-   AddTorrent { source: TorrentSource },
+   AddTorrent {
+      source: TorrentSource,
+   },
    StartAll,
-   StartTorrent { torrent: InfoHash },
-   ResumeTorrent { torrent: InfoHash },
-   PauseTorrent { torrent: InfoHash },
-   StopTorrent { torrent: InfoHash },
-   RemoveTorrent { torrent: InfoHash },
+   /// Sends an existing torrent command through the engine by info hash.
+   Torrent {
+      torrent: InfoHash,
+      command: TorrentCommand,
+   },
+   RemoveTorrent {
+      torrent: InfoHash,
+   },
    Shutdown,
-   SetTorrentOutputPath { torrent: InfoHash, path: PathBuf },
-   SetAutostart { torrent: InfoHash, enabled: bool },
-   SetSufficientPeers { torrent: InfoHash, peers: usize },
 }
 
 /// Typed message accepted by [`Torrent::send`](crate::torrent::Torrent::send).
@@ -24,9 +26,7 @@ pub enum CoreCommand {
 #[non_exhaustive]
 pub enum TorrentCommand {
    Start,
-   Resume,
    Pause,
-   Stop,
    SetOutputPath(PathBuf),
    SetAutostart(bool),
    SetSufficientPeers(usize),

@@ -29,12 +29,15 @@ recovery.
 ## Commands
 
 `Engine::send(CoreCommand)` is the application-level message boundary. It can
-add, start, pause, resume, configure, remove, and stop torrents, or shut down
-the engine. Add commands return a `CoreCommandResult::TorrentAdded` handle.
+add and remove torrents, start all torrents, or shut down the engine. The
+`CoreCommand::Torrent` variant routes the same `TorrentCommand` type accepted
+by `Torrent::send`, so the engine and torrent APIs do not maintain parallel
+command lists. Add commands return a `CoreCommandResult::TorrentAdded` handle.
 
-`Torrent::send(TorrentCommand)` provides the same typed pattern when a
-frontend already owns a torrent handle. Both handles retain their existing
-explicit convenience methods.
+`Torrent::send(TorrentCommand)` starts, pauses, or configures a torrent when a
+frontend already owns its handle. Both handles retain their explicit
+convenience methods; `resume()` aliases `start()` and `stop()` aliases `pause()`
+because those pairs currently produce the same engine transition.
 
 ## Views and persistence snapshots
 

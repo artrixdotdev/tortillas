@@ -63,7 +63,7 @@ use crate::{
    errors::EngineError,
    frontend::{
       CoreCommand, CoreCommandResult, EngineListener, EngineView, EventSubscription,
-      FrontendPublisher, TorrentCommand,
+      FrontendPublisher,
    },
    hashes::InfoHash,
    peer::PeerId,
@@ -490,36 +490,8 @@ impl Engine {
             self.start_all().await?;
             Ok(CoreCommandResult::Applied)
          }
-         CoreCommand::StartTorrent { torrent } => {
-            self
-               .torrent(torrent)
-               .await?
-               .send(TorrentCommand::Start)
-               .await?;
-            Ok(CoreCommandResult::Applied)
-         }
-         CoreCommand::ResumeTorrent { torrent } => {
-            self
-               .torrent(torrent)
-               .await?
-               .send(TorrentCommand::Resume)
-               .await?;
-            Ok(CoreCommandResult::Applied)
-         }
-         CoreCommand::PauseTorrent { torrent } => {
-            self
-               .torrent(torrent)
-               .await?
-               .send(TorrentCommand::Pause)
-               .await?;
-            Ok(CoreCommandResult::Applied)
-         }
-         CoreCommand::StopTorrent { torrent } => {
-            self
-               .torrent(torrent)
-               .await?
-               .send(TorrentCommand::Stop)
-               .await?;
+         CoreCommand::Torrent { torrent, command } => {
+            self.torrent(torrent).await?.send(command).await?;
             Ok(CoreCommandResult::Applied)
          }
          CoreCommand::RemoveTorrent { torrent } => {
@@ -528,30 +500,6 @@ impl Engine {
          }
          CoreCommand::Shutdown => {
             self.shutdown().await?;
-            Ok(CoreCommandResult::Applied)
-         }
-         CoreCommand::SetTorrentOutputPath { torrent, path } => {
-            self
-               .torrent(torrent)
-               .await?
-               .send(TorrentCommand::SetOutputPath(path))
-               .await?;
-            Ok(CoreCommandResult::Applied)
-         }
-         CoreCommand::SetAutostart { torrent, enabled } => {
-            self
-               .torrent(torrent)
-               .await?
-               .send(TorrentCommand::SetAutostart(enabled))
-               .await?;
-            Ok(CoreCommandResult::Applied)
-         }
-         CoreCommand::SetSufficientPeers { torrent, peers } => {
-            self
-               .torrent(torrent)
-               .await?
-               .send(TorrentCommand::SetSufficientPeers(peers))
-               .await?;
             Ok(CoreCommandResult::Applied)
          }
       }

@@ -115,7 +115,10 @@ async fn engine_commands_return_typed_unknown_torrent_errors() {
    let unknown = libtortillas::hashes::InfoHash::from_bytes([42; 20]);
 
    let error = engine
-      .send(CoreCommand::PauseTorrent { torrent: unknown })
+      .send(CoreCommand::Torrent {
+         torrent: unknown,
+         command: TorrentCommand::Pause,
+      })
       .await
       .unwrap_err();
 
