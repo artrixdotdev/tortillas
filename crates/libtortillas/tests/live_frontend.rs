@@ -3,10 +3,10 @@ use std::time::Duration;
 use libtortillas::{
    engine::EngineStatus,
    errors::EngineError,
-   frontend::{CoreCommand, CoreCommandResult, CoreEventKind, TorrentCommand},
+   frontend::{CoreCommand, CoreCommandResult, CoreEventKind, EventStreamError, TorrentCommand},
    prelude::{Engine, Settings, TorrentSource, TorrentState},
 };
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 const BIG_BUCK_BUNNY: &[u8] = include_bytes!("torrents/big-buck-bunny.torrent");
 
@@ -120,5 +120,79 @@ async fn engine_commands_return_typed_unknown_torrent_errors() {
       .unwrap_err();
 
    assert!(matches!(error, EngineError::TorrentNotFound(torrent) if torrent == unknown));
+   engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn lagging_listener_recovers_from_current_live_view() {
+   let engine = deterministic_engine();
+   let result = engine
+      .send(CoreCommand::AddTorrent {
+         source: TorrentSource::torrent_file_bytes(BIG_BUCK_BUNNY),
+      })
+      .await
+      .unwrap();
+   let CoreCommandResult::TorrentAdded(torrent) = result else {
+      panic!("add command should return a torrent handle");
+   };
+   let mut listener = torrent.listener();
+
+   for peers in 1..=300 {
+      torrent
+         .send(TorrentCommand::SetSufficientPeers(peers))
+         .await
+         .unwrap();
+   }
+   timeout(Duration::from_secs(2), async {
+      loop {
+         if listener
+            .view()
+            .is_some_and(|view| view.sufficient_peers == 300)
+         {
+            break;
+         }
+         sleep(Duration::from_millis(5)).await;
+      }
+   })
+   .await
+   .unwrap();
+
+   let error = listener.recv().await.unwrap_err();
+   assert!(matches!(error, EventStreamError::Lagged(events) if events > 0));
+   assert_eq!(listener.view().unwrap().sufficient_peers, 300);
+
+   engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn live_views_and_events_are_serde_compatible() {
+   let engine = deterministic_engine();
+   let mut listener = engine.listener();
+   let _ = engine
+      .send(CoreCommand::AddTorrent {
+         source: TorrentSource::torrent_file_bytes(BIG_BUCK_BUNNY),
+      })
+      .await
+      .unwrap();
+   let added = timeout(Duration::from_secs(2), async {
+      loop {
+         let event = listener.recv().await.unwrap();
+         if matches!(event.kind, CoreEventKind::TorrentAdded(_)) {
+            break event;
+         }
+      }
+   })
+   .await
+   .unwrap();
+
+   let encoded_event = serde_json::to_string(&added).unwrap();
+   let decoded_event = serde_json::from_str(&encoded_event).unwrap();
+   assert_eq!(added, decoded_event);
+
+   let view = listener.view();
+   let encoded_view = serde_json::to_string(&view).unwrap();
+   let decoded_view = serde_json::from_str(&encoded_view).unwrap();
+   assert_eq!(view, decoded_view);
+
    engine.shutdown().await.unwrap();
 }
