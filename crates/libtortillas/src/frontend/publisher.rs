@@ -88,7 +88,8 @@ impl FrontendPublisher {
    }
 
    pub(crate) fn update_torrent(&self, torrent: TorrentView) {
-      self.replace_torrent(torrent);
+      self.replace_torrent(torrent.clone());
+      self.publish(CoreEventKind::TorrentUpdated(torrent));
    }
 
    pub(crate) fn metadata_resolved(&self, torrent: TorrentView) {

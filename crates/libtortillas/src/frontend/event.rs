@@ -40,6 +40,8 @@ pub enum CoreEventKind {
       previous: TorrentState,
       current: TorrentState,
    },
+   /// Display-oriented torrent configuration or counts changed.
+   TorrentUpdated(TorrentView),
    /// Metadata for a magnet torrent was resolved.
    MetadataResolved(TorrentView),
    /// Download progress changed.
@@ -73,9 +75,9 @@ impl CoreEventKind {
    pub const fn torrent(&self) -> Option<InfoHash> {
       match self {
          Self::EngineStarted(_) | Self::Shutdown(_) => None,
-         Self::TorrentAdded(snapshot) | Self::MetadataResolved(snapshot) => {
-            Some(snapshot.info_hash)
-         }
+         Self::TorrentAdded(snapshot)
+         | Self::TorrentUpdated(snapshot)
+         | Self::MetadataResolved(snapshot) => Some(snapshot.info_hash),
          Self::TorrentRemoved { torrent }
          | Self::TorrentStateChanged { torrent, .. }
          | Self::ProgressChanged { torrent, .. }

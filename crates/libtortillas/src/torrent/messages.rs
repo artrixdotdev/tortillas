@@ -197,6 +197,7 @@ pub(crate) mod commands {
          if let Some(actor) = self.trackers.get(&tracker) {
             actor.kill();
             self.trackers.remove(&tracker);
+            self.frontend.update_torrent(self.live_view());
          } else {
             warn!("Received kill tracker message for unknown tracker");
          }
@@ -212,6 +213,7 @@ pub(crate) mod commands {
             util::create_dir(dir).await.unwrap(); // Intended panic
          }
          self.piece_storage = strategy;
+         self.frontend.update_torrent(self.live_view());
       }
 
       /// Sets the current piece manager to a custom implementation.
@@ -230,6 +232,7 @@ pub(crate) mod commands {
          {
             warn!(?err, "Failed to pre-start custom piece manager");
          }
+         self.frontend.update_torrent(self.live_view());
       }
 
       /// Sets the output path, should only be used when the `FilePieceManager`
@@ -242,6 +245,7 @@ pub(crate) mod commands {
                warn!(path = ?path, "Cannot set output path when using a custom piece manager; ignoring.")
             }
          }
+         self.frontend.update_torrent(self.live_view());
       }
 
       /// Start the torrenting process & actually start downloading
@@ -261,6 +265,7 @@ pub(crate) mod commands {
          if !self.pending_start {
             self.autostart().await;
          }
+         self.frontend.update_torrent(self.live_view());
       }
 
       #[message]
@@ -269,6 +274,7 @@ pub(crate) mod commands {
          if !self.pending_start {
             self.autostart().await;
          }
+         self.frontend.update_torrent(self.live_view());
       }
 
       #[message(derive(Debug, Clone, Copy))]
