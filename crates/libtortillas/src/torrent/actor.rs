@@ -1511,6 +1511,7 @@ mod tests {
          settings: Settings::default(),
          frontend: frontend.clone(),
       });
+      actor_ref.ask(GetState).await.unwrap();
       assert_eq!(frontend.torrent_view(info_hash).unwrap().tracker_count, 1);
 
       let piece_count = info_dict.piece_count();
