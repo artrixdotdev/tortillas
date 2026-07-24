@@ -318,6 +318,7 @@ impl Engine {
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
       torrent.wait_for_shutdown().await;
+      self.frontend.torrent_removed(info_hash);
 
       Ok(())
    }

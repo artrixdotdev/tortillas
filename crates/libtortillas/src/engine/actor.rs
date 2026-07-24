@@ -270,6 +270,7 @@ impl Actor for EngineActor {
          }
          torrent.wait_for_shutdown().await;
          self.torrents.remove(&info_hash);
+         self.frontend.torrent_removed(info_hash);
       }
 
       if let Some(dht) = self.dht.take() {
