@@ -122,6 +122,8 @@ impl TorrentActor {
          self.request_blocks_from_peer(peer_id, 1).await;
          trace!(%peer_id, "Requested replacement block from peer");
       }
+
+      self.frontend.progress_changed(self.live_view());
    }
 
    pub(super) async fn request_blocks_from_peer(

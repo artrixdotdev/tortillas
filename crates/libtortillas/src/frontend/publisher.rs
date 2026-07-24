@@ -93,6 +93,16 @@ impl FrontendPublisher {
       self.publish(CoreEventKind::MetadataResolved(torrent));
    }
 
+   pub(crate) fn progress_changed(&self, torrent: TorrentView) {
+      let info_hash = torrent.info_hash;
+      let progress = torrent.progress.clone();
+      self.replace_torrent(torrent);
+      self.publish(CoreEventKind::ProgressChanged {
+         torrent: info_hash,
+         progress,
+      });
+   }
+
    pub(crate) fn torrent_state_changed(&self, previous: TorrentState, torrent: TorrentView) {
       let info_hash = torrent.info_hash;
       let current = torrent.state;
