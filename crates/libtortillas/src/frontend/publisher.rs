@@ -88,59 +88,66 @@ impl FrontendPublisher {
    }
 
    pub(crate) fn update_torrent(&self, torrent: TorrentView) {
-      self.replace_torrent(torrent.clone());
-      self.publish(CoreEventKind::TorrentUpdated(torrent));
+      if self.update_torrent_entry(torrent.clone()) {
+         self.publish(CoreEventKind::TorrentUpdated(torrent));
+      }
    }
 
    pub(crate) fn metadata_resolved(&self, torrent: TorrentView) {
-      self.replace_torrent(torrent.clone());
-      self.publish(CoreEventKind::MetadataResolved(torrent));
+      if self.update_torrent_entry(torrent.clone()) {
+         self.publish(CoreEventKind::MetadataResolved(torrent));
+      }
    }
 
    pub(crate) fn progress_changed(&self, torrent: TorrentView) {
       let info_hash = torrent.info_hash;
       let progress = torrent.progress.clone();
-      self.replace_torrent(torrent);
-      self.publish(CoreEventKind::ProgressChanged {
-         torrent: info_hash,
-         progress,
-      });
+      if self.update_torrent_entry(torrent) {
+         self.publish(CoreEventKind::ProgressChanged {
+            torrent: info_hash,
+            progress,
+         });
+      }
    }
 
    pub(crate) fn peer_connected(&self, torrent: TorrentView, peer: PeerView) {
       let info_hash = torrent.info_hash;
-      self.replace_torrent(torrent);
-      self.publish(CoreEventKind::PeerConnected {
-         torrent: info_hash,
-         peer,
-      });
+      if self.update_torrent_entry(torrent) {
+         self.publish(CoreEventKind::PeerConnected {
+            torrent: info_hash,
+            peer,
+         });
+      }
    }
 
    pub(crate) fn peer_disconnected(&self, torrent: TorrentView, peer: PeerView) {
       let info_hash = torrent.info_hash;
-      self.replace_torrent(torrent);
-      self.publish(CoreEventKind::PeerDisconnected {
-         torrent: info_hash,
-         peer,
-      });
+      if self.update_torrent_entry(torrent) {
+         self.publish(CoreEventKind::PeerDisconnected {
+            torrent: info_hash,
+            peer,
+         });
+      }
    }
 
    pub(crate) fn tracker_announce_succeeded(&self, torrent: TorrentView, tracker: TrackerView) {
       let info_hash = torrent.info_hash;
-      self.replace_torrent(torrent);
-      self.publish(CoreEventKind::TrackerAnnounceSucceeded {
-         torrent: info_hash,
-         tracker,
-      });
+      if self.update_torrent_entry(torrent) {
+         self.publish(CoreEventKind::TrackerAnnounceSucceeded {
+            torrent: info_hash,
+            tracker,
+         });
+      }
    }
 
    pub(crate) fn tracker_announce_failed(&self, torrent: TorrentView, tracker: TrackerView) {
       let info_hash = torrent.info_hash;
-      self.replace_torrent(torrent);
-      self.publish(CoreEventKind::TrackerAnnounceFailed {
-         torrent: info_hash,
-         tracker,
-      });
+      if self.update_torrent_entry(torrent) {
+         self.publish(CoreEventKind::TrackerAnnounceFailed {
+            torrent: info_hash,
+            tracker,
+         });
+      }
    }
 
    pub(crate) fn health(
@@ -156,12 +163,13 @@ impl FrontendPublisher {
    pub(crate) fn torrent_state_changed(&self, previous: TorrentState, torrent: TorrentView) {
       let info_hash = torrent.info_hash;
       let current = torrent.state;
-      self.replace_torrent(torrent);
-      self.publish(CoreEventKind::TorrentStateChanged {
-         torrent: info_hash,
-         previous,
-         current,
-      });
+      if self.update_torrent_entry(torrent) {
+         self.publish(CoreEventKind::TorrentStateChanged {
+            torrent: info_hash,
+            previous,
+            current,
+         });
+      }
    }
 
    pub(crate) fn torrent_removed(&self, torrent: InfoHash) {
@@ -199,6 +207,19 @@ impl FrontendPublisher {
          .torrents
          .sort_by(|left, right| left.info_hash.as_bytes().cmp(right.info_hash.as_bytes()));
       view.torrent_count = u64::try_from(view.torrents.len()).unwrap_or(u64::MAX);
+   }
+
+   fn update_torrent_entry(&self, torrent: TorrentView) -> bool {
+      let mut view = self.write_view();
+      let Some(current) = view
+         .torrents
+         .iter_mut()
+         .find(|candidate| candidate.info_hash == torrent.info_hash)
+      else {
+         return false;
+      };
+      *current = torrent;
+      true
    }
 
    fn read_view(&self) -> RwLockReadGuard<'_, EngineView> {
