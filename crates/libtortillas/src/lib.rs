@@ -48,6 +48,7 @@ pub(crate) mod dht;
 pub mod engine;
 pub mod errors;
 pub mod facade;
+pub mod frontend;
 pub mod hashes;
 pub mod metainfo;
 pub mod peer;

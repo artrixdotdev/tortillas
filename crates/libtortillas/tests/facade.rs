@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use libtortillas::{
-   facade::{EngineSnapshot, TorrentSnapshot, TrackerStatus},
+   facade::{EngineSnapshot, TorrentSnapshot},
    hashes::InfoHash,
    prelude::{CoreCommand, EngineHandle, TorrentSource},
 };
@@ -60,5 +60,4 @@ fn facade_reexports_canonical_snapshot_types() {
 
    accepts_engine_snapshot(engine_snapshot);
    accepts_torrent_snapshot(torrent_snapshot);
-   assert_eq!(TrackerStatus::Pending, TrackerStatus::Pending);
 }
