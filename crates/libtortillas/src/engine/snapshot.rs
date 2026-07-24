@@ -13,5 +13,12 @@ pub struct EngineSnapshot {
 /// Coarse engine status for frontend displays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EngineStatus {
+   /// Runtime resources are still being initialized.
+   Starting,
+   /// The engine is accepting commands and managing torrents.
    Running,
+   /// Graceful shutdown is in progress.
+   Stopping,
+   /// The engine and its managed torrents have stopped.
+   Stopped,
 }
