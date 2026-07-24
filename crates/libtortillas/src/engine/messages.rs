@@ -3,7 +3,7 @@ use kameo::{actor::Spawn, mailbox, messages, prelude::ActorRef, supervision::Res
 use tokio::time::timeout;
 use tracing::{error, warn};
 
-use super::{EngineActor, EngineSnapshot, EngineStatus};
+use super::{ENGINE_SNAPSHOT_VERSION, EngineActor, EngineSnapshot};
 use crate::{
    dht::messages::commands::{RegisterTorrent, UnregisterTorrent},
    errors::EngineError,
@@ -11,13 +11,30 @@ use crate::{
    metainfo::MetaInfo,
    peer::Peer,
    protocol::stream::{PeerStream, validate_handshake_protocol},
-   torrent::{self, TorrentActor, TorrentActorArgs, TorrentState},
+   torrent::{self, Torrent, TorrentActor, TorrentActorArgs, TorrentSnapshot, TorrentState},
 };
 
 pub(crate) mod commands {
    use anyhow::anyhow;
 
    use super::*;
+
+   impl EngineActor {
+      async fn discard_restored_torrent(
+         &mut self, info_hash: InfoHash, torrent: &ActorRef<TorrentActor>,
+      ) {
+         if self.torrents.remove(&info_hash).is_some()
+            && let Some(dht) = &self.dht
+            && let Err(error) = dht.tell(UnregisterTorrent { info_hash }).await
+         {
+            warn!(error = %error, %info_hash, "Failed to unregister rejected restored torrent from DHT");
+         }
+         if let Err(error) = torrent.stop_gracefully().await {
+            warn!(error = %error, %info_hash, "Failed to stop rejected restored torrent");
+         }
+         self.frontend.torrent_removed(info_hash);
+      }
+   }
 
    #[messages]
    impl EngineActor {
@@ -85,6 +102,18 @@ pub(crate) mod commands {
          }
       }
 
+      /// Returns a managed torrent actor for public handle construction.
+      #[message]
+      pub(crate) fn get_torrent(
+         &self, info_hash: InfoHash,
+      ) -> Result<ActorRef<TorrentActor>, EngineError> {
+         self
+            .torrents
+            .get(&info_hash)
+            .map(|torrent| torrent.clone())
+            .ok_or(EngineError::TorrentNotFound(info_hash))
+      }
+
       /// Removes a torrent actor from the engine and stops it gracefully.
       #[message]
       pub(crate) async fn remove_torrent(
@@ -106,8 +135,11 @@ pub(crate) mod commands {
       /// Creates a new [`Torrent`](crate::torrent::Torrent) actor.
       #[message]
       pub(crate) async fn create_torrent(
-         &mut self, metainfo: Box<MetaInfo>,
+         &mut self, metainfo: Box<MetaInfo>, restore: Option<Box<TorrentSnapshot>>,
       ) -> Result<ActorRef<TorrentActor>, EngineError> {
+         if let Some(snapshot) = restore.as_ref() {
+            snapshot.validate()?;
+         }
          let info_hash = metainfo.info_hash().map_err(|e| {
             error!(error = %e, "Failed to unwrap info hash");
             EngineError::Other(e)
@@ -122,6 +154,15 @@ pub(crate) mod commands {
             return Err(EngineError::TorrentAlreadyExists(info_hash));
          }
 
+         let restoring = restore.is_some();
+         let piece_storage = restore.as_ref().map_or_else(
+            || self.default_piece_storage_strategy.clone(),
+            |snapshot| snapshot.piece_storage.clone(),
+         );
+         let base_path = restore
+            .as_ref()
+            .and_then(|snapshot| snapshot.output_path.clone())
+            .or_else(|| self.default_base_path.clone());
          let torrent_ref = TorrentActor::supervise(
             &self.actor_ref,
             TorrentActorArgs {
@@ -130,11 +171,12 @@ pub(crate) mod commands {
                utp_server: self.utp_socket.clone(),
                tracker_server: self.udp_server.clone(),
                primary_addr: None,
-               piece_storage: self.default_piece_storage_strategy.clone(),
-               autostart: None,
-               sufficient_peers: None,
-               base_path: self.default_base_path.clone(),
+               piece_storage,
+               autostart: restoring.then_some(false),
+               sufficient_peers: restoring.then_some(usize::MAX),
+               base_path,
                settings: self.settings.clone(),
+               frontend: self.frontend.weak(),
             },
          )
          .restart_policy(RestartPolicy::Transient)
@@ -153,6 +195,31 @@ pub(crate) mod commands {
             size => mailbox::bounded(size),
          })
          .await;
+
+         let resume = if let Some(snapshot) = restore {
+            match torrent_ref
+               .ask(torrent::commands::RestoreSnapshot {
+                  snapshot: *snapshot,
+               })
+               .await
+            {
+               Ok(result) => match result.0 {
+                  Ok(resume) => resume,
+                  Err(error) => {
+                     self.discard_restored_torrent(info_hash, &torrent_ref).await;
+                     return Err(error.into());
+                  }
+               },
+               Err(error) => {
+                  self.discard_restored_torrent(info_hash, &torrent_ref).await;
+                  return Err(EngineError::Other(anyhow!(
+                     "failed to restore torrent snapshot: {error}"
+                  )));
+               }
+            }
+         } else {
+            false
+         };
 
          self.torrents.insert(info_hash, torrent_ref.clone());
          // BEP 27 requires private torrents to use only their declared trackers:
@@ -176,10 +243,82 @@ pub(crate) mod commands {
                }
             }
          }
+         if resume
+            && let Err(error) = torrent_ref
+               .ask(torrent::commands::SetState {
+                  state: TorrentState::Downloading,
+               })
+               .await
+         {
+            self.discard_restored_torrent(info_hash, &torrent_ref).await;
+            return Err(EngineError::Other(anyhow!(
+               "failed to resume restored torrent: {error}"
+            )));
+         }
+         let initial_view = match torrent_ref.ask(torrent::commands::GetLiveView).await {
+            Ok(view) => *view,
+            Err(error) => {
+               self.discard_restored_torrent(info_hash, &torrent_ref).await;
+               return Err(EngineError::Other(anyhow!(
+                  "failed to initialize torrent frontend: {error}"
+               )));
+            }
+         };
+         self.frontend.torrent_added(Torrent::new_with_frontend(
+            info_hash,
+            torrent_ref.clone(),
+            &self.frontend,
+            Some(initial_view),
+         ));
          Ok(torrent_ref)
       }
 
-      /// Snapshots the current state of the engine for frontends.
+      /// Atomically validates and restores an engine snapshot against the
+      /// authoritative actor state.
+      #[message]
+      pub(crate) async fn restore_engine(
+         &mut self, snapshot: EngineSnapshot,
+      ) -> Result<Vec<InfoHash>, EngineError> {
+         snapshot.validate()?;
+         if !self.torrents.is_empty() {
+            return Err(EngineError::InvalidSnapshot {
+               reason: "target engine already manages torrents".to_string(),
+            });
+         }
+
+         let mut restored = Vec::with_capacity(snapshot.torrents.len());
+         for torrent in snapshot.torrents {
+            let info_hash = torrent.info_hash;
+            let result = self
+               .create_torrent(Box::new(torrent.metainfo.clone()), Some(Box::new(torrent)))
+               .await;
+            match result {
+               Ok(_) => restored.push(info_hash),
+               Err(error) => {
+                  for info_hash in restored.drain(..) {
+                     match self.remove_torrent(info_hash).await {
+                        Ok(torrent) => {
+                           torrent.kill();
+                           self.frontend.torrent_removed(info_hash);
+                        }
+                        Err(remove_error) => {
+                           warn!(
+                              error = %remove_error,
+                              %info_hash,
+                              "Failed to roll back restored torrent"
+                           );
+                        }
+                     }
+                  }
+                  return Err(error);
+               }
+            }
+         }
+
+         Ok(restored)
+      }
+
+      /// Captures resumable state for every managed torrent.
       #[message]
       pub(crate) async fn snapshot_engine(&self) -> Result<EngineSnapshot, EngineError> {
          let futures = self
@@ -202,8 +341,7 @@ pub(crate) mod commands {
          let torrents = try_join_all(futures).await?;
 
          Ok(EngineSnapshot {
-            status: EngineStatus::Running,
-            torrent_count: u64::try_from(torrents.len()).unwrap_or(u64::MAX),
+            version: ENGINE_SNAPSHOT_VERSION,
             torrents,
          })
       }

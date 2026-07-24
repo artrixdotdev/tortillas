@@ -17,6 +17,7 @@ use super::commands;
 use crate::{
    dht::{DhtActor, DhtActorArgs},
    errors::EngineError,
+   frontend::{FrontendHealthLevel, FrontendPublisher},
    hashes::InfoHash,
    peer::PeerId,
    protocol::stream::PeerStream,
@@ -30,6 +31,8 @@ use crate::{
 /// also implements the [Actor] trait, and consequently behaves like an
 /// actor.
 pub struct EngineActor {
+   /// Live frontend event and view publisher shared with managed torrents.
+   pub(super) frontend: FrontendPublisher,
    /// Engine-wide DHT service shared by every torrent.
    pub(super) dht: Option<ActorRef<DhtActor>>,
    /// Listener to wait for incoming TCP connections from peers
@@ -102,6 +105,9 @@ pub struct EngineActorArgs {
    ///
    /// If not provided, torrents will use their own default paths.
    pub default_base_path: Option<PathBuf>,
+
+   /// Live frontend state shared by the engine handle and actor hierarchy.
+   pub(crate) frontend: FrontendPublisher,
 }
 
 impl Actor for EngineActor {
@@ -130,6 +136,7 @@ impl Actor for EngineActor {
          piece_storage_strategy,
          settings,
          default_base_path,
+         frontend,
       } = args;
 
       let tcp_addr = tcp_addr.unwrap_or(settings.engine.tcp_addr);
@@ -167,7 +174,10 @@ impl Actor for EngineActor {
          None
       };
 
+      frontend.engine_started();
+
       Ok(Self {
+         frontend,
          dht,
          tcp_socket,
          utp_socket,
@@ -186,6 +196,11 @@ impl Actor for EngineActor {
       &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
       error!(?id, ?reason, "Linked child died");
+      self.frontend.health(
+         None,
+         FrontendHealthLevel::Error,
+         "an engine service stopped unexpectedly",
+      );
 
       Ok(ControlFlow::Continue(()))
    }
@@ -215,6 +230,11 @@ impl Actor for EngineActor {
             }
             Err(err) => {
                error!("Failed to accept incoming peer: {}", err);
+               self.frontend.health(
+                  None,
+                  FrontendHealthLevel::Warning,
+                  "the TCP peer listener rejected an incoming connection",
+               );
                None
             }
          },
@@ -238,6 +258,11 @@ impl Actor for EngineActor {
             }
             Err(err) => {
                error!("Failed to accept incoming peer: {}", err);
+               self.frontend.health(
+                  None,
+                  FrontendHealthLevel::Warning,
+                  "the uTP peer listener rejected an incoming connection",
+               );
                None
             }
          },
@@ -247,6 +272,7 @@ impl Actor for EngineActor {
    async fn on_stop(
       &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
    ) -> Result<(), Self::Error> {
+      self.frontend.engine_stopping();
       let torrents = self
          .torrents
          .iter()
@@ -259,12 +285,15 @@ impl Actor for EngineActor {
          }
          torrent.wait_for_shutdown().await;
          self.torrents.remove(&info_hash);
+         self.frontend.torrent_removed(info_hash);
       }
 
       if let Some(dht) = self.dht.take() {
          dht.kill();
          dht.wait_for_shutdown().await;
       }
+
+      self.frontend.engine_stopped();
 
       Ok(())
    }

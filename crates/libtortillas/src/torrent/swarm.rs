@@ -10,6 +10,7 @@ use tracing::{debug, instrument, trace, warn};
 
 use super::TorrentActor;
 use crate::{
+   frontend::{PeerScope, PeerView},
    peer::{Peer, PeerActor, PeerId},
    protocol::{
       messages::{Handshake, PeerMessages},
@@ -104,16 +105,36 @@ impl TorrentActor {
       let info_hash = self.info_hash();
       let peer_settings = self.settings.peer.clone();
       let peer_mailbox_size = self.settings.torrent.peer_mailbox_size;
+      if self.peers.contains_key(&id) {
+         return;
+      }
 
-      self.peers.entry(id).or_insert_with(|| {
-         PeerActor::spawn_with_mailbox(
-            (peer, stream, actor_ref, info_hash, peer_settings),
-            match peer_mailbox_size {
-               0 => mailbox::unbounded(),
-               size => mailbox::bounded(size),
-            },
-         )
-      });
+      let peer_frontend = self.frontend.peer(
+         PeerScope {
+            torrent: info_hash,
+            peer: id,
+         },
+         PeerView::from_peer(&peer, true),
+      );
+
+      let peer_actor = PeerActor::spawn_with_mailbox(
+         (
+            peer,
+            stream,
+            actor_ref,
+            info_hash,
+            peer_settings,
+            peer_frontend.clone(),
+         ),
+         match peer_mailbox_size {
+            0 => mailbox::unbounded(),
+            size => mailbox::bounded(size),
+         },
+      );
+      self.peers.insert(id, peer_actor);
+      self
+         .frontend
+         .peer_connected(self.live_view(), &peer_frontend);
    }
 
    #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]
@@ -154,6 +175,7 @@ impl TorrentActor {
       }
       for id in dead_peers {
          self.peers.remove(&id);
+         self.frontend.update_torrent(self.live_view());
       }
    }
 

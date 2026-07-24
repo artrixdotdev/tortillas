@@ -8,6 +8,8 @@ use tokio::{
 use tracing::{debug, info, trace, warn};
 
 use super::{TorrentActor, util};
+#[cfg(test)]
+use crate::frontend::FrontendPublisher;
 use crate::{
    errors::TorrentError,
    peer::commands::{CancelPiece, Have, NeedPiece},
@@ -120,6 +122,8 @@ impl TorrentActor {
          self.request_blocks_from_peer(peer_id, 1).await;
          trace!(%peer_id, "Requested replacement block from peer");
       }
+
+      self.frontend.progress_changed(self.live_view());
    }
 
    pub(super) async fn request_blocks_from_peer(
@@ -240,7 +244,7 @@ impl TorrentActor {
       self.sync_tracker_announce_progress().await;
 
       if self.piece_scheduler.next_piece() >= piece_count {
-         self.state = TorrentState::Seeding;
+         self.transition_state(TorrentState::Seeding);
          self.announce_tracker_event(Event::Completed).await;
          info!("Torrenting process completed, switching to seeding mode");
          self.rechoke_peers().await;
@@ -463,9 +467,11 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(base_path.clone()),
          settings: Settings::default(),
+         frontend: FrontendPublisher::default(),
       });
 
       TorrentActor {
+         frontend: FrontendPublisher::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield: BitVec::<AtomicU8>::repeat(false, info.piece_count()),

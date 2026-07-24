@@ -117,6 +117,34 @@ impl Tracker {
          Tracker::Http(uri) | Tracker::Udp(uri) | Tracker::Websocket(uri) => uri.clone(),
       }
    }
+
+   /// Returns a credential-free endpoint label for frontend events.
+   pub(crate) fn frontend_endpoint(&self) -> String {
+      let uri = self.uri();
+      let Ok(url) = reqwest::Url::parse(&uri) else {
+         return self.scheme().to_string();
+      };
+      let Some(host) = url.host_str() else {
+         return self.scheme().to_string();
+      };
+      let host = if host.contains(':') {
+         format!("[{host}]")
+      } else {
+         host.to_string()
+      };
+      let port = url
+         .port()
+         .map_or_else(String::new, |port| format!(":{port}"));
+      format!("{}://{host}{port}/", url.scheme())
+   }
+
+   fn scheme(&self) -> &'static str {
+      match self {
+         Self::Http(_) => "http",
+         Self::Udp(_) => "udp",
+         Self::Websocket(_) => "websocket",
+      }
+   }
 }
 
 /// Trait for HTTP and UDP trackers.
@@ -255,5 +283,46 @@ fn tracker_from_uri(uri: String) -> Result<Tracker, String> {
       "udp" => Ok(Tracker::Udp(uri)),
       "ws" | "wss" => Ok(Tracker::Websocket(uri)),
       _ => Err(format!("unsupported tracker scheme: {scheme}")),
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   #[test]
+   fn frontend_endpoint_removes_tracker_credentials_and_paths() {
+      let tracker = Tracker::Http(
+         "https://alice:password@tracker.example/secret-passkey/announce?token=secret".to_string(),
+      );
+
+      let endpoint = tracker.frontend_endpoint();
+
+      assert_eq!(endpoint, "https://tracker.example/");
+      assert!(!endpoint.contains("alice"));
+      assert!(!endpoint.contains("password"));
+      assert!(!endpoint.contains("passkey"));
+      assert!(!endpoint.contains("token"));
+   }
+
+   #[test]
+   fn udp_frontend_endpoint_removes_tracker_credentials() {
+      let tracker = Tracker::Udp(
+         "udp://alice:password@tracker.example:6969/announce?token=secret".to_string(),
+      );
+
+      let endpoint = tracker.frontend_endpoint();
+
+      assert_eq!(endpoint, "udp://tracker.example:6969/");
+      assert!(!endpoint.contains("alice"));
+      assert!(!endpoint.contains("password"));
+      assert!(!endpoint.contains("token"));
+   }
+
+   #[test]
+   fn invalid_tracker_endpoint_falls_back_to_protocol_only() {
+      let tracker = Tracker::Udp("udp://[invalid".to_string());
+
+      assert_eq!(tracker.frontend_endpoint(), "udp");
    }
 }

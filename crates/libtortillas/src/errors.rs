@@ -64,6 +64,25 @@ pub enum EngineError {
    #[error("Torrent not found: {0}")]
    TorrentNotFound(InfoHash),
 
+   /// Serialized engine state is incompatible or internally inconsistent.
+   #[error("Invalid engine snapshot: {reason}")]
+   InvalidSnapshot { reason: String },
+
+   /// A managed torrent command failed.
+   #[error(transparent)]
+   Torrent(#[from] TorrentError),
+
+   /// Communication with an actor failed before its handler completed.
+   #[error("Actor communication failed during {operation}: {reason}")]
+   ActorCommunicationFailed {
+      operation: &'static str,
+      reason: String,
+   },
+
+   /// The actor owns a torrent that is missing its live public handle.
+   #[error("Torrent {info_hash} is missing its frontend handle")]
+   FrontendHandleMissing { info_hash: InfoHash },
+
    /// Any other engine-level error wrapped in [`anyhow::Error`]
    #[error(transparent)]
    Other(#[from] anyhow::Error),
@@ -277,6 +296,10 @@ pub enum TorrentError {
    #[error("Unsafe torrent output path: {path}")]
    UnsafeOutputPath { path: String },
 
+   /// Serialized torrent state is incompatible or internally inconsistent.
+   #[error("Invalid torrent snapshot: {reason}")]
+   InvalidSnapshot { reason: String },
+
    /// Bitfield operation failed
    #[error("Bitfield operation failed: {reason}")]
    BitfieldError { reason: String },
@@ -290,8 +313,11 @@ pub enum TorrentError {
    MissingInfoDict,
 
    /// Actor communication failed
-   #[error("Actor communication failed: {actor_type} - {reason}")]
-   ActorCommunicationFailed { actor_type: String, reason: String },
+   #[error("Actor communication failed during {operation}: {reason}")]
+   ActorCommunicationFailed {
+      operation: &'static str,
+      reason: String,
+   },
 
    /// IO error
    #[error(transparent)]

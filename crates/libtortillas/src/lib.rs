@@ -20,16 +20,15 @@
 //! Frontends should prefer [`facade`] or [`prelude`] imports. The facade names
 //! the stable concepts a TUI or other UI needs: [`facade::EngineHandle`],
 //! [`facade::TorrentHandle`], [`facade::TorrentSource`],
-//! [`facade::CoreCommand`], [`facade::CoreEvent`], and snapshot types for
-//! engine, torrent, peer, and tracker views.
+//! [`facade::CoreEvent`], and live engine, torrent,
+//! peer, and tracker views.
 //!
 //! ```no_run
-//! use libtortillas::prelude::{CoreCommand, EngineHandle, TorrentSource};
+//! use libtortillas::prelude::{EngineHandle, TorrentSource};
 //!
-//! let _engine = EngineHandle::default();
-//! let _command = CoreCommand::AddTorrent {
-//!    source: TorrentSource::magnet("magnet:?xt=urn:btih:..."),
-//! };
+//! let engine = EngineHandle::default();
+//! let source = TorrentSource::magnet("magnet:?xt=urn:btih:...");
+//! # let _ = (engine, source);
 //! ```
 //!
 //! # Advanced APIs
@@ -40,14 +39,15 @@
 //! depending on actor messages, raw peer streams, tracker clients, or storage
 //! internals when an equivalent facade type exists.
 //!
-//! Follow-up work will narrow the prelude and connect more commands, events,
-//! snapshots, and typed errors to the facade without requiring frontend callers
-//! to import implementation modules.
+//! Engine and torrent handles expose listeners for live UI updates. Persistence
+//! snapshots are intentionally separate and should not be polled for display
+//! changes.
 
 pub(crate) mod dht;
 pub mod engine;
 pub mod errors;
 pub mod facade;
+pub mod frontend;
 pub mod hashes;
 pub mod metainfo;
 pub mod peer;

@@ -6,10 +6,7 @@ use libtortillas::{
    settings::Settings,
 };
 use rand::random;
-use tokio::{
-   fs,
-   time::{sleep, timeout},
-};
+use tokio::{fs, time::timeout};
 
 const ARCH_LINUX_TORRENT: &str = "archlinux-2026.07.01-x86_64.iso.torrent";
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -44,14 +41,15 @@ async fn arch_linux_torrent_when_public_dht_is_available_then_downloads_data() {
       .add_torrent(TorrentSource::torrent_file_bytes(dht_only_torrent))
       .await
       .unwrap();
+   let mut listener = torrent.listener();
 
    let download = timeout(DOWNLOAD_TIMEOUT, async {
       loop {
-         let snapshot = torrent.snapshot().await.unwrap();
-         if snapshot.progress.downloaded_bytes > 0 {
-            return snapshot;
+         let view = listener.view().unwrap();
+         if view.progress.downloaded_bytes > 0 {
+            return view;
          }
-         sleep(POLL_INTERVAL).await;
+         timeout(POLL_INTERVAL, listener.recv()).await.ok();
       }
    })
    .await;
@@ -59,7 +57,7 @@ async fn arch_linux_torrent_when_public_dht_is_available_then_downloads_data() {
    engine.shutdown().await.unwrap();
    fs::remove_dir_all(&output_root).await.unwrap();
 
-   let snapshot = download.expect("Arch Linux did not download data through DHT in time");
-   assert!(snapshot.has_metadata);
-   assert!(snapshot.peer_count > 0);
+   let view = download.expect("Arch Linux did not download data through DHT in time");
+   assert!(view.has_metadata);
+   assert!(view.peer_count > 0);
 }

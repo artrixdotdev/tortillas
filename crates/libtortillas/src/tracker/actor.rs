@@ -19,6 +19,7 @@ use super::{
 };
 use crate::{
    errors::TrackerActorError,
+   frontend::TrackerHandle,
    peer::PeerId,
    settings::TrackerSettings,
    torrent::{self, TorrentActor},
@@ -33,6 +34,7 @@ pub(crate) struct TrackerActor {
    next_announce: Option<AbortHandle>,
    actor_ref: ActorRef<Self>,
    settings: TrackerSettings,
+   frontend: TrackerHandle,
 }
 
 #[derive(Clone)]
@@ -45,6 +47,7 @@ pub(crate) struct TrackerActorArgs {
    pub(crate) supervisor: ActorRef<TorrentActor>,
    pub(crate) scheduler: ActorRef<Scheduler>,
    pub(crate) settings: TrackerSettings,
+   pub(crate) frontend: TrackerHandle,
 }
 
 impl Actor for TrackerActor {
@@ -61,6 +64,7 @@ impl Actor for TrackerActor {
          supervisor,
          scheduler,
          settings,
+         frontend,
       } = state;
 
       let info_hash = supervisor
@@ -133,12 +137,14 @@ impl Actor for TrackerActor {
          next_announce: Some(next_announce),
          actor_ref,
          settings,
+         frontend,
       })
    }
 
    async fn on_stop(
       &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
    ) -> Result<(), Self::Error> {
+      self.frontend.stopped();
       if let Some(next_announce) = self.next_announce.take() {
          next_announce.abort();
       }
@@ -185,6 +191,9 @@ impl TrackerActor {
    pub(crate) async fn announce(&mut self) -> Option<TrackerStats> {
       match self.tracker.announce().await {
          Ok(peers) => {
+            self
+               .frontend
+               .announce_succeeded(u64::try_from(peers.len()).unwrap_or(u64::MAX));
             if let Err(e) = self
                .supervisor
                .tell(torrent::events::Announce {
@@ -196,7 +205,10 @@ impl TrackerActor {
                error!(error = %e, "Failed to send announce to supervisor");
             }
          }
-         Err(e) => error!(error = %e, "Announce request failed"),
+         Err(e) => {
+            error!(error = %e, "Announce request failed");
+            self.frontend.announce_failed();
+         }
       }
       self.schedule_next_announce().await;
       None

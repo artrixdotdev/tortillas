@@ -5,24 +5,28 @@ use std::{
 
 use bitvec::vec::BitVec;
 use bytes::Bytes;
-use kameo::messages;
+use kameo::{Reply, messages};
 use sha1::{Digest, Sha1};
 use tracing::{info, instrument, trace, warn};
 
 use super::{
-   AnnounceFrom, BLOCK_SIZE, PieceStorageStrategy, TorrentActor, TorrentExport, TorrentSnapshot,
-   TorrentState,
+   AnnounceFrom, BLOCK_SIZE, PieceStorageStrategy, TorrentActor, TorrentSnapshot, TorrentState,
    actor::{PieceManagerProxy, ReadyHookSender},
    util,
 };
 use crate::{
+   errors::TorrentError,
+   frontend::TorrentView,
    hashes::InfoHash,
    metainfo::Info,
    peer::{Peer, PeerId, commands::HaveInfoDict},
-   pieces::PieceManager,
+   pieces::{PieceManager, PieceScheduler},
    protocol::stream::PeerStream,
    tracker::Tracker,
 };
+
+#[derive(Debug, Reply)]
+pub(crate) struct SnapshotRestoreResult(pub(crate) Result<bool, TorrentError>);
 
 pub(crate) mod events {
    use super::*;
@@ -106,8 +110,9 @@ pub(crate) mod events {
             self.bitfield = BitVec::repeat(false, info.piece_count());
             self.info = Some(info);
             if self.state == TorrentState::ResolvingMetadata {
-               self.state = TorrentState::Added;
+               self.transition_state(TorrentState::Added);
             }
+            self.frontend.metadata_resolved(self.live_view());
             self
                .broadcast_to_peers(HaveInfoDict {
                   bitfield: Arc::new(self.bitfield.clone()),
@@ -147,15 +152,13 @@ pub(crate) mod commands {
    #[messages]
    impl TorrentActor {
       #[message]
-      pub(crate) fn kill_peer(&mut self, id: PeerId) {
+      pub(crate) fn kill_peer(&mut self, id: PeerId, frontend: crate::frontend::PeerHandle) {
          self.piece_scheduler.peer_disconnected(id);
          // Kill the actor quietly.
-         if let Some(actor) = self.peers.get(&id) {
+         if let Some(actor) = self.peers.remove(&id) {
             actor.kill();
-            self.peers.remove(&id);
-         } else {
-            warn!("Received kill peer message for unknown peer");
          }
+         frontend.disconnected(Some(self.live_view()));
       }
 
       #[message]
@@ -164,6 +167,7 @@ pub(crate) mod commands {
          if let Some(actor) = self.trackers.get(&tracker) {
             actor.kill();
             self.trackers.remove(&tracker);
+            self.frontend.update_torrent(self.live_view());
          } else {
             warn!("Received kill tracker message for unknown tracker");
          }
@@ -179,6 +183,7 @@ pub(crate) mod commands {
             util::create_dir(dir).await.unwrap(); // Intended panic
          }
          self.piece_storage = strategy;
+         self.frontend.update_torrent(self.live_view());
       }
 
       /// Sets the current piece manager to a custom implementation.
@@ -197,6 +202,7 @@ pub(crate) mod commands {
          {
             warn!(?err, "Failed to pre-start custom piece manager");
          }
+         self.frontend.update_torrent(self.live_view());
       }
 
       /// Sets the output path, should only be used when the `FilePieceManager`
@@ -209,6 +215,7 @@ pub(crate) mod commands {
                warn!(path = ?path, "Cannot set output path when using a custom piece manager; ignoring.")
             }
          }
+         self.frontend.update_torrent(self.live_view());
       }
 
       /// Start the torrenting process & actually start downloading
@@ -218,7 +225,7 @@ pub(crate) mod commands {
          match state {
             TorrentState::Downloading | TorrentState::Seeding => self.start().await,
             TorrentState::Paused => self.stop_transfer().await,
-            state => self.state = state,
+            state => self.transition_state(state),
          }
       }
 
@@ -228,6 +235,7 @@ pub(crate) mod commands {
          if !self.pending_start {
             self.autostart().await;
          }
+         self.frontend.update_torrent(self.live_view());
       }
 
       #[message]
@@ -236,6 +244,55 @@ pub(crate) mod commands {
          if !self.pending_start {
             self.autostart().await;
          }
+         self.frontend.update_torrent(self.live_view());
+      }
+
+      /// Restores persisted piece and lifecycle state before exposing a resumed
+      /// torrent to callers.
+      #[message]
+      pub(crate) fn restore_snapshot(
+         &mut self, snapshot: TorrentSnapshot,
+      ) -> SnapshotRestoreResult {
+         let result = (|| -> Result<bool, TorrentError> {
+            snapshot.validate()?;
+            if snapshot.info_hash != self.info_hash() {
+               return Err(TorrentError::InvalidSnapshot {
+                  reason: "info hash does not match metainfo".to_string(),
+               });
+            }
+
+            let piece_count = snapshot
+               .resolved_info()
+               .map_or(0, crate::metainfo::Info::piece_count);
+
+            let resume = snapshot.state.is_transfer_active();
+            let restored_state = match snapshot.state {
+               TorrentState::Downloading
+               | TorrentState::Seeding
+               | TorrentState::Stopping
+               | TorrentState::Stopped => TorrentState::Paused,
+               state => state,
+            };
+            let mut scheduler = PieceScheduler::new(piece_count);
+            for index in snapshot.bitfield.iter_ones() {
+               scheduler.mark_piece_complete(index);
+            }
+            for entry in &snapshot.block_map {
+               scheduler.restore_piece_blocks(*entry.key(), entry.value().clone());
+            }
+
+            self.info = snapshot.info_dict;
+            self.bitfield = snapshot.bitfield;
+            self.piece_scheduler = scheduler;
+            self.autostart = snapshot.auto_start;
+            self.sufficient_peers = snapshot.sufficient_peers;
+            self.transition_state(restored_state);
+            self.frontend.update_torrent(self.live_view());
+
+            Ok(resume)
+         })();
+
+         SnapshotRestoreResult(result)
       }
 
       #[message(derive(Debug, Clone, Copy))]
@@ -404,8 +461,8 @@ pub(crate) mod commands {
       }
 
       #[message]
-      pub(crate) fn export_state(&self) -> Box<TorrentExport> {
-         Box::new(self.export())
+      pub(crate) fn get_live_view(&self) -> Box<TorrentView> {
+         Box::new(self.live_view())
       }
 
       #[message]
