@@ -5,7 +5,7 @@ use std::sync::{
 
 use tokio::sync::broadcast;
 
-use super::{CoreEvent, CoreEventKind, EngineView, EventSubscription, TorrentView};
+use super::{CoreEvent, CoreEventKind, EngineView, EventSubscription, PeerView, TorrentView};
 use crate::{engine::EngineStatus, hashes::InfoHash, torrent::TorrentState};
 
 /// Number of discrete frontend events retained for each listener.
@@ -100,6 +100,24 @@ impl FrontendPublisher {
       self.publish(CoreEventKind::ProgressChanged {
          torrent: info_hash,
          progress,
+      });
+   }
+
+   pub(crate) fn peer_connected(&self, torrent: TorrentView, peer: PeerView) {
+      let info_hash = torrent.info_hash;
+      self.replace_torrent(torrent);
+      self.publish(CoreEventKind::PeerConnected {
+         torrent: info_hash,
+         peer,
+      });
+   }
+
+   pub(crate) fn peer_disconnected(&self, torrent: TorrentView, peer: PeerView) {
+      let info_hash = torrent.info_hash;
+      self.replace_torrent(torrent);
+      self.publish(CoreEventKind::PeerDisconnected {
+         torrent: info_hash,
+         peer,
       });
    }
 

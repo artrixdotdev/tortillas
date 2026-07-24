@@ -16,6 +16,7 @@ use super::{
    util,
 };
 use crate::{
+   frontend::PeerView,
    hashes::InfoHash,
    metainfo::Info,
    peer::{Peer, PeerId, commands::HaveInfoDict},
@@ -154,6 +155,14 @@ pub(crate) mod commands {
          if let Some(actor) = self.peers.get(&id) {
             actor.kill();
             self.peers.remove(&id);
+            self.frontend.peer_disconnected(
+               self.live_view(),
+               PeerView {
+                  address: None,
+                  client: Some(id.client_name().to_string()),
+                  connected: false,
+               },
+            );
          } else {
             warn!("Received kill peer message for unknown peer");
          }
