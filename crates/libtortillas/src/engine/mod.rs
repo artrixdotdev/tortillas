@@ -46,7 +46,7 @@ mod messages;
 mod snapshot;
 mod source;
 
-use std::{net::SocketAddr, path::PathBuf};
+use std::{collections::HashSet, net::SocketAddr, path::PathBuf};
 
 pub(crate) use actor::*;
 use bon;
@@ -347,6 +347,63 @@ impl Engine {
          torrent_ref,
          self.frontend.clone(),
       ))
+   }
+
+   /// Restores all torrent sessions from an engine persistence snapshot.
+   ///
+   /// The target engine must be empty. If any torrent fails to restore, this
+   /// method removes the torrents already restored by this call before
+   /// returning the error.
+   pub async fn restore(&self, snapshot: EngineSnapshot) -> Result<Vec<Torrent>, EngineError> {
+      if snapshot.version != ENGINE_SNAPSHOT_VERSION {
+         return Err(EngineError::InvalidSnapshot {
+            reason: format!(
+               "unsupported version {}; expected {}",
+               snapshot.version, ENGINE_SNAPSHOT_VERSION
+            ),
+         });
+      }
+      if snapshot.torrent_count != u64::try_from(snapshot.torrents.len()).unwrap_or(u64::MAX) {
+         return Err(EngineError::InvalidSnapshot {
+            reason: "torrent count does not match serialized torrent entries".to_string(),
+         });
+      }
+      if self.live_view().torrent_count != 0 {
+         return Err(EngineError::InvalidSnapshot {
+            reason: "target engine already manages torrents".to_string(),
+         });
+      }
+      let mut unique = HashSet::with_capacity(snapshot.torrents.len());
+      if snapshot
+         .torrents
+         .iter()
+         .any(|torrent| !unique.insert(torrent.info_hash))
+      {
+         return Err(EngineError::InvalidSnapshot {
+            reason: "snapshot contains duplicate torrent info hashes".to_string(),
+         });
+      }
+
+      let mut restored = Vec::with_capacity(snapshot.torrents.len());
+      for torrent_snapshot in snapshot.torrents {
+         match self.restore_torrent(torrent_snapshot).await {
+            Ok(torrent) => restored.push(torrent),
+            Err(error) => {
+               for torrent in &restored {
+                  if let Err(remove_error) = self.remove_torrent(torrent.info_hash()).await {
+                     tracing::warn!(
+                        error = %remove_error,
+                        torrent = %torrent.info_hash(),
+                        "Failed to roll back restored torrent"
+                     );
+                  }
+               }
+               return Err(error);
+            }
+         }
+      }
+
+      Ok(restored)
    }
    /// Starts all torrents managed by the engine.
    /// See [`Torrent::start`] for more information.

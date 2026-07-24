@@ -64,6 +64,10 @@ pub enum EngineError {
    #[error("Torrent not found: {0}")]
    TorrentNotFound(InfoHash),
 
+   /// Serialized engine state is incompatible or internally inconsistent.
+   #[error("Invalid engine snapshot: {reason}")]
+   InvalidSnapshot { reason: String },
+
    /// A managed torrent command failed.
    #[error(transparent)]
    Torrent(#[from] TorrentError),

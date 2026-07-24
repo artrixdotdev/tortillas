@@ -6,6 +6,7 @@ use libtortillas::{
 };
 
 const BIG_BUCK_BUNNY: &[u8] = include_bytes!("torrents/big-buck-bunny.torrent");
+const WIRED_CD: &[u8] = include_bytes!("torrents/wired-cd.torrent");
 
 fn deterministic_engine() -> Engine {
    let mut settings = Settings::default();
@@ -88,4 +89,52 @@ async fn torrent_snapshot_when_version_is_unknown_then_returns_typed_error() {
       EngineError::Torrent(TorrentError::InvalidSnapshot { .. })
    ));
    engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn engine_snapshot_when_serialized_then_restores_all_torrents() {
+   let engine = deterministic_engine();
+   let first = engine
+      .add_torrent(TorrentSource::torrent_file_bytes(BIG_BUCK_BUNNY))
+      .await
+      .unwrap();
+   let second = engine
+      .add_torrent(TorrentSource::torrent_file_bytes(WIRED_CD))
+      .await
+      .unwrap();
+   let expected_hashes = [first.info_hash(), second.info_hash()];
+   let snapshot_bytes = serde_json::to_vec(&engine.snapshot().await.unwrap()).unwrap();
+   engine.shutdown().await.unwrap();
+
+   let snapshot = serde_json::from_slice(&snapshot_bytes).unwrap();
+   let restored_engine = deterministic_engine();
+   let restored = restored_engine.restore(snapshot).await.unwrap();
+   let restored_hashes = restored
+      .iter()
+      .map(libtortillas::torrent::Torrent::info_hash)
+      .collect::<Vec<_>>();
+
+   assert_eq!(restored.len(), 2);
+   assert!(
+      expected_hashes
+         .iter()
+         .all(|hash| restored_hashes.contains(hash))
+   );
+   assert_eq!(restored_engine.live_view().torrent_count, 2);
+   restored_engine.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn engine_snapshot_when_version_is_unknown_then_restores_nothing() {
+   let source_engine = deterministic_engine();
+   let mut snapshot = source_engine.snapshot().await.unwrap();
+   source_engine.shutdown().await.unwrap();
+   snapshot.version += 1;
+   let target_engine = deterministic_engine();
+
+   let error = target_engine.restore(snapshot).await.unwrap_err();
+
+   assert!(matches!(error, EngineError::InvalidSnapshot { .. }));
+   assert_eq!(target_engine.live_view().torrent_count, 0);
+   target_engine.shutdown().await.unwrap();
 }
