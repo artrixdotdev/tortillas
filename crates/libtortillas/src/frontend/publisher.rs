@@ -6,7 +6,8 @@ use std::sync::{
 use tokio::sync::broadcast;
 
 use super::{
-   CoreEvent, CoreEventKind, EngineView, EventSubscription, PeerView, TorrentView, TrackerView,
+   CoreEvent, CoreEventKind, EngineView, EventSubscription, FrontendHealth, FrontendHealthLevel,
+   PeerView, TorrentView, TrackerView,
 };
 use crate::{engine::EngineStatus, hashes::InfoHash, torrent::TorrentState};
 
@@ -139,6 +140,16 @@ impl FrontendPublisher {
          torrent: info_hash,
          tracker,
       });
+   }
+
+   pub(crate) fn health(
+      &self, torrent: Option<InfoHash>, level: FrontendHealthLevel, message: impl Into<String>,
+   ) {
+      self.publish(CoreEventKind::Health(FrontendHealth {
+         torrent,
+         level,
+         message: message.into(),
+      }));
    }
 
    pub(crate) fn torrent_state_changed(&self, previous: TorrentState, torrent: TorrentView) {

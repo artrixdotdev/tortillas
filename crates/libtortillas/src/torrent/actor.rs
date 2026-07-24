@@ -26,7 +26,9 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use super::{choking::ChokingScheduler, util};
 use crate::{
    errors::TorrentError,
-   frontend::{FrontendPublisher, TorrentProgress, TorrentTransfer, TorrentView},
+   frontend::{
+      FrontendHealthLevel, FrontendPublisher, TorrentProgress, TorrentTransfer, TorrentView,
+   },
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
    peer::{PeerActor, PeerId, commands::SetChoked},
@@ -218,6 +220,11 @@ impl TorrentActor {
       // Pre-start the piece manager before transitioning state
       if let Err(err) = self.piece_manager.pre_start(info.clone()).await {
          self.transition_state(TorrentState::Failed);
+         self.frontend.health(
+            Some(self.info_hash()),
+            FrontendHealthLevel::Error,
+            "torrent storage could not be initialized",
+         );
          error!(?err, "Failed to pre-start piece manager; aborting start");
          return;
       }
@@ -817,6 +824,11 @@ impl Actor for TorrentActor {
       &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
       error!(?id, ?reason, "Linked child died");
+      self.frontend.health(
+         Some(self.info_hash()),
+         FrontendHealthLevel::Error,
+         "a torrent service stopped unexpectedly",
+      );
 
       Ok(ControlFlow::Continue(()))
    }

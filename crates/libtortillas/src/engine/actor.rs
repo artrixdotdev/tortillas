@@ -17,7 +17,7 @@ use super::commands;
 use crate::{
    dht::{DhtActor, DhtActorArgs},
    errors::EngineError,
-   frontend::FrontendPublisher,
+   frontend::{FrontendHealthLevel, FrontendPublisher},
    hashes::InfoHash,
    peer::PeerId,
    protocol::stream::PeerStream,
@@ -196,6 +196,11 @@ impl Actor for EngineActor {
       &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
       error!(?id, ?reason, "Linked child died");
+      self.frontend.health(
+         None,
+         FrontendHealthLevel::Error,
+         "an engine service stopped unexpectedly",
+      );
 
       Ok(ControlFlow::Continue(()))
    }
@@ -225,6 +230,11 @@ impl Actor for EngineActor {
             }
             Err(err) => {
                error!("Failed to accept incoming peer: {}", err);
+               self.frontend.health(
+                  None,
+                  FrontendHealthLevel::Warning,
+                  "the TCP peer listener rejected an incoming connection",
+               );
                None
             }
          },
@@ -248,6 +258,11 @@ impl Actor for EngineActor {
             }
             Err(err) => {
                error!("Failed to accept incoming peer: {}", err);
+               self.frontend.health(
+                  None,
+                  FrontendHealthLevel::Warning,
+                  "the uTP peer listener rejected an incoming connection",
+               );
                None
             }
          },
