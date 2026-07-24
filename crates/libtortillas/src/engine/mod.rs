@@ -61,7 +61,7 @@ use self::commands::{CreateTorrent, RemoveTorrent, SnapshotEngine, StartAll};
 pub use self::snapshot::{EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
-   frontend::{EngineView, EventSubscription, FrontendPublisher},
+   frontend::{EngineListener, EngineView, EventSubscription, FrontendPublisher},
    hashes::InfoHash,
    peer::PeerId,
    settings::Settings,
@@ -357,6 +357,13 @@ impl Engine {
    #[must_use]
    pub fn subscribe(&self) -> EventSubscription {
       self.frontend.subscribe()
+   }
+
+   /// Creates a live listener with typed events and coherent current display
+   /// state.
+   #[must_use]
+   pub fn listener(&self) -> EngineListener {
+      EngineListener::new(self.frontend.clone())
    }
 
    /// Returns the current display-oriented engine state maintained by the live

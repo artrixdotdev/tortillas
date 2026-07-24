@@ -13,7 +13,7 @@ use super::{
    },
 };
 use crate::{
-   frontend::{EventSubscription, FrontendPublisher, TorrentView},
+   frontend::{EventSubscription, FrontendPublisher, TorrentListener, TorrentView},
    hashes::InfoHash,
    pieces::PieceManager,
 };
@@ -162,6 +162,12 @@ impl Torrent {
    #[must_use]
    pub fn subscribe(&self) -> EventSubscription {
       self.frontend.subscribe_torrent(self.info_hash)
+   }
+
+   /// Creates a live listener scoped to this torrent.
+   #[must_use]
+   pub fn listener(&self) -> TorrentListener {
+      TorrentListener::new(self.frontend.clone(), self.info_hash)
    }
 
    /// Returns the latest display-oriented state maintained for this torrent.
