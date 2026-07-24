@@ -121,16 +121,21 @@ impl Tracker {
    /// Returns a credential-free endpoint label for frontend events.
    pub(crate) fn frontend_endpoint(&self) -> String {
       let uri = self.uri();
-      let Ok(mut url) = reqwest::Url::parse(&uri) else {
+      let Ok(url) = reqwest::Url::parse(&uri) else {
          return self.scheme().to_string();
       };
-
-      let _ = url.set_username("");
-      let _ = url.set_password(None);
-      url.set_path("");
-      url.set_query(None);
-      url.set_fragment(None);
-      url.to_string()
+      let Some(host) = url.host_str() else {
+         return self.scheme().to_string();
+      };
+      let host = if host.contains(':') {
+         format!("[{host}]")
+      } else {
+         host.to_string()
+      };
+      let port = url
+         .port()
+         .map_or_else(String::new, |port| format!(":{port}"));
+      format!("{}://{host}{port}/", url.scheme())
    }
 
    fn scheme(&self) -> &'static str {
@@ -297,6 +302,20 @@ mod tests {
       assert!(!endpoint.contains("alice"));
       assert!(!endpoint.contains("password"));
       assert!(!endpoint.contains("passkey"));
+      assert!(!endpoint.contains("token"));
+   }
+
+   #[test]
+   fn udp_frontend_endpoint_removes_tracker_credentials() {
+      let tracker = Tracker::Udp(
+         "udp://alice:password@tracker.example:6969/announce?token=secret".to_string(),
+      );
+
+      let endpoint = tracker.frontend_endpoint();
+
+      assert_eq!(endpoint, "udp://tracker.example:6969/");
+      assert!(!endpoint.contains("alice"));
+      assert!(!endpoint.contains("password"));
       assert!(!endpoint.contains("token"));
    }
 
