@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
    errors::TorrentError,
-   frontend::{EventSubscription, FrontendPublisher, TorrentListener, TorrentView},
+   frontend::{EventSubscription, FrontendPublisher, TorrentCommand, TorrentListener, TorrentView},
    hashes::InfoHash,
    pieces::PieceManager,
 };
@@ -185,6 +185,19 @@ impl Torrent {
       hook_rx.await.map_err(Self::communication_error)?;
 
       Ok(())
+   }
+
+   /// Sends a typed frontend command directly to this torrent.
+   pub async fn send(&self, command: TorrentCommand) -> Result<(), TorrentError> {
+      match command {
+         TorrentCommand::Start => self.start().await,
+         TorrentCommand::Resume => self.resume().await,
+         TorrentCommand::Pause => self.pause().await,
+         TorrentCommand::Stop => self.stop().await,
+         TorrentCommand::SetOutputPath(path) => self.with_output_folder(path).await,
+         TorrentCommand::SetAutostart(enabled) => self.set_auto_start(enabled).await,
+         TorrentCommand::SetSufficientPeers(peers) => self.set_sufficient_peers(peers).await,
+      }
    }
 
    /// Subscribes to live events for this torrent only.
