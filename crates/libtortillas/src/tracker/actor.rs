@@ -196,7 +196,18 @@ impl TrackerActor {
                error!(error = %e, "Failed to send announce to supervisor");
             }
          }
-         Err(e) => error!(error = %e, "Announce request failed"),
+         Err(e) => {
+            error!(error = %e, "Announce request failed");
+            if let Err(send_error) = self
+               .supervisor
+               .tell(torrent::events::TrackerAnnounceFailed {
+                  tracker: self.source.clone(),
+               })
+               .await
+            {
+               error!(error = %send_error, "Failed to report tracker announce failure");
+            }
+         }
       }
       self.schedule_next_announce().await;
       None

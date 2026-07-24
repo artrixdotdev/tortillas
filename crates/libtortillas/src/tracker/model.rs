@@ -117,6 +117,29 @@ impl Tracker {
          Tracker::Http(uri) | Tracker::Udp(uri) | Tracker::Websocket(uri) => uri.clone(),
       }
    }
+
+   /// Returns a credential-free endpoint label for frontend events.
+   pub(crate) fn frontend_endpoint(&self) -> String {
+      let uri = self.uri();
+      let Ok(mut url) = reqwest::Url::parse(&uri) else {
+         return self.scheme().to_string();
+      };
+
+      let _ = url.set_username("");
+      let _ = url.set_password(None);
+      url.set_path("");
+      url.set_query(None);
+      url.set_fragment(None);
+      url.to_string()
+   }
+
+   fn scheme(&self) -> &'static str {
+      match self {
+         Self::Http(_) => "http",
+         Self::Udp(_) => "udp",
+         Self::Websocket(_) => "websocket",
+      }
+   }
 }
 
 /// Trait for HTTP and UDP trackers.
