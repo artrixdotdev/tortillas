@@ -280,3 +280,30 @@ fn tracker_from_uri(uri: String) -> Result<Tracker, String> {
       _ => Err(format!("unsupported tracker scheme: {scheme}")),
    }
 }
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   #[test]
+   fn frontend_endpoint_removes_tracker_credentials_and_paths() {
+      let tracker = Tracker::Http(
+         "https://alice:password@tracker.example/secret-passkey/announce?token=secret".to_string(),
+      );
+
+      let endpoint = tracker.frontend_endpoint();
+
+      assert_eq!(endpoint, "https://tracker.example/");
+      assert!(!endpoint.contains("alice"));
+      assert!(!endpoint.contains("password"));
+      assert!(!endpoint.contains("passkey"));
+      assert!(!endpoint.contains("token"));
+   }
+
+   #[test]
+   fn invalid_tracker_endpoint_falls_back_to_protocol_only() {
+      let tracker = Tracker::Udp("udp://[invalid".to_string());
+
+      assert_eq!(tracker.frontend_endpoint(), "udp");
+   }
+}
