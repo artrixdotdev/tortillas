@@ -106,7 +106,7 @@ impl TorrentSnapshot {
    }
 
    pub(crate) fn resolved_info(&self) -> Option<&Info> {
-      self.info_dict.as_ref().or_else(|| match &self.metainfo {
+      self.info_dict.as_ref().or(match &self.metainfo {
          MetaInfo::Torrent(torrent) => Some(&torrent.info),
          MetaInfo::MagnetUri(_) => None,
       })
