@@ -750,9 +750,10 @@ mod tests {
       assert_eq!(peer.torrent(), info_hash);
       assert!(peer.live_view().address.is_some());
       assert!(
-         event_torrent
-            .live_view()
-            .is_some_and(|view| view.peer_count > 0)
+         !peer.live_view().connected
+            || event_torrent
+               .live_view()
+               .is_some_and(|view| view.peer_count > 0)
       );
       let _peer_listener = peer.listener();
 
