@@ -8,10 +8,12 @@ use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-   let Some(torrent_path) = std::env::args_os().nth(1).map(PathBuf::from) else {
-      error!("pass a .torrent file path to run the live frontend example");
+   let mut args = std::env::args_os().skip(1).map(PathBuf::from);
+   let Some(torrent_path) = args.next() else {
+      error!("pass a .torrent file path and optional session path to run the example");
       return Ok(());
    };
+   let session_path = args.next();
 
    let engine = Engine::default();
    let mut listener = engine.listener();
@@ -73,6 +75,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
    torrent.send(TorrentCommand::Start).await?;
 
    tokio::signal::ctrl_c().await?;
+   if let Some(path) = session_path {
+      let snapshot = engine.snapshot().await?;
+      tokio::fs::write(&path, serde_json::to_vec_pretty(&snapshot)?).await?;
+      info!(?path, "saved resumable engine state");
+   }
    let _ = engine.send(CoreCommand::Shutdown).await?;
    frontend.await?;
    Ok(())
