@@ -465,6 +465,14 @@ impl TorrentActor {
             piece_idx < total_pieces && !self.bitfield[piece_idx] && entry.value().count_ones() > 0
          })
          .count();
+      let transfer = TorrentTransfer::from_peers(
+         self
+            .frontend
+            .peer_handles(self.info_hash())
+            .into_iter()
+            .map(|peer| peer.live_view()),
+         bytes_remaining,
+      );
 
       TorrentView {
          info_hash: self.info_hash(),
@@ -489,11 +497,7 @@ impl TorrentActor {
             partial_pieces: Self::snapshot_u64(partial_pieces),
             total_pieces: Self::snapshot_u64(total_pieces),
          },
-         transfer: TorrentTransfer {
-            download_rate_bytes_per_second: None,
-            upload_rate_bytes_per_second: None,
-            eta_seconds: None,
-         },
+         transfer,
       }
    }
 
@@ -1597,8 +1601,8 @@ mod tests {
          view.progress.bytes_remaining.unwrap() < u64::try_from(info_dict.total_length()).unwrap()
       );
       assert!(view.progress.progress_fraction.unwrap() > 0.0);
-      assert_eq!(view.transfer.download_rate_bytes_per_second, None);
-      assert_eq!(view.transfer.upload_rate_bytes_per_second, None);
+      assert_eq!(view.transfer.download_rate_bytes_per_second, Some(0));
+      assert_eq!(view.transfer.upload_rate_bytes_per_second, Some(0));
       assert_eq!(view.transfer.eta_seconds, None);
 
       let snapshot = test_actor.snapshot();

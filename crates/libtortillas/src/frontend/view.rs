@@ -52,6 +52,30 @@ pub struct TorrentTransfer {
    pub eta_seconds: Option<u64>,
 }
 
+impl TorrentTransfer {
+   pub(crate) fn from_peers(
+      peers: impl IntoIterator<Item = PeerView>, bytes_remaining: Option<u64>,
+   ) -> Self {
+      let (download_rate, upload_rate) =
+         peers
+            .into_iter()
+            .fold((0_u64, 0_u64), |(download, upload), peer| {
+               (
+                  download.saturating_add(peer.download_rate_bytes_per_second),
+                  upload.saturating_add(peer.upload_rate_bytes_per_second),
+               )
+            });
+      let eta_seconds = bytes_remaining
+         .and_then(|remaining| (download_rate > 0).then(|| remaining.div_ceil(download_rate)));
+
+      Self {
+         download_rate_bytes_per_second: Some(download_rate),
+         upload_rate_bytes_per_second: Some(upload_rate),
+         eta_seconds,
+      }
+   }
+}
+
 /// Live view of a connected or recently disconnected peer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerView {
@@ -124,5 +148,34 @@ impl TrackerStatus {
    #[must_use]
    pub const fn is_active(self) -> bool {
       !matches!(self, Self::Stopped)
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   #[test]
+   fn torrent_transfer_aggregates_peer_rates_and_estimates_completion() {
+      let peer = PeerView {
+         address: None,
+         client: None,
+         connected: true,
+         peer_choking: false,
+         peer_interested: true,
+         client_choking: false,
+         client_interested: true,
+         available_pieces: 1,
+         download_rate_bytes_per_second: 3,
+         upload_rate_bytes_per_second: 2,
+         downloaded_bytes: 0,
+         uploaded_bytes: 0,
+      };
+
+      let transfer = TorrentTransfer::from_peers([peer.clone(), peer], Some(13));
+
+      assert_eq!(transfer.download_rate_bytes_per_second, Some(6));
+      assert_eq!(transfer.upload_rate_bytes_per_second, Some(4));
+      assert_eq!(transfer.eta_seconds, Some(3));
    }
 }
