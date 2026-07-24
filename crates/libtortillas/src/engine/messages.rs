@@ -183,20 +183,20 @@ pub(crate) mod commands {
                })
                .await
             {
-               Ok(resume) => resume,
-               Err(kameo::error::SendError::HandlerError(error)) => {
-                  if let Err(stop_error) = torrent_ref.stop_gracefully().await {
-                     warn!(error = %stop_error, %info_hash, "Failed to stop rejected restored torrent");
+               Ok(result) => match result.0 {
+                  Ok(resume) => resume,
+                  Err(error) => {
+                     if let Err(stop_error) = torrent_ref.stop_gracefully().await {
+                        warn!(error = %stop_error, %info_hash, "Failed to stop rejected restored torrent");
+                     }
+                     self.frontend.torrent_removed(info_hash);
+                     return Err(error.into());
                   }
-                  torrent_ref.wait_for_shutdown().await;
-                  self.frontend.torrent_removed(info_hash);
-                  return Err(error.into());
-               }
+               },
                Err(error) => {
                   if let Err(stop_error) = torrent_ref.stop_gracefully().await {
                      warn!(error = %stop_error, %info_hash, "Failed to stop rejected restored torrent");
                   }
-                  torrent_ref.wait_for_shutdown().await;
                   self.frontend.torrent_removed(info_hash);
                   return Err(EngineError::Other(anyhow!(
                      "failed to restore torrent snapshot: {error}"

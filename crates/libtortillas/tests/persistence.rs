@@ -138,3 +138,25 @@ async fn engine_snapshot_when_version_is_unknown_then_restores_nothing() {
    assert_eq!(target_engine.live_view().torrent_count, 0);
    target_engine.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn torrent_snapshot_when_piece_state_is_inconsistent_then_is_rejected_cleanly() {
+   let source_engine = deterministic_engine();
+   let torrent = source_engine
+      .add_torrent(TorrentSource::torrent_file_bytes(BIG_BUCK_BUNNY))
+      .await
+      .unwrap();
+   let mut snapshot = torrent.snapshot().await.unwrap();
+   source_engine.shutdown().await.unwrap();
+   snapshot.bitfield.pop();
+   let target_engine = deterministic_engine();
+
+   let error = target_engine.restore_torrent(snapshot).await.unwrap_err();
+
+   assert!(matches!(
+      error,
+      EngineError::Torrent(TorrentError::InvalidSnapshot { .. })
+   ));
+   assert_eq!(target_engine.live_view().torrent_count, 0);
+   target_engine.shutdown().await.unwrap();
+}

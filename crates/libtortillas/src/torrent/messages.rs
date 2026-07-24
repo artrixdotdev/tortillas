@@ -5,7 +5,7 @@ use std::{
 
 use bitvec::vec::BitVec;
 use bytes::Bytes;
-use kameo::messages;
+use kameo::{Reply, messages};
 use sha1::{Digest, Sha1};
 use tracing::{info, instrument, trace, warn};
 
@@ -16,6 +16,7 @@ use super::{
    util,
 };
 use crate::{
+   errors::TorrentError,
    frontend::{PeerView, TrackerView},
    hashes::InfoHash,
    metainfo::Info,
@@ -24,6 +25,9 @@ use crate::{
    protocol::stream::PeerStream,
    tracker::Tracker,
 };
+
+#[derive(Debug, Reply)]
+pub(crate) struct SnapshotRestoreResult(pub(crate) Result<bool, TorrentError>);
 
 pub(crate) mod events {
    use super::*;
@@ -282,69 +286,121 @@ pub(crate) mod commands {
       #[message]
       pub(crate) fn restore_snapshot(
          &mut self, snapshot: TorrentSnapshot,
-      ) -> Result<bool, crate::errors::TorrentError> {
-         if snapshot.version != TORRENT_SNAPSHOT_VERSION {
-            return Err(crate::errors::TorrentError::InvalidSnapshot {
-               reason: format!(
-                  "unsupported version {}; expected {}",
-                  snapshot.version, TORRENT_SNAPSHOT_VERSION
-               ),
-            });
-         }
-         if snapshot.info_hash != self.info_hash() {
-            return Err(crate::errors::TorrentError::InvalidSnapshot {
-               reason: "info hash does not match metainfo".to_string(),
-            });
-         }
+      ) -> SnapshotRestoreResult {
+         let result = (|| -> Result<bool, TorrentError> {
+            if snapshot.version != TORRENT_SNAPSHOT_VERSION {
+               return Err(TorrentError::InvalidSnapshot {
+                  reason: format!(
+                     "unsupported version {}; expected {}",
+                     snapshot.version, TORRENT_SNAPSHOT_VERSION
+                  ),
+               });
+            }
+            if snapshot.info_hash != self.info_hash() {
+               return Err(TorrentError::InvalidSnapshot {
+                  reason: "info hash does not match metainfo".to_string(),
+               });
+            }
 
-         let piece_count = snapshot
-            .info_dict
-            .as_ref()
-            .or_else(|| self.info_dict())
-            .map_or(0, Info::piece_count);
-         if snapshot.bitfield.len() != piece_count {
-            return Err(crate::errors::TorrentError::InvalidSnapshot {
-               reason: format!(
-                  "bitfield has {} pieces but metadata declares {piece_count}",
-                  snapshot.bitfield.len()
-               ),
-            });
-         }
-         if snapshot
-            .block_map
-            .iter()
-            .any(|entry| *entry.key() >= piece_count)
-         {
-            return Err(crate::errors::TorrentError::InvalidSnapshot {
-               reason: "partial piece index is outside the metadata piece range".to_string(),
-            });
-         }
+            if let Some(info) = &snapshot.info_dict {
+               let restored_hash = info.hash().map_err(|error| TorrentError::InvalidSnapshot {
+                  reason: format!("failed to hash restored info dictionary: {error}"),
+               })?;
+               if restored_hash != snapshot.info_hash {
+                  return Err(TorrentError::InvalidSnapshot {
+                     reason: "restored info dictionary does not match the info hash".to_string(),
+                  });
+               }
+            }
 
-         let resume = snapshot.state.is_transfer_active();
-         let restored_state = match snapshot.state {
-            TorrentState::Downloading
-            | TorrentState::Seeding
-            | TorrentState::Stopping
-            | TorrentState::Stopped => TorrentState::Paused,
-            state => state,
-         };
-         let mut scheduler = PieceScheduler::new(piece_count);
-         for index in snapshot.bitfield.iter_ones() {
-            scheduler.mark_piece_complete(index);
-         }
-         for entry in &snapshot.block_map {
-            scheduler.restore_piece_blocks(*entry.key(), entry.value().clone());
-         }
+            let info = snapshot.info_dict.as_ref().or_else(|| self.info_dict());
+            let piece_count = info.map_or(0, Info::piece_count);
+            if snapshot.bitfield.len() != piece_count {
+               return Err(TorrentError::InvalidSnapshot {
+                  reason: format!(
+                     "bitfield has {} pieces but metadata declares {piece_count}",
+                     snapshot.bitfield.len()
+                  ),
+               });
+            }
+            for entry in &snapshot.block_map {
+               let index = *entry.key();
+               if index >= piece_count {
+                  return Err(TorrentError::InvalidSnapshot {
+                     reason: "partial piece index is outside the metadata piece range".to_string(),
+                  });
+               }
+               if snapshot.bitfield[index] {
+                  return Err(TorrentError::InvalidSnapshot {
+                     reason: "completed piece also contains partial block state".to_string(),
+                  });
+               }
 
-         self.info = snapshot.info_dict;
-         self.bitfield = snapshot.bitfield;
-         self.piece_scheduler = scheduler;
-         self.autostart = snapshot.auto_start;
-         self.sufficient_peers = snapshot.sufficient_peers;
-         self.transition_state(restored_state);
-         self.frontend.update_torrent(self.live_view());
+               let Some(info) = info else {
+                  return Err(TorrentError::InvalidSnapshot {
+                     reason: "partial block state requires resolved metadata".to_string(),
+                  });
+               };
+               let piece_length = usize::try_from(info.piece_length).map_err(|_| {
+                  TorrentError::InvalidSnapshot {
+                     reason: "piece length cannot be represented on this platform".to_string(),
+                  }
+               })?;
+               if piece_length == 0 {
+                  return Err(TorrentError::InvalidSnapshot {
+                     reason: "piece length must be greater than zero".to_string(),
+                  });
+               }
+               let last_piece = piece_count.saturating_sub(1);
+               let concrete_length = if index == last_piece {
+                  let remainder = info.total_length() % piece_length;
+                  if remainder == 0 {
+                     piece_length
+                  } else {
+                     remainder
+                  }
+               } else {
+                  piece_length
+               };
+               let expected_blocks = concrete_length.div_ceil(BLOCK_SIZE);
+               if entry.value().len() != expected_blocks {
+                  return Err(TorrentError::InvalidSnapshot {
+                     reason: format!(
+                        "partial piece {index} has {} blocks; expected {expected_blocks}",
+                        entry.value().len()
+                     ),
+                  });
+               }
+            }
 
-         Ok(resume)
+            let resume = snapshot.state.is_transfer_active();
+            let restored_state = match snapshot.state {
+               TorrentState::Downloading
+               | TorrentState::Seeding
+               | TorrentState::Stopping
+               | TorrentState::Stopped => TorrentState::Paused,
+               state => state,
+            };
+            let mut scheduler = PieceScheduler::new(piece_count);
+            for index in snapshot.bitfield.iter_ones() {
+               scheduler.mark_piece_complete(index);
+            }
+            for entry in &snapshot.block_map {
+               scheduler.restore_piece_blocks(*entry.key(), entry.value().clone());
+            }
+
+            self.info = snapshot.info_dict;
+            self.bitfield = snapshot.bitfield;
+            self.piece_scheduler = scheduler;
+            self.autostart = snapshot.auto_start;
+            self.sufficient_peers = snapshot.sufficient_peers;
+            self.transition_state(restored_state);
+            self.frontend.update_torrent(self.live_view());
+
+            Ok(resume)
+         })();
+
+         SnapshotRestoreResult(result)
       }
 
       #[message(derive(Debug, Clone, Copy))]
