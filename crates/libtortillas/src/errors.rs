@@ -281,6 +281,10 @@ pub enum TorrentError {
    #[error("Unsafe torrent output path: {path}")]
    UnsafeOutputPath { path: String },
 
+   /// Serialized torrent state is incompatible or internally inconsistent.
+   #[error("Invalid torrent snapshot: {reason}")]
+   InvalidSnapshot { reason: String },
+
    /// Bitfield operation failed
    #[error("Bitfield operation failed: {reason}")]
    BitfieldError { reason: String },

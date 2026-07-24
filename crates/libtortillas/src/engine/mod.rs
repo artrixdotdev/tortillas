@@ -285,6 +285,7 @@ impl Engine {
          .actor()
          .ask(CreateTorrent {
             metainfo: Box::new(metainfo),
+            restore: None,
          })
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
@@ -296,6 +297,56 @@ impl Engine {
       ))
       // We don't need to assign link or insert the ref here because its already
       // done by the engine actor
+   }
+
+   /// Restores one torrent from a Serde-compatible persistence snapshot.
+   ///
+   /// Torrents that were downloading or seeding when captured resume after
+   /// their piece state and storage configuration have been restored.
+   pub async fn restore_torrent(
+      &self, snapshot: crate::torrent::TorrentSnapshot,
+   ) -> Result<Torrent, EngineError> {
+      if snapshot.version != crate::torrent::TORRENT_SNAPSHOT_VERSION {
+         return Err(
+            crate::errors::TorrentError::InvalidSnapshot {
+               reason: format!(
+                  "unsupported version {}; expected {}",
+                  snapshot.version,
+                  crate::torrent::TORRENT_SNAPSHOT_VERSION
+               ),
+            }
+            .into(),
+         );
+      }
+      let info_hash = snapshot.info_hash;
+      let metainfo_hash = snapshot.metainfo.info_hash()?;
+      if metainfo_hash != info_hash {
+         return Err(
+            crate::errors::TorrentError::InvalidSnapshot {
+               reason: "info hash does not match metainfo".to_string(),
+            }
+            .into(),
+         );
+      }
+
+      let torrent_ref = match self
+         .actor()
+         .ask(CreateTorrent {
+            metainfo: Box::new(snapshot.metainfo.clone()),
+            restore: Some(Box::new(snapshot)),
+         })
+         .await
+      {
+         Ok(torrent) => torrent,
+         Err(SendError::HandlerError(error)) => return Err(error),
+         Err(error) => return Err(EngineError::Other(anyhow::anyhow!(error.to_string()))),
+      };
+
+      Ok(Torrent::new_with_frontend(
+         info_hash,
+         torrent_ref,
+         self.frontend.clone(),
+      ))
    }
    /// Starts all torrents managed by the engine.
    /// See [`Torrent::start`] for more information.

@@ -11,7 +11,7 @@ use crate::{
    metainfo::MetaInfo,
    peer::Peer,
    protocol::stream::{PeerStream, validate_handshake_protocol},
-   torrent::{self, TorrentActor, TorrentActorArgs, TorrentState},
+   torrent::{self, TorrentActor, TorrentActorArgs, TorrentSnapshot, TorrentState},
 };
 
 pub(crate) mod commands {
@@ -118,7 +118,7 @@ pub(crate) mod commands {
       /// Creates a new [`Torrent`](crate::torrent::Torrent) actor.
       #[message]
       pub(crate) async fn create_torrent(
-         &mut self, metainfo: Box<MetaInfo>,
+         &mut self, metainfo: Box<MetaInfo>, restore: Option<Box<TorrentSnapshot>>,
       ) -> Result<ActorRef<TorrentActor>, EngineError> {
          let info_hash = metainfo.info_hash().map_err(|e| {
             error!(error = %e, "Failed to unwrap info hash");
@@ -134,6 +134,15 @@ pub(crate) mod commands {
             return Err(EngineError::TorrentAlreadyExists(info_hash));
          }
 
+         let restoring = restore.is_some();
+         let piece_storage = restore.as_ref().map_or_else(
+            || self.default_piece_storage_strategy.clone(),
+            |snapshot| snapshot.piece_storage.clone(),
+         );
+         let base_path = restore
+            .as_ref()
+            .and_then(|snapshot| snapshot.output_path.clone())
+            .or_else(|| self.default_base_path.clone());
          let torrent_ref = TorrentActor::supervise(
             &self.actor_ref,
             TorrentActorArgs {
@@ -142,10 +151,10 @@ pub(crate) mod commands {
                utp_server: self.utp_socket.clone(),
                tracker_server: self.udp_server.clone(),
                primary_addr: None,
-               piece_storage: self.default_piece_storage_strategy.clone(),
-               autostart: None,
-               sufficient_peers: None,
-               base_path: self.default_base_path.clone(),
+               piece_storage,
+               autostart: restoring.then_some(false),
+               sufficient_peers: restoring.then_some(usize::MAX),
+               base_path,
                settings: self.settings.clone(),
                frontend: self.frontend.clone(),
             },
@@ -166,6 +175,37 @@ pub(crate) mod commands {
             size => mailbox::bounded(size),
          })
          .await;
+
+         let resume = if let Some(snapshot) = restore {
+            match torrent_ref
+               .ask(torrent::commands::RestoreSnapshot {
+                  snapshot: *snapshot,
+               })
+               .await
+            {
+               Ok(resume) => resume,
+               Err(kameo::error::SendError::HandlerError(error)) => {
+                  if let Err(stop_error) = torrent_ref.stop_gracefully().await {
+                     warn!(error = %stop_error, %info_hash, "Failed to stop rejected restored torrent");
+                  }
+                  torrent_ref.wait_for_shutdown().await;
+                  self.frontend.torrent_removed(info_hash);
+                  return Err(error.into());
+               }
+               Err(error) => {
+                  if let Err(stop_error) = torrent_ref.stop_gracefully().await {
+                     warn!(error = %stop_error, %info_hash, "Failed to stop rejected restored torrent");
+                  }
+                  torrent_ref.wait_for_shutdown().await;
+                  self.frontend.torrent_removed(info_hash);
+                  return Err(EngineError::Other(anyhow!(
+                     "failed to restore torrent snapshot: {error}"
+                  )));
+               }
+            }
+         } else {
+            false
+         };
 
          self.torrents.insert(info_hash, torrent_ref.clone());
          // BEP 27 requires private torrents to use only their declared trackers:
@@ -188,6 +228,17 @@ pub(crate) mod commands {
                   warn!(error = %err, %info_hash, "Failed to resolve local port for DHT registration");
                }
             }
+         }
+         if resume
+            && let Err(error) = torrent_ref
+               .ask(torrent::commands::SetState {
+                  state: TorrentState::Downloading,
+               })
+               .await
+         {
+            return Err(EngineError::Other(anyhow!(
+               "failed to resume restored torrent: {error}"
+            )));
          }
          Ok(torrent_ref)
       }
