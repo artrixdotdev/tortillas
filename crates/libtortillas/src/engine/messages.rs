@@ -19,6 +19,23 @@ pub(crate) mod commands {
 
    use super::*;
 
+   impl EngineActor {
+      async fn discard_restored_torrent(
+         &mut self, info_hash: InfoHash, torrent: &ActorRef<TorrentActor>,
+      ) {
+         if self.torrents.remove(&info_hash).is_some()
+            && let Some(dht) = &self.dht
+            && let Err(error) = dht.tell(UnregisterTorrent { info_hash }).await
+         {
+            warn!(error = %error, %info_hash, "Failed to unregister rejected restored torrent from DHT");
+         }
+         if let Err(error) = torrent.stop_gracefully().await {
+            warn!(error = %error, %info_hash, "Failed to stop rejected restored torrent");
+         }
+         self.frontend.torrent_removed(info_hash);
+      }
+   }
+
    #[messages]
    impl EngineActor {
       /// Handles an incoming peer connection. The peer has been neither
@@ -186,18 +203,12 @@ pub(crate) mod commands {
                Ok(result) => match result.0 {
                   Ok(resume) => resume,
                   Err(error) => {
-                     if let Err(stop_error) = torrent_ref.stop_gracefully().await {
-                        warn!(error = %stop_error, %info_hash, "Failed to stop rejected restored torrent");
-                     }
-                     self.frontend.torrent_removed(info_hash);
+                     self.discard_restored_torrent(info_hash, &torrent_ref).await;
                      return Err(error.into());
                   }
                },
                Err(error) => {
-                  if let Err(stop_error) = torrent_ref.stop_gracefully().await {
-                     warn!(error = %stop_error, %info_hash, "Failed to stop rejected restored torrent");
-                  }
-                  self.frontend.torrent_removed(info_hash);
+                  self.discard_restored_torrent(info_hash, &torrent_ref).await;
                   return Err(EngineError::Other(anyhow!(
                      "failed to restore torrent snapshot: {error}"
                   )));
@@ -236,6 +247,7 @@ pub(crate) mod commands {
                })
                .await
          {
+            self.discard_restored_torrent(info_hash, &torrent_ref).await;
             return Err(EngineError::Other(anyhow!(
                "failed to resume restored torrent: {error}"
             )));
