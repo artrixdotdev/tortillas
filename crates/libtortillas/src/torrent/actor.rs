@@ -35,8 +35,8 @@ use crate::{
    pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
    settings::Settings,
    torrent::{
-      BLOCK_SIZE, PieceStorageStrategy, TorrentExport, TorrentProgressSnapshot, TorrentSnapshot,
-      TorrentState, TorrentTransferSnapshot,
+      BLOCK_SIZE, PieceStorageStrategy, TORRENT_SNAPSHOT_VERSION, TorrentExport, TorrentSnapshot,
+      TorrentState,
    },
    tracker::{
       Announce, Event, Tracker, TrackerActor, TrackerActorArgs, TrackerUpdate, udp::UdpServer,
@@ -423,6 +423,7 @@ impl TorrentActor {
 
    pub fn export(&self) -> TorrentExport {
       TorrentExport {
+         version: TORRENT_SNAPSHOT_VERSION,
          info_hash: self.info_hash(),
          state: self.state,
          auto_start: self.autostart,
@@ -440,59 +441,7 @@ impl TorrentActor {
    }
 
    pub fn snapshot(&self) -> TorrentSnapshot {
-      let info = self.info_dict();
-      let total_bytes = info.map(Info::total_length).map(Self::snapshot_u64);
-      let downloaded_bytes = Self::snapshot_u64(self.total_bytes_downloaded().unwrap_or(0));
-      let bytes_remaining =
-         total_bytes.map(|bytes| bytes.saturating_sub(downloaded_bytes.min(bytes)));
-      let progress_fraction = total_bytes.map(|bytes| {
-         if bytes == 0 {
-            1.0
-         } else {
-            downloaded_bytes.min(bytes) as f64 / bytes as f64
-         }
-      });
-      let completed_pieces = self.bitfield.count_ones();
-      let total_pieces = self.bitfield.len();
-      let partial_pieces = self
-         .piece_scheduler
-         .block_map_export()
-         .iter()
-         .filter(|entry| {
-            let piece_idx = *entry.key();
-            piece_idx < total_pieces && !self.bitfield[piece_idx] && entry.value().count_ones() > 0
-         })
-         .count();
-
-      TorrentSnapshot {
-         info_hash: self.info_hash(),
-         name: self.display_name().to_string(),
-         state: self.state,
-         has_metadata: info.is_some(),
-         is_ready: self.state == TorrentState::Ready && self.is_ready(),
-         auto_start: self.autostart,
-         sufficient_peers: Self::snapshot_u64(self.sufficient_peers),
-         peer_count: Self::snapshot_u64(self.peers.len()),
-         tracker_count: Self::snapshot_u64(self.trackers.len()),
-         output_path: match &self.piece_manager {
-            PieceManagerProxy::Default(manager) => manager.path().cloned(),
-            PieceManagerProxy::Custom(_) => None,
-         },
-         progress: TorrentProgressSnapshot {
-            total_bytes,
-            downloaded_bytes,
-            bytes_remaining,
-            progress_fraction,
-            completed_pieces: Self::snapshot_u64(completed_pieces),
-            partial_pieces: Self::snapshot_u64(partial_pieces),
-            total_pieces: Self::snapshot_u64(total_pieces),
-         },
-         transfer: TorrentTransferSnapshot {
-            download_rate_bytes_per_second: None,
-            upload_rate_bytes_per_second: None,
-            eta_seconds: None,
-         },
-      }
+      self.export()
    }
 
    /// Builds the display-oriented state used by live frontend listeners.
@@ -1527,7 +1476,7 @@ mod tests {
    }
 
    #[tokio::test(flavor = "multi_thread")]
-   async fn torrent_actor_when_pieces_are_marked_complete_then_snapshots_progress_correctly() {
+   async fn torrent_actor_when_pieces_are_marked_complete_then_updates_live_progress() {
       testing::init_tracing();
       let mut metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
       if let MetaInfo::Torrent(torrent_file) = &mut metainfo {
@@ -1548,6 +1497,7 @@ mod tests {
       let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
          .await
          .unwrap();
+      let frontend = FrontendPublisher::default();
       let actor_ref = TorrentActor::spawn(TorrentActorArgs {
          peer_id,
          metainfo: metainfo.clone(),
@@ -1559,13 +1509,9 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(file_path.clone()),
          settings: Settings::default(),
-         frontend: FrontendPublisher::default(),
+         frontend: frontend.clone(),
       });
-      let live_snapshot = Torrent::new(info_hash, actor_ref.clone())
-         .snapshot()
-         .await
-         .unwrap();
-      assert_eq!(live_snapshot.tracker_count, 1);
+      assert_eq!(frontend.torrent_view(info_hash).unwrap().tracker_count, 1);
 
       let piece_count = info_dict.piece_count();
       let bitfield: BitVec<AtomicU8> = BitVec::repeat(false, piece_count);
@@ -1614,46 +1560,56 @@ mod tests {
          settings: Settings::default(),
       };
 
-      let snapshot = test_actor.snapshot();
+      let view = test_actor.live_view();
 
-      assert_eq!(snapshot.info_hash, info_hash);
-      assert_eq!(snapshot.name, testing::BIG_BUCK_BUNNY_NAME);
-      assert_eq!(snapshot.state, TorrentState::Ready);
-      assert!(snapshot.has_metadata);
-      assert!(snapshot.is_ready);
-      assert!(!snapshot.auto_start);
-      assert_eq!(snapshot.sufficient_peers, 0);
-      assert_eq!(snapshot.output_path, Some(file_path));
+      assert_eq!(view.info_hash, info_hash);
+      assert_eq!(view.name, testing::BIG_BUCK_BUNNY_NAME);
+      assert_eq!(view.state, TorrentState::Ready);
+      assert!(view.has_metadata);
+      assert!(view.is_ready);
+      assert!(!view.auto_start);
+      assert_eq!(view.sufficient_peers, 0);
+      assert_eq!(view.output_path, Some(file_path.clone()));
       assert_eq!(
-         snapshot.progress.total_bytes,
+         view.progress.total_bytes,
          Some(u64::try_from(info_dict.total_length()).unwrap())
       );
       assert_eq!(
-         snapshot.progress.completed_pieces,
+         view.progress.completed_pieces,
          u64::try_from(completed_pieces).unwrap()
       );
-      assert_eq!(snapshot.progress.partial_pieces, 1);
+      assert_eq!(view.progress.partial_pieces, 1);
       assert_eq!(
-         snapshot.progress.total_pieces,
+         view.progress.total_pieces,
          u64::try_from(piece_count).unwrap()
       );
-      assert!(snapshot.progress.downloaded_bytes > 0);
+      assert!(view.progress.downloaded_bytes > 0);
       assert!(
-         snapshot.progress.bytes_remaining.unwrap()
-            < u64::try_from(info_dict.total_length()).unwrap()
+         view.progress.bytes_remaining.unwrap() < u64::try_from(info_dict.total_length()).unwrap()
       );
-      assert!(snapshot.progress.progress_fraction.unwrap() > 0.0);
-      assert_eq!(snapshot.transfer.download_rate_bytes_per_second, None);
-      assert_eq!(snapshot.transfer.upload_rate_bytes_per_second, None);
-      assert_eq!(snapshot.transfer.eta_seconds, None);
+      assert!(view.progress.progress_fraction.unwrap() > 0.0);
+      assert_eq!(view.transfer.download_rate_bytes_per_second, None);
+      assert_eq!(view.transfer.upload_rate_bytes_per_second, None);
+      assert_eq!(view.transfer.eta_seconds, None);
 
+      let snapshot = test_actor.snapshot();
+      assert_eq!(snapshot.version, TORRENT_SNAPSHOT_VERSION);
+      assert_eq!(snapshot.info_hash, info_hash);
+      assert_eq!(snapshot.state, TorrentState::Ready);
+      assert_eq!(snapshot.output_path, Some(file_path));
+      assert_eq!(snapshot.bitfield.count_ones(), completed_pieces);
+      assert_eq!(snapshot.block_map.len(), 1);
       let snapshot_str = serde_json::to_string(&snapshot).unwrap();
       let from_snapshot: TorrentSnapshot = serde_json::from_str(&snapshot_str).unwrap();
 
-      assert_eq!(snapshot, from_snapshot);
+      assert_eq!(snapshot.version, from_snapshot.version);
+      assert_eq!(snapshot.info_hash, from_snapshot.info_hash);
+      assert_eq!(snapshot.state, from_snapshot.state);
+      assert_eq!(snapshot.bitfield, from_snapshot.bitfield);
+      assert_eq!(snapshot.block_map.len(), from_snapshot.block_map.len());
 
       test_actor.state = TorrentState::Paused;
-      assert!(!test_actor.snapshot().is_ready);
+      assert!(!test_actor.live_view().is_ready);
 
       test_actor.bitfield.fill(false);
       test_actor.bitfield.set_aliased(piece_count - 1, true);
@@ -1661,7 +1617,7 @@ mod tests {
       let last_piece_bytes = info_dict.total_length()
          - ((piece_count - 1) * usize::try_from(info_dict.piece_length).unwrap());
       assert_eq!(
-         test_actor.snapshot().progress.downloaded_bytes,
+         test_actor.live_view().progress.downloaded_bytes,
          u64::try_from(last_piece_bytes).unwrap()
       );
 

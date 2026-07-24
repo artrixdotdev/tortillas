@@ -2,9 +2,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::torrent::TorrentSnapshot;
 
-/// Stable, frontend-ready view of the engine.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Current persistence schema version for [`EngineSnapshot`].
+pub const ENGINE_SNAPSHOT_VERSION: u32 = 1;
+
+/// Serializable state required to restore an engine's torrent sessions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineSnapshot {
+   pub version: u32,
    pub status: EngineStatus,
    pub torrent_count: u64,
    pub torrents: Vec<TorrentSnapshot>,

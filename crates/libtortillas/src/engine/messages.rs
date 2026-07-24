@@ -3,7 +3,7 @@ use kameo::{actor::Spawn, mailbox, messages, prelude::ActorRef, supervision::Res
 use tokio::time::timeout;
 use tracing::{error, warn};
 
-use super::{EngineActor, EngineSnapshot, EngineStatus};
+use super::{ENGINE_SNAPSHOT_VERSION, EngineActor, EngineSnapshot, EngineStatus};
 use crate::{
    dht::messages::commands::{RegisterTorrent, UnregisterTorrent},
    errors::EngineError,
@@ -215,6 +215,7 @@ pub(crate) mod commands {
          let torrents = try_join_all(futures).await?;
 
          Ok(EngineSnapshot {
+            version: ENGINE_SNAPSHOT_VERSION,
             status: EngineStatus::Running,
             torrent_count: u64::try_from(torrents.len()).unwrap_or(u64::MAX),
             torrents,

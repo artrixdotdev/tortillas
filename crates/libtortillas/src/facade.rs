@@ -26,7 +26,7 @@ pub use crate::{
       FrontendHealthLevel, PeerView, TorrentCommand, TorrentListener, TorrentProgress,
       TorrentTransfer, TorrentView, TrackerView,
    },
-   torrent::{TorrentProgressSnapshot, TorrentSnapshot, TorrentTransferSnapshot},
+   torrent::TorrentSnapshot,
 };
 
 /// Stable handle used by frontends to manage the torrent engine.

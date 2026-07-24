@@ -58,7 +58,7 @@ pub(crate) use messages::*;
 pub use source::TorrentSource;
 
 use self::commands::{CreateTorrent, GetTorrent, RemoveTorrent, SnapshotEngine, StartAll};
-pub use self::snapshot::{EngineSnapshot, EngineStatus};
+pub use self::snapshot::{ENGINE_SNAPSHOT_VERSION, EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
    frontend::{
@@ -484,7 +484,7 @@ mod snapshot_tests {
    use crate::{settings::Settings, testing};
 
    #[tokio::test]
-   async fn engine_when_torrent_is_added_then_snapshots_frontend_state() {
+   async fn engine_when_torrent_is_added_then_snapshots_persistence_state() {
       let mut settings = Settings::default();
       settings.dht.enabled = false;
       let engine = Engine::builder()
@@ -500,17 +500,31 @@ mod snapshot_tests {
       let snapshot = engine.snapshot().await.unwrap();
 
       assert_eq!(snapshot.status, EngineStatus::Running);
+      assert_eq!(snapshot.version, ENGINE_SNAPSHOT_VERSION);
       assert_eq!(snapshot.torrent_count, 1);
       assert_eq!(snapshot.torrents.len(), 1);
       assert_eq!(snapshot.torrents[0].info_hash, torrent.info_hash());
-      assert_eq!(snapshot.torrents[0].name, testing::BIG_BUCK_BUNNY_NAME);
-      assert!(snapshot.torrents[0].progress.total_pieces > 0);
-      assert!(snapshot.torrents[0].has_metadata);
+      assert_eq!(
+         snapshot.torrents[0].version,
+         crate::torrent::TORRENT_SNAPSHOT_VERSION
+      );
+      assert!(snapshot.torrents[0].info_dict.is_some());
+      assert!(!snapshot.torrents[0].bitfield.is_empty());
 
       let snapshot_str = to_string(&snapshot).unwrap();
       let from_snapshot: EngineSnapshot = from_str(&snapshot_str).unwrap();
 
-      assert_eq!(snapshot, from_snapshot);
+      assert_eq!(snapshot.version, from_snapshot.version);
+      assert_eq!(snapshot.status, from_snapshot.status);
+      assert_eq!(snapshot.torrent_count, from_snapshot.torrent_count);
+      assert_eq!(
+         snapshot.torrents[0].info_hash,
+         from_snapshot.torrents[0].info_hash
+      );
+      assert_eq!(
+         snapshot.torrents[0].bitfield,
+         from_snapshot.torrents[0].bitfield
+      );
    }
 }
 
