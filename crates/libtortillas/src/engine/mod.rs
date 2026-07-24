@@ -573,6 +573,54 @@ mod tests {
    }
 
    #[tokio::test]
+   async fn torrent_removal_reconciles_frontend_after_actor_shutdown_failure() {
+      let engine = Engine::builder()
+         .settings(deterministic_settings())
+         .autostart(false)
+         .build();
+      let torrent = engine
+         .add_torrent(TorrentSource::torrent_file_path(torrent_fixture_path(
+            BIG_BUCK_BUNNY_TORRENT_FILE,
+         )))
+         .await
+         .unwrap();
+      let info_hash = torrent.info_hash();
+      torrent.actor().stop_gracefully().await.unwrap();
+      torrent.actor().wait_for_shutdown().await;
+
+      let result = engine.remove_torrent(info_hash).await;
+
+      assert!(result.is_err());
+      assert_eq!(engine.live_view().torrent_count, 0);
+      assert!(torrent.live_view().is_none());
+      engine.shutdown().await.unwrap();
+   }
+
+   #[tokio::test]
+   async fn removed_torrent_rejects_late_actor_views() {
+      let engine = Engine::builder()
+         .settings(deterministic_settings())
+         .autostart(false)
+         .build();
+      let torrent = engine
+         .add_torrent(TorrentSource::torrent_file_path(torrent_fixture_path(
+            BIG_BUCK_BUNNY_TORRENT_FILE,
+         )))
+         .await
+         .unwrap();
+      let info_hash = torrent.info_hash();
+      let late_view = torrent.live_view().unwrap();
+
+      engine.frontend.torrent_removed(info_hash);
+      engine.frontend.update_torrent(late_view);
+
+      assert!(torrent.live_view().is_none());
+      assert_eq!(engine.live_view().torrent_count, 0);
+      let _ = engine.remove_torrent(info_hash).await;
+      engine.shutdown().await.unwrap();
+   }
+
+   #[tokio::test]
    async fn engine_when_dht_returns_peer_then_connects_torrent_swarm() {
       let info_hash = crate::hashes::InfoHash::from_hex(BIG_BUCK_BUNNY_INFO_HASH).unwrap();
       let dht_id = NodeId::from(info_hash);
