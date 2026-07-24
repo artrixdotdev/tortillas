@@ -7,6 +7,7 @@
 mod event;
 mod handle;
 mod listener;
+mod live;
 mod publisher;
 mod subscription;
 mod view;
@@ -18,7 +19,7 @@ pub use event::{
 pub(crate) use handle::PeerScope;
 pub use handle::{PeerHandle, PeerListener, TrackerHandle, TrackerId, TrackerListener};
 pub use listener::{EngineListener, EventListener, TorrentListener};
-pub use publisher::{DEFAULT_EVENT_CAPACITY, LivePublisher};
+pub use live::{DEFAULT_EVENT_CAPACITY, LivePublisher};
 pub(crate) use publisher::{FrontendHub, FrontendPublisher};
 pub use subscription::{EventStreamError, EventSubscription};
 pub use view::{
