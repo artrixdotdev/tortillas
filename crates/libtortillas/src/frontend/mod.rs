@@ -5,7 +5,9 @@
 //! prefer these types over actor messages and protocol internals.
 
 mod event;
+mod subscription;
 
 pub use event::{
    CoreEvent, CoreEventKind, FrontendHealth, FrontendHealthLevel, PeerSnapshot, TrackerSnapshot,
 };
+pub use subscription::{EventStreamError, EventSubscription};
