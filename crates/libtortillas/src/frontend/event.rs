@@ -21,6 +21,12 @@ pub struct Sequenced<E> {
 
 /// A sequenced event emitted by the engine's frontend publisher.
 pub type CoreEvent = Sequenced<CoreEventKind>;
+/// A sequenced event emitted by a torrent's live publisher.
+pub type TorrentEvent = Sequenced<TorrentEventKind>;
+/// A sequenced event emitted by a peer's live publisher.
+pub type PeerEvent = Sequenced<PeerEventKind>;
+/// A sequenced event emitted by a tracker's live publisher.
+pub type TrackerEvent = Sequenced<TrackerEventKind>;
 
 impl Sequenced<CoreEventKind> {
    /// Returns the torrent associated with this event, when applicable.
@@ -34,7 +40,7 @@ impl Sequenced<CoreEventKind> {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum CoreEventKind {
-   /// The engine finished starting and is ready for commands.
+   /// The engine finished starting and is ready for operations.
    EngineStarted(EngineView),
    /// A torrent was added to the engine.
    TorrentAdded(Torrent),
@@ -82,6 +88,44 @@ pub enum CoreEventKind {
    Shutdown(EngineView),
 }
 
+/// Events emitted by one torrent's independent live publisher.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum TorrentEventKind {
+   Updated,
+   StateChanged {
+      previous: TorrentState,
+      current: TorrentState,
+   },
+   MetadataResolved,
+   ProgressChanged(TorrentProgress),
+   PeerConnected(PeerHandle),
+   PeerUpdated(PeerHandle),
+   PeerDisconnected(PeerHandle),
+   TrackerAnnounceSucceeded(TrackerHandle),
+   TrackerAnnounceFailed(TrackerHandle),
+   TrackerStopped(TrackerHandle),
+   Health(FrontendHealth),
+   Removed,
+}
+
+/// Events emitted by one peer's independent live publisher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PeerEventKind {
+   Updated,
+   Disconnected,
+}
+
+/// Events emitted by one tracker's independent live publisher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TrackerEventKind {
+   AnnounceSucceeded { peers_returned: u64 },
+   AnnounceFailed,
+   Stopped,
+}
+
 impl CoreEventKind {
    /// Returns the torrent associated with this event, when applicable.
    #[must_use]
@@ -102,26 +146,6 @@ impl CoreEventKind {
          | Self::TrackerStopped { torrent, .. } => Some(*torrent),
          Self::Health(health) => health.torrent,
       }
-   }
-
-   pub(crate) fn is_peer(&self, scope: super::handle::PeerScope) -> bool {
-      matches!(
-         self,
-         Self::PeerConnected { peer, .. }
-            | Self::PeerUpdated { peer, .. }
-            | Self::PeerDisconnected { peer, .. }
-            if peer.scope() == scope
-      )
-   }
-
-   pub(crate) fn is_tracker(&self, scope: &super::handle::TrackerScope) -> bool {
-      matches!(
-         self,
-         Self::TrackerAnnounceSucceeded { tracker, .. }
-            | Self::TrackerAnnounceFailed { tracker, .. }
-            | Self::TrackerStopped { tracker, .. }
-            if tracker.scope() == scope
-      )
    }
 }
 

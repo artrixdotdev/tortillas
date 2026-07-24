@@ -61,10 +61,7 @@ use self::commands::{CreateTorrent, GetTorrent, RemoveTorrent, SnapshotEngine, S
 pub use self::snapshot::{ENGINE_SNAPSHOT_VERSION, EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
-   frontend::{
-      CoreCommand, CoreCommandResult, EngineListener, EngineView, EventSubscription,
-      FrontendPublisher,
-   },
+   frontend::{EngineListener, EngineView, EventSubscription, FrontendPublisher},
    hashes::InfoHash,
    peer::PeerId,
    settings::Settings,
@@ -281,7 +278,7 @@ impl Engine {
       let metainfo = source.into_metainfo().await?;
       let info_hash = metainfo.info_hash()?;
 
-      let torrent_ref = self
+      self
          .actor()
          .ask(CreateTorrent {
             metainfo: Box::new(metainfo),
@@ -290,11 +287,7 @@ impl Engine {
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
 
-      Ok(Torrent::new_with_frontend(
-         info_hash,
-         torrent_ref,
-         self.frontend.clone(),
-      ))
+      self.frontend_torrent(info_hash)
       // We don't need to assign link or insert the ref here because its already
       // done by the engine actor
    }
@@ -329,7 +322,7 @@ impl Engine {
          );
       }
 
-      let torrent_ref = match self
+      match self
          .actor()
          .ask(CreateTorrent {
             metainfo: Box::new(snapshot.metainfo.clone()),
@@ -337,16 +330,12 @@ impl Engine {
          })
          .await
       {
-         Ok(torrent) => torrent,
+         Ok(_) => {}
          Err(SendError::HandlerError(error)) => return Err(error),
          Err(error) => return Err(EngineError::Other(anyhow::anyhow!(error.to_string()))),
-      };
+      }
 
-      Ok(Torrent::new_with_frontend(
-         info_hash,
-         torrent_ref,
-         self.frontend.clone(),
-      ))
+      self.frontend_torrent(info_hash)
    }
 
    /// Restores all torrent sessions from an engine persistence snapshot.
@@ -418,17 +407,13 @@ impl Engine {
 
    /// Returns a public handle for a torrent managed by this engine.
    pub async fn torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
-      let actor = match self.actor().ask(GetTorrent { info_hash }).await {
-         Ok(actor) => actor,
+      match self.actor().ask(GetTorrent { info_hash }).await {
+         Ok(_) => {}
          Err(SendError::HandlerError(err)) => return Err(err),
          Err(err) => return Err(EngineError::Other(anyhow::anyhow!(err.to_string()))),
-      };
+      }
 
-      Ok(Torrent::new_with_frontend(
-         info_hash,
-         actor,
-         self.frontend.clone(),
-      ))
+      self.frontend_torrent(info_hash)
    }
 
    /// Removes a torrent from the engine and stops its actor gracefully.
@@ -479,32 +464,6 @@ impl Engine {
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))
    }
 
-   /// Sends a typed frontend command to the engine or one of its torrents.
-   pub async fn send(&self, command: CoreCommand) -> Result<CoreCommandResult, EngineError> {
-      match command {
-         CoreCommand::AddTorrent { source } => self
-            .add_torrent(source)
-            .await
-            .map(CoreCommandResult::TorrentAdded),
-         CoreCommand::StartAll => {
-            self.start_all().await?;
-            Ok(CoreCommandResult::Applied)
-         }
-         CoreCommand::Torrent { torrent, command } => {
-            self.torrent(torrent).await?.send(command).await?;
-            Ok(CoreCommandResult::Applied)
-         }
-         CoreCommand::RemoveTorrent { torrent } => {
-            self.remove_torrent(torrent).await?;
-            Ok(CoreCommandResult::Applied)
-         }
-         CoreCommand::Shutdown => {
-            self.shutdown().await?;
-            Ok(CoreCommandResult::Applied)
-         }
-      }
-   }
-
    /// Subscribes to typed engine and torrent events as they happen.
    ///
    /// The returned stream is bounded. A lagging frontend can read
@@ -528,6 +487,14 @@ impl Engine {
    #[must_use]
    pub fn live_view(&self) -> EngineView {
       self.frontend.view()
+   }
+
+   fn frontend_torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
+      self.frontend.torrent_handle(info_hash).ok_or_else(|| {
+         EngineError::Other(anyhow::anyhow!(
+            "torrent {info_hash} is missing its frontend handle"
+         ))
+      })
    }
 }
 
@@ -772,11 +739,11 @@ mod tests {
       .await
       .unwrap();
       assert_eq!(peer.torrent(), info_hash);
-      assert!(peer.live_view().is_some());
+      assert!(peer.live_view().connected);
       let _peer_listener = peer.listener();
 
       engine.shutdown().await.unwrap();
-      assert!(peer.live_view().is_none());
+      assert!(!peer.live_view().connected);
       receive_task.abort();
       seed.kill();
    }

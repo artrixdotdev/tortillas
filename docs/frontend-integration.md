@@ -6,43 +6,65 @@ polling loop.
 
 ## Live listeners
 
-Call `Engine::listener()` before sending commands. The listener combines two
+Call `Engine::listener()` before invoking operations. The listener combines two
 related capabilities:
 
 - `recv().await` yields sequenced `CoreEvent` values as changes happen.
 - `view()` returns the latest display-oriented `EngineView` held by the live
   publisher.
 
-Every `Torrent` returned by an add command similarly has `listener()` and
-`subscribe()` methods. A torrent listener receives only events associated with
-that torrent and exposes its latest `TorrentView`.
+Every `Torrent` returned by `Engine::add_torrent()` similarly has `listener()`
+and `subscribe()` methods. A torrent listener has its own publisher, receives
+typed `TorrentEvent` values for that torrent only, and exposes its latest
+`TorrentView`. It does not filter the engine's global event stream.
+
+Peers and trackers returned by `Torrent::peers()` and `Torrent::trackers()`
+follow the same pattern. Each `PeerHandle` and `TrackerHandle` owns an
+independent typed listener and current view, including a terminal disconnected
+or stopped view. Engine events carry the public `Torrent`, `PeerHandle`, and
+`TrackerHandle` values so a frontend can descend into more detailed streams
+only when needed.
 
 The event channel retains 256 events per listener by default. Slow listeners
 receive `EventStreamError::Lagged` instead of causing unbounded memory growth.
 After lagging, redraw from `listener.view()` and continue calling `recv()`.
-Sequence numbers remain engine-local and monotonic.
+Sequence numbers are monotonic within each publisher.
 
 Use `subscribe()` when only discrete events are needed. Use `listener()` when
 the frontend also needs a coherent current view for initial rendering or lag
 recovery.
 
-## Commands
+## Operations
 
-`Engine::send(CoreCommand)` is the application-level message boundary. It can
-add and remove torrents, start all torrents, or shut down the engine. The
-`CoreCommand::Torrent` variant routes the same `TorrentCommand` type accepted
-by `Torrent::send`, so the engine and torrent APIs do not maintain parallel
-command lists. Add commands return a `CoreCommandResult::TorrentAdded` handle.
+`Engine` and `Torrent` methods are the sole public command API. Call
+`engine.add_torrent(...)`, `engine.remove_torrent(...)`, or
+`engine.shutdown()` directly; call `torrent.start()`, `torrent.pause()`, and
+configuration methods directly on a `Torrent` handle. There is no parallel
+command enum or generic `send` method duplicating these operations.
 
-`Torrent::send(TorrentCommand)` starts, pauses, or configures a torrent when a
-frontend already owns its handle. Both handles retain their explicit
-convenience methods; `resume()` aliases `start()` and `stop()` aliases `pause()`
-because those pairs currently produce the same engine transition.
+Applications that need to funnel UI actions through a task can put their own
+application command type on a Tokio channel and call these methods in its
+consumer. That keeps application-specific routing outside the engine without
+making the library maintain two representations of every operation.
+
+`resume()` aliases `start()` and `stop()` aliases `pause()` because those pairs
+currently produce the same engine transition.
+
+## Reusable live publishers
+
+`LivePublisher<V, E>`, `EventListener<V, E>`, and `EventSubscription<E>` are
+generic over the current view and event type. `EventListener` and
+`EventSubscription` implement `futures::Stream`, while `recv()` supports the
+usual Tokio-style loop. Engine, torrent, peer, and tracker APIs all reuse these
+types; future protocols can expose the same behavior without another listener
+implementation.
 
 ## Views and persistence snapshots
 
-`EngineView`, `TorrentView`, and `CoreEvent` are live presentation contracts.
-They are updated by listeners and are suitable for rendering.
+`EngineView`, `TorrentView`, `PeerView`, and `TrackerView` are live presentation
+contracts. They are updated by their publishers, are suitable for rendering,
+and are Serde-compatible where a frontend wants to store or transmit display
+state.
 
 `Engine::snapshot()` and `Torrent::snapshot()` are not the live frontend path.
 Snapshots are the persistence boundary for serializing resumable engine and
@@ -62,13 +84,13 @@ state.
 
 ## Runtime and shutdown
 
-The library is Tokio-based. Keep the engine, torrent handles, command tasks,
+The library is Tokio-based. Keep the engine, torrent handles, application tasks,
 and listener tasks on the application runtime. Terminal or UI operations that
 block should run separately from those async tasks.
 
-Send `CoreCommand::Shutdown` or call `Engine::shutdown()` and keep the engine
+Call `Engine::shutdown()` and keep the engine
 listener alive until it receives `CoreEventKind::Shutdown`. This ensures the
 frontend observes the terminal state after managed torrents stop.
 
 See [`live_frontend.rs`](../crates/libtortillas/examples/live_frontend.rs) for a
-compiling command/listener loop.
+compiling operation/listener loop.

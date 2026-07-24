@@ -14,8 +14,8 @@ use super::{
 use crate::{
    errors::TorrentError,
    frontend::{
-      EventSubscription, FrontendPublisher, PeerHandle, TorrentCommand, TorrentListener,
-      TorrentView, TrackerHandle,
+      DEFAULT_EVENT_CAPACITY, EventSubscription, FrontendPublisher, LivePublisher, PeerHandle,
+      TorrentEventKind, TorrentListener, TorrentView, TrackerHandle,
    },
    hashes::InfoHash,
    pieces::PieceManager,
@@ -31,6 +31,7 @@ pub struct Torrent {
    info_hash: InfoHash,
    actor: ActorRef<TorrentActor>,
    frontend: FrontendPublisher,
+   live: LivePublisher<Option<TorrentView>, TorrentEventKind>,
 }
 
 impl fmt::Debug for Torrent {
@@ -56,6 +57,7 @@ impl Torrent {
       Self {
          info_hash,
          actor,
+         live: LivePublisher::new(frontend.torrent_view(info_hash), DEFAULT_EVENT_CAPACITY),
          frontend,
       }
    }
@@ -204,29 +206,16 @@ impl Torrent {
       Ok(())
    }
 
-   /// Sends a typed frontend command directly to this torrent.
-   pub async fn send(&self, command: TorrentCommand) -> Result<(), TorrentError> {
-      match command {
-         TorrentCommand::Start => self.start().await,
-         TorrentCommand::Pause => self.pause().await,
-         TorrentCommand::SetOutputPath(path) => self.with_output_folder(path).await,
-         TorrentCommand::SetAutostart(enabled) => self.set_auto_start(enabled).await,
-         TorrentCommand::SetSufficientPeers(peers) => self.set_sufficient_peers(peers).await,
-      }
-   }
-
    /// Subscribes to live events for this torrent only.
    #[must_use]
-   pub fn subscribe(&self) -> EventSubscription {
-      self.frontend.subscribe_torrent(self.info_hash)
+   pub fn subscribe(&self) -> EventSubscription<TorrentEventKind> {
+      self.live.subscribe()
    }
 
    /// Creates a live listener scoped to this torrent.
    #[must_use]
    pub fn listener(&self) -> TorrentListener {
-      let frontend = self.frontend.clone();
-      let info_hash = self.info_hash;
-      TorrentListener::new(self.subscribe(), move || frontend.torrent_view(info_hash))
+      self.live.listener()
    }
 
    /// Returns the latest display-oriented state maintained for this torrent.
@@ -234,7 +223,7 @@ impl Torrent {
    /// This returns `None` after the torrent has been removed from its engine.
    #[must_use]
    pub fn live_view(&self) -> Option<TorrentView> {
-      self.frontend.torrent_view(self.info_hash)
+      self.live.view()
    }
 
    /// Returns handles for this torrent's currently connected peers.
@@ -247,6 +236,14 @@ impl Torrent {
    #[must_use]
    pub fn trackers(&self) -> Vec<TrackerHandle> {
       self.frontend.tracker_handles(self.info_hash)
+   }
+
+   pub(crate) fn publish(&self, view: TorrentView, event: TorrentEventKind) {
+      self.live.update(Some(view), event);
+   }
+
+   pub(crate) fn removed(&self) {
+      self.live.update(None, TorrentEventKind::Removed);
    }
 
    fn communication_error(error: impl std::fmt::Display) -> TorrentError {

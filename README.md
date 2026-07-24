@@ -96,12 +96,13 @@ For the Tortillas TUI, the binary should own a single application runtime,
 typically through `#[tokio::main]`, and create `libtortillas::engine::Engine`
 inside that runtime. UI rendering or terminal input that blocks should run on a
 dedicated thread or, for bounded work, through Tokio blocking tasks, then send
-commands into async engine tasks. Long-lived input loops should use a dedicated
+application actions into async engine tasks. Long-lived input loops should use a dedicated
 thread because `spawn_blocking` tasks cannot be aborted once they start. The
 library does not currently support swapping in a different async runtime, HTTP
 client, clock, listener, or storage executor.
 
-Frontends should use the live listeners and typed command API rather than
+Frontends should use live listeners for updates and direct `Engine` and
+`Torrent` methods for operations rather than
 polling persistence snapshots. See the
 [frontend integration guide](docs/frontend-integration.md) and the
 [`live_frontend` example](crates/libtortillas/examples/live_frontend.rs).

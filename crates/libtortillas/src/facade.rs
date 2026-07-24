@@ -9,23 +9,22 @@
 //! # Example
 //!
 //! ```no_run
-//! use libtortillas::facade::{CoreCommand, EngineHandle, TorrentSource};
+//! use libtortillas::facade::{EngineHandle, TorrentSource};
 //!
 //! let engine = EngineHandle::default();
-//! let command = CoreCommand::AddTorrent {
-//!    source: TorrentSource::magnet("magnet:?xt=urn:btih:..."),
-//! };
+//! let source = TorrentSource::magnet("magnet:?xt=urn:btih:...");
+//! # let _ = (engine, source);
 //! ```
 
 use crate::{engine::Engine, torrent::Torrent};
 pub use crate::{
    engine::{EngineSnapshot, EngineStatus, TorrentSource},
    frontend::{
-      CoreCommand, CoreCommandResult, CoreEvent, CoreEventKind, DEFAULT_EVENT_CAPACITY,
-      EngineListener, EngineView, EventListener, EventStreamError, EventSubscription,
-      FrontendHealth, FrontendHealthLevel, LivePublisher, PeerHandle, PeerListener, PeerView,
-      Sequenced, TorrentCommand, TorrentListener, TorrentProgress, TorrentTransfer, TorrentView,
-      TrackerHandle, TrackerListener, TrackerView,
+      CoreEvent, CoreEventKind, DEFAULT_EVENT_CAPACITY, EngineListener, EngineView, EventListener,
+      EventStreamError, EventSubscription, FrontendHealth, FrontendHealthLevel, LivePublisher,
+      PeerEvent, PeerEventKind, PeerHandle, PeerListener, PeerView, Sequenced, TorrentEvent,
+      TorrentEventKind, TorrentListener, TorrentProgress, TorrentTransfer, TorrentView,
+      TrackerEvent, TrackerEventKind, TrackerHandle, TrackerListener, TrackerView,
    },
    torrent::TorrentSnapshot,
 };

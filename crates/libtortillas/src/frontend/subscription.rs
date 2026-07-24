@@ -1,7 +1,6 @@
 use std::{
    fmt,
    pin::Pin,
-   sync::Arc,
    task::{Context, Poll},
 };
 
@@ -12,8 +11,6 @@ use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 
 use super::{CoreEventKind, Sequenced};
 
-type EventFilter<E> = Arc<dyn Fn(&E) -> bool + Send + Sync>;
-
 /// A generic, lag-aware subscription to events from a live publisher.
 ///
 /// `EventSubscription` implements [`Stream`], so applications can use the
@@ -22,17 +19,13 @@ type EventFilter<E> = Arc<dyn Fn(&E) -> bool + Send + Sync>;
 pub struct EventSubscription<E = CoreEventKind> {
    sender: broadcast::Sender<Sequenced<E>>,
    stream: BroadcastStream<Sequenced<E>>,
-   filter: Option<EventFilter<E>>,
 }
 
 impl<E: Clone + Send + 'static> EventSubscription<E> {
-   pub(crate) fn new(
-      sender: broadcast::Sender<Sequenced<E>>, filter: Option<EventFilter<E>>,
-   ) -> Self {
+   pub(crate) fn new(sender: broadcast::Sender<Sequenced<E>>) -> Self {
       Self {
          stream: BroadcastStream::new(sender.subscribe()),
          sender,
-         filter,
       }
    }
 
@@ -44,10 +37,10 @@ impl<E: Clone + Send + 'static> EventSubscription<E> {
    }
 
    /// Creates another subscription beginning at the publisher's current
-   /// event position and retaining this subscription's filter.
+   /// event position.
    #[must_use]
    pub fn resubscribe(&self) -> Self {
-      Self::new(self.sender.clone(), self.filter.clone())
+      Self::new(self.sender.clone())
    }
 }
 
@@ -55,23 +48,13 @@ impl<E: Clone + Send + 'static> Stream for EventSubscription<E> {
    type Item = Result<Sequenced<E>, EventStreamError>;
 
    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-      loop {
-         match Pin::new(&mut self.stream).poll_next(context) {
-            Poll::Ready(Some(Ok(event))) => {
-               if self
-                  .filter
-                  .as_ref()
-                  .is_none_or(|filter| filter(&event.kind))
-               {
-                  return Poll::Ready(Some(Ok(event)));
-               }
-            }
-            Poll::Ready(Some(Err(BroadcastStreamRecvError::Lagged(events)))) => {
-               return Poll::Ready(Some(Err(EventStreamError::Lagged(events))));
-            }
-            Poll::Ready(None) => return Poll::Ready(None),
-            Poll::Pending => return Poll::Pending,
+      match Pin::new(&mut self.stream).poll_next(context) {
+         Poll::Ready(Some(Ok(event))) => Poll::Ready(Some(Ok(event))),
+         Poll::Ready(Some(Err(BroadcastStreamRecvError::Lagged(events)))) => {
+            Poll::Ready(Some(Err(EventStreamError::Lagged(events))))
          }
+         Poll::Ready(None) => Poll::Ready(None),
+         Poll::Pending => Poll::Pending,
       }
    }
 }
@@ -81,7 +64,6 @@ impl<E> fmt::Debug for EventSubscription<E> {
       formatter
          .debug_struct("EventSubscription")
          .field("receiver_count", &self.sender.receiver_count())
-         .field("filtered", &self.filter.is_some())
          .finish_non_exhaustive()
    }
 }

@@ -1,6 +1,9 @@
 use std::{fmt, net::SocketAddr};
 
-use super::{EventListener, EventSubscription, FrontendPublisher, PeerView, TrackerView};
+use super::{
+   DEFAULT_EVENT_CAPACITY, EventListener, EventSubscription, FrontendPublisher, LivePublisher,
+   PeerEventKind, PeerView, TrackerEventKind, TrackerView,
+};
 use crate::{hashes::InfoHash, peer::PeerId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -20,21 +23,16 @@ pub(crate) struct TrackerScope {
 pub struct PeerHandle {
    scope: PeerScope,
    frontend: FrontendPublisher,
-}
-
-impl fmt::Debug for PeerHandle {
-   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-      formatter
-         .debug_struct("PeerHandle")
-         .field("torrent", &self.scope.torrent)
-         .field("peer", &self.scope.peer)
-         .finish_non_exhaustive()
-   }
+   live: LivePublisher<PeerView, PeerEventKind>,
 }
 
 impl PeerHandle {
-   pub(crate) const fn new(scope: PeerScope, frontend: FrontendPublisher) -> Self {
-      Self { scope, frontend }
+   pub(crate) fn new(scope: PeerScope, view: PeerView, frontend: FrontendPublisher) -> Self {
+      Self {
+         scope,
+         frontend,
+         live: LivePublisher::new(view, DEFAULT_EVENT_CAPACITY),
+      }
    }
 
    /// Torrent that owns this peer connection.
@@ -52,27 +50,25 @@ impl PeerHandle {
    /// Latest known network address.
    #[must_use]
    pub fn address(&self) -> Option<SocketAddr> {
-      self.live_view().and_then(|view| view.address)
+      self.live_view().address
    }
 
    /// Subscribes to events for this peer only.
    #[must_use]
-   pub fn subscribe(&self) -> EventSubscription {
-      self.frontend.subscribe_peer(self.scope)
+   pub fn subscribe(&self) -> EventSubscription<PeerEventKind> {
+      self.live.subscribe()
    }
 
    /// Creates a stream-compatible listener for this peer.
    #[must_use]
    pub fn listener(&self) -> PeerListener {
-      let frontend = self.frontend.clone();
-      let scope = self.scope;
-      PeerListener::new(self.subscribe(), move || frontend.peer_view(scope))
+      self.live.listener()
    }
 
-   /// Returns the latest peer view, or `None` after its torrent is removed.
+   /// Returns the latest peer view, including its terminal disconnected state.
    #[must_use]
-   pub fn live_view(&self) -> Option<PeerView> {
-      self.frontend.peer_view(self.scope)
+   pub fn live_view(&self) -> PeerView {
+      self.live.view()
    }
 
    pub(crate) const fn scope(&self) -> PeerScope {
@@ -80,11 +76,28 @@ impl PeerHandle {
    }
 
    pub(crate) fn update(&self, view: PeerView) {
-      self.frontend.peer_updated(self, view);
+      self.live.update(view, PeerEventKind::Updated);
+      self.frontend.peer_updated(self);
    }
 
    pub(crate) fn disconnected(&self) {
+      let mut view = self.live_view();
+      if !view.connected {
+         return;
+      }
+      view.connected = false;
+      self.live.update(view, PeerEventKind::Disconnected);
       self.frontend.peer_disconnected(self.clone());
+   }
+}
+
+impl fmt::Debug for PeerHandle {
+   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+      formatter
+         .debug_struct("PeerHandle")
+         .field("torrent", &self.scope.torrent)
+         .field("peer", &self.scope.peer)
+         .finish_non_exhaustive()
    }
 }
 
@@ -101,21 +114,16 @@ impl Eq for PeerHandle {}
 pub struct TrackerHandle {
    scope: TrackerScope,
    frontend: FrontendPublisher,
-}
-
-impl fmt::Debug for TrackerHandle {
-   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-      formatter
-         .debug_struct("TrackerHandle")
-         .field("torrent", &self.scope.torrent)
-         .field("endpoint", &self.scope.endpoint)
-         .finish_non_exhaustive()
-   }
+   live: LivePublisher<TrackerView, TrackerEventKind>,
 }
 
 impl TrackerHandle {
-   pub(crate) fn new(scope: TrackerScope, frontend: FrontendPublisher) -> Self {
-      Self { scope, frontend }
+   pub(crate) fn new(scope: TrackerScope, view: TrackerView, frontend: FrontendPublisher) -> Self {
+      Self {
+         scope,
+         frontend,
+         live: LivePublisher::new(view, DEFAULT_EVENT_CAPACITY),
+      }
    }
 
    /// Torrent that owns this tracker.
@@ -132,22 +140,20 @@ impl TrackerHandle {
 
    /// Subscribes to events for this tracker only.
    #[must_use]
-   pub fn subscribe(&self) -> EventSubscription {
-      self.frontend.subscribe_tracker(self.scope.clone())
+   pub fn subscribe(&self) -> EventSubscription<TrackerEventKind> {
+      self.live.subscribe()
    }
 
    /// Creates a stream-compatible listener for this tracker.
    #[must_use]
    pub fn listener(&self) -> TrackerListener {
-      let frontend = self.frontend.clone();
-      let scope = self.scope.clone();
-      TrackerListener::new(self.subscribe(), move || frontend.tracker_view(&scope))
+      self.live.listener()
    }
 
-   /// Returns the current tracker view, or `None` after removal.
+   /// Returns the latest tracker view, including its terminal stopped state.
    #[must_use]
-   pub fn live_view(&self) -> Option<TrackerView> {
-      self.frontend.tracker_view(&self.scope)
+   pub fn live_view(&self) -> TrackerView {
+      self.live.view()
    }
 
    pub(crate) fn scope(&self) -> &TrackerScope {
@@ -155,31 +161,43 @@ impl TrackerHandle {
    }
 
    pub(crate) fn announce_succeeded(&self, peers_returned: u64) {
-      self.frontend.tracker_announce_succeeded(
-         self,
-         TrackerView {
-            endpoint: self.scope.endpoint.clone(),
-            active: true,
-            healthy: true,
-            peers_returned: Some(peers_returned),
-         },
-      );
+      let mut view = self.live_view();
+      view.active = true;
+      view.healthy = true;
+      view.peers_returned = Some(peers_returned);
+      self
+         .live
+         .update(view, TrackerEventKind::AnnounceSucceeded { peers_returned });
+      self.frontend.tracker_announce_succeeded(self);
    }
 
    pub(crate) fn announce_failed(&self) {
-      self.frontend.tracker_announce_failed(
-         self,
-         TrackerView {
-            endpoint: self.scope.endpoint.clone(),
-            active: true,
-            healthy: false,
-            peers_returned: None,
-         },
-      );
+      let mut view = self.live_view();
+      view.active = true;
+      view.healthy = false;
+      view.peers_returned = None;
+      self.live.update(view, TrackerEventKind::AnnounceFailed);
+      self.frontend.tracker_announce_failed(self);
    }
 
    pub(crate) fn stopped(&self) {
+      let mut view = self.live_view();
+      if !view.active {
+         return;
+      }
+      view.active = false;
+      self.live.update(view, TrackerEventKind::Stopped);
       self.frontend.tracker_stopped(self);
+   }
+}
+
+impl fmt::Debug for TrackerHandle {
+   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+      formatter
+         .debug_struct("TrackerHandle")
+         .field("torrent", &self.scope.torrent)
+         .field("endpoint", &self.scope.endpoint)
+         .finish_non_exhaustive()
    }
 }
 
@@ -198,7 +216,7 @@ impl fmt::Display for TrackerHandle {
 }
 
 /// Live listener scoped to one peer.
-pub type PeerListener = EventListener<Option<PeerView>>;
+pub type PeerListener = EventListener<PeerView, PeerEventKind>;
 
 /// Live listener scoped to one tracker.
-pub type TrackerListener = EventListener<Option<TrackerView>>;
+pub type TrackerListener = EventListener<TrackerView, TrackerEventKind>;

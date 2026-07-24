@@ -8,7 +8,8 @@ use std::{
 use futures::Stream;
 
 use super::{
-   CoreEventKind, EngineView, EventStreamError, EventSubscription, Sequenced, TorrentView,
+   CoreEventKind, EngineView, EventStreamError, EventSubscription, Sequenced, TorrentEventKind,
+   TorrentView,
 };
 
 /// A generic event stream paired with a synchronous current-state reader.
@@ -69,4 +70,4 @@ impl<V, E> fmt::Debug for EventListener<V, E> {
 pub type EngineListener = EventListener<EngineView>;
 
 /// Live listener scoped to one torrent.
-pub type TorrentListener = EventListener<Option<TorrentView>>;
+pub type TorrentListener = EventListener<Option<TorrentView>, TorrentEventKind>;

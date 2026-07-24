@@ -1,23 +1,17 @@
-use std::path::PathBuf;
-
 use libtortillas::{
    facade::{EngineSnapshot, TorrentSnapshot},
-   hashes::InfoHash,
-   prelude::{CoreCommand, EngineHandle, TorrentCommand, TorrentSource},
+   prelude::{EngineHandle, EventSubscription, PeerEventKind, TorrentEventKind, TrackerEventKind},
 };
 
 #[test]
 fn prelude_exposes_frontend_facade_types() {
-   let command = CoreCommand::AddTorrent {
-      source: TorrentSource::TorrentFilePath(PathBuf::from("ubuntu.torrent")),
-   };
+   fn accepts_torrent_events(_: Option<EventSubscription<TorrentEventKind>>) {}
+   fn accepts_peer_events(_: Option<EventSubscription<PeerEventKind>>) {}
+   fn accepts_tracker_events(_: Option<EventSubscription<TrackerEventKind>>) {}
 
-   match command {
-      CoreCommand::AddTorrent {
-         source: TorrentSource::TorrentFilePath(path),
-      } => assert_eq!(path, PathBuf::from("ubuntu.torrent")),
-      other => panic!("unexpected command: {other:?}"),
-   }
+   accepts_torrent_events(None);
+   accepts_peer_events(None);
+   accepts_tracker_events(None);
 }
 
 #[test]
@@ -25,29 +19,6 @@ fn facade_engine_handle_matches_existing_engine_type() {
    fn accepts_engine_handle(_: Option<EngineHandle>) {}
 
    accepts_engine_handle(None);
-}
-
-#[test]
-fn engine_command_routes_the_shared_torrent_command_type() {
-   let torrent = InfoHash::from_bytes([7; 20]);
-   let command = CoreCommand::Torrent {
-      torrent,
-      command: TorrentCommand::Pause,
-   };
-
-   assert_eq!(
-      command,
-      CoreCommand::Torrent {
-         torrent,
-         command: TorrentCommand::Pause,
-      }
-   );
-
-   let command = CoreCommand::RemoveTorrent { torrent };
-   assert_eq!(command, CoreCommand::RemoveTorrent { torrent });
-
-   let command = CoreCommand::Shutdown;
-   assert_eq!(command, CoreCommand::Shutdown);
 }
 
 #[test]

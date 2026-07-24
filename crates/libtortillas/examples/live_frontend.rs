@@ -1,8 +1,7 @@
-use std::{io, path::PathBuf};
+use std::path::PathBuf;
 
 use libtortillas::prelude::{
-   CoreCommand, CoreCommandResult, CoreEventKind, Engine, EventStreamError, TorrentCommand,
-   TorrentSource, TorrentState,
+   CoreEventKind, Engine, EventStreamError, TorrentEventKind, TorrentSource, TorrentState,
 };
 use tracing::{error, info, warn};
 
@@ -48,22 +47,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       }
    });
 
-   let result = engine
-      .send(CoreCommand::AddTorrent {
-         source: TorrentSource::torrent_file_path(torrent_path),
-      })
+   let torrent = engine
+      .add_torrent(TorrentSource::torrent_file_path(torrent_path))
       .await?;
-   let CoreCommandResult::TorrentAdded(torrent) = result else {
-      return Err(io::Error::other("add command did not return a torrent handle").into());
-   };
 
    let mut torrent_listener = torrent.listener();
-   torrent.send(TorrentCommand::Pause).await?;
+   torrent.pause().await?;
    let paused = loop {
       let event = torrent_listener.recv().await?;
       if matches!(
          event.kind,
-         CoreEventKind::TorrentStateChanged {
+         TorrentEventKind::StateChanged {
             current: TorrentState::Paused,
             ..
          }
@@ -72,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       }
    };
    info!(sequence = paused.sequence, ?paused.kind, "torrent paused");
-   torrent.send(TorrentCommand::Start).await?;
+   torrent.start().await?;
 
    tokio::signal::ctrl_c().await?;
    if let Some(path) = session_path {
@@ -80,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       tokio::fs::write(&path, serde_json::to_vec_pretty(&snapshot)?).await?;
       info!(?path, "saved resumable engine state");
    }
-   let _ = engine.send(CoreCommand::Shutdown).await?;
+   engine.shutdown().await?;
    frontend.await?;
    Ok(())
 }
