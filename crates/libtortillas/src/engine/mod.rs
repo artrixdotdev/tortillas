@@ -57,7 +57,7 @@ use kameo::{
 pub(crate) use messages::*;
 pub use source::TorrentSource;
 
-use self::commands::{CreateTorrent, RemoveTorrent, SnapshotEngine, StartAll};
+use self::commands::{CreateTorrent, GetTorrent, RemoveTorrent, SnapshotEngine, StartAll};
 pub use self::snapshot::{EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
@@ -303,6 +303,21 @@ impl Engine {
          .await
          .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
       Ok(())
+   }
+
+   /// Returns a public handle for a torrent managed by this engine.
+   pub async fn torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
+      let actor = match self.actor().ask(GetTorrent { info_hash }).await {
+         Ok(actor) => actor,
+         Err(SendError::HandlerError(err)) => return Err(err),
+         Err(err) => return Err(EngineError::Other(anyhow::anyhow!(err.to_string()))),
+      };
+
+      Ok(Torrent::new_with_frontend(
+         info_hash,
+         actor,
+         self.frontend.clone(),
+      ))
    }
 
    /// Removes a torrent from the engine and stops its actor gracefully.

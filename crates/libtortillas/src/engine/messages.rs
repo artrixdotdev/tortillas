@@ -85,6 +85,18 @@ pub(crate) mod commands {
          }
       }
 
+      /// Returns a managed torrent actor for public handle construction.
+      #[message]
+      pub(crate) fn get_torrent(
+         &self, info_hash: InfoHash,
+      ) -> Result<ActorRef<TorrentActor>, EngineError> {
+         self
+            .torrents
+            .get(&info_hash)
+            .map(|torrent| torrent.clone())
+            .ok_or(EngineError::TorrentNotFound(info_hash))
+      }
+
       /// Removes a torrent actor from the engine and stops it gracefully.
       #[message]
       pub(crate) async fn remove_torrent(
