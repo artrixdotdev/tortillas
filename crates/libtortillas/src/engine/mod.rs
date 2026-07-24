@@ -61,6 +61,7 @@ use self::commands::{CreateTorrent, RemoveTorrent, SnapshotEngine, StartAll};
 pub use self::snapshot::{EngineSnapshot, EngineStatus};
 use crate::{
    errors::EngineError,
+   frontend::FrontendPublisher,
    hashes::InfoHash,
    peer::PeerId,
    settings::Settings,
@@ -108,7 +109,10 @@ use crate::{
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct Engine(ActorRef<EngineActor>);
+pub struct Engine {
+   actor: ActorRef<EngineActor>,
+   frontend: FrontendPublisher,
+}
 
 #[bon::bon]
 impl Engine {
@@ -205,6 +209,7 @@ impl Engine {
          None => std::env::current_dir().expect("Failed to get current dir"),
       };
 
+      let frontend = FrontendPublisher::new();
       let args = EngineActorArgs {
          tcp_addr,
          utp_addr,
@@ -213,16 +218,17 @@ impl Engine {
          piece_storage_strategy,
          settings,
          default_base_path: Some(output_path),
+         frontend: frontend.clone(),
       };
 
       let actor = EngineActor::spawn(args);
 
-      Engine(actor)
+      Engine { actor, frontend }
    }
 
    /// Just a helper function so we don't have to write `&self.0` all the time.
    fn actor(&self) -> &ActorRef<EngineActor> {
-      &self.0
+      &self.actor
    }
 
    /// Starts the torrenting process for a given torrent. This function

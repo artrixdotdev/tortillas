@@ -141,3 +141,9 @@ impl FrontendPublisher {
          .unwrap_or_else(std::sync::PoisonError::into_inner)
    }
 }
+
+impl Default for FrontendPublisher {
+   fn default() -> Self {
+      Self::new()
+   }
+}
