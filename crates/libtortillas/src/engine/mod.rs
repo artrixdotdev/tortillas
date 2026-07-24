@@ -732,18 +732,24 @@ mod tests {
          loop {
             let event = listener.recv().await.unwrap();
             if let CoreEventKind::Torrent {
+               torrent,
                event: crate::frontend::TorrentEventKind::PeerConnected(peer),
-               ..
             } = event.kind
             {
-               break peer;
+               break (torrent, peer);
             }
          }
       })
       .await
       .unwrap();
+      let (event_torrent, peer) = peer;
       assert_eq!(peer.torrent(), info_hash);
       assert!(peer.live_view().address.is_some());
+      assert!(
+         event_torrent
+            .live_view()
+            .is_some_and(|view| view.peer_count > 0)
+      );
       let _peer_listener = peer.listener();
 
       engine.shutdown().await.unwrap();

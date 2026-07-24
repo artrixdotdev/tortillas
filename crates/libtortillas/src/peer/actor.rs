@@ -425,11 +425,13 @@ impl Actor for PeerActor {
    async fn on_stop(
       &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
    ) -> Result<(), Self::Error> {
-      self.frontend.disconnected();
       if let Some(peer_id) = self.peer.id
          && let Err(err) = self
             .supervisor
-            .tell(torrent::commands::KillPeer { id: peer_id })
+            .tell(torrent::commands::KillPeer {
+               id: peer_id,
+               frontend: self.frontend.clone(),
+            })
             .await
       {
          warn!(error = %err, %peer_id, "Failed to notify torrent actor about stopped peer");
@@ -456,7 +458,10 @@ impl Actor for PeerActor {
             let id = self.peer.id.expect("Peer ID should exist");
             if let Err(err) = self
                .supervisor
-               .tell(torrent::commands::KillPeer { id })
+               .tell(torrent::commands::KillPeer {
+                  id,
+                  frontend: self.frontend.clone(),
+               })
                .await
             {
                warn!(error = %err, "Failed to tell supervisor to kill peer");

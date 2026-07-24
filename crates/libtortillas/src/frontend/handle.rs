@@ -155,17 +155,17 @@ impl PeerHandle {
       if self.inner.update(view, PeerEventKind::Updated)
          && let Some(frontend) = self.inner.frontend()
       {
-         frontend.peer_event(self, PeerEventKind::Updated);
+         frontend.peer_updated(self);
       }
    }
 
-   pub(crate) fn disconnected(&self) {
+   pub(crate) fn disconnected(&self, torrent: Option<super::TorrentView>) {
       let mut view = self.live_view();
       view.connected = false;
       if self.inner.close(view, PeerEventKind::Disconnected)
          && let Some(frontend) = self.inner.frontend()
       {
-         frontend.peer_event(self, PeerEventKind::Disconnected);
+         frontend.peer_disconnected(self, torrent);
       }
    }
 }

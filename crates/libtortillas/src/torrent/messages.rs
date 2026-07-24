@@ -153,16 +153,13 @@ pub(crate) mod commands {
    #[messages]
    impl TorrentActor {
       #[message]
-      pub(crate) fn kill_peer(&mut self, id: PeerId) {
+      pub(crate) fn kill_peer(&mut self, id: PeerId, frontend: crate::frontend::PeerHandle) {
          self.piece_scheduler.peer_disconnected(id);
          // Kill the actor quietly.
-         if let Some(actor) = self.peers.get(&id) {
+         if let Some(actor) = self.peers.remove(&id) {
             actor.kill();
-            self.peers.remove(&id);
-            self.frontend.update_torrent(self.live_view());
-         } else {
-            warn!("Received kill peer message for unknown peer");
          }
+         frontend.disconnected(Some(self.live_view()));
       }
 
       #[message]

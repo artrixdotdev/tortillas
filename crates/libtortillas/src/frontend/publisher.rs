@@ -412,19 +412,21 @@ impl FrontendPublisher {
       self.publish_torrent(torrent, TorrentEventKind::PeerConnected(peer.clone()));
    }
 
-   pub(crate) fn peer_event(&self, peer: &PeerHandle, event: PeerEventKind) {
+   pub(crate) fn peer_updated(&self, peer: &PeerHandle) {
       if self.hub.peers.get(&peer.scope()).is_none() {
          return;
       }
-      let torrent_event = match event {
-         PeerEventKind::Updated => TorrentEventKind::PeerUpdated(peer.clone()),
-         PeerEventKind::Disconnected => TorrentEventKind::PeerDisconnected(peer.clone()),
-      };
       if let Some(view) = self.torrent_view(peer.torrent()) {
-         self.publish_torrent(view, torrent_event);
+         self.publish_torrent(view, TorrentEventKind::PeerUpdated(peer.clone()));
       }
-      if matches!(event, PeerEventKind::Disconnected) {
-         self.hub.peers.remove(&peer.scope());
+   }
+
+   pub(crate) fn peer_disconnected(&self, peer: &PeerHandle, torrent: Option<TorrentView>) {
+      if self.hub.peers.remove(&peer.scope()).is_none() {
+         return;
+      }
+      if let Some(view) = torrent {
+         self.publish_torrent(view, TorrentEventKind::PeerDisconnected(peer.clone()));
       }
    }
 
@@ -491,7 +493,7 @@ impl FrontendPublisher {
          .into_iter()
          .filter(|peer| peer.live_view().connected)
       {
-         peer.disconnected();
+         peer.disconnected(None);
       }
       self.hub.peers.retain(|scope| scope.torrent != info_hash);
 
@@ -617,6 +619,47 @@ mod tests {
       let event = listener.recv().await.unwrap();
       assert_eq!(event.kind, super::super::PeerEventKind::Updated);
       assert_eq!(listener.view().downloaded_bytes, 16);
+   }
+
+   #[tokio::test]
+   async fn disconnected_peer_rejects_late_actor_updates() {
+      let frontend = FrontendPublisher::new();
+      let scope = PeerScope {
+         torrent: InfoHash::from_bytes([1; 20]),
+         peer: PeerId::Unknown([2; 20]),
+      };
+      let view = PeerView {
+         address: None,
+         client: None,
+         connected: true,
+         peer_choking: true,
+         peer_interested: false,
+         client_choking: true,
+         client_interested: false,
+         available_pieces: 0,
+         download_rate_bytes_per_second: 0,
+         upload_rate_bytes_per_second: 0,
+         downloaded_bytes: 0,
+         uploaded_bytes: 0,
+      };
+      let peer = frontend.peer(scope, view.clone());
+      let mut listener = peer.listener();
+
+      peer.disconnected(None);
+      let mut late = view;
+      late.downloaded_bytes = 32;
+      peer.update(late);
+
+      assert_eq!(
+         listener.recv().await.unwrap().kind,
+         PeerEventKind::Disconnected
+      );
+      assert_eq!(
+         listener.recv().await,
+         Err(super::super::EventStreamError::Closed)
+      );
+      assert!(!listener.view().connected);
+      assert_eq!(listener.view().downloaded_bytes, 0);
    }
 
    #[test]
