@@ -6,25 +6,116 @@ use std::sync::{
 use tokio::sync::broadcast;
 
 use super::{
-   CoreEvent, CoreEventKind, EngineView, EventSubscription, FrontendHealth, FrontendHealthLevel,
-   PeerView, TorrentView, TrackerView,
+   CoreEventKind, EngineView, EventListener, EventSubscription, FrontendHealth,
+   FrontendHealthLevel, PeerView, Sequenced, TorrentView, TrackerView,
 };
 use crate::{engine::EngineStatus, hashes::InfoHash, torrent::TorrentState};
 
 /// Number of discrete frontend events retained for each listener.
 pub const DEFAULT_EVENT_CAPACITY: usize = 256;
 
-/// Shared live-state publisher used by the engine actor hierarchy.
+/// Generic current-state and event publisher for live application APIs.
+///
+/// The same primitive backs engine, torrent, peer, and tracker listeners. It
+/// can also be reused by future protocol integrations without introducing
+/// another channel or listener implementation.
 #[derive(Debug, Clone)]
-pub(crate) struct FrontendPublisher {
-   inner: Arc<PublisherInner>,
+pub struct LivePublisher<V, E> {
+   inner: Arc<LivePublisherInner<V, E>>,
 }
 
 #[derive(Debug)]
-struct PublisherInner {
-   events: broadcast::Sender<CoreEvent>,
-   view: RwLock<EngineView>,
+struct LivePublisherInner<V, E> {
+   events: broadcast::Sender<Sequenced<E>>,
+   view: RwLock<V>,
    sequence: AtomicU64,
+}
+
+impl<V, E> LivePublisher<V, E>
+where
+   V: Clone + Send + Sync + 'static,
+   E: Clone + Send + 'static,
+{
+   /// Creates a publisher with an initial view and bounded event capacity.
+   #[must_use]
+   pub fn new(initial_view: V, event_capacity: usize) -> Self {
+      let (events, _) = broadcast::channel(event_capacity);
+      Self {
+         inner: Arc::new(LivePublisherInner {
+            events,
+            view: RwLock::new(initial_view),
+            sequence: AtomicU64::new(0),
+         }),
+      }
+   }
+
+   /// Subscribes to all future events from this publisher.
+   #[must_use]
+   pub fn subscribe(&self) -> EventSubscription<E> {
+      EventSubscription::new(self.inner.events.clone(), None)
+   }
+
+   pub(crate) fn subscribe_where(
+      &self, filter: impl Fn(&E) -> bool + Send + Sync + 'static,
+   ) -> EventSubscription<E> {
+      EventSubscription::new(self.inner.events.clone(), Some(Arc::new(filter)))
+   }
+
+   /// Creates a stream-compatible listener paired with the current view.
+   #[must_use]
+   pub fn listener(&self) -> EventListener<V, E> {
+      let publisher = self.clone();
+      EventListener::new(self.subscribe(), move || publisher.view())
+   }
+
+   /// Clones the latest coherent view.
+   #[must_use]
+   pub fn view(&self) -> V {
+      self.read_view().clone()
+   }
+
+   /// Replaces the current view without emitting an event.
+   pub fn set_view(&self, view: V) {
+      *self.write_view() = view;
+   }
+
+   /// Replaces the current view and emits the corresponding event.
+   pub fn update(&self, view: V, event: E) {
+      self.set_view(view);
+      self.publish(event);
+   }
+
+   /// Emits an event using this publisher's monotonic sequence.
+   pub fn publish(&self, kind: E) {
+      let sequence = self.inner.sequence.fetch_add(1, Ordering::Relaxed) + 1;
+      let _ = self.inner.events.send(Sequenced { sequence, kind });
+   }
+
+   pub(crate) fn edit_view<R>(&self, edit: impl FnOnce(&mut V) -> R) -> R {
+      edit(&mut self.write_view())
+   }
+
+   fn read_view(&self) -> RwLockReadGuard<'_, V> {
+      self
+         .inner
+         .view
+         .read()
+         .unwrap_or_else(std::sync::PoisonError::into_inner)
+   }
+
+   fn write_view(&self) -> RwLockWriteGuard<'_, V> {
+      self
+         .inner
+         .view
+         .write()
+         .unwrap_or_else(std::sync::PoisonError::into_inner)
+   }
+}
+
+/// Shared live-state publisher used by the engine actor hierarchy.
+#[derive(Debug, Clone)]
+pub(crate) struct FrontendPublisher {
+   live: LivePublisher<EngineView, CoreEventKind>,
 }
 
 impl FrontendPublisher {
@@ -33,39 +124,39 @@ impl FrontendPublisher {
    }
 
    fn with_event_capacity(event_capacity: usize) -> Self {
-      let (events, _) = broadcast::channel(event_capacity);
       Self {
-         inner: Arc::new(PublisherInner {
-            events,
-            view: RwLock::new(EngineView {
+         live: LivePublisher::new(
+            EngineView {
                status: EngineStatus::Starting,
                torrent_count: 0,
                torrents: Vec::new(),
-            }),
-            sequence: AtomicU64::new(0),
-         }),
+            },
+            event_capacity,
+         ),
       }
    }
 
    pub(crate) fn subscribe(&self) -> EventSubscription {
-      EventSubscription::engine(self.inner.events.subscribe())
+      self.live.subscribe()
    }
 
    pub(crate) fn subscribe_torrent(&self, torrent: InfoHash) -> EventSubscription {
-      EventSubscription::torrent(self.inner.events.subscribe(), torrent)
+      self
+         .live
+         .subscribe_where(move |event| event.torrent() == Some(torrent))
    }
 
    pub(crate) fn view(&self) -> EngineView {
-      self.read_view().clone()
+      self.live.view()
    }
 
    pub(crate) fn torrent_view(&self, torrent: InfoHash) -> Option<TorrentView> {
       self
-         .read_view()
+         .live
+         .view()
          .torrents
-         .iter()
+         .into_iter()
          .find(|view| view.info_hash == torrent)
-         .cloned()
    }
 
    pub(crate) fn engine_started(&self) {
@@ -173,69 +264,55 @@ impl FrontendPublisher {
    }
 
    pub(crate) fn torrent_removed(&self, torrent: InfoHash) {
-      let mut view = self.write_view();
-      view
-         .torrents
-         .retain(|candidate| candidate.info_hash != torrent);
-      view.torrent_count = u64::try_from(view.torrents.len()).unwrap_or(u64::MAX);
-      drop(view);
+      self.live.edit_view(|view| {
+         view
+            .torrents
+            .retain(|candidate| candidate.info_hash != torrent);
+         view.torrent_count = u64::try_from(view.torrents.len()).unwrap_or(u64::MAX);
+      });
       self.publish(CoreEventKind::TorrentRemoved { torrent });
    }
 
    pub(crate) fn publish(&self, kind: CoreEventKind) {
-      let sequence = self.inner.sequence.fetch_add(1, Ordering::Relaxed) + 1;
-      let _ = self.inner.events.send(CoreEvent { sequence, kind });
+      self.live.publish(kind);
    }
 
    fn set_engine_status(&self, status: EngineStatus) -> EngineView {
-      let mut view = self.write_view();
-      view.status = status;
-      view.clone()
+      self.live.edit_view(|view| {
+         view.status = status;
+         view.clone()
+      })
    }
 
    fn replace_torrent(&self, torrent: TorrentView) {
-      let mut view = self.write_view();
-      match view
-         .torrents
-         .iter_mut()
-         .find(|candidate| candidate.info_hash == torrent.info_hash)
-      {
-         Some(current) => *current = torrent,
-         None => view.torrents.push(torrent),
-      }
-      view
-         .torrents
-         .sort_by(|left, right| left.info_hash.as_bytes().cmp(right.info_hash.as_bytes()));
-      view.torrent_count = u64::try_from(view.torrents.len()).unwrap_or(u64::MAX);
+      self.live.edit_view(|view| {
+         match view
+            .torrents
+            .iter_mut()
+            .find(|candidate| candidate.info_hash == torrent.info_hash)
+         {
+            Some(current) => *current = torrent,
+            None => view.torrents.push(torrent),
+         }
+         view
+            .torrents
+            .sort_by(|left, right| left.info_hash.as_bytes().cmp(right.info_hash.as_bytes()));
+         view.torrent_count = u64::try_from(view.torrents.len()).unwrap_or(u64::MAX);
+      });
    }
 
    fn update_torrent_entry(&self, torrent: TorrentView) -> bool {
-      let mut view = self.write_view();
-      let Some(current) = view
-         .torrents
-         .iter_mut()
-         .find(|candidate| candidate.info_hash == torrent.info_hash)
-      else {
-         return false;
-      };
-      *current = torrent;
-      true
-   }
-
-   fn read_view(&self) -> RwLockReadGuard<'_, EngineView> {
-      self
-         .inner
-         .view
-         .read()
-         .unwrap_or_else(std::sync::PoisonError::into_inner)
-   }
-
-   fn write_view(&self) -> RwLockWriteGuard<'_, EngineView> {
-      self
-         .inner
-         .view
-         .write()
-         .unwrap_or_else(std::sync::PoisonError::into_inner)
+      self.live.edit_view(|view| {
+         let Some(current) = view
+            .torrents
+            .iter_mut()
+            .find(|candidate| candidate.info_hash == torrent.info_hash)
+         else {
+            return false;
+         };
+         *current = torrent;
+         true
+      })
    }
 }
 

@@ -39,6 +39,7 @@ kameo_actors = "^0.5"
 dashmap = { version = "^6", features = ["serde"] }
 bon = "^3.9"
 tokio-util = "^0.7"
+tokio-stream = { version = "^0.1", features = ["sync"] }
 
 [dev-dependencies]
 tracing-test = "0.2.6"

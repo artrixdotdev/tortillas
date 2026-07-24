@@ -12,9 +12,9 @@ mod subscription;
 mod view;
 
 pub use command::{CoreCommand, CoreCommandResult, TorrentCommand};
-pub use event::{CoreEvent, CoreEventKind, FrontendHealth, FrontendHealthLevel};
-pub use listener::{EngineListener, TorrentListener};
-pub use publisher::DEFAULT_EVENT_CAPACITY;
+pub use event::{CoreEvent, CoreEventKind, FrontendHealth, FrontendHealthLevel, Sequenced};
+pub use listener::{EngineListener, EventListener, TorrentListener};
 pub(crate) use publisher::FrontendPublisher;
+pub use publisher::{DEFAULT_EVENT_CAPACITY, LivePublisher};
 pub use subscription::{EventStreamError, EventSubscription};
 pub use view::{EngineView, PeerView, TorrentProgress, TorrentTransfer, TorrentView, TrackerView};

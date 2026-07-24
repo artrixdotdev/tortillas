@@ -519,7 +519,8 @@ impl Engine {
    /// state.
    #[must_use]
    pub fn listener(&self) -> EngineListener {
-      EngineListener::new(self.frontend.clone())
+      let frontend = self.frontend.clone();
+      EngineListener::new(self.subscribe(), move || frontend.view())
    }
 
    /// Returns the current display-oriented engine state maintained by the live

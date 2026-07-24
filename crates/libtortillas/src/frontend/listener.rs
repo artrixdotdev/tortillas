@@ -1,64 +1,72 @@
-use super::{
-   CoreEvent, EngineView, EventStreamError, EventSubscription, FrontendPublisher, TorrentView,
+use std::{
+   fmt,
+   pin::Pin,
+   sync::Arc,
+   task::{Context, Poll},
 };
-use crate::hashes::InfoHash;
+
+use futures::Stream;
+
+use super::{
+   CoreEventKind, EngineView, EventStreamError, EventSubscription, Sequenced, TorrentView,
+};
+
+/// A generic event stream paired with a synchronous current-state reader.
+///
+/// The listener itself implements [`Stream`]. Its view type and event type are
+/// generic so engine, torrent, peer, tracker, and future protocol integrations
+/// all reuse the same implementation.
+pub struct EventListener<V, E = CoreEventKind> {
+   events: EventSubscription<E>,
+   read_view: Arc<dyn Fn() -> V + Send + Sync>,
+}
+
+impl<V, E: Clone + Send + 'static> EventListener<V, E> {
+   pub(crate) fn new(
+      events: EventSubscription<E>, read_view: impl Fn() -> V + Send + Sync + 'static,
+   ) -> Self {
+      Self {
+         events,
+         read_view: Arc::new(read_view),
+      }
+   }
+
+   /// Waits for the next live event.
+   pub async fn recv(&mut self) -> Result<Sequenced<E>, EventStreamError> {
+      self.events.recv().await
+   }
+
+   /// Reads the latest coherent state without creating a persistence snapshot.
+   pub fn view(&self) -> V {
+      (self.read_view)()
+   }
+
+   /// Returns the underlying event subscription.
+   #[must_use]
+   pub const fn subscription(&self) -> &EventSubscription<E> {
+      &self.events
+   }
+}
+
+impl<V, E: Clone + Send + 'static> Stream for EventListener<V, E> {
+   type Item = Result<Sequenced<E>, EventStreamError>;
+
+   fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+      Pin::new(&mut self.events).poll_next(context)
+   }
+}
+
+impl<V, E> fmt::Debug for EventListener<V, E> {
+   fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+      formatter
+         .debug_struct("EventListener")
+         .field("events", &self.events)
+         .finish_non_exhaustive()
+   }
+}
 
 /// Live engine listener with typed events and current display state.
-///
-/// [`Self::recv`] waits for discrete changes. [`Self::view`] reads the latest
-/// coherent live state directly from the engine publisher, including after a
-/// lag report.
-#[derive(Debug)]
-pub struct EngineListener {
-   events: EventSubscription,
-   frontend: FrontendPublisher,
-}
-
-impl EngineListener {
-   pub(crate) fn new(frontend: FrontendPublisher) -> Self {
-      Self {
-         events: frontend.subscribe(),
-         frontend,
-      }
-   }
-
-   /// Waits for the next live engine or torrent event.
-   pub async fn recv(&mut self) -> Result<CoreEvent, EventStreamError> {
-      self.events.recv().await
-   }
-
-   /// Returns the latest coherent engine view without persistence snapshots.
-   #[must_use]
-   pub fn view(&self) -> EngineView {
-      self.frontend.view()
-   }
-}
+pub type EngineListener = EventListener<EngineView>;
 
 /// Live listener scoped to one torrent.
-#[derive(Debug)]
-pub struct TorrentListener {
-   torrent: InfoHash,
-   events: EventSubscription,
-   frontend: FrontendPublisher,
-}
-
-impl TorrentListener {
-   pub(crate) fn new(frontend: FrontendPublisher, torrent: InfoHash) -> Self {
-      Self {
-         torrent,
-         events: frontend.subscribe_torrent(torrent),
-         frontend,
-      }
-   }
-
-   /// Waits for the next live event associated with this torrent.
-   pub async fn recv(&mut self) -> Result<CoreEvent, EventStreamError> {
-      self.events.recv().await
-   }
-
-   /// Returns the latest torrent view, or `None` after removal.
-   #[must_use]
-   pub fn view(&self) -> Option<TorrentView> {
-      self.frontend.torrent_view(self.torrent)
-   }
-}
+pub type TorrentListener = EventListener<Option<TorrentView>>;

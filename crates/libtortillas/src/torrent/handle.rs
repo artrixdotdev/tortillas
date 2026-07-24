@@ -212,7 +212,9 @@ impl Torrent {
    /// Creates a live listener scoped to this torrent.
    #[must_use]
    pub fn listener(&self) -> TorrentListener {
-      TorrentListener::new(self.frontend.clone(), self.info_hash)
+      let frontend = self.frontend.clone();
+      let info_hash = self.info_hash;
+      TorrentListener::new(self.subscribe(), move || frontend.torrent_view(info_hash))
    }
 
    /// Returns the latest display-oriented state maintained for this torrent.

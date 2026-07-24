@@ -3,20 +3,23 @@ use serde::{Deserialize, Serialize};
 use super::{EngineView, PeerView, TorrentProgress, TorrentView, TrackerView};
 use crate::{hashes::InfoHash, torrent::TorrentState};
 
-/// A sequenced event emitted by the live frontend API.
+/// A sequenced event emitted by a live publisher.
 ///
 /// Sequence numbers are engine-local and strictly increase for every event.
 /// A frontend can use them to preserve event order or detect a gap after
 /// reconnecting a consumer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CoreEvent {
+pub struct Sequenced<E> {
    /// Engine-local sequence number for this event.
    pub sequence: u64,
    /// The typed change represented by this event.
-   pub kind: CoreEventKind,
+   pub kind: E,
 }
 
-impl CoreEvent {
+/// A sequenced event emitted by the engine's frontend publisher.
+pub type CoreEvent = Sequenced<CoreEventKind>;
+
+impl Sequenced<CoreEventKind> {
    /// Returns the torrent associated with this event, when applicable.
    #[must_use]
    pub const fn torrent(&self) -> Option<InfoHash> {
