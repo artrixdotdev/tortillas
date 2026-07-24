@@ -474,6 +474,15 @@ impl FrontendPublisher {
    ) {
       let info_hash = view.info_hash;
       let Some(torrent) = self.read_torrents().get(&info_hash).cloned() else {
+         self.live.edit_view(|engine| {
+            if let Some(current) = engine
+               .torrents
+               .iter_mut()
+               .find(|candidate| candidate.info_hash == info_hash)
+            {
+               *current = view;
+            }
+         });
          return;
       };
       torrent.publish(view.clone(), event);
