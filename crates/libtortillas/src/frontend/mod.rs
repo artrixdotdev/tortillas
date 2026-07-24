@@ -5,9 +5,12 @@
 //! prefer these types over actor messages and protocol internals.
 
 mod event;
+mod publisher;
 mod subscription;
 mod view;
 
 pub use event::{CoreEvent, CoreEventKind, FrontendHealth, FrontendHealthLevel};
+pub use publisher::DEFAULT_EVENT_CAPACITY;
+pub(crate) use publisher::FrontendPublisher;
 pub use subscription::{EventStreamError, EventSubscription};
 pub use view::{EngineView, PeerView, TorrentProgress, TorrentTransfer, TorrentView, TrackerView};
