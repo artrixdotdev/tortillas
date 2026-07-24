@@ -95,11 +95,11 @@ impl Torrent {
    ) -> Result<(), TorrentError> {
       self
          .actor()
-         .tell(SetPieceStorage {
+         .ask(SetPieceStorage {
             strategy: piece_storage,
          })
          .await
-         .map_err(Self::communication_error)?;
+         .map_err(|error| Self::communication_error("set piece storage", error))?;
       Ok(())
    }
 
@@ -110,7 +110,7 @@ impl Torrent {
             path: folder.into(),
          })
          .await
-         .map_err(Self::communication_error)?;
+         .map_err(|error| Self::communication_error("set output path", error))?;
       Ok(())
    }
 
@@ -119,11 +119,11 @@ impl Torrent {
    ) -> Result<(), TorrentError> {
       self
          .actor()
-         .tell(SetPieceManager {
+         .ask(SetPieceManager {
             manager: Box::new(piece_manager),
          })
          .await
-         .map_err(Self::communication_error)?;
+         .map_err(|error| Self::communication_error("set piece manager", error))?;
       Ok(())
    }
 
@@ -156,7 +156,7 @@ impl Torrent {
          .inspect_err(|error| {
             error!(%error, operation, "Failed to change torrent state");
          })
-         .map_err(Self::communication_error)?;
+         .map_err(|error| Self::communication_error(operation, error))?;
       Ok(())
    }
 
@@ -165,7 +165,7 @@ impl Torrent {
          .actor()
          .ask(GetState)
          .await
-         .map_err(Self::communication_error)
+         .map_err(|error| Self::communication_error("get state", error))
    }
 
    /// Captures this torrent's metadata, storage configuration, and verified or
@@ -178,24 +178,24 @@ impl Torrent {
          .ask(SnapshotState)
          .await
          .map(|snapshot| *snapshot)
-         .map_err(Self::communication_error)
+         .map_err(|error| Self::communication_error("snapshot torrent", error))
    }
 
    pub async fn set_auto_start(&self, auto: bool) -> Result<(), TorrentError> {
       self
          .actor()
-         .tell(SetAutoStart { auto })
+         .ask(SetAutoStart { auto })
          .await
-         .map_err(Self::communication_error)?;
+         .map_err(|error| Self::communication_error("set auto start", error))?;
       Ok(())
    }
 
    pub async fn set_sufficient_peers(&self, peers: usize) -> Result<(), TorrentError> {
       self
          .actor()
-         .tell(SetSufficientPeers { peers })
+         .ask(SetSufficientPeers { peers })
          .await
-         .map_err(Self::communication_error)?;
+         .map_err(|error| Self::communication_error("set sufficient peers", error))?;
       Ok(())
    }
 
@@ -203,10 +203,12 @@ impl Torrent {
       let (hook, hook_rx) = oneshot::channel();
       self
          .actor()
-         .tell(ReadyHook { hook })
+         .ask(ReadyHook { hook })
          .await
-         .map_err(Self::communication_error)?;
-      hook_rx.await.map_err(Self::communication_error)?;
+         .map_err(|error| Self::communication_error("register ready hook", error))?;
+      hook_rx
+         .await
+         .map_err(|error| Self::communication_error("wait for readiness", error))?;
       Ok(())
    }
 
@@ -266,9 +268,9 @@ impl Torrent {
       self.inner.hub.upgrade().map(FrontendPublisher::from_hub)
    }
 
-   fn communication_error(error: impl fmt::Display) -> TorrentError {
+   fn communication_error(operation: &'static str, error: impl fmt::Display) -> TorrentError {
       TorrentError::ActorCommunicationFailed {
-         actor_type: "torrent".to_string(),
+         operation,
          reason: error.to_string(),
       }
    }

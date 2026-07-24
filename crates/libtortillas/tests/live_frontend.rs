@@ -214,6 +214,22 @@ async fn engine_methods_return_typed_unknown_torrent_errors() {
 }
 
 #[tokio::test]
+async fn stopped_engine_reports_typed_actor_communication_errors() {
+   let engine = deterministic_engine();
+   engine.shutdown().await.unwrap();
+
+   let error = engine.snapshot().await.unwrap_err();
+
+   assert!(matches!(
+      error,
+      EngineError::ActorCommunicationFailed {
+         operation: "snapshot engine",
+         ..
+      }
+   ));
+}
+
+#[tokio::test]
 async fn lagging_listener_recovers_from_current_live_view() {
    let engine = deterministic_engine();
    let torrent = engine

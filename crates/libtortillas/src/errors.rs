@@ -72,6 +72,17 @@ pub enum EngineError {
    #[error(transparent)]
    Torrent(#[from] TorrentError),
 
+   /// Communication with an actor failed before its handler completed.
+   #[error("Actor communication failed during {operation}: {reason}")]
+   ActorCommunicationFailed {
+      operation: &'static str,
+      reason: String,
+   },
+
+   /// The actor owns a torrent that is missing its live public handle.
+   #[error("Torrent {info_hash} is missing its frontend handle")]
+   FrontendHandleMissing { info_hash: InfoHash },
+
    /// Any other engine-level error wrapped in [`anyhow::Error`]
    #[error(transparent)]
    Other(#[from] anyhow::Error),
@@ -302,8 +313,11 @@ pub enum TorrentError {
    MissingInfoDict,
 
    /// Actor communication failed
-   #[error("Actor communication failed: {actor_type} - {reason}")]
-   ActorCommunicationFailed { actor_type: String, reason: String },
+   #[error("Actor communication failed during {operation}: {reason}")]
+   ActorCommunicationFailed {
+      operation: &'static str,
+      reason: String,
+   },
 
    /// IO error
    #[error(transparent)]

@@ -233,6 +233,13 @@ impl Engine {
       &self.actor
    }
 
+   fn communication_error(operation: &'static str, error: impl std::fmt::Display) -> EngineError {
+      EngineError::ActorCommunicationFailed {
+         operation,
+         reason: error.to_string(),
+      }
+   }
+
    /// Starts the torrenting process for a given torrent. This function
    /// automatically contacts trackers and connects to peers. The spawned
    /// [Torrent Actor](Torrent) will be controlled by the [Engine].
@@ -287,7 +294,7 @@ impl Engine {
             restore: None,
          })
          .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+         .map_err(|error| Self::communication_error("add torrent", error))?;
 
       self.frontend_torrent(info_hash)
       // We don't need to assign link or insert the ref here because its already
@@ -314,7 +321,7 @@ impl Engine {
       {
          Ok(_) => {}
          Err(SendError::HandlerError(error)) => return Err(error),
-         Err(error) => return Err(EngineError::Other(anyhow::anyhow!(error.to_string()))),
+         Err(error) => return Err(Self::communication_error("restore torrent", error)),
       }
 
       self.frontend_torrent(info_hash)
@@ -329,7 +336,7 @@ impl Engine {
       let info_hashes = match self.actor().ask(RestoreEngine { snapshot }).await {
          Ok(info_hashes) => info_hashes,
          Err(SendError::HandlerError(error)) => return Err(error),
-         Err(error) => return Err(EngineError::Other(anyhow::anyhow!(error.to_string()))),
+         Err(error) => return Err(Self::communication_error("restore engine", error)),
       };
       info_hashes
          .into_iter()
@@ -341,9 +348,9 @@ impl Engine {
    pub async fn start_all(&self) -> Result<(), EngineError> {
       self
          .actor()
-         .tell(StartAll)
+         .ask(StartAll)
          .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+         .map_err(|error| Self::communication_error("start all torrents", error))?;
       Ok(())
    }
 
@@ -352,7 +359,7 @@ impl Engine {
       match self.actor().ask(GetTorrent { info_hash }).await {
          Ok(_) => {}
          Err(SendError::HandlerError(err)) => return Err(err),
-         Err(err) => return Err(EngineError::Other(anyhow::anyhow!(err.to_string()))),
+         Err(error) => return Err(Self::communication_error("get torrent", error)),
       }
 
       self.frontend_torrent(info_hash)
@@ -363,13 +370,13 @@ impl Engine {
       let torrent = match self.actor().ask(RemoveTorrent { info_hash }).await {
          Ok(torrent) => torrent,
          Err(SendError::HandlerError(err)) => return Err(err),
-         Err(err) => return Err(EngineError::Other(anyhow::anyhow!(err.to_string()))),
+         Err(error) => return Err(Self::communication_error("remove torrent", error)),
       };
 
       let stop_result = torrent.stop_gracefully().await;
       torrent.wait_for_shutdown().await;
       self.frontend.torrent_removed(info_hash);
-      stop_result.map_err(|error| EngineError::Other(anyhow::anyhow!(error.to_string())))
+      stop_result.map_err(|error| Self::communication_error("stop torrent", error))
    }
 
    /// Gracefully shuts down the engine and its managed torrent actors.
@@ -378,7 +385,7 @@ impl Engine {
          .actor()
          .stop_gracefully()
          .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+         .map_err(|error| Self::communication_error("shut down engine", error))?;
       self.actor().wait_for_shutdown().await;
 
       Ok(())
@@ -394,7 +401,7 @@ impl Engine {
          .actor()
          .ask(SnapshotEngine)
          .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))
+         .map_err(|error| Self::communication_error("snapshot engine", error))
    }
 
    /// Subscribes to typed engine and torrent events as they happen.
@@ -423,11 +430,10 @@ impl Engine {
    }
 
    fn frontend_torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
-      self.frontend.torrent_handle(info_hash).ok_or_else(|| {
-         EngineError::Other(anyhow::anyhow!(
-            "torrent {info_hash} is missing its frontend handle"
-         ))
-      })
+      self
+         .frontend
+         .torrent_handle(info_hash)
+         .ok_or_else(|| EngineError::FrontendHandleMissing { info_hash })
    }
 }
 
