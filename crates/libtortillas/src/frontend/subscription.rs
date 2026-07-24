@@ -17,16 +17,29 @@ use super::{CoreEventKind, Sequenced};
 /// standard async stream combinators from `futures` or `tokio-stream`. The
 /// inherent [`Self::recv`] method remains available for Tokio-style loops.
 pub struct EventSubscription<E = CoreEventKind> {
-   sender: broadcast::Sender<Sequenced<E>>,
+   sender: broadcast::WeakSender<Sequenced<E>>,
    stream: BroadcastStream<Sequenced<E>>,
 }
 
 impl<E: Clone + Send + 'static> EventSubscription<E> {
    pub(crate) fn new(sender: broadcast::Sender<Sequenced<E>>) -> Self {
+      Self::from_receiver(sender.subscribe(), sender.downgrade())
+   }
+
+   pub(crate) fn from_receiver(
+      receiver: broadcast::Receiver<Sequenced<E>>, sender: broadcast::WeakSender<Sequenced<E>>,
+   ) -> Self {
       Self {
-         stream: BroadcastStream::new(sender.subscribe()),
+         stream: BroadcastStream::new(receiver),
          sender,
       }
+   }
+
+   fn closed() -> Self {
+      let (sender, receiver) = broadcast::channel(1);
+      let weak = sender.downgrade();
+      drop(sender);
+      Self::from_receiver(receiver, weak)
    }
 
    /// Waits for the next event in this subscription.
@@ -40,7 +53,7 @@ impl<E: Clone + Send + 'static> EventSubscription<E> {
    /// event position.
    #[must_use]
    pub fn resubscribe(&self) -> Self {
-      Self::new(self.sender.clone())
+      self.sender.upgrade().map_or_else(Self::closed, Self::new)
    }
 }
 
@@ -63,7 +76,13 @@ impl<E> fmt::Debug for EventSubscription<E> {
    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
       formatter
          .debug_struct("EventSubscription")
-         .field("receiver_count", &self.sender.receiver_count())
+         .field(
+            "receiver_count",
+            &self
+               .sender
+               .upgrade()
+               .map_or(0, |sender| sender.receiver_count()),
+         )
          .finish_non_exhaustive()
    }
 }

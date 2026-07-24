@@ -94,6 +94,30 @@ async fn generic_live_publisher_implements_async_stream() {
    assert_eq!(listener.view(), 1);
 }
 
+#[tokio::test]
+async fn live_listener_closes_when_its_publisher_is_dropped() {
+   let publisher = LivePublisher::<_, &'static str>::new(0_u8, 4);
+   let mut listener = publisher.listener();
+
+   drop(publisher);
+
+   assert_eq!(listener.recv().await, Err(EventStreamError::Closed));
+   assert_eq!(listener.view(), 0);
+}
+
+#[tokio::test]
+async fn closed_live_publisher_rejects_late_updates() {
+   let publisher = LivePublisher::new(0_u8, 4);
+   let mut listener = publisher.listener();
+
+   assert!(publisher.close(1, "closed"));
+   assert!(!publisher.update(2, "late"));
+
+   assert_eq!(listener.recv().await.unwrap().kind, "closed");
+   assert_eq!(listener.recv().await, Err(EventStreamError::Closed));
+   assert_eq!(listener.view(), 1);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn concurrent_live_updates_are_delivered_in_sequence_order() {
    const UPDATE_COUNT: u64 = 64;

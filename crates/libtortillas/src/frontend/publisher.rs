@@ -1,9 +1,6 @@
 use std::{
    collections::HashMap,
-   sync::{
-      Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
-      atomic::{AtomicU64, Ordering},
-   },
+   sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use tokio::sync::broadcast;
@@ -48,15 +45,20 @@ fn mutex_lock<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
 /// another channel or listener implementation.
 #[derive(Debug, Clone)]
 pub struct LivePublisher<V, E> {
-   inner: Arc<LivePublisherInner<V, E>>,
+   state: Arc<Mutex<LiveState<V>>>,
+   channel: Arc<LiveChannel<E>>,
 }
 
 #[derive(Debug)]
-struct LivePublisherInner<V, E> {
-   events: broadcast::Sender<Sequenced<E>>,
-   view: RwLock<V>,
-   sequence: AtomicU64,
-   ordering: Mutex<()>,
+struct LiveState<V> {
+   view: V,
+   sequence: u64,
+   closed: bool,
+}
+
+#[derive(Debug)]
+struct LiveChannel<E> {
+   sender: Mutex<Option<broadcast::Sender<Sequenced<E>>>>,
 }
 
 impl<V, E> LivePublisher<V, E>
@@ -65,15 +67,22 @@ where
    E: Clone + Send + 'static,
 {
    /// Creates a publisher with an initial view and bounded event capacity.
+   ///
+   /// # Panics
+   ///
+   /// Panics when `event_capacity` is zero.
    #[must_use]
    pub fn new(initial_view: V, event_capacity: usize) -> Self {
+      assert!(event_capacity > 0, "event capacity must be non-zero");
       let (events, _) = broadcast::channel(event_capacity);
       Self {
-         inner: Arc::new(LivePublisherInner {
-            events,
-            view: RwLock::new(initial_view),
-            sequence: AtomicU64::new(0),
-            ordering: Mutex::new(()),
+         state: Arc::new(Mutex::new(LiveState {
+            view: initial_view,
+            sequence: 0,
+            closed: false,
+         })),
+         channel: Arc::new(LiveChannel {
+            sender: Mutex::new(Some(events)),
          }),
       }
    }
@@ -81,73 +90,123 @@ where
    /// Subscribes to all future events from this publisher.
    #[must_use]
    pub fn subscribe(&self) -> EventSubscription<E> {
-      EventSubscription::new(self.inner.events.clone())
+      let sender = mutex_lock(&self.channel.sender);
+      match sender.as_ref() {
+         Some(sender) => EventSubscription::from_receiver(sender.subscribe(), sender.downgrade()),
+         None => {
+            let (sender, receiver) = broadcast::channel(1);
+            let weak = sender.downgrade();
+            drop(sender);
+            EventSubscription::from_receiver(receiver, weak)
+         }
+      }
    }
 
    /// Creates a stream-compatible listener paired with the current view.
    #[must_use]
    pub fn listener(&self) -> EventListener<V, E> {
-      let publisher = self.clone();
-      EventListener::new(self.subscribe(), move || publisher.view())
+      let state = Arc::clone(&self.state);
+      EventListener::new(self.subscribe(), move || mutex_lock(&state).view.clone())
    }
 
    /// Clones the latest coherent view.
    #[must_use]
    pub fn view(&self) -> V {
-      self.read_view().clone()
+      mutex_lock(&self.state).view.clone()
    }
 
    /// Replaces the current view without emitting an event.
-   pub fn set_view(&self, view: V) {
-      let _ordering = mutex_lock(&self.inner.ordering);
-      *self.write_view() = view;
-   }
-
-   /// Replaces the current view and emits the corresponding event.
-   pub fn update(&self, view: V, event: E) {
-      let _ordering = mutex_lock(&self.inner.ordering);
-      *self.write_view() = view;
-      self.publish_ordered(event);
-   }
-
-   /// Emits an event using this publisher's monotonic sequence.
-   pub fn publish(&self, kind: E) {
-      let _ordering = mutex_lock(&self.inner.ordering);
-      self.publish_ordered(kind);
-   }
-
-   pub(crate) fn edit_and_publish<R>(&self, edit: impl FnOnce(&mut V) -> (R, E)) -> R {
-      let _ordering = mutex_lock(&self.inner.ordering);
-      let (result, event) = edit(&mut self.write_view());
-      self.publish_ordered(event);
-      result
-   }
-
-   pub(crate) fn edit_if_and_publish(&self, edit: impl FnOnce(&mut V) -> bool, event: E) -> bool {
-      let _ordering = mutex_lock(&self.inner.ordering);
-      if !edit(&mut self.write_view()) {
+   ///
+   /// Returns `false` when the publisher has already closed.
+   pub fn set_view(&self, view: V) -> bool {
+      let mut state = mutex_lock(&self.state);
+      if state.closed {
          return false;
       }
-      self.publish_ordered(event);
+      state.view = view;
       true
    }
 
-   fn publish_ordered(&self, kind: E) {
-      let sequence = self.inner.sequence.fetch_add(1, Ordering::Relaxed) + 1;
-      let _ = self.inner.events.send(Sequenced { sequence, kind });
+   /// Replaces the current view and emits the corresponding event.
+   ///
+   /// Returns `false` when the publisher has already closed.
+   pub fn update(&self, view: V, event: E) -> bool {
+      self.mutate(|current| *current = view, event)
    }
 
-   pub(crate) fn edit_view<R>(&self, edit: impl FnOnce(&mut V) -> R) -> R {
-      let _ordering = mutex_lock(&self.inner.ordering);
-      edit(&mut self.write_view())
+   /// Emits an event using this publisher's monotonic sequence.
+   ///
+   /// Returns `false` when the publisher has already closed.
+   pub fn publish(&self, kind: E) -> bool {
+      self.mutate(|_| {}, kind)
    }
 
-   fn read_view(&self) -> RwLockReadGuard<'_, V> {
-      read_lock(&self.inner.view)
+   /// Atomically updates the view and permanently closes this publisher after
+   /// delivering one terminal event.
+   ///
+   /// Returns `false` if another caller already closed the publisher.
+   pub fn close(&self, view: V, event: E) -> bool {
+      let mut state = mutex_lock(&self.state);
+      if state.closed {
+         return false;
+      }
+      state.view = view;
+      state.sequence = state.sequence.saturating_add(1);
+      state.closed = true;
+      let mut sender = mutex_lock(&self.channel.sender);
+      if let Some(sender) = sender.take() {
+         let _ = sender.send(Sequenced {
+            sequence: state.sequence,
+            kind: event,
+         });
+      }
+      true
    }
 
-   fn write_view(&self) -> RwLockWriteGuard<'_, V> {
-      write_lock(&self.inner.view)
+   pub(crate) fn edit_and_publish(&self, edit: impl FnOnce(&mut V) -> E) -> bool {
+      let mut state = mutex_lock(&self.state);
+      if state.closed {
+         return false;
+      }
+      let event = edit(&mut state.view);
+      state.sequence = state.sequence.saturating_add(1);
+      self.send(&state, event);
+      true
+   }
+
+   pub(crate) fn edit_if_and_publish(&self, edit: impl FnOnce(&mut V) -> bool, event: E) -> bool {
+      let mut state = mutex_lock(&self.state);
+      if state.closed || !edit(&mut state.view) {
+         return false;
+      }
+      state.sequence = state.sequence.saturating_add(1);
+      self.send(&state, event);
+      true
+   }
+
+   pub(crate) fn edit_view<R>(&self, edit: impl FnOnce(&mut V) -> R) -> Option<R> {
+      let mut state = mutex_lock(&self.state);
+      (!state.closed).then(|| edit(&mut state.view))
+   }
+
+   fn mutate(&self, edit: impl FnOnce(&mut V), event: E) -> bool {
+      let mut state = mutex_lock(&self.state);
+      if state.closed {
+         return false;
+      }
+      edit(&mut state.view);
+      state.sequence = state.sequence.saturating_add(1);
+      self.send(&state, event);
+      true
+   }
+
+   fn send(&self, state: &LiveState<V>, event: E) {
+      if let Some(sender) = mutex_lock(&self.channel.sender).as_ref() {
+         let _ = sender.send(Sequenced {
+            sequence: state.sequence,
+            kind: event,
+         });
+      }
    }
 }
 
@@ -221,8 +280,7 @@ impl FrontendPublisher {
    pub(crate) fn engine_started(&self) {
       self.live.edit_and_publish(|view| {
          view.status = EngineStatus::Running;
-         let view = view.clone();
-         ((), CoreEventKind::EngineStarted(view))
+         CoreEventKind::EngineStarted(view.clone())
       });
    }
 
@@ -231,11 +289,9 @@ impl FrontendPublisher {
    }
 
    pub(crate) fn engine_stopped(&self) {
-      self.live.edit_and_publish(|view| {
-         view.status = EngineStatus::Stopped;
-         let view = view.clone();
-         ((), CoreEventKind::Shutdown(view))
-      });
+      let mut view = self.live.view();
+      view.status = EngineStatus::Stopped;
+      self.live.close(view.clone(), CoreEventKind::Shutdown(view));
    }
 
    pub(crate) fn initialize_torrent(&self, torrent: TorrentView) {
@@ -431,7 +487,7 @@ impl FrontendPublisher {
          handle.removed();
          self.live.edit_and_publish(|view| {
             Self::remove_torrent_view(view, torrent);
-            ((), CoreEventKind::TorrentRemoved(handle))
+            CoreEventKind::TorrentRemoved(handle)
          });
       } else {
          self
@@ -445,14 +501,17 @@ impl FrontendPublisher {
    }
 
    fn set_engine_status(&self, status: EngineStatus) -> EngineView {
-      self.live.edit_view(|view| {
-         view.status = status;
-         view.clone()
-      })
+      self
+         .live
+         .edit_view(|view| {
+            view.status = status;
+            view.clone()
+         })
+         .unwrap_or_else(|| self.live.view())
    }
 
    fn replace_torrent(&self, torrent: TorrentView) {
-      self.live.edit_view(|view| {
+      let _ = self.live.edit_view(|view| {
          match view
             .torrents
             .iter_mut()
@@ -474,7 +533,7 @@ impl FrontendPublisher {
    ) {
       let info_hash = view.info_hash;
       let Some(torrent) = self.read_torrents().get(&info_hash).cloned() else {
-         self.live.edit_view(|engine| {
+         let _ = self.live.edit_view(|engine| {
             if let Some(current) = engine
                .torrents
                .iter_mut()
