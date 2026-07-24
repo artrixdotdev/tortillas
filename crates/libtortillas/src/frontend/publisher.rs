@@ -498,7 +498,7 @@ impl FrontendPublisher {
       for tracker in self
          .tracker_handles(info_hash)
          .into_iter()
-         .filter(|tracker| tracker.live_view().active)
+         .filter(|tracker| tracker.live_view().status.is_active())
       {
          tracker.stopped();
       }
@@ -649,5 +649,23 @@ mod tests {
 
       assert!(hub.upgrade().is_none());
       assert!(peer.live_view().connected);
+   }
+
+   #[test]
+   fn trackers_with_the_same_public_endpoint_keep_distinct_identities() {
+      let frontend = FrontendPublisher::new();
+      let torrent = InfoHash::from_bytes([3; 20]);
+      let view = TrackerView {
+         endpoint: "https://tracker.example".to_string(),
+         status: super::super::TrackerStatus::Pending,
+         peers_returned: None,
+      };
+
+      let first = frontend.tracker(torrent, view.clone());
+      let second = frontend.tracker(torrent, view);
+
+      assert_ne!(first.id(), second.id());
+      assert_ne!(first, second);
+      assert_eq!(frontend.tracker_handles(torrent).len(), 2);
    }
 }

@@ -4,7 +4,10 @@ use futures::StreamExt;
 use libtortillas::{
    engine::EngineStatus,
    errors::EngineError,
-   frontend::{CoreEventKind, EventStreamError, LivePublisher, TorrentEventKind, TrackerEventKind},
+   frontend::{
+      CoreEventKind, EventStreamError, LivePublisher, TorrentEventKind, TrackerEventKind,
+      TrackerStatus,
+   },
    prelude::{Engine, Settings, TorrentSource, TorrentState},
 };
 use tokio::time::{sleep, timeout};
@@ -158,7 +161,7 @@ async fn tracker_handle_exposes_its_own_live_listener() {
    let tracker = torrent.trackers().into_iter().next().unwrap();
    let mut listener = tracker.listener();
 
-   assert!(tracker.live_view().active);
+   assert!(tracker.live_view().status.is_active());
    engine.shutdown().await.unwrap();
 
    let stopped = timeout(Duration::from_secs(2), async {
@@ -172,7 +175,7 @@ async fn tracker_handle_exposes_its_own_live_listener() {
    .await
    .unwrap();
    assert!(stopped.sequence > 0);
-   assert!(!listener.view().active);
+   assert_eq!(listener.view().status, TrackerStatus::Stopped);
 }
 
 #[tokio::test]

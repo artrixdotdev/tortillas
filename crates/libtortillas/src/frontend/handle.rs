@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
    DEFAULT_EVENT_CAPACITY, EventListener, EventSubscription, FrontendHub, FrontendPublisher,
-   LivePublisher, PeerEventKind, PeerView, TrackerEventKind, TrackerView,
+   LivePublisher, PeerEventKind, PeerView, TrackerEventKind, TrackerStatus, TrackerView,
 };
 use crate::{hashes::InfoHash, peer::PeerId};
 
@@ -243,8 +243,7 @@ impl TrackerHandle {
 
    pub(crate) fn announce_succeeded(&self, peers_returned: u64) {
       let mut view = self.live_view();
-      view.active = true;
-      view.healthy = true;
+      view.status = TrackerStatus::Healthy;
       view.peers_returned = Some(peers_returned);
       let event = TrackerEventKind::AnnounceSucceeded { peers_returned };
       if self.inner.update(view, event)
@@ -256,8 +255,7 @@ impl TrackerHandle {
 
    pub(crate) fn announce_failed(&self) {
       let mut view = self.live_view();
-      view.active = true;
-      view.healthy = false;
+      view.status = TrackerStatus::Degraded;
       view.peers_returned = None;
       if self.inner.update(view, TrackerEventKind::AnnounceFailed)
          && let Some(frontend) = self.inner.frontend()
@@ -268,7 +266,7 @@ impl TrackerHandle {
 
    pub(crate) fn stopped(&self) {
       let mut view = self.live_view();
-      view.active = false;
+      view.status = TrackerStatus::Stopped;
       if self.inner.close(view, TrackerEventKind::Stopped)
          && let Some(frontend) = self.inner.frontend()
       {

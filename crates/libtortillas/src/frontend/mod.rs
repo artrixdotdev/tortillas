@@ -21,4 +21,6 @@ pub use listener::{EngineListener, EventListener, TorrentListener};
 pub use publisher::{DEFAULT_EVENT_CAPACITY, LivePublisher};
 pub(crate) use publisher::{FrontendHub, FrontendPublisher};
 pub use subscription::{EventStreamError, EventSubscription};
-pub use view::{EngineView, PeerView, TorrentProgress, TorrentTransfer, TorrentView, TrackerView};
+pub use view::{
+   EngineView, PeerView, TorrentProgress, TorrentTransfer, TorrentView, TrackerStatus, TrackerView,
+};

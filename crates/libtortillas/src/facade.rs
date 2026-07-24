@@ -24,7 +24,8 @@ pub use crate::{
       EventStreamError, EventSubscription, FrontendHealth, FrontendHealthLevel, LivePublisher,
       PeerEvent, PeerEventKind, PeerHandle, PeerListener, PeerView, Sequenced, TorrentEvent,
       TorrentEventKind, TorrentListener, TorrentProgress, TorrentTransfer, TorrentView,
-      TrackerEvent, TrackerEventKind, TrackerHandle, TrackerId, TrackerListener, TrackerView,
+      TrackerEvent, TrackerEventKind, TrackerHandle, TrackerId, TrackerListener, TrackerStatus,
+      TrackerView,
    },
    torrent::TorrentSnapshot,
 };

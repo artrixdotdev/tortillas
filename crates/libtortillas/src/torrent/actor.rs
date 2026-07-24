@@ -28,7 +28,7 @@ use crate::{
    errors::TorrentError,
    frontend::{
       FrontendHealthLevel, FrontendPublisher, TorrentProgress, TorrentTransfer, TorrentView,
-      TrackerView,
+      TrackerStatus, TrackerView,
    },
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
@@ -671,8 +671,7 @@ impl Actor for TorrentActor {
             torrent_id,
             TrackerView {
                endpoint,
-               active: true,
-               healthy: false,
+               status: TrackerStatus::Pending,
                peers_returned: None,
             },
          );

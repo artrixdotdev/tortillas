@@ -100,10 +100,29 @@ impl PeerView {
 pub struct TrackerView {
    /// Credential-free tracker endpoint label.
    pub endpoint: String,
-   /// Whether the tracker actor is running.
-   pub active: bool,
-   /// Whether the latest announce succeeded.
-   pub healthy: bool,
+   /// Current actor and announce lifecycle.
+   pub status: TrackerStatus,
    /// Number of peers returned by the latest successful announce.
    pub peers_returned: Option<u64>,
+}
+
+/// Lifecycle and latest announce outcome for a tracker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrackerStatus {
+   /// The tracker actor is running but has not completed an announce.
+   Pending,
+   /// The latest announce completed successfully.
+   Healthy,
+   /// The latest announce failed while the actor remained available.
+   Degraded,
+   /// The tracker actor stopped and will emit no more events.
+   Stopped,
+}
+
+impl TrackerStatus {
+   /// Whether the tracker actor can still produce announcements.
+   #[must_use]
+   pub const fn is_active(self) -> bool {
+      !matches!(self, Self::Stopped)
+   }
 }
