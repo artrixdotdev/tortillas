@@ -88,6 +88,11 @@ impl FrontendPublisher {
       self.replace_torrent(torrent);
    }
 
+   pub(crate) fn metadata_resolved(&self, torrent: TorrentView) {
+      self.replace_torrent(torrent.clone());
+      self.publish(CoreEventKind::MetadataResolved(torrent));
+   }
+
    pub(crate) fn torrent_state_changed(&self, previous: TorrentState, torrent: TorrentView) {
       let info_hash = torrent.info_hash;
       let current = torrent.state;

@@ -108,6 +108,7 @@ pub(crate) mod events {
             if self.state == TorrentState::ResolvingMetadata {
                self.transition_state(TorrentState::Added);
             }
+            self.frontend.metadata_resolved(self.live_view());
             self
                .broadcast_to_peers(HaveInfoDict {
                   bitfield: Arc::new(self.bitfield.clone()),
