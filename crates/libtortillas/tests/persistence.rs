@@ -46,6 +46,8 @@ async fn torrent_snapshot_when_serialized_then_restores_session_state() {
 
    let round_trip = restored.snapshot().await.unwrap();
    assert_eq!(round_trip.info_hash, snapshot.info_hash);
+   assert_eq!(round_trip.output_path, snapshot.output_path);
+   assert_eq!(round_trip.piece_storage, snapshot.piece_storage);
    assert_eq!(round_trip.bitfield, snapshot.bitfield);
    assert_eq!(round_trip.block_map.len(), snapshot.block_map.len());
    restored_engine.shutdown().await.unwrap();
@@ -62,12 +64,17 @@ async fn active_torrent_snapshot_when_restored_then_resumes_transfer_state() {
    torrent.start().await.unwrap();
    assert_eq!(torrent.state().await.unwrap(), TorrentState::Downloading);
    let snapshot = torrent.snapshot().await.unwrap();
+   let expected_output_path = snapshot.output_path.clone();
+   let expected_piece_storage = snapshot.piece_storage.clone();
    engine.shutdown().await.unwrap();
 
    let restored_engine = deterministic_engine();
    let restored = restored_engine.restore_torrent(snapshot).await.unwrap();
 
    assert_eq!(restored.state().await.unwrap(), TorrentState::Downloading);
+   let round_trip = restored.snapshot().await.unwrap();
+   assert_eq!(round_trip.output_path, expected_output_path);
+   assert_eq!(round_trip.piece_storage, expected_piece_storage);
    restored_engine.shutdown().await.unwrap();
 }
 
