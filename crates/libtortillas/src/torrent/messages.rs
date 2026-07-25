@@ -85,8 +85,11 @@ pub(crate) mod events {
       /// Release a scheduler entry for a request a peer could not accept.
       #[message(derive(Debug, Clone, Copy))]
       #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
-      pub(crate) fn peer_rejected_request(&mut self, index: usize, offset: usize) {
-         self.piece_scheduler.release_request(index, offset);
+      pub(crate) fn peer_rejected_request(&mut self, peer_id: PeerId, index: usize, offset: usize) {
+         self
+            .piece_scheduler
+            .release_peer_request(peer_id, index, offset);
+         self.fill_peer_request_window(peer_id);
       }
 
       /// Bytes for the [`Info`] dict from a peer. These info bytes are expected
@@ -134,17 +137,18 @@ pub(crate) mod events {
       }
 
       /// Sent after `PeerActor::on_start` runs.
-      #[message(derive(Debug, Clone, Copy))]
+      #[message(derive(Debug, Clone))]
       #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
-      pub(crate) async fn peer_ready(&mut self, id: PeerId) {
+      pub(crate) fn peer_ready(&mut self, id: PeerId, available_pieces: Arc<BitVec<AtomicU8>>) {
+         self
+            .piece_scheduler
+            .update_peer_availability(id, available_pieces);
          if let Some(actor) = self.peers.get(&id)
             && actor.is_alive()
             && self.state == TorrentState::Downloading
             && self.is_ready()
          {
-            self
-               .request_blocks_from_peer(id, self.settings.torrent.max_in_flight_per_peer)
-               .await;
+            self.fill_peer_request_window(id);
             trace!(peer_id = %id, "Filled peer request window");
          } else {
             trace!(peer_id = %id, state = ?self.state, ready = self.is_ready(), "Ignoring PeerReady: peer unknown, dead, or torrent not in download state");
@@ -167,6 +171,7 @@ pub(crate) mod commands {
          }
          frontend.disconnected();
          self.publish_live_view(|_| TorrentEventKind::Updated);
+         self.fill_all_peer_request_windows();
       }
 
       #[message]

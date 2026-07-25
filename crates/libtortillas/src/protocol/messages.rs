@@ -3,10 +3,7 @@ use std::{
    collections::HashMap,
    fmt::Display,
    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-   sync::{
-      Arc,
-      atomic::{AtomicU8, Ordering},
-   },
+   sync::{Arc, atomic::AtomicU8},
 };
 
 use anyhow::{Error, Result, bail, ensure};
@@ -171,9 +168,7 @@ impl PeerMessages {
          PeerMessages::Interested => create_message_with_id(2, &[]),
          PeerMessages::NotInterested => create_message_with_id(3, &[]),
          PeerMessages::Have(index) => create_message_with_id(4, &index.to_be_bytes()),
-         // This code is wildly confusing, but all it does is maps the array of AtomicU8s to an
-         // vector of u8s
-         PeerMessages::Bitfield(bits) => create_message_with_id(5, &bits.as_raw_slice().iter().map(|byte| byte.load(Ordering::Acquire)).collect::<Vec<u8>>()),
+         PeerMessages::Bitfield(bits) => create_message_with_id(5, &encode_bitfield(bits)),
          PeerMessages::Request(index, begin, length) // Code is identical
          | PeerMessages::Cancel(index, begin, length) => {
             let id = match self {
@@ -270,11 +265,7 @@ impl PeerMessages {
             let index = payload_buf.get_u32();
             Ok(PeerMessages::Have(index))
          }
-         5 => {
-            let bitvec: BitVec<AtomicU8> = payload.into_iter().map(AtomicU8::new).collect();
-
-            Ok(PeerMessages::Bitfield(Arc::new(bitvec)))
-         }
+         5 => Ok(PeerMessages::Bitfield(Arc::new(decode_bitfield(&payload)))),
          6 => {
             if payload.len() != 12 {
                return Err(PeerActorError::InvalidMessagePayload {
@@ -622,6 +613,29 @@ fn create_message_with_id(id: u8, payload: &[u8]) -> Bytes {
    message.freeze()
 }
 
+/// Encodes the canonical piece-index order using BEP 3's most-significant-bit
+/// first wire representation. Internal bit vectors intentionally keep their
+/// default ordering; unit conversion belongs at the protocol boundary.
+fn encode_bitfield(bits: &BitVec<AtomicU8>) -> Vec<u8> {
+   let mut payload = vec![0; bits.len().div_ceil(8)];
+   for (piece_index, available) in bits.iter().by_vals().enumerate() {
+      if available {
+         payload[piece_index / 8] |= 1 << (7 - piece_index % 8);
+      }
+   }
+   payload
+}
+
+fn decode_bitfield(payload: &[u8]) -> BitVec<AtomicU8> {
+   let mut bits = BitVec::with_capacity(payload.len() * 8);
+   for byte in payload {
+      for shift in (0..8).rev() {
+         bits.push(byte & (1 << shift) != 0);
+      }
+   }
+   bits
+}
+
 /// Helper to parse u32 triplets
 fn parse_triplet(payload: &Bytes) -> Result<(u32, u32, u32), PeerActorError> {
    if payload.len() != 12 {
@@ -765,5 +779,28 @@ mod ipaddr_serde {
       }
 
       deserializer.deserialize_option(Visitor)
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   #[test]
+   fn peer_bitfield_uses_most_significant_bit_first_piece_order() {
+      let mut wire = vec![u8::MAX; 132];
+      // A 1,055-piece torrent has seven real bits in its final byte. BEP 3
+      // requires the unused least-significant padding bit to be zero.
+      wire[131] = 0b1111_1110;
+
+      let bits = decode_bitfield(&wire);
+
+      assert!(
+         bits[1048],
+         "first piece in final byte must remain available"
+      );
+      assert!(bits[1054], "last real piece bit must remain available");
+      assert!(!bits[1055], "wire padding must not become a real piece");
+      assert_eq!(encode_bitfield(&bits), wire);
    }
 }

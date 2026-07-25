@@ -178,6 +178,32 @@ impl TorrentActor {
       }
    }
 
+   /// Enqueues an advisory peer message without allowing a slow peer mailbox
+   /// to block the torrent actor's piece-processing loop.
+   pub(super) fn broadcast_to_peers_best_effort<M>(&mut self, message: M)
+   where
+      PeerActor: Message<M, Reply = ()>,
+      M: Clone + std::fmt::Debug + Send + 'static,
+   {
+      let mut dead_peers = Vec::new();
+
+      for (id, actor) in &self.peers {
+         if !actor.is_alive() {
+            dead_peers.push(*id);
+            continue;
+         }
+
+         if let Err(error) = actor.tell(message.clone()).try_send() {
+            trace!(%error, peer_id = %id, "Peer mailbox unavailable for advisory message");
+         }
+      }
+
+      for id in dead_peers {
+         self.peers.remove(&id);
+         self.piece_scheduler.peer_disconnected(id);
+      }
+   }
+
    #[instrument(skip(self, message), fields(torrent_id = %self.info_hash()))]
    pub(super) async fn update_trackers(&mut self, message: TrackerUpdate) {
       let actor_refs: Vec<(Tracker, ActorRef<TrackerActor>)> = self
@@ -207,6 +233,28 @@ impl TorrentActor {
             dead_trackers.push(tracker.clone());
          }
       }
+      for tracker in dead_trackers {
+         self.trackers.remove(&tracker);
+      }
+   }
+
+   /// Enqueues coalescible tracker state without allowing a slow announce
+   /// actor to stop piece processing. Lifecycle and explicit announce
+   /// messages continue to use the reliable async broadcast path.
+   pub(super) fn update_trackers_best_effort(&mut self, message: TrackerUpdate) {
+      let mut dead_trackers = Vec::new();
+
+      for (tracker, actor) in &self.trackers {
+         if !actor.is_alive() {
+            dead_trackers.push(tracker.clone());
+            continue;
+         }
+
+         if let Err(error) = actor.tell(message.clone()).try_send() {
+            trace!(%error, tracker_uri = ?tracker, "Tracker mailbox unavailable for progress update");
+         }
+      }
+
       for tracker in dead_trackers {
          self.trackers.remove(&tracker);
       }

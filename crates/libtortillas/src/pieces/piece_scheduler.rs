@@ -1,4 +1,8 @@
-use std::collections::HashMap;
+use std::{
+   collections::HashMap,
+   sync::{Arc, atomic::AtomicU8},
+   time::{Duration, Instant},
+};
 
 use bitvec::vec::BitVec;
 
@@ -21,8 +25,15 @@ impl BlockRequest {
 pub(crate) struct PieceScheduler {
    completed_pieces: BitVec,
    completed_blocks: HashMap<usize, BitVec>,
-   in_flight: HashMap<(usize, usize), PeerId>,
+   in_flight: HashMap<(usize, usize), InFlightBlock>,
+   peer_availability: HashMap<PeerId, Arc<BitVec<AtomicU8>>>,
    next_piece: usize,
+}
+
+#[derive(Debug)]
+struct InFlightBlock {
+   peer_id: PeerId,
+   requested_at: Instant,
 }
 
 impl PieceScheduler {
@@ -31,6 +42,7 @@ impl PieceScheduler {
          completed_pieces: BitVec::repeat(false, piece_count),
          completed_blocks: HashMap::new(),
          in_flight: HashMap::new(),
+         peer_availability: HashMap::new(),
          next_piece: 0,
       }
    }
@@ -61,7 +73,7 @@ impl PieceScheduler {
 
    pub(crate) fn mark_block_complete(
       &mut self, piece_index: usize, block_index: usize, total_blocks: usize,
-   ) {
+   ) -> Option<PeerId> {
       let blocks = self.completed_blocks.entry(piece_index).or_insert_with(|| {
          let mut blocks = BitVec::with_capacity(total_blocks);
          blocks.resize(total_blocks, false);
@@ -70,7 +82,10 @@ impl PieceScheduler {
       if block_index < blocks.len() {
          blocks.set(block_index, true);
       }
-      self.in_flight.remove(&(piece_index, block_index));
+      self
+         .in_flight
+         .remove(&(piece_index, block_index))
+         .map(|request| request.peer_id)
    }
 
    pub(crate) fn remove_piece_blocks(&mut self, piece_index: usize) -> Option<BitVec> {
@@ -103,6 +118,10 @@ impl PieceScheduler {
          return requests;
       }
 
+      let Some(available_pieces) = self.peer_availability.get(&peer_id) else {
+         return requests;
+      };
+
       let last_piece_index = self.completed_pieces.len().saturating_sub(1);
       let last_piece_len = if total_length.is_multiple_of(piece_length) {
          piece_length
@@ -111,7 +130,13 @@ impl PieceScheduler {
       };
 
       for piece_index in self.next_piece..self.completed_pieces.len() {
-         if self.completed_pieces[piece_index] {
+         if self.completed_pieces[piece_index]
+            || !available_pieces
+               .get(piece_index)
+               .as_deref()
+               .copied()
+               .unwrap_or(false)
+         {
             continue;
          }
 
@@ -135,7 +160,13 @@ impl PieceScheduler {
                continue;
             }
 
-            self.in_flight.insert(key, peer_id);
+            self.in_flight.insert(
+               key,
+               InFlightBlock {
+                  peer_id,
+                  requested_at: Instant::now(),
+               },
+            );
             requests.push(self.block_request(piece_index, block_index, piece_len));
             if requests.len() >= limit {
                return requests;
@@ -146,12 +177,47 @@ impl PieceScheduler {
       requests
    }
 
-   pub(crate) fn peer_disconnected(&mut self, peer_id: PeerId) {
-      self.in_flight.retain(|_, owner| *owner != peer_id);
+   pub(crate) fn in_flight_for_peer(&self, peer_id: PeerId) -> usize {
+      self
+         .in_flight
+         .values()
+         .filter(|request| request.peer_id == peer_id)
+         .count()
    }
 
-   pub(crate) fn release_request(&mut self, piece_index: usize, offset: usize) {
-      self.in_flight.remove(&(piece_index, offset / BLOCK_SIZE));
+   pub(crate) fn update_peer_availability(
+      &mut self, peer_id: PeerId, available_pieces: Arc<BitVec<AtomicU8>>,
+   ) {
+      self.peer_availability.insert(peer_id, available_pieces);
+   }
+
+   pub(crate) fn peer_disconnected(&mut self, peer_id: PeerId) {
+      self
+         .in_flight
+         .retain(|_, request| request.peer_id != peer_id);
+      self.peer_availability.remove(&peer_id);
+   }
+
+   pub(crate) fn release_stale_requests(&mut self, timeout: Duration) -> usize {
+      let before = self.in_flight.len();
+      let now = Instant::now();
+      self
+         .in_flight
+         .retain(|_, request| now.saturating_duration_since(request.requested_at) < timeout);
+      before.saturating_sub(self.in_flight.len())
+   }
+
+   pub(crate) fn release_peer_request(
+      &mut self, peer_id: PeerId, piece_index: usize, offset: usize,
+   ) {
+      let key = (piece_index, offset / BLOCK_SIZE);
+      if self
+         .in_flight
+         .get(&key)
+         .is_some_and(|request| request.peer_id == peer_id)
+      {
+         self.in_flight.remove(&key);
+      }
    }
 
    pub(crate) fn completed_blocks(&self) -> &HashMap<usize, BitVec> {
@@ -173,5 +239,73 @@ impl PieceScheduler {
          block_index,
          length,
       }
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   #[test]
+   fn scheduler_assigns_only_pieces_available_from_peer() {
+      let peer_id = PeerId::Unknown([1; 20]);
+      let mut scheduler = PieceScheduler::new(3);
+      scheduler.update_peer_availability(
+         peer_id,
+         Arc::new([false, true, false].into_iter().collect()),
+      );
+
+      let requests = scheduler.requests_for_peer(peer_id, 4, BLOCK_SIZE, BLOCK_SIZE * 3);
+
+      assert_eq!(requests.len(), 1);
+      assert_eq!(requests[0].piece_index, 1);
+   }
+
+   #[test]
+   fn scheduler_releases_unanswered_requests_after_timeout() {
+      let peer_id = PeerId::Unknown([2; 20]);
+      let mut scheduler = PieceScheduler::new(1);
+      scheduler.update_peer_availability(peer_id, Arc::new([true].into_iter().collect()));
+      assert_eq!(
+         scheduler
+            .requests_for_peer(peer_id, 1, BLOCK_SIZE, BLOCK_SIZE)
+            .len(),
+         1
+      );
+
+      assert_eq!(scheduler.release_stale_requests(Duration::ZERO), 1);
+      assert_eq!(scheduler.in_flight_for_peer(peer_id), 0);
+   }
+
+   #[test]
+   fn late_rejection_does_not_release_reassigned_request() {
+      let original_peer = PeerId::Unknown([3; 20]);
+      let replacement_peer = PeerId::Unknown([4; 20]);
+      let mut scheduler = PieceScheduler::new(1);
+      let availability: Arc<BitVec<AtomicU8>> = Arc::new([true].into_iter().collect());
+      scheduler.update_peer_availability(original_peer, availability.clone());
+      scheduler.update_peer_availability(replacement_peer, availability);
+      assert_eq!(
+         scheduler
+            .requests_for_peer(original_peer, 1, BLOCK_SIZE, BLOCK_SIZE)
+            .len(),
+         1
+      );
+      scheduler.release_stale_requests(Duration::ZERO);
+      assert_eq!(
+         scheduler
+            .requests_for_peer(replacement_peer, 1, BLOCK_SIZE, BLOCK_SIZE)
+            .len(),
+         1
+      );
+
+      scheduler.release_peer_request(original_peer, 0, 0);
+
+      assert_eq!(scheduler.in_flight_for_peer(original_peer), 0);
+      assert_eq!(scheduler.in_flight_for_peer(replacement_peer), 1);
+      assert_eq!(
+         scheduler.mark_block_complete(0, 0, 1),
+         Some(replacement_peer)
+      );
    }
 }

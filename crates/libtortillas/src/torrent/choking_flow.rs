@@ -19,11 +19,18 @@ impl TorrentActor {
       }
 
       let peer_stats = self.peer_stats().await;
+      let expired_requests = self
+         .piece_scheduler
+         .release_stale_requests(self.settings.torrent.peer_request_timeout);
+      if expired_requests > 0 {
+         trace!(expired_requests, "Released unanswered peer requests");
+      }
       // Peer actors publish their own high-frequency samples. The torrent
       // publishes one coalesced aggregate after the collection interval.
       self.publish_live_view(|view| {
          crate::frontend::TorrentEventKind::MetricsChanged(view.metrics.clone())
       });
+      self.try_update_tracker_progress();
       let decision = self.choking_scheduler.decide(&peer_stats, self.state);
       let unchoked: HashSet<_> = decision.unchoked.iter().copied().collect();
 
@@ -47,6 +54,11 @@ impl TorrentActor {
             warn!(?err, peer_id = %stats.id, choked, "Failed to update peer choke state");
          }
       }
+
+      // Recover work released by peers that rejected requests or disconnected
+      // between collection intervals. Filling to a target size is idempotent,
+      // so this cannot grow a peer beyond its configured request window.
+      self.fill_all_peer_request_windows();
    }
 
    async fn peer_stats(&self) -> Vec<PeerStats> {

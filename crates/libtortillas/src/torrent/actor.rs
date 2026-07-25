@@ -229,7 +229,7 @@ impl TorrentActor {
          return;
       }
 
-      self.sync_tracker_announce_progress().await;
+      self.update_tracker_progress().await;
 
       if self.is_full() {
          self.transition_state(TorrentState::Seeding);
@@ -245,9 +245,7 @@ impl TorrentActor {
       if self.state == TorrentState::Downloading {
          let peer_ids: Vec<_> = self.peers.keys().copied().collect();
          for peer_id in peer_ids {
-            self
-               .request_blocks_from_peer(peer_id, self.settings.torrent.initial_peer_request_window)
-               .await;
+            self.fill_initial_peer_request_window(peer_id);
          }
       }
 
@@ -286,6 +284,7 @@ impl TorrentActor {
       }
 
       self.broadcast_to_peers(SetChoked { choked: true }).await;
+      self.update_tracker_progress().await;
       self
          .update_trackers(TrackerUpdate::Event(Event::Stopped))
          .await;
@@ -418,7 +417,7 @@ impl TorrentActor {
       })
    }
 
-   pub(super) async fn sync_tracker_announce_progress(&mut self) {
+   pub(super) async fn update_tracker_progress(&mut self) {
       let Some(progress) = self.tracker_announce_progress() else {
          return;
       };
@@ -429,6 +428,15 @@ impl TorrentActor {
       self
          .update_trackers(TrackerUpdate::Left(progress.left))
          .await;
+   }
+
+   pub(super) fn try_update_tracker_progress(&mut self) {
+      let Some(progress) = self.tracker_announce_progress() else {
+         return;
+      };
+
+      self.update_trackers_best_effort(TrackerUpdate::Downloaded(progress.downloaded));
+      self.update_trackers_best_effort(TrackerUpdate::Left(progress.left));
    }
 
    pub(super) async fn announce_tracker_event(&mut self, event: Event) {
@@ -878,15 +886,83 @@ mod tests {
       hashes::HashVec,
       metainfo::{InfoKeys, MetaInfo, TorrentFile},
       metrics::BytesPerSecond,
+      protocol::{
+         messages::{Handshake, PeerMessages},
+         stream::{PeerRecv, PeerSend, PeerStream},
+      },
       settings::Settings,
       testing,
       torrent::{
          BLOCK_SIZE, Torrent, TorrentSnapshot,
          commands::{GetState, HasInfoDict, SetState, SnapshotState},
-         events::IncomingPiece,
+         events::{AddPeer, IncomingPiece},
       },
       tracker::Tracker,
    };
+
+   struct LocalSeed {
+      address: SocketAddr,
+      task: tokio::task::JoinHandle<()>,
+   }
+
+   impl LocalSeed {
+      async fn start(peer_id: PeerId, payload: Vec<u8>, piece_length: usize) -> Self {
+         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+         let address = listener.local_addr().unwrap();
+         let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut stream = PeerStream::tcp(stream);
+            let handshake = stream.recv_handshake_message().await.unwrap();
+            stream
+               .send(PeerMessages::Handshake(Handshake::new(
+                  handshake.info_hash,
+                  peer_id,
+               )))
+               .await
+               .unwrap();
+
+            let piece_count = payload.len().div_ceil(piece_length);
+            stream
+               .send(PeerMessages::Bitfield(Arc::new(
+                  BitVec::<AtomicU8>::repeat(true, piece_count),
+               )))
+               .await
+               .unwrap();
+            stream.send(PeerMessages::Unchoke).await.unwrap();
+
+            while let Ok(message) = stream.recv().await {
+               let PeerMessages::Request(index, begin, length) = message else {
+                  continue;
+               };
+               let start = index as usize * piece_length + begin as usize;
+               let end = start + length as usize;
+               assert!(
+                  end <= payload.len(),
+                  "client requested bytes outside payload"
+               );
+               stream
+                  .send(PeerMessages::Piece(
+                     index,
+                     begin,
+                     Bytes::copy_from_slice(&payload[start..end]),
+                  ))
+                  .await
+                  .unwrap();
+            }
+         });
+         Self { address, task }
+      }
+
+      fn peer(&self) -> crate::peer::Peer {
+         crate::peer::Peer::from_socket_addr(self.address)
+      }
+   }
+
+   impl Drop for LocalSeed {
+      fn drop(&mut self) {
+         self.task.abort();
+      }
+   }
 
    fn empty_torrent(tracker: Tracker) -> MetaInfo {
       torrent_with_info(
@@ -1156,6 +1232,93 @@ mod tests {
       assert!(stopped.contains("event=stopped"));
 
       fs::remove_dir_all(base_path).await.unwrap();
+   }
+
+   #[tokio::test(flavor = "multi_thread")]
+   async fn torrent_actor_when_request_window_is_smaller_than_torrent_then_downloads_every_piece() {
+      let piece_length = BLOCK_SIZE;
+      let piece_count = 12;
+      let payload = (0..piece_length * piece_count)
+         .map(|index| (index % 251) as u8)
+         .collect::<Vec<_>>();
+      let mut pieces = HashVec::new();
+      for piece in payload.chunks(piece_length) {
+         pieces.push(testing::piece_hash(piece));
+      }
+      let info = Info {
+         name: "complete-download.bin".to_string(),
+         piece_length: piece_length as u64,
+         pieces,
+         file: InfoKeys::Single {
+            length: payload.len() as u64,
+            md5sum: None,
+         },
+         is_private: Some(true),
+         publisher: None,
+         publisher_url: None,
+         source: None,
+      };
+      let info_hash = info.hash().unwrap();
+      let metainfo = MetaInfo::Torrent(TorrentFile {
+         announce: None,
+         announce_list: None,
+         comment: None,
+         created_by: None,
+         creation_date: None,
+         encoding: None,
+         info,
+         url_list: None,
+      });
+      let fixture = testing::storage_fixture("complete-download").await.unwrap();
+      let seed = LocalSeed::start(PeerId::Unknown([7; 20]), payload.clone(), piece_length).await;
+      let mut settings = Settings::default();
+      settings.torrent.initial_peer_request_window = 4;
+      settings.torrent.max_in_flight_per_peer = 4;
+
+      let actor = TorrentActor::spawn(TorrentActorArgs {
+         peer_id: testing::peer_id(),
+         metainfo,
+         utp_server: UtpSocket::new_udp(testing::ephemeral_socket_addr())
+            .await
+            .unwrap(),
+         tracker_server: testing::udp_server().await,
+         primary_addr: None,
+         piece_storage: PieceStorageStrategy::InFile,
+         autostart: Some(false),
+         sufficient_peers: Some(1),
+         base_path: Some(fixture.path().to_path_buf()),
+         settings,
+         frontend: FrontendHub::default(),
+      });
+      let torrent = Torrent::new(info_hash, actor.clone());
+      actor.tell(AddPeer { peer: seed.peer() }).await.unwrap();
+
+      timeout(Duration::from_secs(5), torrent.poll_ready())
+         .await
+         .expect("local seed should make torrent ready")
+         .unwrap();
+      torrent.start().await.unwrap();
+      timeout(Duration::from_secs(10), async {
+         loop {
+            if torrent.state().await.unwrap() == TorrentState::Seeding {
+               break;
+            }
+            sleep(Duration::from_millis(10)).await;
+         }
+      })
+      .await
+      .expect("torrent should replenish its request window through completion");
+
+      assert_eq!(
+         fs::read(fixture.child("complete-download.bin"))
+            .await
+            .unwrap(),
+         payload
+      );
+      let snapshot = torrent.snapshot().await.unwrap();
+      assert!(snapshot.bitfield.iter().all(|complete| *complete));
+
+      actor.stop_gracefully().await.unwrap();
    }
 
    #[tokio::test(flavor = "multi_thread")]

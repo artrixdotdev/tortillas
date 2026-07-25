@@ -389,6 +389,7 @@ impl Actor for PeerActor {
       supervisor
          .tell(torrent::events::PeerReady {
             id: peer.id.unwrap(),
+            available_pieces: peer.pieces.clone(),
          })
          .await
          .map_err(|e| PeerActorError::SupervisorCommunicationFailed(e.to_string()))?;
@@ -680,7 +681,10 @@ impl PeerActor {
 
       if let Err(err) = self
          .supervisor
-         .tell(torrent::events::PeerReady { id: peer_id })
+         .tell(torrent::events::PeerReady {
+            id: peer_id,
+            available_pieces: self.peer.pieces.clone(),
+         })
          .await
       {
          trace!(error = %err, %peer_id, "Failed to notify torrent actor that peer is ready");
@@ -688,9 +692,13 @@ impl PeerActor {
    }
 
    async fn reject_piece_request(&self, index: usize, begin: usize) {
+      let Some(peer_id) = self.peer.id else {
+         return;
+      };
       if let Err(err) = self
          .supervisor
          .tell(torrent::events::PeerRejectedRequest {
+            peer_id,
             index,
             offset: begin,
          })

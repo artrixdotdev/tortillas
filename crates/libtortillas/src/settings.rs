@@ -164,6 +164,9 @@ pub struct TorrentSettings {
    pub initial_peer_request_window: usize,
    /// Maximum in-flight block requests filled for a ready peer.
    pub max_in_flight_per_peer: usize,
+   /// Maximum age of an unanswered block request before it can be assigned
+   /// again. Duplicate late responses are safely ignored.
+   pub peer_request_timeout: Duration,
    /// Peer actor mailbox size. `0` means unbounded.
    pub peer_mailbox_size: usize,
    /// Maximum concurrent sends when broadcasting a message to peers.
@@ -195,6 +198,7 @@ impl Default for TorrentSettings {
          sufficient_peers: 6,
          initial_peer_request_window: 32,
          max_in_flight_per_peer: 32,
+         peer_request_timeout: Duration::from_secs(15),
          peer_mailbox_size: 120,
          peer_broadcast_concurrency: 32,
          tracker_broadcast_concurrency: 8,
