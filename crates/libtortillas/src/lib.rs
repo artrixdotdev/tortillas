@@ -1,13 +1,23 @@
-//! Async BitTorrent engine for building Tortillas frontends.
+//! Async BitTorrent library for downloading and seeding files.
 //!
-//! # Quick start
+//! # Getting started
 //!
-//! The following program downloads the payload described by a local
-//! `.torrent` file into `downloads/`. Torrents start automatically once they
-//! have metadata and enough peers.
+//! A basic downloader only needs an [`engine::Engine`] and a
+//! [`engine::TorrentSource`]. The live frontend API is optional.
+//!
+//! Add the library and its Tokio runtime to a binary crate:
+//!
+//! ```text
+//! cargo add libtortillas
+//! cargo add tokio --features full
+//! ```
+//!
+//! The following complete program loads `example.torrent`, writes its payload
+//! to `downloads/`, and continues downloading or seeding until Ctrl-C is
+//! pressed:
 //!
 //! ```no_run
-//! use libtortillas::prelude::{Engine, TorrentSource, TorrentState};
+//! use libtortillas::prelude::{Engine, TorrentSource};
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -15,28 +25,137 @@
 //!    let torrent = engine
 //!       .add_torrent(TorrentSource::torrent_file_path("example.torrent"))
 //!       .await?;
-//!    let mut listener = torrent.listener();
 //!
-//!    // The listener's view is always current, even if an event is missed.
-//!    loop {
-//!       if matches!(listener.view(), Some(view) if view.state == TorrentState::Seeding) {
-//!          break;
-//!       }
-//!       listener.recv().await?;
-//!    }
+//!    println!("torrenting {} — press Ctrl-C to stop", torrent.info_hash());
+//!    tokio::signal::ctrl_c().await?;
 //!
-//!    println!("download complete: {}", torrent.info_hash());
 //!    engine.shutdown().await?;
 //!    Ok(())
 //! }
 //! ```
 //!
-//! [`engine::TorrentSource`] also accepts magnet URIs, in-memory `.torrent`
-//! bytes, and remote `.torrent` URLs. See the repository's
-//! [examples directory](https://github.com/artrixdotdev/tortillas/tree/main/crates/libtortillas/examples)
-//! for complete runnable programs.
+//! That is enough to start torrenting. By default, a newly added torrent starts
+//! automatically after it discovers enough peers. The [`torrent::Torrent`]
+//! returned by [`engine::Engine::add_torrent`] is a lightweight handle for
+//! controlling that download.
 //!
-//! # Runtime boundary
+//! ## Torrent sources
+//!
+//! Use the constructor that matches the input your application already has:
+//!
+//! - [`engine::TorrentSource::torrent_file_path`] for a local `.torrent` file.
+//! - [`engine::TorrentSource::magnet`] for a magnet URI.
+//! - [`engine::TorrentSource::torrent_file_bytes`] for bytes already in memory.
+//! - [`engine::TorrentSource::remote_torrent_url`] for an HTTP or HTTPS URL.
+//!
+//! Every source is passed to [`engine::Engine::add_torrent`] in the same way.
+//! There is no frontend-specific setup.
+//!
+//! For example, downloading from a magnet link only changes the source:
+//!
+//! ```no_run
+//! use libtortillas::prelude::{Engine, TorrentSource};
+//!
+//! async fn add_magnet(engine: &Engine) -> Result<(), Box<dyn std::error::Error>> {
+//!    let torrent = engine
+//!       .add_torrent(TorrentSource::magnet(
+//!          "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+//!       ))
+//!       .await?;
+//!
+//!    println!("torrenting {}", torrent.info_hash());
+//!    Ok(())
+//! }
+//! ```
+//!
+//! ## Basic control
+//!
+//! The returned [`torrent::Torrent`] can be
+//! [`paused`](torrent::Torrent::pause),
+//! [`resumed`](torrent::Torrent::resume), or inspected for its
+//! [`state`](torrent::Torrent::state). An engine can manage multiple torrents;
+//! call [`engine::Engine::remove_torrent`] to remove one and
+//! [`engine::Engine::shutdown`] before exiting cleanly.
+//!
+//! ```no_run
+//! use libtortillas::prelude::Torrent;
+//!
+//! async fn pause_and_resume(torrent: &Torrent) -> Result<(), Box<dyn std::error::Error>> {
+//!    torrent.pause().await?;
+//!    println!("state after pausing: {:?}", torrent.state().await?);
+//!
+//!    torrent.resume().await?;
+//!    Ok(())
+//! }
+//! ```
+//!
+//! ## Multiple torrents
+//!
+//! One engine can download and seed many torrents:
+//!
+//! ```no_run
+//! use libtortillas::prelude::{Engine, TorrentSource};
+//!
+//! async fn add_downloads(engine: &Engine) -> Result<(), Box<dyn std::error::Error>> {
+//!    let sources = [
+//!       TorrentSource::torrent_file_path("first.torrent"),
+//!       TorrentSource::torrent_file_path("second.torrent"),
+//!    ];
+//!
+//!    for source in sources {
+//!       let torrent = engine.add_torrent(source).await?;
+//!       println!("added {}", torrent.info_hash());
+//!    }
+//!
+//!    Ok(())
+//! }
+//! ```
+//!
+//! ## More examples
+//!
+//! Browse the repository's
+//! [examples directory](https://github.com/artrixdotdev/tortillas/tree/main/crates/libtortillas/examples)
+//! for complete runnable programs, including live frontend integration.
+//!
+//! # Live updates are optional
+//!
+//! Applications that only need to download and seed files do not need
+//! [`frontend`] listeners, events, views, or metrics. Those APIs exist for
+//! applications that want to display live progress or forward state through a
+//! terminal, web server, website, or desktop application.
+//!
+//! When live updates are useful, start with [`frontend::EventListener`] and the
+//! current view exposed by [`frontend::EventListener::view`]. The
+//! [`frontend`] module documents the complete transport-agnostic model.
+//!
+//! This helper waits for changes and prints verified payload progress until the
+//! torrent finishes downloading:
+//!
+//! ```no_run
+//! use libtortillas::prelude::{Torrent, TorrentState};
+//!
+//! async fn show_progress(torrent: &Torrent) -> Result<(), Box<dyn std::error::Error>> {
+//!    let mut listener = torrent.listener();
+//!
+//!    loop {
+//!       if let Some(view) = listener.view() {
+//!          let progress = &view.metrics.progress;
+//!          if let Some(total) = progress.total_bytes {
+//!             println!("{} / {} bytes verified", progress.verified_bytes.0, total.0);
+//!          }
+//!          if view.state == TorrentState::Seeding {
+//!             break;
+//!          }
+//!       }
+//!
+//!       listener.recv().await?;
+//!    }
+//!
+//!    Ok(())
+//! }
+//! ```
+//!
+//! # Runtime and advanced APIs
 //!
 //! `libtortillas` is intentionally a Tokio-based library. Public handles such
 //! as [`engine::Engine`] and [`torrent::Torrent`] expose async methods that
@@ -52,32 +171,15 @@
 //! appropriate for bounded blocking work, but not for a permanent input loop:
 //! a blocking task cannot be aborted after it starts and can delay shutdown.
 //!
-//! An application can use `#[tokio::main]` on its binary entry point, or create
+//! An application can use `#[tokio::main]`, as in the example above, or create
 //! an explicit Tokio runtime before initializing `Engine`.
-//!
-//! # Frontend facade
-//!
-//! Frontends should prefer [`facade`] or [`prelude`] imports. The facade names
-//! the stable concepts any application adapter needs: [`engine::Engine`],
-//! [`torrent::Torrent`], [`facade::TorrentSource`],
-//! [`facade::EngineEvent`], and live engine, torrent,
-//! peer, and tracker views.
-//!
-//! ```no_run
-//! use libtortillas::prelude::{Engine, TorrentSource};
-//!
-//! let engine = Engine::default();
-//! let source = TorrentSource::magnet("magnet:?xt=urn:btih:...");
-//! # let _ = (engine, source);
-//! ```
-//!
-//! # Advanced APIs
 //!
 //! The lower-level [`engine`], [`torrent`], [`metainfo`], [`peer`],
 //! [`tracker`], [`pieces`], and [`protocol`] modules remain public for advanced
-//! integrations, tests, and protocol-level work. Frontend code should avoid
+//! integrations, tests, and protocol-level work. Applications should avoid
 //! depending on actor messages, raw peer streams, tracker clients, or storage
-//! internals when an equivalent facade type exists.
+//! internals when an equivalent [`facade`] type exists. [`prelude`] re-exports
+//! the types most applications need.
 //!
 //! Engine and torrent handles expose listeners for live UI updates. Persistence
 //! snapshots are intentionally separate and should not be polled for display
