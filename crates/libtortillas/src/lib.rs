@@ -1,34 +1,40 @@
 //! Async BitTorrent engine for building Tortillas frontends.
 //!
-//! # Architecture
+//! # Quick start
 //!
-//! The runtime is organized as a supervised actor tree:
+//! The following program downloads the payload described by a local
+//! `.torrent` file into `downloads/`. Torrents start automatically once they
+//! have metadata and enough peers.
 //!
-//! ```text
-//! EngineActor
-//! ├── DhtActor (one shared instance)
-//! └── TorrentActor (one per torrent)
-//!     ├── TrackerActor (one per tracker)
-//!     └── PeerActor (one per connected peer)
+//! ```no_run
+//! use libtortillas::prelude::{Engine, TorrentSource, TorrentState};
 //!
-//! DhtActor ───── discovered peers ────> TorrentActor
-//! TrackerActor ── discovered peers ────> TorrentActor
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!    let engine = Engine::builder().output_path("downloads").build();
+//!    let torrent = engine
+//!       .add_torrent(TorrentSource::torrent_file_path("example.torrent"))
+//!       .await?;
+//!    let mut listener = torrent.listener();
+//!
+//!    // The listener's view is always current, even if an event is missed.
+//!    loop {
+//!       if matches!(listener.view(), Some(view) if view.state == TorrentState::Seeding) {
+//!          break;
+//!       }
+//!       listener.recv().await?;
+//!    }
+//!
+//!    println!("download complete: {}", torrent.info_hash());
+//!    engine.shutdown().await?;
+//!    Ok(())
+//! }
 //! ```
 //!
-//! Actors own operational protocol state. Public applications interact through
-//! [`engine::Engine`], [`torrent::Torrent`], and the transport-agnostic
-//! [`frontend`] views and event streams. Durable state is represented by
-//! [`engine::EngineSnapshot`] and [`torrent::TorrentSnapshot`], never by live
-//! presentation views.
-//!
-//! Stable public types are exported by module facades while actor messages and
-//! coordination details remain crate-private. Domain values such as lifecycle
-//! state, storage strategy, metrics, and snapshots live outside actor files so
-//! actors can focus on orchestration.
-//!
-//! See [`frontend`] for the source-of-truth, publication, lifecycle, and lock
-//! invariants. See [`torrent`] for transfer scheduling and persistence
-//! semantics.
+//! [`engine::TorrentSource`] also accepts magnet URIs, in-memory `.torrent`
+//! bytes, and remote `.torrent` URLs. See the repository's
+//! [examples directory](https://github.com/artrixdotdev/tortillas/tree/main/crates/libtortillas/examples)
+//! for complete runnable programs.
 //!
 //! # Runtime boundary
 //!
@@ -76,6 +82,39 @@
 //! Engine and torrent handles expose listeners for live UI updates. Persistence
 //! snapshots are intentionally separate and should not be polled for display
 //! changes.
+//!
+//! # Internal architecture
+//!
+//! Most applications do not need these implementation details. They are
+//! documented here for contributors and advanced integrations.
+//!
+//! The runtime is organized as a supervised actor tree:
+//!
+//! ```text
+//! EngineActor
+//! ├── DhtActor (one shared instance)
+//! └── TorrentActor (one per torrent)
+//!     ├── TrackerActor (one per tracker)
+//!     └── PeerActor (one per connected peer)
+//!
+//! DhtActor ───── discovered peers ────> TorrentActor
+//! TrackerActor ── discovered peers ────> TorrentActor
+//! ```
+//!
+//! Actors own operational protocol state. Public applications interact through
+//! [`engine::Engine`], [`torrent::Torrent`], and the transport-agnostic
+//! [`frontend`] views and event streams. Durable state is represented by
+//! [`engine::EngineSnapshot`] and [`torrent::TorrentSnapshot`], never by live
+//! presentation views.
+//!
+//! Stable public types are exported by module facades while actor messages and
+//! coordination details remain crate-private. Domain values such as lifecycle
+//! state, storage strategy, metrics, and snapshots live outside actor files so
+//! actors can focus on orchestration.
+//!
+//! See [`frontend`] for the source-of-truth, publication, lifecycle, and lock
+//! invariants. See [`torrent`] for transfer scheduling and persistence
+//! semantics.
 
 pub(crate) mod dht;
 pub mod engine;
