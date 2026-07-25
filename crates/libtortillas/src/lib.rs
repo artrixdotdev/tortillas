@@ -20,7 +20,7 @@
 //! Frontends should prefer [`facade`] or [`prelude`] imports. The facade names
 //! the stable concepts any application adapter needs: [`engine::Engine`],
 //! [`torrent::Torrent`], [`facade::TorrentSource`],
-//! [`facade::CoreEvent`], and live engine, torrent,
+//! [`facade::EngineEvent`], and live engine, torrent,
 //! peer, and tracker views.
 //!
 //! ```no_run
@@ -50,6 +50,7 @@ pub mod facade;
 pub mod frontend;
 pub mod hashes;
 pub mod metainfo;
+pub mod metrics;
 pub mod peer;
 pub mod pieces;
 pub mod protocol;

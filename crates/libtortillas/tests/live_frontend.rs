@@ -5,7 +5,7 @@ use libtortillas::{
    engine::EngineStatus,
    errors::EngineError,
    frontend::{
-      CoreEventKind, EventStreamError, LivePublisher, TorrentEventKind, TrackerEventKind,
+      EngineEventKind, EventStreamError, LivePublisher, TorrentEventKind, TrackerEventKind,
       TrackerStatus,
    },
    prelude::{Engine, Settings, TorrentSource, TorrentState},
@@ -37,7 +37,7 @@ async fn engine_listener_receives_live_torrent_lifecycle() {
          let event = engine_listener.next().await.unwrap().unwrap();
          if matches!(
             event.kind,
-            CoreEventKind::Torrent {
+            EngineEventKind::Torrent {
                event: TorrentEventKind::Added,
                ..
             }
@@ -49,7 +49,7 @@ async fn engine_listener_receives_live_torrent_lifecycle() {
    .await
    .unwrap();
    assert_eq!(added.torrent(), Some(torrent.info_hash()));
-   let CoreEventKind::Torrent {
+   let EngineEventKind::Torrent {
       torrent: added_torrent,
       event: TorrentEventKind::Added,
    } = added.kind
@@ -118,7 +118,7 @@ async fn generic_live_publisher_implements_async_stream() {
    let publisher = LivePublisher::new(0_u8, 4);
    let mut listener = publisher.listener();
 
-   publisher.update(1, "changed");
+   publisher.replace_view_and_emit(1, "changed");
 
    let event = listener.next().await.unwrap().unwrap();
    assert_eq!(event.sequence, 1);
@@ -145,8 +145,8 @@ async fn closed_live_publisher_rejects_late_updates() {
    let publisher = LivePublisher::new(0_u8, 4);
    let mut listener = publisher.listener();
 
-   assert!(publisher.close(1, "closed"));
-   assert!(!publisher.update(2, "late"));
+   assert!(publisher.close_with_terminal_event(1, "closed"));
+   assert!(!publisher.replace_view_and_emit(2, "late"));
 
    assert_eq!(listener.recv().await.unwrap().kind, "closed");
    assert!(matches!(
@@ -164,7 +164,7 @@ async fn concurrent_live_updates_are_delivered_in_sequence_order() {
    let updates = (1..=UPDATE_COUNT)
       .map(|view| {
          let publisher = publisher.clone();
-         tokio::spawn(async move { publisher.update(view, view) })
+         tokio::spawn(async move { publisher.replace_view_and_emit(view, view) })
       })
       .collect::<Vec<_>>();
 
@@ -182,7 +182,7 @@ async fn listener_view_is_never_older_than_its_accepted_update() {
    let mut listener = publisher.listener();
 
    for value in 1..=32 {
-      assert!(publisher.update(value, value));
+      assert!(publisher.replace_view_and_emit(value, value));
       let event = listener.recv().await.unwrap();
       assert_eq!(event.kind, value);
       assert!(listener.view() >= event.kind);
@@ -231,7 +231,7 @@ async fn engine_listener_receives_graceful_shutdown() {
    let shutdown = timeout(Duration::from_secs(2), async {
       loop {
          let event = listener.recv().await.unwrap();
-         if matches!(event.kind, CoreEventKind::Shutdown(_)) {
+         if matches!(event.kind, EngineEventKind::Shutdown(_)) {
             break event;
          }
       }
@@ -239,7 +239,7 @@ async fn engine_listener_receives_graceful_shutdown() {
    .await
    .unwrap();
 
-   let CoreEventKind::Shutdown(view) = shutdown.kind else {
+   let EngineEventKind::Shutdown(view) = shutdown.kind else {
       unreachable!();
    };
    assert_eq!(view.status, EngineStatus::Stopped);
@@ -344,7 +344,7 @@ async fn live_views_are_serde_compatible() {
          let event = listener.recv().await.unwrap();
          if matches!(
             event.kind,
-            CoreEventKind::Torrent {
+            EngineEventKind::Torrent {
                event: TorrentEventKind::Added,
                ..
             }

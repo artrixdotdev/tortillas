@@ -19,12 +19,14 @@
 pub use crate::{
    engine::{Engine, EngineSnapshot, EngineStatus, TorrentSource},
    frontend::{
-      ByteCount, BytesPerSecond, ContentProgress, CoreEvent, CoreEventKind, DEFAULT_EVENT_CAPACITY,
-      EngineListener, EngineView, EventListener, EventStreamError, EventSubscription,
-      FrontendHealth, FrontendHealthLevel, HasTransferMetrics, LivePublisher, PeerEvent,
-      PeerEventKind, PeerHandle, PeerListener, PeerView, Seconds, Sequenced, TorrentEvent,
-      TorrentEventKind, TorrentListener, TorrentMetrics, TorrentView, TrackerEvent,
-      TrackerEventKind, TrackerHandle, TrackerId, TrackerListener, TrackerStatus, TrackerView,
+      EngineEvent, EngineEventKind, EngineListener, EngineView, EventListener, EventStreamError,
+      EventSubscription, FrontendHealth, FrontendHealthLevel, LivePublisher, PeerEvent,
+      PeerEventKind, PeerHandle, PeerListener, PeerView, SequencedEvent, TorrentEvent,
+      TorrentEventKind, TorrentListener, TorrentView, TrackerEvent, TrackerEventKind,
+      TrackerHandle, TrackerId, TrackerListener, TrackerStatus, TrackerView,
+   },
+   metrics::{
+      ByteCount, BytesPerSecond, ContentProgress, HasTransferMetrics, Seconds, TorrentMetrics,
       TrafficTotals, TransferMetrics, TransferRates,
    },
    torrent::{RestoreVerification, Torrent, TorrentSnapshot},

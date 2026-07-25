@@ -1,5 +1,5 @@
 use crate::{
-   frontend::BytesPerSecond,
+   metrics::BytesPerSecond,
    peer::{PeerId, PeerStats},
    settings::Settings,
    torrent::TorrentState,
@@ -137,7 +137,7 @@ fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> BytesPerSecond {
 #[cfg(test)]
 mod tests {
    use super::*;
-   use crate::frontend::{TransferMetrics, TransferRates};
+   use crate::metrics::{TransferMetrics, TransferRates};
 
    fn peer_id(value: u8) -> PeerId {
       PeerId::from([value; 20])

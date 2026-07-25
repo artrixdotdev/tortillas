@@ -1,3 +1,6 @@
+//! Canonical transfer and verified-content measurements shared by actors and
+//! presentation views.
+
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};

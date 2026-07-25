@@ -10,7 +10,7 @@ use tracing::{debug, instrument, trace, warn};
 
 use super::TorrentActor;
 use crate::{
-   frontend::{PeerScope, PeerView},
+   frontend::{PeerIdentity, PeerView},
    peer::{Peer, PeerActor, PeerId},
    protocol::{
       messages::{Handshake, PeerMessages},
@@ -110,7 +110,7 @@ impl TorrentActor {
       }
 
       let peer_frontend = self.frontend.register_peer_scope(
-         PeerScope {
+         PeerIdentity {
             torrent: info_hash,
             peer: id,
          },

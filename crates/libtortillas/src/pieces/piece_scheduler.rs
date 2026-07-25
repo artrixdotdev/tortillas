@@ -2,10 +2,7 @@ use std::collections::HashMap;
 
 use bitvec::vec::BitVec;
 
-use crate::{
-   peer::PeerId,
-   torrent::{BLOCK_SIZE, BlockMap},
-};
+use crate::{peer::PeerId, torrent::BLOCK_SIZE};
 
 #[derive(Debug)]
 pub(crate) struct BlockRequest {
@@ -157,12 +154,8 @@ impl PieceScheduler {
       self.in_flight.remove(&(piece_index, offset / BLOCK_SIZE));
    }
 
-   pub(crate) fn block_map_export(&self) -> BlockMap {
-      let block_map = BlockMap::new();
-      for (piece, blocks) in &self.completed_blocks {
-         block_map.insert(*piece, blocks.clone());
-      }
-      block_map
+   pub(crate) fn completed_blocks(&self) -> &HashMap<usize, BitVec> {
+      &self.completed_blocks
    }
 
    fn block_request(

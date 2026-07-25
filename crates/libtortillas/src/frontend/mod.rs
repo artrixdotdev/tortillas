@@ -1,34 +1,42 @@
-//! Live, frontend-facing API contracts.
+//! Transport-agnostic live application API.
 //!
-//! This module contains typed events, listeners, publishers, and live views
-//! intended for application and UI integrations. Frontends should prefer these
-//! types over actor messages, protocol internals, or snapshot polling.
+//! The module is intentionally organized by the way a consumer reads it:
+//!
+//! - [`EngineView`], [`TorrentView`], [`PeerView`], and [`TrackerView`] are
+//!   current presentation state.
+//! - Shared measurements live in [`crate::metrics`] and are re-exported here.
+//! - Event enums describe discrete changes.
+//! - [`EventSubscription`] is events only; [`EventListener`] pairs events with
+//!   a current view.
+//! - [`PeerHandle`] and [`TrackerHandle`] provide scoped identity and access.
+//! - `hub` is the single internal ownership and publication coordinator.
+//!
+//! Terminal interfaces, HTTP/WebSocket servers, web backends, and desktop
+//! applications all consume this same API. Rendering, transport, and input
+//! policy remain outside `libtortillas`.
 
 mod event;
 mod handle;
 mod hub;
-mod listener;
-mod live;
-mod metrics;
-mod publisher;
-mod registry;
-mod subscription;
+mod stream;
+#[cfg(test)]
+mod tests;
 mod view;
 
 pub use event::{
-   CoreEvent, CoreEventKind, FrontendHealth, FrontendHealthLevel, PeerEvent, PeerEventKind,
-   Sequenced, TorrentEvent, TorrentEventKind, TrackerEvent, TrackerEventKind,
+   EngineEvent, EngineEventKind, FrontendHealth, FrontendHealthLevel, PeerEvent, PeerEventKind,
+   SequencedEvent, TorrentEvent, TorrentEventKind, TrackerEvent, TrackerEventKind,
 };
-pub(crate) use handle::PeerScope;
+pub(crate) use handle::PeerIdentity;
 pub use handle::{PeerHandle, PeerListener, TrackerHandle, TrackerId, TrackerListener};
-pub(crate) use hub::{FrontendHub, TorrentScope};
-pub use listener::{EngineListener, EventListener, TorrentListener};
-pub use live::{DEFAULT_EVENT_CAPACITY, LivePublisher};
-pub(crate) use metrics::TransferSample;
-pub use metrics::{
+pub(crate) use hub::{FrontendHub, FrontendHubInner};
+pub use stream::{
+   EngineListener, EventListener, EventStreamError, EventSubscription, LivePublisher,
+   TorrentListener,
+};
+pub use view::{EngineView, PeerView, TorrentView, TrackerStatus, TrackerView};
+
+pub use crate::metrics::{
    ByteCount, BytesPerSecond, ContentProgress, HasTransferMetrics, Seconds, TorrentMetrics,
    TrafficTotals, TransferMetrics, TransferRates,
 };
-pub(crate) use publisher::FrontendPublisher;
-pub use subscription::{EventStreamError, EventSubscription};
-pub use view::{EngineView, PeerView, TorrentView, TrackerStatus, TrackerView};

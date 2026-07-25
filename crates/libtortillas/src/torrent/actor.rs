@@ -26,13 +26,13 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use super::{choking::ChokingScheduler, util};
 use crate::{
    errors::{SnapshotUnsupportedReason, TorrentError},
-   frontend::{
-      ByteCount, ContentProgress, FrontendHealthLevel, FrontendPublisher, HasTransferMetrics,
-      TorrentMetrics, TorrentView, TrackerStatus, TrackerView, TrafficTotals, TransferMetrics,
-      TransferRates,
-   },
+   frontend::{FrontendHealthLevel, FrontendHub, TorrentView, TrackerStatus, TrackerView},
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
+   metrics::{
+      ByteCount, ContentProgress, HasTransferMetrics, TorrentMetrics, TrafficTotals,
+      TransferMetrics, TransferRates,
+   },
    peer::{PeerActor, PeerId, commands::SetChoked},
    pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
    settings::Settings,
@@ -100,7 +100,7 @@ impl PieceManager for PieceManagerProxy {
 }
 
 pub(crate) struct TorrentActor {
-   pub(super) frontend: FrontendPublisher,
+   pub(super) frontend: FrontendHub,
    pub(crate) peers: HashMap<PeerId, ActorRef<PeerActor>>,
    pub(crate) trackers: HashMap<Tracker, ActorRef<TrackerActor>>,
 
@@ -364,10 +364,7 @@ impl TorrentActor {
          }
       }
 
-      let block_map = self.piece_scheduler.block_map_export();
-      for entry in block_map.iter() {
-         let piece_idx = *entry.key();
-         let block = entry.value();
+      for (&piece_idx, block) in self.piece_scheduler.completed_blocks() {
          if piece_idx < num_pieces && !self.bitfield[piece_idx] {
             let piece_size = if piece_idx == num_pieces - 1 {
                last_piece_len
@@ -463,12 +460,13 @@ impl TorrentActor {
          resolved_magnet_info: self.resolved_magnet_info.clone(),
          bitfield: self.bitfield.iter().by_vals().collect(),
          block_map: {
-            let map = self.piece_scheduler.block_map_export();
-            let mut blocks = map
+            let mut blocks = self
+               .piece_scheduler
+               .completed_blocks()
                .iter()
-               .map(|entry| PieceBlockSnapshot {
-                  piece_index: Self::snapshot_u64(*entry.key()),
-                  blocks: entry.value().iter().by_vals().collect(),
+               .map(|(&piece_index, blocks)| PieceBlockSnapshot {
+                  piece_index: Self::snapshot_u64(piece_index),
+                  blocks: blocks.iter().by_vals().collect(),
                })
                .collect::<Vec<_>>();
             blocks.sort_by_key(|entry| entry.piece_index);
@@ -497,11 +495,10 @@ impl TorrentActor {
       let total_pieces = self.bitfield.len();
       let partial_pieces = self
          .piece_scheduler
-         .block_map_export()
+         .completed_blocks()
          .iter()
-         .filter(|entry| {
-            let piece_idx = *entry.key();
-            piece_idx < total_pieces && !self.bitfield[piece_idx] && entry.value().count_ones() > 0
+         .filter(|(piece_index, blocks)| {
+            **piece_index < total_pieces && !self.bitfield[**piece_index] && blocks.count_ones() > 0
          })
          .count();
       let peers = self
@@ -648,7 +645,7 @@ pub struct TorrentActorArgs {
    pub settings: Settings,
 
    /// Live frontend state shared with the owning engine.
-   pub(crate) frontend: FrontendPublisher,
+   pub(crate) frontend: FrontendHub,
 }
 
 impl Actor for TorrentActor {
@@ -877,9 +874,10 @@ mod tests {
 
    use super::*;
    use crate::{
-      frontend::{BytesPerSecond, PeerScope, PeerView},
+      frontend::{PeerIdentity, PeerView},
       hashes::HashVec,
       metainfo::{InfoKeys, MetaInfo, TorrentFile},
+      metrics::BytesPerSecond,
       settings::Settings,
       testing,
       torrent::{
@@ -1011,7 +1009,7 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(file_path),
          settings,
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
       });
       actor
          .tell(SetState {
@@ -1031,9 +1029,9 @@ mod tests {
       assert!(query.contains(&format!("left={}", info.total_length())));
       assert!(query.contains("compact=0"));
 
-      let export = actor.ask(SnapshotState).await.unwrap();
-      assert_eq!(export.info_hash, info_hash);
-      assert_eq!(export.state, TorrentState::Downloading);
+      let snapshot = actor.ask(SnapshotState).await.unwrap();
+      assert_eq!(snapshot.info_hash, info_hash);
+      assert_eq!(snapshot.state, TorrentState::Downloading);
 
       actor.stop_gracefully().await.unwrap();
    }
@@ -1062,7 +1060,7 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(testing::torrent_temp_path()),
          settings,
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
       });
       actor
          .tell(SetState {
@@ -1110,7 +1108,7 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(base_path.clone()),
          settings,
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
       });
       actor
          .tell(SetState {
@@ -1188,7 +1186,7 @@ mod tests {
          sufficient_peers: Some(sufficient_peers),
          base_path: None,
          settings: Settings::default(),
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
       });
 
       let torrent = Torrent::new(info_hash, actor.clone());
@@ -1222,7 +1220,7 @@ mod tests {
          sufficient_peers: None,
          base_path: None,
          settings: Settings::default(),
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
       });
 
       // Blocking loop that runs until we get an info dict
@@ -1262,7 +1260,7 @@ mod tests {
          sufficient_peers: Some(0),
          base_path: None,
          settings: Settings::default(),
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
       });
 
       assert_eq!(actor.ask(GetState).await.unwrap(), TorrentState::Ready);
@@ -1287,7 +1285,7 @@ mod tests {
          sufficient_peers: Some(0),
          base_path: None,
          settings: Settings::default(),
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
       });
 
       assert_eq!(
@@ -1316,7 +1314,7 @@ mod tests {
          sufficient_peers: Some(0),
          base_path: None,
          settings: Settings::default(),
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
       });
 
       actor
@@ -1376,7 +1374,7 @@ mod tests {
          sufficient_peers: None,
          base_path: Some(file_path),
          settings: Settings::default(),
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
       });
 
       let torrent = Torrent::new(info_hash, actor.clone());
@@ -1385,9 +1383,9 @@ mod tests {
 
       let wrote_piece_block = timeout(Duration::from_secs(60), async {
          loop {
-            let export = actor.ask(SnapshotState).await.unwrap();
-            let has_persisted_progress = export.bitfield.iter().any(|complete| *complete)
-               || export
+            let snapshot = actor.ask(SnapshotState).await.unwrap();
+            let has_persisted_progress = snapshot.bitfield.iter().any(|complete| *complete)
+               || snapshot
                   .block_map
                   .iter()
                   .any(|entry| entry.blocks.iter().any(|block| *block));
@@ -1421,7 +1419,7 @@ mod tests {
    }
 
    #[tokio::test(flavor = "multi_thread")]
-   async fn torrent_actor_when_pieces_are_marked_complete_then_exports_progress_correctly() {
+   async fn torrent_actor_when_pieces_are_marked_complete_then_snapshots_progress_correctly() {
       testing::init_tracing();
       let metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
       let info_dict = match &metainfo {
@@ -1440,7 +1438,7 @@ mod tests {
          .unwrap();
 
       // Spawn the actor first so we get an ActorRef, then immediately stop it
-      // and reconstruct state for direct export testing.
+      // and reconstruct state for direct snapshot testing.
       let actor_ref = TorrentActor::spawn(TorrentActorArgs {
          peer_id,
          metainfo: metainfo.clone(),
@@ -1452,7 +1450,7 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(file_path.clone()),
          settings: Settings::default(),
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
       });
 
       // Build the bitfield with fake completed pieces
@@ -1474,9 +1472,9 @@ mod tests {
       let mut piece_scheduler = PieceScheduler::new(info_dict.piece_count());
       piece_scheduler.set_piece_blocks(partial_piece_index, blocks);
 
-      // Construct the actor manually for export testing
+      // Construct the actor manually for snapshot testing
       let test_actor = TorrentActor {
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield,
@@ -1505,26 +1503,30 @@ mod tests {
          settings: Settings::default(),
       };
 
-      let export = test_actor.snapshot().unwrap();
+      let snapshot = test_actor.snapshot().unwrap();
 
-      // Verify export contents
-      assert_eq!(export.info_hash, info_hash);
-      assert_eq!(export.state, TorrentState::Added);
-      assert!(!export.auto_start);
-      assert_eq!(export.sufficient_peers, 6);
+      // Verify snapshot contents
+      assert_eq!(snapshot.info_hash, info_hash);
+      assert_eq!(snapshot.state, TorrentState::Added);
+      assert!(!snapshot.auto_start);
+      assert_eq!(snapshot.sufficient_peers, 6);
       assert!(
-         export.resolved_magnet_info.is_none(),
+         snapshot.resolved_magnet_info.is_none(),
          "torrent metainfo already contains its info dict"
       );
-      assert!(export.resolved_info().is_some());
+      assert!(snapshot.resolved_info().is_some());
       assert_eq!(
-         export.bitfield.iter().filter(|complete| **complete).count(),
+         snapshot
+            .bitfield
+            .iter()
+            .filter(|complete| **complete)
+            .count(),
          fake_completed
       );
-      assert_eq!(export.bitfield.len(), piece_count);
-      assert_eq!(export.block_map.len(), 1);
+      assert_eq!(snapshot.bitfield.len(), piece_count);
+      assert_eq!(snapshot.block_map.len(), 1);
 
-      let partial_entry = export
+      let partial_entry = snapshot
          .block_map
          .iter()
          .find(|entry| entry.piece_index == partial_piece_index as u64)
@@ -1549,7 +1551,7 @@ mod tests {
          info_dict.total_length() - expected_downloaded
       );
 
-      match &export.piece_storage {
+      match &snapshot.piece_storage {
          PieceStorageStrategy::Disk(path) => {
             assert_eq!(path.as_path(), piece_path.as_path());
          }
@@ -1558,18 +1560,18 @@ mod tests {
 
       // Test serialization round-trip
       use serde_json::{from_str, to_string};
-      let export_str = to_string(&export).unwrap();
-      let from_export: TorrentSnapshot = from_str(&export_str).unwrap();
+      let snapshot_json = to_string(&snapshot).unwrap();
+      let round_trip: TorrentSnapshot = from_str(&snapshot_json).unwrap();
 
-      assert_eq!(export.info_hash, from_export.info_hash);
-      assert_eq!(export.state, from_export.state);
-      assert_eq!(export.auto_start, from_export.auto_start);
-      assert_eq!(export.sufficient_peers, from_export.sufficient_peers);
-      assert_eq!(export.output_path, from_export.output_path);
-      assert_eq!(export.bitfield, from_export.bitfield);
-      assert_eq!(export.block_map.len(), from_export.block_map.len());
+      assert_eq!(snapshot.info_hash, round_trip.info_hash);
+      assert_eq!(snapshot.state, round_trip.state);
+      assert_eq!(snapshot.auto_start, round_trip.auto_start);
+      assert_eq!(snapshot.sufficient_peers, round_trip.sufficient_peers);
+      assert_eq!(snapshot.output_path, round_trip.output_path);
+      assert_eq!(snapshot.bitfield, round_trip.bitfield);
+      assert_eq!(snapshot.block_map.len(), round_trip.block_map.len());
 
-      trace!("Export: {export_str}");
+      trace!("Snapshot: {snapshot_json}");
 
       actor_ref.stop_gracefully().await.unwrap();
    }
@@ -1596,7 +1598,7 @@ mod tests {
       let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
          .await
          .unwrap();
-      let frontend = FrontendPublisher::default();
+      let frontend = FrontendHub::default();
       let actor_ref = TorrentActor::spawn(TorrentActorArgs {
          peer_id,
          metainfo: metainfo.clone(),
@@ -1631,7 +1633,7 @@ mod tests {
       piece_scheduler.set_piece_blocks(partial_piece_index, blocks);
 
       let mut test_actor = TorrentActor {
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield,
@@ -1662,7 +1664,7 @@ mod tests {
 
       let verified_content = test_actor.live_view().metrics.progress.verified_bytes;
       let sampled_peer = test_actor.frontend.register_peer_scope(
-         PeerScope {
+         PeerIdentity {
             torrent: info_hash,
             peer: PeerId::Unknown([9; 20]),
          },
@@ -1804,11 +1806,11 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(file_path.clone()),
          settings: Settings::default(),
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
       });
 
       let mut actor = TorrentActor {
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield: BitVec::repeat(false, piece_count),

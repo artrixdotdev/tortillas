@@ -9,12 +9,12 @@ polling loop.
 Call `Engine::listener()` before invoking operations. The listener combines two
 related capabilities:
 
-- `recv().await` yields sequenced `CoreEvent` values as changes happen.
-- `view()` returns the latest display-oriented `EngineView` held by the live
-  publisher.
+- `recv().await` yields sequenced `EngineEvent` values as changes happen.
+- `view()` derives the latest presentation-oriented `EngineView` from the live
+  scope tree.
 
 Every `Torrent` returned by `Engine::add_torrent()` similarly has `listener()`
-and `subscribe()` methods. A torrent listener has its own publisher, receives
+and `subscribe()` methods. A torrent listener has its own scope, receives
 typed `TorrentEvent` values for that torrent only, and exposes its latest
 `TorrentView`. It does not filter the engine's global event stream.
 
@@ -22,15 +22,17 @@ Peers and trackers returned by `Torrent::peers()` and `Torrent::trackers()`
 follow the same pattern. Each `PeerHandle` and `TrackerHandle` owns an
 independent typed listener and current view, including a terminal disconnected
 or stopped view. Engine listeners receive
-`CoreEventKind::Torrent { torrent, event }`, where `event` uses the same
+`EngineEventKind::Torrent { torrent, event }`, where `event` uses the same
 `TorrentEventKind` vocabulary as the torrent listener. Peer and tracker
 changes carry their public handles inside that nested event, so a frontend can
 descend into more detailed streams only when needed.
 
-Each publisher's shared event channel retains 256 events by default. Slow listeners
-receive `EventStreamError::Lagged` instead of causing unbounded memory growth.
-After lagging, redraw from `listener.view()` and continue calling `recv()`.
-Sequence numbers are monotonic within each publisher.
+Event channels are allocated lazily on first subscription. Defaults retain 256
+engine or torrent events and 64 peer or tracker events; all four capacities are
+configurable through `FrontendSettings`. Slow listeners receive
+`EventStreamError::Lagged` instead of causing unbounded memory growth. After
+lagging, rebuild adapter state from `listener.view()` and continue calling
+`recv()`. Sequence numbers are monotonic within each scope.
 
 Use `subscribe()` when only discrete events are needed. Use `listener()` when
 the frontend also needs a coherent current view for initial rendering or lag
@@ -61,12 +63,17 @@ usual Tokio-style loop. Engine, torrent, peer, and tracker APIs all reuse these
 types; future protocols can expose the same behavior without another listener
 implementation.
 
+Publisher mutation names state their complete effect:
+`replace_view()` changes only the current projection,
+`replace_view_and_emit()` performs a coherent view/event transition,
+`emit_without_view_change()` emits a discrete event, and
+`close_with_terminal_event()` performs the one irreversible close transition.
+
 ## Views and persistence snapshots
 
 `EngineView`, `TorrentView`, `PeerView`, and `TrackerView` are live presentation
-contracts. They are updated by their publishers, are suitable for rendering,
-and are Serde-compatible where a frontend wants to store or transmit display
-state.
+contracts. They are suitable for rendering, API responses, or transport
+serialization and are Serde-compatible.
 
 `Engine::snapshot()` and `Torrent::snapshot()` are not the live frontend path.
 Snapshots are the persistence boundary for serializing resumable engine and
@@ -91,11 +98,11 @@ state.
 ## Runtime and shutdown
 
 The library is Tokio-based. Keep the engine, torrent handles, application tasks,
-and listener tasks on the application runtime. Terminal or UI operations that
-block should run separately from those async tasks.
+and listener tasks on the application runtime. Any blocking adapter work should
+run separately from those async tasks.
 
 Call `Engine::shutdown()` and keep the engine
-listener alive until it receives `CoreEventKind::Shutdown`. This ensures the
+listener alive until it receives `EngineEventKind::Shutdown`. This ensures the
 frontend observes the terminal state after managed torrents stop.
 
 See [`live_frontend.rs`](../crates/libtortillas/examples/live_frontend.rs) for a

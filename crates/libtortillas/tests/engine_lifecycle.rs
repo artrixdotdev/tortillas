@@ -17,7 +17,7 @@ use libtortillas::{
 use tokio::fs;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn engine_remove_torrent_drops_it_from_exports() {
+async fn engine_remove_torrent_drops_it_from_snapshot_and_live_view() {
    let (path, info_hash) = write_http_torrent_fixture().await;
    let engine = Engine::builder()
       .settings(test_settings())
@@ -31,9 +31,11 @@ async fn engine_remove_torrent_drops_it_from_exports() {
       .unwrap();
    assert_eq!(torrent.info_hash(), info_hash);
    assert_eq!(engine.snapshot().await.unwrap().torrents.len(), 1);
+   assert_eq!(engine.view().torrent_count(), 1);
 
    engine.remove_torrent(info_hash).await.unwrap();
    assert!(engine.snapshot().await.unwrap().torrents.is_empty());
+   assert_eq!(engine.view().torrent_count(), 0);
    assert!(torrent.state().await.is_err());
 
    let err = engine.remove_torrent(info_hash).await.unwrap_err();

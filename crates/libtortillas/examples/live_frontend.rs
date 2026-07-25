@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use libtortillas::prelude::{
-   CoreEventKind, Engine, EventStreamError, TorrentEventKind, TorrentSource, TorrentState,
+   Engine, EngineEventKind, EventStreamError, TorrentEventKind, TorrentSource, TorrentState,
 };
 use tracing::{error, info, warn};
 
@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
    let engine = Engine::default();
    let mut listener = engine.listener();
-   let frontend = tokio::spawn(async move {
+   let event_task = tokio::spawn(async move {
       loop {
          match listener.recv().await {
             Ok(event) => {
@@ -27,7 +27,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                   ?event.kind,
                   "frontend received a live engine event"
                );
-               if matches!(event.kind, CoreEventKind::Shutdown(_)) {
+               if matches!(event.kind, EngineEventKind::Shutdown(_)) {
                   break;
                }
             }
@@ -75,6 +75,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
       info!(?path, "saved resumable engine state");
    }
    engine.shutdown().await?;
-   frontend.await?;
+   event_task.await?;
    Ok(())
 }

@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use super::{EngineView, PeerHandle, TorrentMetrics, TrackerHandle, TransferMetrics};
+use super::{EngineView, PeerHandle, TrackerHandle};
 use crate::{
    hashes::InfoHash,
+   metrics::{TorrentMetrics, TransferMetrics},
    torrent::{Torrent, TorrentState},
 };
 
@@ -12,7 +13,7 @@ use crate::{
 /// event it emits. A frontend can use them to preserve scoped event order or
 /// detect a gap after reconnecting a consumer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Sequenced<E> {
+pub struct SequencedEvent<E> {
    /// Publisher-local sequence number for this event.
    pub sequence: u64,
    /// The typed change represented by this event.
@@ -20,15 +21,15 @@ pub struct Sequenced<E> {
 }
 
 /// A sequenced event emitted by the engine's frontend publisher.
-pub type CoreEvent = Sequenced<CoreEventKind>;
+pub type EngineEvent = SequencedEvent<EngineEventKind>;
 /// A sequenced event emitted by a torrent's live publisher.
-pub type TorrentEvent = Sequenced<TorrentEventKind>;
+pub type TorrentEvent = SequencedEvent<TorrentEventKind>;
 /// A sequenced event emitted by a peer's live publisher.
-pub type PeerEvent = Sequenced<PeerEventKind>;
+pub type PeerEvent = SequencedEvent<PeerEventKind>;
 /// A sequenced event emitted by a tracker's live publisher.
-pub type TrackerEvent = Sequenced<TrackerEventKind>;
+pub type TrackerEvent = SequencedEvent<TrackerEventKind>;
 
-impl Sequenced<CoreEventKind> {
+impl SequencedEvent<EngineEventKind> {
    /// Returns the torrent associated with this event, when applicable.
    #[must_use]
    pub fn torrent(&self) -> Option<InfoHash> {
@@ -39,7 +40,7 @@ impl Sequenced<CoreEventKind> {
 /// Typed changes a frontend can react to without actor internals or polling.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-pub enum CoreEventKind {
+pub enum EngineEventKind {
    /// The engine finished starting and is ready for operations.
    EngineStarted(EngineView),
    /// A change emitted by one managed torrent.
@@ -98,7 +99,7 @@ pub enum TrackerEventKind {
    Stopped,
 }
 
-impl CoreEventKind {
+impl EngineEventKind {
    /// Returns the torrent associated with this event, when applicable.
    #[must_use]
    pub fn torrent(&self) -> Option<InfoHash> {

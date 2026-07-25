@@ -2,15 +2,21 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use super::{
-   ByteCount, HasTransferMetrics, TorrentMetrics, TrafficTotals, TransferMetrics, TransferRates,
+use crate::{
+   engine::EngineStatus,
+   hashes::InfoHash,
+   metrics::{
+      ByteCount, HasTransferMetrics, TorrentMetrics, TrafficTotals, TransferMetrics, TransferRates,
+   },
+   peer::Peer,
+   torrent::TorrentState,
 };
-use crate::{engine::EngineStatus, hashes::InfoHash, peer::Peer, torrent::TorrentState};
 
 /// Current live engine state maintained by a frontend listener.
 ///
-/// Unlike persistence snapshots, views are presentation-oriented and updated
-/// by applying live [`CoreEvent`](super::CoreEvent) values.
+/// Unlike persistence snapshots, views are presentation-oriented projections
+/// updated by the actor hierarchy. A listener always reads the current
+/// projection directly, including after a lagged event subscription.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EngineView {
    pub status: EngineStatus,
@@ -150,7 +156,7 @@ impl TrackerStatus {
 #[cfg(test)]
 mod tests {
    use super::*;
-   use crate::frontend::BytesPerSecond;
+   use crate::metrics::BytesPerSecond;
 
    #[test]
    fn peer_view_uses_canonical_byte_units() {

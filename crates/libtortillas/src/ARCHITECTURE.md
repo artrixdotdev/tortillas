@@ -22,23 +22,24 @@ TrackerActor ── discovered peers ──> TorrentActor
 Module facades should export stable public types while keeping actor internals private to the crate.
 Domain types such as torrent state, storage strategy, exported snapshots, tracker model types, and tracker stats live outside actor files so actors can focus on orchestration.
 
-The frontend coordination boundary is split by owned lifecycle:
+The frontend boundary uses a small, reader-oriented module layout:
 
 ```text
+metrics.rs        canonical units, transfer metrics, and aggregation
 frontend/
-├── live.rs                 generic state/channel primitive
-├── registry.rs             guard-free keyed scope storage
-├── handle/
-│   ├── mod.rs              generic identity-bearing handle primitive
-│   ├── peer.rs             peer identity and public access
-│   └── tracker.rs          tracker identity and public access
-└── hub/
-    ├── mod.rs              ownership root and scope definitions
-    ├── engine.rs           root status and derived engine view
-    ├── torrent.rs          torrent projection and tree cleanup
-    ├── peer.rs             torrent-local peer registry
-    └── tracker.rs          torrent-local tracker registry
+├── mod.rs        public map and exports
+├── view.rs       current presentation models
+├── event.rs      discrete event contracts
+├── stream.rs     publisher, subscription, listener, and closure lifecycle
+├── handle.rs     peer and tracker identity-bearing access
+├── hub.rs        complete ownership tree and publication coordination
+└── tests.rs      private invariants and performance proof
 ```
+
+The ownership path is deliberately kept in one `hub.rs`. Engine, torrent, peer,
+and tracker publication are sections of one coordinator rather than separate
+files, so a reader can follow a state change without navigating between small
+modules.
 
 ## Architectural Invariants
 
@@ -51,7 +52,7 @@ These rules define the source of truth:
 5. Peer and tracker events do not implicitly rebuild torrent or engine state.
 6. A scope closes exactly once, only when it cannot restart.
 7. Snapshot schema validation runs once at the authoritative engine restore boundary.
-8. Actor and publisher back-references are weak; the ownership graph contains no strong cycle.
+8. Actor and hub back-references are weak; the ownership graph contains no strong cycle.
 9. Synchronous lock order is registry, scope publication/state, then event sender.
 10. No actor communication, filesystem operation, arbitrary callback, or `.await` occurs while a synchronous lock is held.
 
@@ -62,9 +63,13 @@ methods are the only public command API, while `listener` combines a bounded
 event subscription with current `EngineView` or `TorrentView` state. A shared
 frontend hub owns engine lifecycle state and a keyed registry of torrent
 scopes. Each torrent scope owns its live torrent publisher plus its peer and
-tracker registries. Public handles hold weak back-references to that hub, and
-each scope has an irreversible terminal state so actor updates cannot
-resurrect removed objects.
+tracker registries. The torrent scope also retains the one backing
+`TorrentInner`; there is no parallel keyed handle registry to synchronize.
+`TorrentInner` retains only the shared live publisher and a weak hub
+back-reference, so this ownership path does not form a cycle. Peer and tracker
+handles likewise hold weak hub back-references. Every live publisher has an
+irreversible terminal state, so actor updates cannot resurrect removed
+objects.
 
 `EngineView` is derived on read from engine lifecycle state and current torrent
 scopes, sorted by info hash. The engine does not cache a second
@@ -73,7 +78,7 @@ scope. Peer connection and disconnection are propagated separately as discrete
 parent events without cloning unrelated torrent projections.
 
 Engine events project the canonical `TorrentEventKind` hierarchy through
-`CoreEventKind::Torrent`; they do not duplicate every torrent, peer, and
+`EngineEventKind::Torrent`; they do not duplicate every torrent, peer, and
 tracker event in a second vocabulary.
 
 Live views are intentionally distinct from `EngineSnapshot` and
@@ -85,6 +90,11 @@ live state.
 
 Event channels are allocated lazily on first subscription. Their capacities are
 configured independently through `FrontendSettings`.
+
+`LivePublisher` mutation names state the complete transition:
+`replace_view`, `replace_view_and_emit`, `emit_without_view_change`, and
+`close_with_terminal_event`. Coordination code does not hide those effects
+behind generic `update` or `publish` methods.
 
 ## Metrics
 
@@ -136,8 +146,9 @@ publishes `Stopped` and closes the scope tree.
 ## Locking and Publication
 
 The lock hierarchy is registry shard, scope publication/state, then event
-sender. `ScopeRegistry` wraps `DashMap`, but never exposes shard guards:
-registry methods return cloned `Arc` values or owned vectors. Every shard guard
+sender. `ScopeRegistry` is not a replacement concurrent map: it is a narrow
+policy wrapper around `DashMap` that prevents shard guards from escaping.
+Registry methods return cloned `Arc` values or owned vectors. Every shard guard
 is therefore released before a scope publication lock is acquired. Scope
 construction happens before shard entry acquisition, so callbacks do not run
 under a registry lock. A scope publication lock serializes its view transition,

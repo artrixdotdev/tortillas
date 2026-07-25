@@ -22,11 +22,9 @@ use tracing::{Span, debug, info, instrument, trace, warn};
 
 use crate::{
    errors::PeerActorError,
-   frontend::{
-      ByteCount, HasTransferMetrics, PeerHandle, PeerView, TrafficTotals, TransferMetrics,
-      TransferSample,
-   },
+   frontend::{PeerHandle, PeerView},
    hashes::InfoHash,
+   metrics::{ByteCount, HasTransferMetrics, TrafficTotals, TransferMetrics, TransferSample},
    peer::{Peer, PeerId},
    protocol::{stream::PeerRecv, *},
    settings::PeerSettings,

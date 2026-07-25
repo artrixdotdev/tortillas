@@ -18,8 +18,8 @@ use super::{
 use crate::{
    errors::{TorrentError, map_torrent_send_error},
    frontend::{
-      EventSubscription, FrontendHub, FrontendPublisher, PeerHandle, TorrentEventKind,
-      TorrentListener, TorrentScope, TorrentView, TrackerHandle,
+      EventSubscription, FrontendHub, FrontendHubInner, LivePublisher, PeerHandle,
+      TorrentEventKind, TorrentListener, TorrentView, TrackerHandle,
    },
    hashes::InfoHash,
    pieces::PieceManager,
@@ -29,8 +29,8 @@ use crate::{
 pub(crate) struct TorrentInner {
    pub(crate) info_hash: InfoHash,
    pub(crate) actor: ActorRef<TorrentActor>,
-   pub(crate) hub: Weak<FrontendHub>,
-   pub(crate) scope: Arc<TorrentScope>,
+   pub(crate) hub: Weak<FrontendHubInner>,
+   pub(crate) live: Arc<LivePublisher<Option<TorrentView>, TorrentEventKind>>,
 }
 
 /// A handle to a torrent managed by the engine.
@@ -57,22 +57,22 @@ impl Torrent {
    /// to its underlying [`TorrentActor`].
    #[cfg(test)]
    pub(crate) fn new(info_hash: InfoHash, actor_ref: ActorRef<TorrentActor>) -> Self {
-      Self::new_with_frontend(info_hash, actor_ref, &FrontendPublisher::default(), None)
+      Self::new_with_frontend(info_hash, actor_ref, &FrontendHub::default(), None)
    }
 
    pub(crate) fn new_with_frontend(
-      info_hash: InfoHash, actor: ActorRef<TorrentActor>, frontend: &FrontendPublisher,
+      info_hash: InfoHash, actor: ActorRef<TorrentActor>, frontend: &FrontendHub,
       initial_view: Option<TorrentView>,
    ) -> Self {
       let scope = frontend.ensure_torrent_scope(info_hash);
       if let Some(view) = initial_view {
-         let _ = scope.live.set_view(Some(view));
+         let _ = scope.live.replace_view(Some(view));
       }
       let inner = Arc::new(TorrentInner {
          info_hash,
          actor,
          hub: frontend.downgrade(),
-         scope: Arc::clone(&scope),
+         live: Arc::clone(&scope.live),
       });
       Self { inner }
    }
@@ -215,13 +215,13 @@ impl Torrent {
    /// Subscribes to live events for this torrent only.
    #[must_use]
    pub fn subscribe(&self) -> EventSubscription<TorrentEventKind> {
-      self.inner.scope.live.subscribe()
+      self.inner.live.subscribe()
    }
 
    /// Creates a live listener scoped to this torrent.
    #[must_use]
    pub fn listener(&self) -> TorrentListener {
-      self.inner.scope.live.listener()
+      self.inner.live.listener()
    }
 
    /// Returns the latest display-oriented state maintained for this torrent.
@@ -229,7 +229,7 @@ impl Torrent {
    /// This returns `None` after the torrent has been removed from its engine.
    #[must_use]
    pub fn view(&self) -> Option<TorrentView> {
-      self.inner.scope.live.view()
+      self.inner.live.view()
    }
 
    /// Returns handles for this torrent's currently connected peers.
@@ -248,7 +248,7 @@ impl Torrent {
       })
    }
 
-   fn frontend(&self) -> Option<FrontendPublisher> {
-      self.inner.hub.upgrade().map(FrontendPublisher::from_hub)
+   fn frontend(&self) -> Option<FrontendHub> {
+      self.inner.hub.upgrade().map(FrontendHub::from_inner)
    }
 }

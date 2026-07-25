@@ -9,7 +9,7 @@ use tracing::{debug, info, trace, warn};
 
 use super::{TorrentActor, util};
 #[cfg(test)]
-use crate::frontend::FrontendPublisher;
+use crate::frontend::FrontendHub;
 use crate::{
    errors::TorrentError,
    peer::commands::{CancelPiece, Have, NeedPiece},
@@ -477,11 +477,11 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(base_path.clone()),
          settings: Settings::default(),
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
       });
 
       TorrentActor {
-         frontend: FrontendPublisher::default(),
+         frontend: FrontendHub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield: BitVec::<AtomicU8>::repeat(false, info.piece_count()),

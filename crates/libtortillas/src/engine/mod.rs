@@ -62,7 +62,7 @@ use self::{
 };
 use crate::{
    errors::{EngineError, map_engine_send_error},
-   frontend::{EngineListener, EngineView, EventSubscription, FrontendPublisher},
+   frontend::{EngineListener, EngineView, EventSubscription, FrontendHub},
    hashes::InfoHash,
    peer::PeerId,
    settings::Settings,
@@ -112,7 +112,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct Engine {
    actor: ActorRef<EngineActor>,
-   frontend: FrontendPublisher,
+   frontend: FrontendHub,
 }
 
 #[bon::bon]
@@ -210,7 +210,7 @@ impl Engine {
          None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
       };
 
-      let frontend = FrontendPublisher::with_settings(settings.frontend);
+      let frontend = FrontendHub::with_settings(settings.frontend);
       let args = EngineActorArgs {
          tcp_addr,
          utp_addr,
@@ -521,7 +521,7 @@ mod tests {
       },
       engine::{Engine, TorrentSource},
       errors::EngineError,
-      frontend::{CoreEventKind, TorrentEventKind},
+      frontend::{EngineEventKind, TorrentEventKind},
       settings::{DhtSettings, Settings},
       testing::{
          BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_MAGNET, BIG_BUCK_BUNNY_TORRENT_FILE, LocalPeer,
@@ -611,10 +611,10 @@ mod tests {
          TorrentSource::torrent_file_path(torrent_fixture_path(BIG_BUCK_BUNNY_TORRENT_FILE));
 
       let torrent = engine.add_torrent(source).await.unwrap();
-      let export = engine.snapshot().await.unwrap();
+      let snapshot = engine.snapshot().await.unwrap();
 
       assert_eq!(torrent.info_hash().to_hex(), BIG_BUCK_BUNNY_INFO_HASH);
-      assert_eq!(export.torrents.len(), 1);
+      assert_eq!(snapshot.torrents.len(), 1);
    }
 
    #[tokio::test]
@@ -626,10 +626,10 @@ mod tests {
       let source = TorrentSource::magnet(BIG_BUCK_BUNNY_MAGNET);
 
       let torrent = engine.add_torrent(source).await.unwrap();
-      let export = engine.snapshot().await.unwrap();
+      let snapshot = engine.snapshot().await.unwrap();
 
       assert_eq!(torrent.info_hash().to_hex(), BIG_BUCK_BUNNY_INFO_HASH);
-      assert_eq!(export.torrents.len(), 1);
+      assert_eq!(snapshot.torrents.len(), 1);
    }
 
    #[tokio::test]
@@ -816,7 +816,7 @@ mod tests {
       let peer = timeout(Duration::from_secs(2), async {
          loop {
             let event = listener.recv().await.unwrap();
-            if let CoreEventKind::Torrent {
+            if let EngineEventKind::Torrent {
                torrent,
                event: crate::frontend::TorrentEventKind::PeerConnected(peer),
             } = event.kind
