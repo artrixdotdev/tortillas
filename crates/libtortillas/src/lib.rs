@@ -2,8 +2,8 @@
 //!
 //! # Getting started
 //!
-//! A basic downloader only needs an [`engine::Engine`] and a
-//! [`engine::TorrentSource`]. The live frontend API is optional.
+//! A basic downloader only needs an [`Engine`](engine::Engine) and a
+//! [`TorrentSource`](engine::TorrentSource). The live frontend API is optional.
 //!
 //! Add the library and its Tokio runtime to a binary crate:
 //!
@@ -35,21 +35,26 @@
 //! ```
 //!
 //! That is enough to start torrenting. By default, a newly added torrent starts
-//! automatically after it discovers enough peers. The [`torrent::Torrent`]
-//! returned by [`engine::Engine::add_torrent`] is a lightweight handle for
-//! controlling that download.
+//! automatically after it discovers enough peers. The
+//! [`Torrent`](torrent::Torrent) returned by
+//! [`Engine::add_torrent`](engine::Engine::add_torrent) is a lightweight handle
+//! for controlling that download.
 //!
 //! ## Torrent sources
 //!
 //! Use the constructor that matches the input your application already has:
 //!
-//! - [`engine::TorrentSource::torrent_file_path`] for a local `.torrent` file.
-//! - [`engine::TorrentSource::magnet`] for a magnet URI.
-//! - [`engine::TorrentSource::torrent_file_bytes`] for bytes already in memory.
-//! - [`engine::TorrentSource::remote_torrent_url`] for an HTTP or HTTPS URL.
+//! - [`TorrentSource::torrent_file_path`](engine::TorrentSource::torrent_file_path)
+//!   for a local `.torrent` file.
+//! - [`TorrentSource::magnet`](engine::TorrentSource::magnet) for a magnet URI.
+//! - [`TorrentSource::torrent_file_bytes`](engine::TorrentSource::torrent_file_bytes)
+//!   for bytes already in memory.
+//! - [`TorrentSource::remote_torrent_url`](engine::TorrentSource::remote_torrent_url)
+//!   for an HTTP or HTTPS URL.
 //!
-//! Every source is passed to [`engine::Engine::add_torrent`] in the same way.
-//! There is no frontend-specific setup.
+//! Every source is passed to
+//! [`Engine::add_torrent`](engine::Engine::add_torrent) in the same way. There
+//! is no frontend-specific setup.
 //!
 //! For example, downloading from a magnet link only changes the source:
 //!
@@ -59,7 +64,7 @@
 //! async fn add_magnet(engine: &Engine) -> Result<(), Box<dyn std::error::Error>> {
 //!    let torrent = engine
 //!       .add_torrent(TorrentSource::magnet(
-//!          "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+//!          "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big+Buck+Bunny",
 //!       ))
 //!       .await?;
 //!
@@ -70,12 +75,12 @@
 //!
 //! ## Basic control
 //!
-//! The returned [`torrent::Torrent`] can be
-//! [`paused`](torrent::Torrent::pause),
-//! [`resumed`](torrent::Torrent::resume), or inspected for its
-//! [`state`](torrent::Torrent::state). An engine can manage multiple torrents;
-//! call [`engine::Engine::remove_torrent`] to remove one and
-//! [`engine::Engine::shutdown`] before exiting cleanly.
+//! The returned [`Torrent`](torrent::Torrent) can be
+//! [`paused`](torrent::Torrent::pause), [`resumed`](torrent::Torrent::resume),
+//! or inspected for its [`state`](torrent::Torrent::state). An engine can
+//! manage multiple torrents; call
+//! [`Engine::remove_torrent`](engine::Engine::remove_torrent) to remove one and
+//! [`Engine::shutdown`](engine::Engine::shutdown) before exiting cleanly.
 //!
 //! ```no_run
 //! use libtortillas::prelude::Torrent;
@@ -124,9 +129,10 @@
 //! applications that want to display live progress or forward state through a
 //! terminal, web server, website, or desktop application.
 //!
-//! When live updates are useful, start with [`frontend::EventListener`] and the
-//! current view exposed by [`frontend::EventListener::view`]. The
-//! [`frontend`] module documents the complete transport-agnostic model.
+//! When live updates are useful, start with
+//! [`EventListener`](frontend::EventListener) and its
+//! [`view`](frontend::EventListener::view). The [`frontend`] module documents
+//! the complete transport-agnostic model.
 //!
 //! This helper waits for changes and prints verified payload progress until the
 //! torrent finishes downloading:
@@ -158,9 +164,9 @@
 //! # Runtime and advanced APIs
 //!
 //! `libtortillas` is intentionally a Tokio-based library. Public handles such
-//! as [`engine::Engine`] and [`torrent::Torrent`] expose async methods that
-//! must be driven inside a Tokio runtime, and the crate uses Tokio tasks,
-//! sockets, timers, channels, and filesystem APIs internally.
+//! as [`Engine`](engine::Engine) and [`Torrent`](torrent::Torrent) expose async
+//! methods that must be driven inside a Tokio runtime, and the crate uses Tokio
+//! tasks, sockets, timers, channels, and filesystem APIs internally.
 //!
 //! Frontends should create one application-level Tokio runtime and keep the
 //! engine plus all torrent handles on work scheduled by that runtime. The crate
@@ -204,10 +210,11 @@
 //! ```
 //!
 //! Actors own operational protocol state. Public applications interact through
-//! [`engine::Engine`], [`torrent::Torrent`], and the transport-agnostic
-//! [`frontend`] views and event streams. Durable state is represented by
-//! [`engine::EngineSnapshot`] and [`torrent::TorrentSnapshot`], never by live
-//! presentation views.
+//! [`Engine`](engine::Engine), [`Torrent`](torrent::Torrent), and the
+//! transport-agnostic [`frontend`] views and event streams. Durable state is
+//! represented by [`EngineSnapshot`](engine::EngineSnapshot) and
+//! [`TorrentSnapshot`](torrent::TorrentSnapshot), never by live presentation
+//! views.
 //!
 //! Stable public types are exported by module facades while actor messages and
 //! coordination details remain crate-private. Domain values such as lifecycle

@@ -540,8 +540,8 @@ mod tests {
       frontend::{EngineEventKind, TorrentEventKind},
       settings::{DhtSettings, Settings},
       testing::{
-         BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_MAGNET, BIG_BUCK_BUNNY_TORRENT_FILE, LocalPeer,
-         peer_id, torrent_fixture_path,
+         BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_TORRENT_FILE, LocalPeer, peer_id,
+         torrent_fixture_path,
       },
       torrent::TorrentState,
    };
@@ -639,7 +639,9 @@ mod tests {
          .settings(deterministic_settings())
          .autostart(false)
          .build();
-      let source = TorrentSource::magnet(BIG_BUCK_BUNNY_MAGNET);
+      let source = TorrentSource::magnet(format!(
+         "magnet:?xt=urn:btih:{BIG_BUCK_BUNNY_INFO_HASH}&dn=Big+Buck+Bunny"
+      ));
 
       let torrent = engine.add_torrent(source).await.unwrap();
       let snapshot = engine.snapshot().await.unwrap();
