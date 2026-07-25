@@ -4,7 +4,7 @@ use std::{
    path::{Component, Path, PathBuf},
 };
 
-use anyhow::ensure;
+use anyhow::{Context, ensure};
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::{
@@ -124,7 +124,8 @@ pub trait PieceManager: Send + Sync {
          }
          InfoKeys::Multi { files } => {
             for file in files {
-               let file_len = file.length;
+               let file_len = usize::try_from(file.length)
+                  .context("file length cannot be represented on this platform")?;
 
                // Skip files before the piece
                if piece_start >= acc + file_len {

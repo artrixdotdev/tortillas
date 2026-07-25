@@ -6,9 +6,12 @@
 
 mod event;
 mod handle;
+mod hub;
 mod listener;
 mod live;
+mod metrics;
 mod publisher;
+mod registry;
 mod subscription;
 mod view;
 
@@ -18,10 +21,14 @@ pub use event::{
 };
 pub(crate) use handle::PeerScope;
 pub use handle::{PeerHandle, PeerListener, TrackerHandle, TrackerId, TrackerListener};
+pub(crate) use hub::{FrontendHub, TorrentScope};
 pub use listener::{EngineListener, EventListener, TorrentListener};
 pub use live::{DEFAULT_EVENT_CAPACITY, LivePublisher};
-pub(crate) use publisher::{FrontendHub, FrontendPublisher};
-pub use subscription::{EventStreamError, EventSubscription};
-pub use view::{
-   EngineView, PeerView, TorrentProgress, TorrentTransfer, TorrentView, TrackerStatus, TrackerView,
+pub(crate) use metrics::TransferSample;
+pub use metrics::{
+   ByteCount, BytesPerSecond, ContentProgress, HasTransferMetrics, Seconds, TorrentMetrics,
+   TrafficTotals, TransferMetrics, TransferRates,
 };
+pub(crate) use publisher::FrontendPublisher;
+pub use subscription::{EventStreamError, EventSubscription};
+pub use view::{EngineView, PeerView, TorrentView, TrackerStatus, TrackerView};

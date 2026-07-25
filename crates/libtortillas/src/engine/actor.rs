@@ -196,7 +196,7 @@ impl Actor for EngineActor {
       &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
       error!(?id, ?reason, "Linked child died");
-      self.frontend.health(
+      self.frontend.emit_health(
          None,
          FrontendHealthLevel::Error,
          "an engine service stopped unexpectedly",
@@ -230,7 +230,7 @@ impl Actor for EngineActor {
             }
             Err(err) => {
                error!("Failed to accept incoming peer: {}", err);
-               self.frontend.health(
+               self.frontend.emit_health(
                   None,
                   FrontendHealthLevel::Warning,
                   "the TCP peer listener rejected an incoming connection",
@@ -258,7 +258,7 @@ impl Actor for EngineActor {
             }
             Err(err) => {
                error!("Failed to accept incoming peer: {}", err);
-               self.frontend.health(
+               self.frontend.emit_health(
                   None,
                   FrontendHealthLevel::Warning,
                   "the uTP peer listener rejected an incoming connection",
@@ -285,7 +285,7 @@ impl Actor for EngineActor {
          }
          torrent.wait_for_shutdown().await;
          self.torrents.remove(&info_hash);
-         self.frontend.torrent_removed(info_hash);
+         self.frontend.remove_torrent_scope(info_hash);
       }
 
       if let Some(dht) = self.dht.take() {

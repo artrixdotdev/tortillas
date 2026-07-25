@@ -142,9 +142,16 @@ impl Actor for TrackerActor {
    }
 
    async fn on_stop(
-      &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
+      &mut self, _: WeakActorRef<Self>, reason: ActorStopReason,
    ) -> Result<(), Self::Error> {
-      self.frontend.stopped();
+      if reason.is_normal() {
+         self.frontend.stopped();
+      } else {
+         // Transient supervision may reconstruct this actor with the same
+         // frontend scope. Keep the listener open until its owning torrent
+         // performs final tree cleanup.
+         self.frontend.restarting();
+      }
       if let Some(next_announce) = self.next_announce.take() {
          next_announce.abort();
       }

@@ -66,7 +66,7 @@ impl<V, E> fmt::Debug for EventListener<V, E> {
    }
 }
 
-/// Live engine listener with typed events and current display state.
+/// Live engine listener with typed events and current presentation state.
 pub type EngineListener = EventListener<EngineView>;
 
 /// Live listener scoped to one torrent.

@@ -1,4 +1,5 @@
 use crate::{
+   frontend::BytesPerSecond,
    peer::{PeerId, PeerStats},
    settings::Settings,
    torrent::TorrentState,
@@ -112,23 +113,31 @@ pub(crate) fn select_unchoked_peers(
    }
 }
 
-fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> usize {
+fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> BytesPerSecond {
    match torrent_state {
-      TorrentState::Downloading => peer.download_rate,
-      TorrentState::Seeding => peer.upload_rate,
+      TorrentState::Downloading => peer
+         .transfer
+         .rates
+         .map_or(BytesPerSecond::ZERO, |rates| rates.download),
+      TorrentState::Seeding => peer
+         .transfer
+         .rates
+         .map_or(BytesPerSecond::ZERO, |rates| rates.upload),
       TorrentState::Added
       | TorrentState::ResolvingMetadata
       | TorrentState::Ready
       | TorrentState::Paused
+      | TorrentState::Restarting
       | TorrentState::Stopping
       | TorrentState::Stopped
-      | TorrentState::Failed => 0,
+      | TorrentState::Failed => BytesPerSecond::ZERO,
    }
 }
 
 #[cfg(test)]
 mod tests {
    use super::*;
+   use crate::frontend::{TransferMetrics, TransferRates};
 
    fn peer_id(value: u8) -> PeerId {
       PeerId::from([value; 20])
@@ -139,17 +148,22 @@ mod tests {
          id: peer_id(id),
          interested: true,
          choked: true,
-         download_rate: 0,
-         upload_rate: 0,
-         bytes_downloaded: 0,
-         bytes_uploaded: 0,
+         transfer: TransferMetrics {
+            totals: Default::default(),
+            rates: Some(TransferRates::default()),
+         },
       }
    }
 
-   fn with_rates(id: u8, download_rate: usize, upload_rate: usize) -> PeerStats {
+   fn with_rates(id: u8, download_rate: u64, upload_rate: u64) -> PeerStats {
       PeerStats {
-         download_rate,
-         upload_rate,
+         transfer: TransferMetrics {
+            rates: Some(TransferRates {
+               download: BytesPerSecond(download_rate),
+               upload: BytesPerSecond(upload_rate),
+            }),
+            ..Default::default()
+         },
          ..stats(id)
       }
    }

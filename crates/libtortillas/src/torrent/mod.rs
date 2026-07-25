@@ -17,7 +17,10 @@ pub use discovery::AnnounceFrom;
 pub use handle::Torrent;
 pub(crate) use handle::TorrentInner;
 pub(crate) use messages::*;
-pub use snapshot::{TORRENT_SNAPSHOT_VERSION, TorrentSnapshot};
+pub use snapshot::{
+   PieceBlockSnapshot, RestoreVerification, TORRENT_SNAPSHOT_VERSION, TorrentSnapshot,
+};
+pub(crate) use snapshot::{ValidatedTorrentSnapshot, ValidatedTorrentState};
 pub use state::TorrentState;
 pub use storage::PieceStorageStrategy;
 

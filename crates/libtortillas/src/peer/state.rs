@@ -29,10 +29,6 @@ use super::Peer;
 /// that everything is contained in an Arc.
 #[derive(Clone)]
 pub struct PeerState {
-   /// Download rate measured in kilobytes per second
-   download_rate: Arc<AtomicUsize>,
-   /// Upload rate measured in kilobytes per second
-   upload_rate: Arc<AtomicUsize>,
    /// Whether we are choking the remote peer
    am_choking: Arc<AtomicBool>,
    /// Whether the remote peer is interested in us
@@ -68,8 +64,6 @@ impl PeerState {
          peer_interested: Arc::new(false.into()),
          peer_choking: Arc::new(true.into()),
          am_interested: Arc::new(false.into()),
-         download_rate: Arc::new(0.into()),
-         upload_rate: Arc::new(0.into()),
          last_optimistic_unchoke: Arc::new(AtomicOptionInstant::none()),
          last_message_received: Arc::new(AtomicOptionInstant::none()),
          last_message_sent: Arc::new(AtomicOptionInstant::none()),
@@ -102,14 +96,6 @@ impl Peer {
          .state
          .am_interested
          .store(is_interested, Ordering::Release);
-   }
-
-   pub(crate) fn set_download_rate(&self, rate_kbps: usize) {
-      self.state.download_rate.store(rate_kbps, Ordering::Release);
-   }
-
-   pub(crate) fn set_upload_rate(&self, rate_kbps: usize) {
-      self.state.upload_rate.store(rate_kbps, Ordering::Release);
    }
 
    pub(crate) fn update_last_optimistic_unchoke(&self) {
@@ -161,14 +147,6 @@ impl Peer {
 
    pub(crate) fn am_interested(&self) -> bool {
       self.state.am_interested.load(Ordering::Acquire)
-   }
-
-   pub fn download_rate(&self) -> usize {
-      self.state.download_rate.load(Ordering::Acquire)
-   }
-
-   pub fn upload_rate(&self) -> usize {
-      self.state.upload_rate.load(Ordering::Acquire)
    }
 
    pub(crate) fn last_optimistic_unchoke(&self) -> Option<Instant> {

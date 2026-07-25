@@ -46,7 +46,7 @@ async fn arch_linux_torrent_when_public_dht_is_available_then_downloads_data() {
    let download = timeout(DOWNLOAD_TIMEOUT, async {
       loop {
          let view = listener.view().unwrap();
-         if view.progress.downloaded_bytes > 0 {
+         if view.metrics.progress.verified_bytes.0 > 0 {
             return view;
          }
          timeout(POLL_INTERVAL, listener.recv()).await.ok();
@@ -58,6 +58,6 @@ async fn arch_linux_torrent_when_public_dht_is_available_then_downloads_data() {
    fs::remove_dir_all(&output_root).await.unwrap();
 
    let view = download.expect("Arch Linux did not download data through DHT in time");
-   assert!(view.has_metadata);
+   assert!(view.has_metadata());
    assert!(view.peer_count > 0);
 }

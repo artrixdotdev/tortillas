@@ -109,7 +109,7 @@ impl TorrentActor {
          return;
       }
 
-      let peer_frontend = self.frontend.peer(
+      let peer_frontend = self.frontend.register_peer_scope(
          PeerScope {
             torrent: info_hash,
             peer: id,
@@ -132,9 +132,8 @@ impl TorrentActor {
          },
       );
       self.peers.insert(id, peer_actor);
-      self
-         .frontend
-         .peer_connected(self.live_view(), &peer_frontend);
+      self.publish_live_view(|_| crate::frontend::TorrentEventKind::Updated);
+      self.frontend.emit_peer_connected(&peer_frontend);
    }
 
    #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]
@@ -175,7 +174,7 @@ impl TorrentActor {
       }
       for id in dead_peers {
          self.peers.remove(&id);
-         self.frontend.update_torrent(self.live_view());
+         self.publish_live_view(|_| crate::frontend::TorrentEventKind::Updated);
       }
    }
 

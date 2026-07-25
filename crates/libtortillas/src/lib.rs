@@ -12,21 +12,21 @@
 //! does not promise runtime independence, HTTP client injection, clock
 //! injection, listener injection, or storage runtime abstraction.
 //!
-//! A TUI can use `#[tokio::main]` on its binary entry point, or create an
-//! explicit Tokio runtime before initializing `Engine`.
+//! An application can use `#[tokio::main]` on its binary entry point, or create
+//! an explicit Tokio runtime before initializing `Engine`.
 //!
 //! # Frontend facade
 //!
 //! Frontends should prefer [`facade`] or [`prelude`] imports. The facade names
-//! the stable concepts a TUI or other UI needs: [`facade::EngineHandle`],
-//! [`facade::TorrentHandle`], [`facade::TorrentSource`],
+//! the stable concepts any application adapter needs: [`engine::Engine`],
+//! [`torrent::Torrent`], [`facade::TorrentSource`],
 //! [`facade::CoreEvent`], and live engine, torrent,
 //! peer, and tracker views.
 //!
 //! ```no_run
-//! use libtortillas::prelude::{EngineHandle, TorrentSource};
+//! use libtortillas::prelude::{Engine, TorrentSource};
 //!
-//! let engine = EngineHandle::default();
+//! let engine = Engine::default();
 //! let source = TorrentSource::magnet("magnet:?xt=urn:btih:...");
 //! # let _ = (engine, source);
 //! ```

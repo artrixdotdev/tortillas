@@ -19,6 +19,11 @@ impl TorrentActor {
       }
 
       let peer_stats = self.peer_stats().await;
+      // Peer actors publish their own high-frequency samples. The torrent
+      // publishes one coalesced aggregate after the collection interval.
+      self.publish_live_view(|view| {
+         crate::frontend::TorrentEventKind::MetricsChanged(view.metrics.clone())
+      });
       let decision = self.choking_scheduler.decide(&peer_stats, self.state);
       let unchoked: HashSet<_> = decision.unchoked.iter().copied().collect();
 

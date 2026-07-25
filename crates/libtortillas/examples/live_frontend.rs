@@ -23,7 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                let view = listener.view();
                info!(
                   sequence = event.sequence,
-                  torrent_count = view.torrent_count,
+                  torrent_count = view.torrent_count(),
                   ?event.kind,
                   "frontend received a live engine event"
                );
@@ -35,7 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                let view = listener.view();
                warn!(
                   events,
-                  torrent_count = view.torrent_count,
+                  torrent_count = view.torrent_count(),
                   "redrawing live state after lag"
                );
             }

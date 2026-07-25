@@ -1,6 +1,6 @@
 use libtortillas::{
    facade::{EngineSnapshot, TorrentSnapshot},
-   prelude::{EngineHandle, EventSubscription, PeerEventKind, TorrentEventKind, TrackerEventKind},
+   prelude::{Engine, EventSubscription, PeerEventKind, TorrentEventKind, TrackerEventKind},
 };
 
 #[test]
@@ -16,7 +16,7 @@ fn prelude_exposes_frontend_facade_types() {
 
 #[test]
 fn facade_engine_handle_matches_existing_engine_type() {
-   fn accepts_engine_handle(_: Option<EngineHandle>) {}
+   fn accepts_engine_handle(_: Option<Engine>) {}
 
    accepts_engine_handle(None);
 }

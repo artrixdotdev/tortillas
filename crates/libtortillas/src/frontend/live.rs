@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::broadcast;
 
@@ -6,18 +6,6 @@ use super::{EventListener, EventSubscription, Sequenced};
 
 /// Number of discrete frontend events retained by each live publisher.
 pub const DEFAULT_EVENT_CAPACITY: usize = 256;
-
-pub(crate) fn read_lock<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
-   lock
-      .read()
-      .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-pub(crate) fn write_lock<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
-   lock
-      .write()
-      .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 fn mutex_lock<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
    lock
@@ -45,6 +33,7 @@ struct LiveState<V> {
 
 #[derive(Debug)]
 struct LiveChannel<E> {
+   capacity: usize,
    sender: Mutex<Option<broadcast::Sender<Sequenced<E>>>>,
 }
 
@@ -55,13 +44,10 @@ where
 {
    /// Creates a publisher with an initial view and bounded event capacity.
    ///
-   /// # Panics
-   ///
-   /// Panics when `event_capacity` is zero.
+   /// A zero capacity is normalized to one so configuration mistakes cannot
+   /// panic a public operation.
    #[must_use]
    pub fn new(initial_view: V, event_capacity: usize) -> Self {
-      assert!(event_capacity > 0, "event capacity must be non-zero");
-      let (events, _) = broadcast::channel(event_capacity);
       Self {
          state: Arc::new(Mutex::new(LiveState {
             view: initial_view,
@@ -69,7 +55,8 @@ where
             closed: false,
          })),
          channel: Arc::new(LiveChannel {
-            sender: Mutex::new(Some(events)),
+            capacity: event_capacity.max(1),
+            sender: Mutex::new(None),
          }),
       }
    }
@@ -77,16 +64,40 @@ where
    /// Subscribes to all future events from this publisher.
    #[must_use]
    pub fn subscribe(&self) -> EventSubscription<E> {
-      let sender = mutex_lock(&self.channel.sender);
-      match sender.as_ref() {
-         Some(sender) => EventSubscription::from_receiver(sender.subscribe(), sender.downgrade()),
-         None => {
+      let state = mutex_lock(&self.state);
+      if state.closed {
+         return {
             let (sender, receiver) = broadcast::channel(1);
             let weak = sender.downgrade();
             drop(sender);
             EventSubscription::from_receiver(receiver, weak)
-         }
+         };
       }
+      let mut slot = mutex_lock(&self.channel.sender);
+      let sender = slot.get_or_insert_with(|| {
+         let (sender, _) = broadcast::channel(self.channel.capacity);
+         sender
+      });
+      EventSubscription::from_receiver(sender.subscribe(), sender.downgrade())
+   }
+
+   #[cfg(test)]
+   pub(crate) fn has_event_channel(&self) -> bool {
+      mutex_lock(&self.channel.sender).is_some()
+   }
+
+   #[cfg(test)]
+   pub(crate) fn allocated_event_slots(&self) -> usize {
+      usize::from(self.has_event_channel()) * self.channel.capacity
+   }
+
+   #[cfg(test)]
+   pub(crate) fn allocation_lower_bound_bytes(&self) -> usize {
+      std::mem::size_of_val(self.state.as_ref())
+         + std::mem::size_of_val(self.channel.as_ref())
+         + self
+            .allocated_event_slots()
+            .saturating_mul(std::mem::size_of::<Sequenced<E>>())
    }
 
    /// Creates a stream-compatible listener paired with the current view.
@@ -150,32 +161,6 @@ where
       true
    }
 
-   pub(crate) fn edit_and_publish(&self, edit: impl FnOnce(&mut V) -> E) -> bool {
-      let mut state = mutex_lock(&self.state);
-      if state.closed {
-         return false;
-      }
-      let event = edit(&mut state.view);
-      state.sequence = state.sequence.saturating_add(1);
-      self.send(&state, event);
-      true
-   }
-
-   pub(crate) fn edit_if_and_publish(&self, edit: impl FnOnce(&mut V) -> bool, event: E) -> bool {
-      let mut state = mutex_lock(&self.state);
-      if state.closed || !edit(&mut state.view) {
-         return false;
-      }
-      state.sequence = state.sequence.saturating_add(1);
-      self.send(&state, event);
-      true
-   }
-
-   pub(crate) fn edit_view<R>(&self, edit: impl FnOnce(&mut V) -> R) -> Option<R> {
-      let mut state = mutex_lock(&self.state);
-      (!state.closed).then(|| edit(&mut state.view))
-   }
-
    fn mutate(&self, edit: impl FnOnce(&mut V), event: E) -> bool {
       let mut state = mutex_lock(&self.state);
       if state.closed {
@@ -194,5 +179,39 @@ where
             kind: event,
          });
       }
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use std::{sync::Arc, thread};
+
+   use super::*;
+
+   #[test]
+   fn concurrent_update_and_close_never_accepts_an_update_after_terminal() {
+      for _ in 0..100 {
+         let live = Arc::new(LivePublisher::new(0_u64, 8));
+         let update = Arc::clone(&live);
+         let close = Arc::clone(&live);
+         let update_thread = thread::spawn(move || update.update(1, "updated"));
+         let close_thread = thread::spawn(move || close.close(2, "closed"));
+         let update_accepted = update_thread.join().unwrap();
+         let close_accepted = close_thread.join().unwrap();
+
+         assert!(close_accepted);
+         assert!(!live.update(3, "late"));
+         assert_eq!(live.view(), 2);
+         if update_accepted {
+            assert_eq!(live.view(), 2);
+         }
+      }
+   }
+
+   #[test]
+   fn zero_capacity_is_normalized_without_panicking() {
+      let publisher = LivePublisher::new(0_u8, 0);
+      let _subscription = publisher.subscribe();
+      assert!(publisher.publish("event"));
    }
 }

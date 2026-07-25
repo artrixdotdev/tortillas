@@ -26,12 +26,37 @@ pub struct Settings {
    pub dht: DhtSettings,
    /// Engine actor and incoming socket settings.
    pub engine: EngineSettings,
+   /// Live frontend event-channel settings.
+   pub frontend: FrontendSettings,
    /// Per-torrent actor settings.
    pub torrent: TorrentSettings,
    /// Per-peer actor settings.
    pub peer: PeerSettings,
    /// Tracker actor and tracker protocol settings.
    pub tracker: TrackerSettings,
+}
+
+/// Bounded event capacities for each frontend scope.
+///
+/// Channels are allocated lazily when the first listener subscribes, so these
+/// capacities do not impose a per-scope allocation on unobserved peers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FrontendSettings {
+   pub engine_event_capacity: usize,
+   pub torrent_event_capacity: usize,
+   pub peer_event_capacity: usize,
+   pub tracker_event_capacity: usize,
+}
+
+impl Default for FrontendSettings {
+   fn default() -> Self {
+      Self {
+         engine_event_capacity: 256,
+         torrent_event_capacity: 256,
+         peer_event_capacity: 64,
+         tracker_event_capacity: 64,
+      }
+   }
 }
 
 /// Mainline [BEP 5] DHT networking and lookup settings.

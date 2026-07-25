@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 /// Expected transition shape:
 /// `Added` or `ResolvingMetadata` -> `Ready` -> `Downloading` -> `Seeding`.
 /// Future frontend commands may also move a torrent through `Paused`,
-/// `Stopping`, `Stopped`, or `Failed` without collapsing those states into a
-/// generic inactive bucket.
+/// `Restarting`, `Stopping`, `Stopped`, or `Failed` without collapsing those
+/// states into a generic inactive bucket.
 #[derive(
    Debug,
    Default,
@@ -36,6 +36,8 @@ pub enum TorrentState {
    Paused,
    /// Torrent is seeding and has already completed the file.
    Seeding,
+   /// The actor stopped abnormally and supervision may reconstruct it.
+   Restarting,
    /// Torrent is shutting down actors, peers, or trackers.
    Stopping,
    /// Torrent has completed shutdown.
@@ -96,6 +98,7 @@ mod tests {
 
       assert!(!TorrentState::Downloading.can_start());
       assert!(!TorrentState::Seeding.can_start());
+      assert!(!TorrentState::Restarting.can_start());
       assert!(!TorrentState::Stopping.can_start());
       assert!(!TorrentState::Stopped.can_start());
    }

@@ -22,7 +22,10 @@ use tracing::{Span, debug, info, instrument, trace, warn};
 
 use crate::{
    errors::PeerActorError,
-   frontend::{PeerHandle, PeerView},
+   frontend::{
+      ByteCount, HasTransferMetrics, PeerHandle, PeerView, TrafficTotals, TransferMetrics,
+      TransferSample,
+   },
    hashes::InfoHash,
    peer::{Peer, PeerId},
    protocol::{stream::PeerRecv, *},
@@ -35,26 +38,19 @@ pub(crate) struct PeerStats {
    pub(crate) id: PeerId,
    pub(crate) interested: bool,
    pub(crate) choked: bool,
-   pub(crate) download_rate: usize,
-   pub(crate) upload_rate: usize,
-   pub(crate) bytes_downloaded: usize,
-   pub(crate) bytes_uploaded: usize,
+   pub(crate) transfer: TransferMetrics,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct RateSample {
-   at: Instant,
-   bytes_downloaded: usize,
-   bytes_uploaded: usize,
+impl HasTransferMetrics for PeerStats {
+   fn transfer_metrics(&self) -> &TransferMetrics {
+      &self.transfer
+   }
 }
 
-impl RateSample {
-   fn new(peer: &Peer) -> Self {
-      Self {
-         at: Instant::now(),
-         bytes_downloaded: peer.bytes_downloaded(),
-         bytes_uploaded: peer.bytes_uploaded(),
-      }
+fn peer_traffic_totals(peer: &Peer) -> TrafficTotals {
+   TrafficTotals {
+      downloaded: ByteCount(u64::try_from(peer.bytes_downloaded()).unwrap_or(u64::MAX)),
+      uploaded: ByteCount(u64::try_from(peer.bytes_uploaded()).unwrap_or(u64::MAX)),
    }
 }
 
@@ -69,7 +65,7 @@ pub(crate) struct PeerActor {
 
    pending_block_requests: HashSet<(usize, usize, usize)>,
    pending_message_requests: VecDeque<PeerMessages>,
-   last_rate_sample: RateSample,
+   last_rate_sample: TransferSample,
    settings: PeerSettings,
    frontend: PeerHandle,
 }
@@ -338,36 +334,25 @@ impl PeerActor {
    fn snapshot_stats(&mut self) -> Option<PeerStats> {
       let id = self.peer.id?;
       let now = Instant::now();
-      let bytes_downloaded = self.peer.bytes_downloaded();
-      let bytes_uploaded = self.peer.bytes_uploaded();
-      let elapsed_secs = now
-         .duration_since(self.last_rate_sample.at)
-         .as_secs()
-         .max(1) as usize;
-
-      let download_rate = bytes_downloaded.saturating_sub(self.last_rate_sample.bytes_downloaded)
-         / 1024
-         / elapsed_secs;
-      let upload_rate =
-         bytes_uploaded.saturating_sub(self.last_rate_sample.bytes_uploaded) / 1024 / elapsed_secs;
-
-      self.peer.set_download_rate(download_rate);
-      self.peer.set_upload_rate(upload_rate);
-      self.last_rate_sample = RateSample {
-         at: now,
-         bytes_downloaded,
-         bytes_uploaded,
+      let totals = peer_traffic_totals(&self.peer);
+      let sample = TransferSample::new(now, totals);
+      let rates = sample.rates_since(self.last_rate_sample);
+      self.last_rate_sample = sample;
+      let transfer = TransferMetrics {
+         totals,
+         rates: Some(rates),
       };
-      self.frontend.update(PeerView::from_peer(&self.peer, true));
+      self
+         .frontend
+         .publish_metrics(PeerView::from_peer_with_transfer(
+            &self.peer, true, transfer,
+         ));
 
       Some(PeerStats {
          id,
          interested: self.peer.interested(),
          choked: self.peer.choked(),
-         download_rate,
-         upload_rate,
-         bytes_downloaded,
-         bytes_uploaded,
+         transfer,
       })
    }
 }
@@ -411,7 +396,7 @@ impl Actor for PeerActor {
          .map_err(|e| PeerActorError::SupervisorCommunicationFailed(e.to_string()))?;
 
       Ok(Self {
-         last_rate_sample: RateSample::new(&peer),
+         last_rate_sample: TransferSample::new(Instant::now(), peer_traffic_totals(&peer)),
          peer,
          stream,
          supervisor,
@@ -682,7 +667,10 @@ impl Message<PeerMessages> for PeerActor {
             warn!("Received unexpected handshake from peer");
          }
       }
-      self.frontend.update(PeerView::from_peer(&self.peer, true));
+      let rates = self.frontend.view().transfer.rates;
+      self
+         .frontend
+         .publish_state(PeerView::from_peer_with_rates(&self.peer, true, rates));
    }
 }
 
@@ -828,11 +816,10 @@ pub(crate) mod commands {
 
       #[message(derive(Clone, Debug))]
       pub(crate) async fn have_info_dict(&mut self, bitfield: Arc<BitVec<AtomicU8>>) {
-         self
-            .send_message(PeerMessages::Bitfield(bitfield))
-            .await
-            .expect("Failed to send bitfield");
-         trace!("Sent bitfield to peer");
+         match self.send_message(PeerMessages::Bitfield(bitfield)).await {
+            Ok(()) => trace!("Sent bitfield to peer"),
+            Err(error) => warn!(%error, "Failed to send bitfield"),
+         }
       }
 
       #[message(derive(Clone, Debug))]

@@ -1,17 +1,37 @@
 use std::collections::HashSet;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{errors::EngineError, torrent::TorrentSnapshot};
 
 /// Current persistence schema version for [`EngineSnapshot`].
-pub const ENGINE_SNAPSHOT_VERSION: u32 = 1;
+pub const ENGINE_SNAPSHOT_VERSION: u32 = 2;
 
 /// Serializable state required to restore an engine's torrent sessions.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct EngineSnapshot {
    pub version: u32,
    pub torrents: Vec<TorrentSnapshot>,
+}
+
+#[derive(Deserialize)]
+struct EngineSnapshotWire {
+   version: u32,
+   torrents: Vec<TorrentSnapshot>,
+}
+
+impl<'de> Deserialize<'de> for EngineSnapshot {
+   fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+      let wire = EngineSnapshotWire::deserialize(deserializer)?;
+      Ok(Self {
+         version: if wire.version == 1 {
+            ENGINE_SNAPSHOT_VERSION
+         } else {
+            wire.version
+         },
+         torrents: wire.torrents,
+      })
+   }
 }
 
 impl EngineSnapshot {

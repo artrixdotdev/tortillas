@@ -25,10 +25,11 @@ use tracing::{debug, error, info, instrument, trace, warn};
 
 use super::{choking::ChokingScheduler, util};
 use crate::{
-   errors::TorrentError,
+   errors::{SnapshotUnsupportedReason, TorrentError},
    frontend::{
-      FrontendHealthLevel, FrontendPublisher, TorrentProgress, TorrentTransfer, TorrentView,
-      TrackerStatus, TrackerView,
+      ByteCount, ContentProgress, FrontendHealthLevel, FrontendPublisher, HasTransferMetrics,
+      TorrentMetrics, TorrentView, TrackerStatus, TrackerView, TrafficTotals, TransferMetrics,
+      TransferRates,
    },
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
@@ -36,7 +37,8 @@ use crate::{
    pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
    settings::Settings,
    torrent::{
-      BLOCK_SIZE, PieceStorageStrategy, TORRENT_SNAPSHOT_VERSION, TorrentSnapshot, TorrentState,
+      BLOCK_SIZE, PieceBlockSnapshot, PieceStorageStrategy, TORRENT_SNAPSHOT_VERSION,
+      TorrentSnapshot, TorrentState,
    },
    tracker::{
       Announce, Event, Tracker, TrackerActor, TrackerActorArgs, TrackerUpdate, udp::UdpServer,
@@ -104,7 +106,9 @@ pub(crate) struct TorrentActor {
 
    pub(crate) bitfield: BitVec<AtomicU8>,
    pub(super) id: PeerId,
-   pub(super) info: Option<Info>,
+   /// Metadata resolved from a magnet source. `.torrent` metadata remains
+   /// canonical inside `metainfo`.
+   pub(super) resolved_magnet_info: Option<Info>,
    pub(super) metainfo: MetaInfo,
    #[allow(dead_code)]
    pub(super) tracker_server: UdpServer,
@@ -151,13 +155,9 @@ impl fmt::Display for TorrentActor {
 
 impl TorrentActor {
    pub fn info_dict(&self) -> Option<&Info> {
-      if let Some(info) = &self.info {
-         Some(info)
-      } else {
-         match &self.metainfo {
-            MetaInfo::Torrent(t) => Some(&t.info),
-            _ => None,
-         }
+      match &self.metainfo {
+         MetaInfo::Torrent(torrent) => Some(&torrent.info),
+         MetaInfo::MagnetUri(_) => self.resolved_magnet_info.as_ref(),
       }
    }
 
@@ -211,7 +211,7 @@ impl TorrentActor {
 
       self.send_ready_hooks();
 
-      let Some(info) = self.info.clone() else {
+      let Some(info) = self.info_dict().cloned() else {
          self.transition_state(TorrentState::ResolvingMetadata);
          warn!(id = %self.info_hash(), "Start requested before info dict is available; deferring");
          return;
@@ -220,7 +220,7 @@ impl TorrentActor {
       // Pre-start the piece manager before transitioning state
       if let Err(err) = self.piece_manager.pre_start(info.clone()).await {
          self.transition_state(TorrentState::Failed);
-         self.frontend.health(
+         self.frontend.emit_health(
             Some(self.info_hash()),
             FrontendHealthLevel::Error,
             "torrent storage could not be initialized",
@@ -390,6 +390,27 @@ impl TorrentActor {
       Some(total_bytes)
    }
 
+   fn total_verified_bytes(&self) -> Option<usize> {
+      let info = self.info_dict()?;
+      let total_length = info.total_length();
+      let piece_length = usize::try_from(info.piece_length).unwrap_or(usize::MAX);
+      let last_piece = self.bitfield.len().saturating_sub(1);
+      Some(
+         self
+            .bitfield
+            .iter_ones()
+            .map(|index| {
+               if index == last_piece {
+                  total_length.saturating_sub(piece_length.saturating_mul(last_piece))
+               } else {
+                  piece_length
+               }
+            })
+            .fold(0_usize, usize::saturating_add)
+            .min(total_length),
+      )
+   }
+
    pub(super) fn tracker_announce_progress(&self) -> Option<TrackerAnnounceProgress> {
       let info = self.info_dict()?;
       let total_length = info.total_length();
@@ -421,37 +442,55 @@ impl TorrentActor {
          .await;
    }
 
-   pub fn snapshot(&self) -> TorrentSnapshot {
-      TorrentSnapshot {
+   pub fn snapshot(&self) -> Result<TorrentSnapshot, TorrentError> {
+      if self.piece_manager.is_custom() {
+         return Err(TorrentError::SnapshotUnsupported {
+            reason: SnapshotUnsupportedReason::CustomPieceManager,
+         });
+      }
+      Ok(TorrentSnapshot {
          version: TORRENT_SNAPSHOT_VERSION,
          info_hash: self.info_hash(),
          state: self.state,
          auto_start: self.autostart,
-         sufficient_peers: self.sufficient_peers,
+         sufficient_peers: Self::snapshot_u64(self.sufficient_peers),
          output_path: match &self.piece_manager {
             PieceManagerProxy::Default(manager) => manager.path().cloned(),
             _ => None,
          },
          metainfo: self.metainfo.clone(),
          piece_storage: self.piece_storage.clone(),
-         info_dict: self.info_dict().cloned(),
-         bitfield: self.bitfield.clone(),
-         block_map: self.piece_scheduler.block_map_export(),
-      }
+         resolved_magnet_info: self.resolved_magnet_info.clone(),
+         bitfield: self.bitfield.iter().by_vals().collect(),
+         block_map: {
+            let map = self.piece_scheduler.block_map_export();
+            let mut blocks = map
+               .iter()
+               .map(|entry| PieceBlockSnapshot {
+                  piece_index: Self::snapshot_u64(*entry.key()),
+                  blocks: entry.value().iter().by_vals().collect(),
+               })
+               .collect::<Vec<_>>();
+            blocks.sort_by_key(|entry| entry.piece_index);
+            blocks
+         },
+      })
    }
 
-   /// Builds the display-oriented state used by live frontend listeners.
+   /// Builds the presentation state used by live application listeners.
    pub fn live_view(&self) -> TorrentView {
       let info = self.info_dict();
-      let total_bytes = info.map(Info::total_length).map(Self::snapshot_u64);
-      let downloaded_bytes = Self::snapshot_u64(self.total_bytes_downloaded().unwrap_or(0));
-      let bytes_remaining =
-         total_bytes.map(|bytes| bytes.saturating_sub(downloaded_bytes.min(bytes)));
+      let total_bytes = info
+         .map(Info::total_length)
+         .map(Self::snapshot_u64)
+         .map(ByteCount);
+      let verified_bytes = ByteCount(Self::snapshot_u64(self.total_verified_bytes().unwrap_or(0)));
+      let remaining_bytes = total_bytes.map(|bytes| bytes.saturating_sub(verified_bytes));
       let progress_fraction = total_bytes.map(|bytes| {
-         if bytes == 0 {
+         if bytes.0 == 0 {
             1.0
          } else {
-            downloaded_bytes.min(bytes) as f64 / bytes as f64
+            verified_bytes.0.min(bytes.0) as f64 / bytes.0 as f64
          }
       });
       let completed_pieces = self.bitfield.count_ones();
@@ -465,21 +504,35 @@ impl TorrentActor {
             piece_idx < total_pieces && !self.bitfield[piece_idx] && entry.value().count_ones() > 0
          })
          .count();
-      let transfer = TorrentTransfer::from_peers(
-         self
-            .frontend
-            .peer_handles(self.info_hash())
-            .into_iter()
-            .map(|peer| peer.live_view()),
-         bytes_remaining,
+      let peers = self
+         .frontend
+         .peer_handles(self.info_hash())
+         .into_iter()
+         .map(|peer| peer.view())
+         .collect::<Vec<_>>();
+      let rates = TransferRates::aggregate(&peers);
+      let totals = peers
+         .iter()
+         .map(HasTransferMetrics::transfer_metrics)
+         .map(|transfer| transfer.totals)
+         .fold(TrafficTotals::default(), TrafficTotals::saturating_add);
+      let metrics = TorrentMetrics::new(
+         TransferMetrics { totals, rates },
+         ContentProgress {
+            total_bytes,
+            verified_bytes,
+            remaining_bytes,
+            progress_fraction,
+            completed_pieces: Self::snapshot_u64(completed_pieces),
+            partial_pieces: Self::snapshot_u64(partial_pieces),
+            total_pieces: Self::snapshot_u64(total_pieces),
+         },
       );
 
       TorrentView {
          info_hash: self.info_hash(),
          name: self.display_name().to_string(),
          state: self.state,
-         has_metadata: info.is_some(),
-         is_ready: self.state == TorrentState::Ready && self.is_ready(),
          auto_start: self.autostart,
          sufficient_peers: Self::snapshot_u64(self.sufficient_peers),
          peer_count: Self::snapshot_u64(self.peers.len()),
@@ -488,17 +541,17 @@ impl TorrentActor {
             PieceManagerProxy::Default(manager) => manager.path().cloned(),
             PieceManagerProxy::Custom(_) => None,
          },
-         progress: TorrentProgress {
-            total_bytes,
-            downloaded_bytes,
-            bytes_remaining,
-            progress_fraction,
-            completed_pieces: Self::snapshot_u64(completed_pieces),
-            partial_pieces: Self::snapshot_u64(partial_pieces),
-            total_pieces: Self::snapshot_u64(total_pieces),
-         },
-         transfer,
+         metrics,
       }
+   }
+
+   /// The single publication entry point for torrent projection changes.
+   pub(super) fn publish_live_view(
+      &self, event: impl FnOnce(&TorrentView) -> crate::frontend::TorrentEventKind,
+   ) {
+      let view = self.live_view();
+      let event = event(&view);
+      self.frontend.replace_torrent_view_and_emit(view, event);
    }
 
    pub(super) fn transition_state(&mut self, state: TorrentState) {
@@ -508,9 +561,10 @@ impl TorrentActor {
       }
 
       self.state = state;
-      self
-         .frontend
-         .torrent_state_changed(previous, self.live_view());
+      self.publish_live_view(|_| crate::frontend::TorrentEventKind::StateChanged {
+         previous,
+         current: state,
+      });
    }
 
    fn snapshot_u64(value: usize) -> u64 {
@@ -529,7 +583,7 @@ impl TorrentActor {
    }
 
    pub fn is_ready(&self) -> bool {
-      self.info.is_some() && self.peers.len() >= self.sufficient_peers
+      self.info_dict().is_some() && self.peers.len() >= self.sufficient_peers
    }
 
    pub fn is_ready_to_start(&self) -> bool {
@@ -646,8 +700,8 @@ impl Actor for TorrentActor {
          .await;
 
       let info = match &metainfo {
-         MetaInfo::Torrent(t) => Some(t.info.clone()),
-         _ => None,
+         MetaInfo::Torrent(torrent) => Some(&torrent.info),
+         MetaInfo::MagnetUri(_) => None,
       };
       if info.is_none() {
          debug!(torrent_id = %torrent_id, "No info dict found in metainfo, you're probably using a magnet uri");
@@ -664,15 +718,16 @@ impl Actor for TorrentActor {
          TorrentState::ResolvingMetadata
       };
       let bitfield = BitVec::repeat(false, piece_count);
-      let initial_left = info.as_ref().map(Info::total_length);
+      let initial_left = info.map(Info::total_length);
 
       // Create tracker actors
       let tracker_list = metainfo.announce_list();
       let mut trackers = HashMap::new();
       for tracker in tracker_list {
          let endpoint = tracker.frontend_endpoint();
-         let tracker_frontend = frontend.tracker(
+         let tracker_frontend = frontend.register_tracker_scope(
             torrent_id,
+            &tracker,
             TrackerView {
                endpoint,
                status: TrackerStatus::Pending,
@@ -703,7 +758,7 @@ impl Actor for TorrentActor {
 
          trackers.insert(tracker, actor);
       }
-      let default_manager = FilePieceManager(base_path, info.clone());
+      let default_manager = FilePieceManager(base_path, info.cloned());
       let piece_store = PieceStoreActor::supervise(&us, ())
          .restart_policy(RestartPolicy::Permanent)
          .restart_limit(
@@ -723,7 +778,7 @@ impl Actor for TorrentActor {
          trackers,
          id: peer_id,
          metainfo,
-         info,
+         resolved_magnet_info: None,
          actor_ref: us,
          piece_storage,
          piece_store,
@@ -742,7 +797,9 @@ impl Actor for TorrentActor {
          piece_manager: PieceManagerProxy::Default(default_manager),
          settings,
       };
-      actor.frontend.initialize_torrent(actor.live_view());
+      actor
+         .frontend
+         .initialize_torrent_projection(actor.live_view());
 
       Ok(actor)
    }
@@ -760,7 +817,16 @@ impl Actor for TorrentActor {
    async fn on_stop(
       &mut self, _: WeakActorRef<Self>, reason: ActorStopReason,
    ) -> Result<(), Self::Error> {
-      self.transition_state(TorrentState::Stopping);
+      if reason.is_normal() {
+         self.transition_state(TorrentState::Stopping);
+      } else {
+         // The engine supervises torrent actors transiently. Preserve the
+         // frontend scope and make the temporary state explicit.
+         self.transition_state(TorrentState::Restarting);
+         self
+            .frontend
+            .close_peer_scopes_for_torrent_restart(self.info_hash());
+      }
       info!(reason = %reason, "Torrent stopped");
       for peer in self.peers.values() {
          peer.kill();
@@ -773,7 +839,9 @@ impl Actor for TorrentActor {
       }
       self.piece_store.kill();
       self.scheduler.kill();
-      self.transition_state(TorrentState::Stopped);
+      if reason.is_normal() {
+         self.transition_state(TorrentState::Stopped);
+      }
 
       Ok(())
    }
@@ -783,7 +851,7 @@ impl Actor for TorrentActor {
       &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
       error!(?id, ?reason, "Linked child died");
-      self.frontend.health(
+      self.frontend.emit_health(
          Some(self.info_hash()),
          FrontendHealthLevel::Error,
          "a torrent service stopped unexpectedly",
@@ -809,6 +877,7 @@ mod tests {
 
    use super::*;
    use crate::{
+      frontend::{BytesPerSecond, PeerScope, PeerView},
       hashes::HashVec,
       metainfo::{InfoKeys, MetaInfo, TorrentFile},
       settings::Settings,
@@ -1317,11 +1386,11 @@ mod tests {
       let wrote_piece_block = timeout(Duration::from_secs(60), async {
          loop {
             let export = actor.ask(SnapshotState).await.unwrap();
-            let has_persisted_progress = export.bitfield.count_ones() > 0
+            let has_persisted_progress = export.bitfield.iter().any(|complete| *complete)
                || export
                   .block_map
                   .iter()
-                  .any(|entry| entry.value().count_ones() > 0);
+                  .any(|entry| entry.blocks.iter().any(|block| *block));
 
             if has_persisted_progress {
                let mut entries = fs::read_dir(&piece_path).await.unwrap();
@@ -1412,7 +1481,7 @@ mod tests {
          trackers: HashMap::new(),
          bitfield,
          id: peer_id,
-         info: Some(info_dict.clone()),
+         resolved_magnet_info: None,
          metainfo: metainfo.clone(),
          tracker_server: udp_server.clone(),
          scheduler: Scheduler::spawn(Scheduler::new()),
@@ -1436,20 +1505,38 @@ mod tests {
          settings: Settings::default(),
       };
 
-      let export = test_actor.snapshot();
+      let export = test_actor.snapshot().unwrap();
 
       // Verify export contents
       assert_eq!(export.info_hash, info_hash);
       assert_eq!(export.state, TorrentState::Added);
       assert!(!export.auto_start);
       assert_eq!(export.sufficient_peers, 6);
-      assert!(export.info_dict.is_some(), "Info dict should be present");
-      assert_eq!(export.bitfield.count_ones(), fake_completed);
+      assert!(
+         export.resolved_magnet_info.is_none(),
+         "torrent metainfo already contains its info dict"
+      );
+      assert!(export.resolved_info().is_some());
+      assert_eq!(
+         export.bitfield.iter().filter(|complete| **complete).count(),
+         fake_completed
+      );
       assert_eq!(export.bitfield.len(), piece_count);
       assert_eq!(export.block_map.len(), 1);
 
-      let partial_entry = export.block_map.get(&partial_piece_index).unwrap();
-      assert_eq!(partial_entry.count_ones(), partial_blocks_received);
+      let partial_entry = export
+         .block_map
+         .iter()
+         .find(|entry| entry.piece_index == partial_piece_index as u64)
+         .unwrap();
+      assert_eq!(
+         partial_entry
+            .blocks
+            .iter()
+            .filter(|received| **received)
+            .count(),
+         partial_blocks_received
+      );
 
       let announce_progress = test_actor
          .tracker_announce_progress()
@@ -1549,7 +1636,7 @@ mod tests {
          trackers: HashMap::new(),
          bitfield,
          id: peer_id,
-         info: Some(info_dict.clone()),
+         resolved_magnet_info: None,
          metainfo: metainfo.clone(),
          tracker_server: udp_server,
          scheduler: Scheduler::spawn(Scheduler::new()),
@@ -1573,44 +1660,95 @@ mod tests {
          settings: Settings::default(),
       };
 
+      let verified_content = test_actor.live_view().metrics.progress.verified_bytes;
+      let sampled_peer = test_actor.frontend.register_peer_scope(
+         PeerScope {
+            torrent: info_hash,
+            peer: PeerId::Unknown([9; 20]),
+         },
+         PeerView {
+            address: None,
+            client: None,
+            connected: true,
+            peer_choking: false,
+            peer_interested: true,
+            client_choking: false,
+            client_interested: true,
+            available_pieces: 1,
+            transfer: TransferMetrics {
+               totals: TrafficTotals {
+                  downloaded: ByteCount(50_000),
+                  uploaded: ByteCount(5_000),
+               },
+               rates: Some(TransferRates {
+                  download: BytesPerSecond(100),
+                  upload: BytesPerSecond(20),
+               }),
+            },
+         },
+      );
       let view = test_actor.live_view();
 
       assert_eq!(view.info_hash, info_hash);
       assert_eq!(view.name, testing::BIG_BUCK_BUNNY_NAME);
       assert_eq!(view.state, TorrentState::Ready);
-      assert!(view.has_metadata);
-      assert!(view.is_ready);
+      assert!(view.has_metadata());
+      assert!(view.is_ready());
       assert!(!view.auto_start);
       assert_eq!(view.sufficient_peers, 0);
       assert_eq!(view.output_path, Some(file_path.clone()));
       assert_eq!(
-         view.progress.total_bytes,
-         Some(u64::try_from(info_dict.total_length()).unwrap())
+         view.metrics.progress.total_bytes,
+         Some(ByteCount(u64::try_from(info_dict.total_length()).unwrap()))
       );
       assert_eq!(
-         view.progress.completed_pieces,
+         view.metrics.progress.completed_pieces,
          u64::try_from(completed_pieces).unwrap()
       );
-      assert_eq!(view.progress.partial_pieces, 1);
+      assert_eq!(view.metrics.progress.partial_pieces, 1);
       assert_eq!(
-         view.progress.total_pieces,
+         view.metrics.progress.total_pieces,
          u64::try_from(piece_count).unwrap()
       );
-      assert!(view.progress.downloaded_bytes > 0);
+      assert!(view.metrics.progress.verified_bytes > ByteCount::ZERO);
       assert!(
-         view.progress.bytes_remaining.unwrap() < u64::try_from(info_dict.total_length()).unwrap()
+         view.metrics.progress.remaining_bytes.unwrap()
+            < ByteCount(u64::try_from(info_dict.total_length()).unwrap())
       );
-      assert!(view.progress.progress_fraction.unwrap() > 0.0);
-      assert_eq!(view.transfer.download_rate_bytes_per_second, Some(0));
-      assert_eq!(view.transfer.upload_rate_bytes_per_second, Some(0));
-      assert_eq!(view.transfer.eta_seconds, None);
+      assert!(view.metrics.progress.progress_fraction.unwrap() > 0.0);
+      assert_eq!(
+         view.metrics.traffic.rates,
+         Some(TransferRates {
+            download: BytesPerSecond(100),
+            upload: BytesPerSecond(20),
+         })
+      );
+      assert_eq!(view.metrics.traffic.totals.downloaded, ByteCount(50_000));
+      assert_eq!(view.metrics.progress.verified_bytes, verified_content);
+      assert!(view.metrics.eta.is_some());
 
-      let snapshot = test_actor.snapshot();
+      test_actor.state = TorrentState::Seeding;
+      assert_eq!(
+         test_actor.live_view().metrics.traffic.rates.unwrap().upload,
+         BytesPerSecond(20)
+      );
+      sampled_peer.disconnected();
+      assert_eq!(test_actor.live_view().metrics.traffic.rates, None);
+      test_actor.state = TorrentState::Ready;
+
+      let snapshot = test_actor.snapshot().unwrap();
       assert_eq!(snapshot.version, TORRENT_SNAPSHOT_VERSION);
       assert_eq!(snapshot.info_hash, info_hash);
       assert_eq!(snapshot.state, TorrentState::Ready);
       assert_eq!(snapshot.output_path, Some(file_path));
-      assert_eq!(snapshot.bitfield.count_ones(), completed_pieces);
+      assert_eq!(
+         snapshot
+            .bitfield
+            .iter()
+            .filter(|complete| **complete)
+            .count(),
+         completed_pieces
+      );
       assert_eq!(snapshot.block_map.len(), 1);
       let snapshot_str = serde_json::to_string(&snapshot).unwrap();
       let from_snapshot: TorrentSnapshot = serde_json::from_str(&snapshot_str).unwrap();
@@ -1622,7 +1760,7 @@ mod tests {
       assert_eq!(snapshot.block_map.len(), from_snapshot.block_map.len());
 
       test_actor.state = TorrentState::Paused;
-      assert!(!test_actor.live_view().is_ready);
+      assert!(!test_actor.live_view().is_ready());
 
       test_actor.bitfield.fill(false);
       test_actor.bitfield.set_aliased(piece_count - 1, true);
@@ -1630,8 +1768,8 @@ mod tests {
       let last_piece_bytes = info_dict.total_length()
          - ((piece_count - 1) * usize::try_from(info_dict.piece_length).unwrap());
       assert_eq!(
-         test_actor.live_view().progress.downloaded_bytes,
-         u64::try_from(last_piece_bytes).unwrap()
+         test_actor.live_view().metrics.progress.verified_bytes,
+         ByteCount(u64::try_from(last_piece_bytes).unwrap())
       );
 
       actor_ref.stop_gracefully().await.unwrap();
@@ -1675,7 +1813,7 @@ mod tests {
          trackers: HashMap::new(),
          bitfield: BitVec::repeat(false, piece_count),
          id: peer_id,
-         info: Some(info_dict.clone()),
+         resolved_magnet_info: None,
          metainfo,
          tracker_server: udp_server,
          scheduler: Scheduler::spawn(Scheduler::new()),

@@ -57,8 +57,8 @@ async fn engine_listener_receives_live_torrent_lifecycle() {
       unreachable!();
    };
    assert_eq!(added_torrent.info_hash(), torrent.info_hash());
-   assert_eq!(added_torrent.live_view(), torrent.live_view());
-   assert_eq!(engine_listener.view().torrent_count, 1);
+   assert_eq!(added_torrent.view(), torrent.view());
+   assert_eq!(engine_listener.view().torrent_count(), 1);
 
    let mut torrent_listener = torrent.listener();
    torrent.pause().await.unwrap();
@@ -86,6 +86,10 @@ async fn engine_listener_receives_live_torrent_lifecycle() {
       }
    ));
    assert_eq!(torrent_listener.view().unwrap().state, TorrentState::Paused);
+   assert_eq!(
+      engine_listener.view().torrents.first(),
+      torrent_listener.view().as_ref()
+   );
 
    engine.remove_torrent(torrent.info_hash()).await.unwrap();
    let removed = timeout(Duration::from_secs(2), async {
@@ -104,7 +108,7 @@ async fn engine_listener_receives_live_torrent_lifecycle() {
       Err(EventStreamError::Closed)
    ));
    assert!(torrent_listener.view().is_none());
-   assert_eq!(engine_listener.view().torrent_count, 0);
+   assert_eq!(engine_listener.view().torrent_count(), 0);
 
    engine.shutdown().await.unwrap();
 }
@@ -173,6 +177,19 @@ async fn concurrent_live_updates_are_delivered_in_sequence_order() {
 }
 
 #[tokio::test]
+async fn listener_view_is_never_older_than_its_accepted_update() {
+   let publisher = LivePublisher::new(0_u64, 64);
+   let mut listener = publisher.listener();
+
+   for value in 1..=32 {
+      assert!(publisher.update(value, value));
+      let event = listener.recv().await.unwrap();
+      assert_eq!(event.kind, value);
+      assert!(listener.view() >= event.kind);
+   }
+}
+
+#[tokio::test]
 async fn tracker_handle_exposes_its_own_live_listener() {
    let engine = deterministic_engine();
    let torrent = engine
@@ -182,7 +199,7 @@ async fn tracker_handle_exposes_its_own_live_listener() {
    let tracker = torrent.trackers().into_iter().next().unwrap();
    let mut listener = tracker.listener();
 
-   assert!(tracker.live_view().status.is_active());
+   assert!(tracker.view().status.is_active());
    engine.shutdown().await.unwrap();
 
    let stopped = timeout(Duration::from_secs(2), async {
@@ -197,6 +214,12 @@ async fn tracker_handle_exposes_its_own_live_listener() {
    .unwrap();
    assert!(stopped.sequence > 0);
    assert_eq!(listener.view().status, TrackerStatus::Stopped);
+   assert!(matches!(
+      timeout(Duration::from_secs(2), listener.recv())
+         .await
+         .expect("tracker event stream did not close"),
+      Err(EventStreamError::Closed)
+   ));
 }
 
 #[tokio::test]
@@ -252,6 +275,27 @@ async fn stopped_engine_reports_typed_actor_communication_errors() {
          ..
       }
    ));
+}
+
+#[tokio::test]
+async fn stopped_torrent_reports_typed_actor_communication_errors() {
+   let engine = deterministic_engine();
+   let torrent = engine
+      .add_torrent(TorrentSource::torrent_file_bytes(BIG_BUCK_BUNNY))
+      .await
+      .unwrap();
+   engine.remove_torrent(torrent.info_hash()).await.unwrap();
+
+   let error = torrent.state().await.unwrap_err();
+
+   assert!(matches!(
+      error,
+      libtortillas::errors::TorrentError::ActorCommunicationFailed {
+         operation: "get state",
+         ..
+      }
+   ));
+   engine.shutdown().await.unwrap();
 }
 
 #[tokio::test]

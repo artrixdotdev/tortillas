@@ -11,12 +11,13 @@ use tracing::{info, instrument, trace, warn};
 
 use super::{
    AnnounceFrom, BLOCK_SIZE, PieceStorageStrategy, TorrentActor, TorrentSnapshot, TorrentState,
+   ValidatedTorrentState,
    actor::{PieceManagerProxy, ReadyHookSender},
    util,
 };
 use crate::{
    errors::TorrentError,
-   frontend::TorrentView,
+   frontend::{TorrentEventKind, TorrentView},
    hashes::InfoHash,
    metainfo::Info,
    peer::{Peer, PeerId, commands::HaveInfoDict},
@@ -26,7 +27,7 @@ use crate::{
 };
 
 #[derive(Debug, Reply)]
-pub(crate) struct SnapshotRestoreResult(pub(crate) Result<bool, TorrentError>);
+pub(crate) struct SnapshotRestoreResult(pub(crate) Result<(), TorrentError>);
 
 pub(crate) mod events {
    use super::*;
@@ -93,7 +94,7 @@ pub(crate) mod events {
       #[message(derive(Debug))]
       #[instrument(skip(self, bytes), fields(torrent_id = %self.info_hash()))]
       pub(crate) async fn info_bytes(&mut self, bytes: Bytes) {
-         if self.info.is_some() {
+         if self.info_dict().is_some() {
             trace!(
                dict = %String::from_utf8_lossy(&bytes),
                "Received info dict when we already have one"
@@ -106,13 +107,19 @@ pub(crate) mod events {
          let hash = hex::encode(hasher.finalize());
          if hash == self.info_hash().to_hex() {
             info!("Received valid info dict, starting torrent process...");
-            let info: Info = serde_bencode::from_bytes(&bytes).expect("Failed to parse info dict");
+            let info: Info = match serde_bencode::from_bytes(&bytes) {
+               Ok(info) => info,
+               Err(error) => {
+                  warn!(%error, "Peer supplied an invalid info dictionary");
+                  return;
+               }
+            };
             self.bitfield = BitVec::repeat(false, info.piece_count());
-            self.info = Some(info);
+            self.resolved_magnet_info = Some(info);
             if self.state == TorrentState::ResolvingMetadata {
                self.transition_state(TorrentState::Added);
             }
-            self.frontend.metadata_resolved(self.live_view());
+            self.publish_live_view(|_| TorrentEventKind::MetadataResolved);
             self
                .broadcast_to_peers(HaveInfoDict {
                   bitfield: Arc::new(self.bitfield.clone()),
@@ -158,7 +165,8 @@ pub(crate) mod commands {
          if let Some(actor) = self.peers.remove(&id) {
             actor.kill();
          }
-         frontend.disconnected(Some(self.live_view()));
+         frontend.disconnected();
+         self.publish_live_view(|_| TorrentEventKind::Updated);
       }
 
       #[message]
@@ -167,129 +175,179 @@ pub(crate) mod commands {
          if let Some(actor) = self.trackers.get(&tracker) {
             actor.kill();
             self.trackers.remove(&tracker);
-            self.frontend.update_torrent(self.live_view());
+            self.publish_live_view(|_| TorrentEventKind::Updated);
          } else {
             warn!("Received kill tracker message for unknown tracker");
          }
       }
 
       #[message]
-      pub(crate) async fn set_piece_storage(&mut self, strategy: PieceStorageStrategy) {
+      pub(crate) async fn set_piece_storage(
+         &mut self, strategy: PieceStorageStrategy,
+      ) -> Result<(), TorrentError> {
          if !self.is_empty() {
-            // Intentional panic because this is unintended behavior.
-            panic!("Cannot change piece storage strategy after we've already received pieces");
+            return Err(TorrentError::InvalidOperation {
+               operation: "set piece storage",
+               reason: "piece storage cannot change after data has been received".to_string(),
+            });
          }
          if let PieceStorageStrategy::Disk(dir) = &strategy {
-            util::create_dir(dir).await.unwrap(); // Intended panic
+            util::create_dir(dir)
+               .await
+               .map_err(|error| TorrentError::FileIoError {
+                  operation: "create piece storage directory".to_string(),
+                  reason: error.to_string(),
+               })?;
          }
          self.piece_storage = strategy;
-         self.frontend.update_torrent(self.live_view());
+         self.publish_live_view(|_| TorrentEventKind::Updated);
+         Ok(())
       }
 
       /// Sets the current piece manager to a custom implementation.
       #[message]
-      pub(crate) async fn set_piece_manager(&mut self, manager: Box<dyn PieceManager>) {
-         // Intentional panic, the program should not run if this is not the case.
-         assert!(
-            matches!(self.piece_storage, PieceStorageStrategy::Disk(_)),
-            "Storage strategy **must** be set to disk before the piece manager is changed",
-         );
-
-         self.piece_manager = PieceManagerProxy::Custom(manager);
-         // If we already have metadata, initialize the replacement manager now.
-         if let Some(info) = self.info.clone()
-            && let Err(err) = self.piece_manager.pre_start(info).await
-         {
-            warn!(?err, "Failed to pre-start custom piece manager");
+      pub(crate) async fn set_piece_manager(
+         &mut self, mut manager: Box<dyn PieceManager>,
+      ) -> Result<(), TorrentError> {
+         if !self.is_empty() {
+            return Err(TorrentError::InvalidOperation {
+               operation: "set piece manager",
+               reason: "piece manager cannot change after data has been received".to_string(),
+            });
          }
-         self.frontend.update_torrent(self.live_view());
+         if !matches!(self.piece_storage, PieceStorageStrategy::Disk(_)) {
+            return Err(TorrentError::InvalidOperation {
+               operation: "set piece manager",
+               reason: "custom piece managers require disk piece storage".to_string(),
+            });
+         }
+         // If we already have metadata, initialize the replacement manager now.
+         if let Some(info) = self.info_dict().cloned()
+            && let Err(error) = manager.pre_start(info).await
+         {
+            return Err(TorrentError::InvalidOperation {
+               operation: "set piece manager",
+               reason: format!("custom piece manager initialization failed: {error}"),
+            });
+         }
+         self.piece_manager = PieceManagerProxy::Custom(manager);
+         self.publish_live_view(|_| TorrentEventKind::Updated);
+         Ok(())
       }
 
       /// Sets the output path, should only be used when the `FilePieceManager`
       /// is used.
       #[message]
-      pub(crate) fn set_output_path(&mut self, path: PathBuf) {
-         match &mut self.piece_manager {
-            PieceManagerProxy::Default(manager) => manager.set_path(path),
-            _ => {
-               warn!(path = ?path, "Cannot set output path when using a custom piece manager; ignoring.")
-            }
+      pub(crate) async fn set_output_path(&mut self, path: PathBuf) -> Result<(), TorrentError> {
+         if !self.is_empty() {
+            return Err(TorrentError::InvalidOperation {
+               operation: "set output folder",
+               reason: "output folder cannot change after data has been received".to_string(),
+            });
          }
-         self.frontend.update_torrent(self.live_view());
+         if matches!(&self.piece_manager, PieceManagerProxy::Custom(_)) {
+            return Err(TorrentError::InvalidOperation {
+               operation: "set output folder",
+               reason: "a custom piece manager owns its output paths".to_string(),
+            });
+         }
+         util::create_dir(&path)
+            .await
+            .map_err(|error| TorrentError::FileIoError {
+               operation: "create output folder".to_string(),
+               reason: error.to_string(),
+            })?;
+         if let PieceManagerProxy::Default(manager) = &mut self.piece_manager {
+            manager.set_path(path);
+         }
+         self.publish_live_view(|_| TorrentEventKind::Updated);
+         Ok(())
       }
 
       /// Start the torrenting process & actually start downloading
       /// pieces/seeding.
       #[message]
-      pub(crate) async fn set_state(&mut self, state: TorrentState) {
+      pub(crate) async fn set_state(&mut self, state: TorrentState) -> Result<(), TorrentError> {
          match state {
             TorrentState::Downloading | TorrentState::Seeding => self.start().await,
             TorrentState::Paused => self.stop_transfer().await,
             state => self.transition_state(state),
          }
+         Ok(())
       }
 
       #[message]
-      pub(crate) async fn set_auto_start(&mut self, auto: bool) {
+      pub(crate) async fn set_auto_start(&mut self, auto: bool) -> Result<(), TorrentError> {
          self.autostart = auto;
          if !self.pending_start {
             self.autostart().await;
          }
-         self.frontend.update_torrent(self.live_view());
+         self.publish_live_view(|_| TorrentEventKind::Updated);
+         Ok(())
       }
 
       #[message]
-      pub(crate) async fn set_sufficient_peers(&mut self, peers: usize) {
+      pub(crate) async fn set_sufficient_peers(
+         &mut self, peers: usize,
+      ) -> Result<(), TorrentError> {
          self.sufficient_peers = peers;
          if !self.pending_start {
             self.autostart().await;
          }
-         self.frontend.update_torrent(self.live_view());
+         self.publish_live_view(|_| TorrentEventKind::Updated);
+         Ok(())
       }
 
       /// Restores persisted piece and lifecycle state before exposing a resumed
       /// torrent to callers.
       #[message]
       pub(crate) fn restore_snapshot(
-         &mut self, snapshot: TorrentSnapshot,
+         &mut self, snapshot: ValidatedTorrentState,
       ) -> SnapshotRestoreResult {
-         let result = (|| -> Result<bool, TorrentError> {
-            snapshot.validate()?;
-            if snapshot.info_hash != self.info_hash() {
-               return Err(TorrentError::InvalidSnapshot {
-                  reason: "info hash does not match metainfo".to_string(),
-               });
-            }
-
-            let piece_count = snapshot
-               .resolved_info()
+         let result = (|| -> Result<(), TorrentError> {
+            self.resolved_magnet_info = snapshot.resolved_magnet_info;
+            let piece_count = self
+               .info_dict()
                .map_or(0, crate::metainfo::Info::piece_count);
 
-            let resume = snapshot.state.is_transfer_active();
             let restored_state = match snapshot.state {
                TorrentState::Downloading
                | TorrentState::Seeding
+               | TorrentState::Restarting
                | TorrentState::Stopping
                | TorrentState::Stopped => TorrentState::Paused,
                state => state,
             };
             let mut scheduler = PieceScheduler::new(piece_count);
-            for index in snapshot.bitfield.iter_ones() {
+            for (index, complete) in snapshot.bitfield.iter().copied().enumerate() {
+               if !complete {
+                  continue;
+               }
                scheduler.mark_piece_complete(index);
             }
             for entry in &snapshot.block_map {
-               scheduler.restore_piece_blocks(*entry.key(), entry.value().clone());
+               let index = usize::try_from(entry.piece_index).map_err(|_| {
+                  TorrentError::InvalidSnapshot {
+                     reason: "partial piece index cannot be represented on this platform"
+                        .to_string(),
+                  }
+               })?;
+               scheduler.restore_piece_blocks(index, entry.blocks.iter().copied().collect());
             }
 
-            self.info = snapshot.info_dict;
-            self.bitfield = snapshot.bitfield;
+            self.bitfield = snapshot.bitfield.iter().copied().collect();
             self.piece_scheduler = scheduler;
             self.autostart = snapshot.auto_start;
-            self.sufficient_peers = snapshot.sufficient_peers;
+            self.sufficient_peers = usize::try_from(snapshot.sufficient_peers).map_err(|_| {
+               TorrentError::InvalidSnapshot {
+                  reason: "sufficient peer count cannot be represented on this platform"
+                     .to_string(),
+               }
+            })?;
             self.transition_state(restored_state);
-            self.frontend.update_torrent(self.live_view());
+            self.publish_live_view(|_| TorrentEventKind::Updated);
 
-            Ok(resume)
+            Ok(())
          })();
 
          SnapshotRestoreResult(result)
@@ -307,10 +365,10 @@ pub(crate) mod commands {
       ///
       /// Only should be used internally.
       #[message]
-      pub(crate) async fn ready_hook(&mut self, hook: ReadyHookSender) {
+      pub(crate) async fn ready_hook(&mut self, hook: ReadyHookSender) -> Result<(), TorrentError> {
          if self.state == TorrentState::Ready || self.state.is_transfer_active() {
             let _ = hook.send(());
-            return;
+            return Ok(());
          }
 
          let is_ready = self.is_ready_to_start();
@@ -320,6 +378,7 @@ pub(crate) mod commands {
             self.ready_hook.push(hook);
             self.autostart().await;
          }
+         Ok(())
       }
 
       /// Bitfield of the torrent.
@@ -361,7 +420,7 @@ pub(crate) mod commands {
       /// Sends the current info dict if we have it.
       #[message]
       pub(crate) fn has_info_dict(&self) -> Option<Info> {
-         self.info.clone()
+         self.info_dict().cloned()
       }
 
       /// Requests a piece from the torrent.
@@ -369,7 +428,7 @@ pub(crate) mod commands {
       pub(crate) async fn request_piece(
          &mut self, index: usize, offset: usize, length: usize,
       ) -> (usize, usize, Option<Bytes>) {
-         let Some(info) = self.info.as_ref() else {
+         let Some(info) = self.info_dict() else {
             warn!(
                index,
                offset, length, "Peer requested block before info dict was available"
@@ -456,8 +515,8 @@ pub(crate) mod commands {
       }
 
       #[message]
-      pub(crate) fn get_state(&self) -> TorrentState {
-         self.state
+      pub(crate) fn get_state(&self) -> Result<TorrentState, TorrentError> {
+         Ok(self.state)
       }
 
       #[message]
@@ -466,8 +525,8 @@ pub(crate) mod commands {
       }
 
       #[message]
-      pub(crate) fn snapshot_state(&self) -> Box<TorrentSnapshot> {
-         Box::new(self.snapshot())
+      pub(crate) fn snapshot_state(&self) -> Result<Box<TorrentSnapshot>, TorrentError> {
+         self.snapshot().map(Box::new)
       }
    }
 }

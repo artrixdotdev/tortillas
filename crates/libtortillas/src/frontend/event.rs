@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{EngineView, PeerHandle, TorrentProgress, TrackerHandle};
+use super::{EngineView, PeerHandle, TorrentMetrics, TrackerHandle, TransferMetrics};
 use crate::{
    hashes::InfoHash,
    torrent::{Torrent, TorrentState},
@@ -68,12 +68,12 @@ pub enum TorrentEventKind {
       current: TorrentState,
    },
    MetadataResolved,
-   ProgressChanged(TorrentProgress),
+   MetricsChanged(TorrentMetrics),
    PeerConnected(PeerHandle),
-   PeerUpdated(PeerHandle),
    PeerDisconnected(PeerHandle),
    TrackerAnnounceSucceeded(TrackerHandle),
    TrackerAnnounceFailed(TrackerHandle),
+   TrackerRestarting(TrackerHandle),
    TrackerStopped(TrackerHandle),
    Health(FrontendHealth),
    Removed,
@@ -83,7 +83,8 @@ pub enum TorrentEventKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PeerEventKind {
-   Updated,
+   StateChanged,
+   MetricsChanged(TransferMetrics),
    Disconnected,
 }
 
@@ -93,6 +94,7 @@ pub enum PeerEventKind {
 pub enum TrackerEventKind {
    AnnounceSucceeded { peers_returned: u64 },
    AnnounceFailed,
+   Restarting,
    Stopped,
 }
 

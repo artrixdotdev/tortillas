@@ -1,7 +1,7 @@
 use std::{
    fmt,
    path::PathBuf,
-   sync::{Arc, Mutex, MutexGuard, Weak},
+   sync::{Arc, Weak},
 };
 
 use kameo::actor::ActorRef;
@@ -16,10 +16,10 @@ use super::{
    },
 };
 use crate::{
-   errors::TorrentError,
+   errors::{TorrentError, map_torrent_send_error},
    frontend::{
-      DEFAULT_EVENT_CAPACITY, EventSubscription, FrontendHub, FrontendPublisher, LivePublisher,
-      PeerHandle, TorrentEventKind, TorrentListener, TorrentView, TrackerHandle,
+      EventSubscription, FrontendHub, FrontendPublisher, PeerHandle, TorrentEventKind,
+      TorrentListener, TorrentScope, TorrentView, TrackerHandle,
    },
    hashes::InfoHash,
    pieces::PieceManager,
@@ -30,8 +30,7 @@ pub(crate) struct TorrentInner {
    pub(crate) info_hash: InfoHash,
    pub(crate) actor: ActorRef<TorrentActor>,
    pub(crate) hub: Weak<FrontendHub>,
-   pub(crate) live: LivePublisher<Option<TorrentView>, TorrentEventKind>,
-   routing: Mutex<()>,
+   pub(crate) scope: Arc<TorrentScope>,
 }
 
 /// A handle to a torrent managed by the engine.
@@ -65,15 +64,17 @@ impl Torrent {
       info_hash: InfoHash, actor: ActorRef<TorrentActor>, frontend: &FrontendPublisher,
       initial_view: Option<TorrentView>,
    ) -> Self {
-      Self {
-         inner: Arc::new(TorrentInner {
-            info_hash,
-            actor,
-            hub: frontend.downgrade(),
-            live: LivePublisher::new(initial_view, DEFAULT_EVENT_CAPACITY),
-            routing: Mutex::new(()),
-         }),
+      let scope = frontend.ensure_torrent_scope(info_hash);
+      if let Some(view) = initial_view {
+         let _ = scope.live.set_view(Some(view));
       }
+      let inner = Arc::new(TorrentInner {
+         info_hash,
+         actor,
+         hub: frontend.downgrade(),
+         scope: Arc::clone(&scope),
+      });
+      Self { inner }
    }
 
    pub(crate) fn actor(&self) -> &ActorRef<TorrentActor> {
@@ -85,11 +86,6 @@ impl Torrent {
       self.inner.info_hash
    }
 
-   /// Alias for [`Self::info_hash`].
-   pub fn key(&self) -> InfoHash {
-      self.info_hash()
-   }
-
    pub async fn set_piece_storage(
       &self, piece_storage: PieceStorageStrategy,
    ) -> Result<(), TorrentError> {
@@ -99,22 +95,23 @@ impl Torrent {
             strategy: piece_storage,
          })
          .await
-         .map_err(|error| Self::communication_error("set piece storage", error))?;
+         .map_err(|error| map_torrent_send_error("set piece storage", error))?;
       Ok(())
    }
 
-   pub async fn with_output_folder(&self, folder: impl Into<PathBuf>) -> Result<(), TorrentError> {
+   /// Sets the output folder used by the default file piece manager.
+   pub async fn set_output_folder(&self, folder: impl Into<PathBuf>) -> Result<(), TorrentError> {
       self
          .actor()
          .ask(SetOutputPath {
             path: folder.into(),
          })
          .await
-         .map_err(|error| Self::communication_error("set output path", error))?;
+         .map_err(|error| map_torrent_send_error("set output folder", error))?;
       Ok(())
    }
 
-   pub async fn with_piece_manager<'a>(
+   pub async fn set_piece_manager<'a>(
       &'a self, piece_manager: impl PieceManager + 'a + 'static,
    ) -> Result<(), TorrentError> {
       self
@@ -123,7 +120,7 @@ impl Torrent {
             manager: Box::new(piece_manager),
          })
          .await
-         .map_err(|error| Self::communication_error("set piece manager", error))?;
+         .map_err(|error| map_torrent_send_error("set piece manager", error))?;
       Ok(())
    }
 
@@ -156,7 +153,7 @@ impl Torrent {
          .inspect_err(|error| {
             error!(%error, operation, "Failed to change torrent state");
          })
-         .map_err(|error| Self::communication_error(operation, error))?;
+         .map_err(|error| map_torrent_send_error(operation, error))?;
       Ok(())
    }
 
@@ -165,7 +162,7 @@ impl Torrent {
          .actor()
          .ask(GetState)
          .await
-         .map_err(|error| Self::communication_error("get state", error))
+         .map_err(|error| map_torrent_send_error("get state", error))
    }
 
    /// Captures this torrent's metadata, storage configuration, and verified or
@@ -178,7 +175,7 @@ impl Torrent {
          .ask(SnapshotState)
          .await
          .map(|snapshot| *snapshot)
-         .map_err(|error| Self::communication_error("snapshot torrent", error))
+         .map_err(|error| map_torrent_send_error("snapshot torrent", error))
    }
 
    pub async fn set_auto_start(&self, auto: bool) -> Result<(), TorrentError> {
@@ -186,7 +183,7 @@ impl Torrent {
          .actor()
          .ask(SetAutoStart { auto })
          .await
-         .map_err(|error| Self::communication_error("set auto start", error))?;
+         .map_err(|error| map_torrent_send_error("set auto start", error))?;
       Ok(())
    }
 
@@ -195,7 +192,7 @@ impl Torrent {
          .actor()
          .ask(SetSufficientPeers { peers })
          .await
-         .map_err(|error| Self::communication_error("set sufficient peers", error))?;
+         .map_err(|error| map_torrent_send_error("set sufficient peers", error))?;
       Ok(())
    }
 
@@ -205,31 +202,34 @@ impl Torrent {
          .actor()
          .ask(ReadyHook { hook })
          .await
-         .map_err(|error| Self::communication_error("register ready hook", error))?;
+         .map_err(|error| map_torrent_send_error("register ready hook", error))?;
       hook_rx
          .await
-         .map_err(|error| Self::communication_error("wait for readiness", error))?;
+         .map_err(|error| TorrentError::ActorCommunicationFailed {
+            operation: "wait for readiness",
+            reason: error.to_string(),
+         })?;
       Ok(())
    }
 
    /// Subscribes to live events for this torrent only.
    #[must_use]
    pub fn subscribe(&self) -> EventSubscription<TorrentEventKind> {
-      self.inner.live.subscribe()
+      self.inner.scope.live.subscribe()
    }
 
    /// Creates a live listener scoped to this torrent.
    #[must_use]
    pub fn listener(&self) -> TorrentListener {
-      self.inner.live.listener()
+      self.inner.scope.live.listener()
    }
 
    /// Returns the latest display-oriented state maintained for this torrent.
    ///
    /// This returns `None` after the torrent has been removed from its engine.
    #[must_use]
-   pub fn live_view(&self) -> Option<TorrentView> {
-      self.inner.live.view()
+   pub fn view(&self) -> Option<TorrentView> {
+      self.inner.scope.live.view()
    }
 
    /// Returns handles for this torrent's currently connected peers.
@@ -248,30 +248,7 @@ impl Torrent {
       })
    }
 
-   pub(crate) fn publish(&self, view: TorrentView, event: TorrentEventKind) -> bool {
-      self.inner.live.update(Some(view), event)
-   }
-
-   pub(crate) fn removed(&self) -> bool {
-      self.inner.live.close(None, TorrentEventKind::Removed)
-   }
-
-   pub(crate) fn routing_lock(&self) -> MutexGuard<'_, ()> {
-      self
-         .inner
-         .routing
-         .lock()
-         .unwrap_or_else(std::sync::PoisonError::into_inner)
-   }
-
    fn frontend(&self) -> Option<FrontendPublisher> {
       self.inner.hub.upgrade().map(FrontendPublisher::from_hub)
-   }
-
-   fn communication_error(operation: &'static str, error: impl fmt::Display) -> TorrentError {
-      TorrentError::ActorCommunicationFailed {
-         operation,
-         reason: error.to_string(),
-      }
    }
 }

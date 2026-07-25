@@ -2,17 +2,26 @@ use std::{net::SocketAddr, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use super::{
+   ByteCount, HasTransferMetrics, TorrentMetrics, TrafficTotals, TransferMetrics, TransferRates,
+};
 use crate::{engine::EngineStatus, hashes::InfoHash, peer::Peer, torrent::TorrentState};
 
 /// Current live engine state maintained by a frontend listener.
 ///
-/// Unlike persistence snapshots, views are display-oriented and updated by
-/// applying live [`CoreEvent`](super::CoreEvent) values.
+/// Unlike persistence snapshots, views are presentation-oriented and updated
+/// by applying live [`CoreEvent`](super::CoreEvent) values.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EngineView {
    pub status: EngineStatus,
-   pub torrent_count: u64,
    pub torrents: Vec<TorrentView>,
+}
+
+impl EngineView {
+   #[must_use]
+   pub fn torrent_count(&self) -> usize {
+      self.torrents.len()
+   }
 }
 
 /// Current live state of one torrent.
@@ -21,58 +30,25 @@ pub struct TorrentView {
    pub info_hash: InfoHash,
    pub name: String,
    pub state: TorrentState,
-   pub has_metadata: bool,
-   pub is_ready: bool,
    pub auto_start: bool,
    pub sufficient_peers: u64,
    pub peer_count: u64,
    pub tracker_count: u64,
    pub output_path: Option<PathBuf>,
-   pub progress: TorrentProgress,
-   pub transfer: TorrentTransfer,
+   pub metrics: TorrentMetrics,
 }
 
-/// Live torrent progress intended for frontend rendering.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TorrentProgress {
-   pub total_bytes: Option<u64>,
-   pub downloaded_bytes: u64,
-   pub bytes_remaining: Option<u64>,
-   pub progress_fraction: Option<f64>,
-   pub completed_pieces: u64,
-   pub partial_pieces: u64,
-   pub total_pieces: u64,
-}
+impl TorrentView {
+   /// Whether the torrent has resolved payload metadata.
+   #[must_use]
+   pub const fn has_metadata(&self) -> bool {
+      self.metrics.progress.total_bytes.is_some()
+   }
 
-/// Live torrent transfer metrics intended for frontend rendering.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TorrentTransfer {
-   pub download_rate_bytes_per_second: Option<u64>,
-   pub upload_rate_bytes_per_second: Option<u64>,
-   pub eta_seconds: Option<u64>,
-}
-
-impl TorrentTransfer {
-   pub(crate) fn from_peers(
-      peers: impl IntoIterator<Item = PeerView>, bytes_remaining: Option<u64>,
-   ) -> Self {
-      let (download_rate, upload_rate) =
-         peers
-            .into_iter()
-            .fold((0_u64, 0_u64), |(download, upload), peer| {
-               (
-                  download.saturating_add(peer.download_rate_bytes_per_second),
-                  upload.saturating_add(peer.upload_rate_bytes_per_second),
-               )
-            });
-      let eta_seconds = bytes_remaining
-         .and_then(|remaining| (download_rate > 0).then(|| remaining.div_ceil(download_rate)));
-
-      Self {
-         download_rate_bytes_per_second: Some(download_rate),
-         upload_rate_bytes_per_second: Some(upload_rate),
-         eta_seconds,
-      }
+   /// Whether the torrent has reached its ready lifecycle state.
+   #[must_use]
+   pub const fn is_ready(&self) -> bool {
+      matches!(self.state, TorrentState::Ready)
    }
 }
 
@@ -90,14 +66,33 @@ pub struct PeerView {
    pub client_choking: bool,
    pub client_interested: bool,
    pub available_pieces: u64,
-   pub download_rate_bytes_per_second: u64,
-   pub upload_rate_bytes_per_second: u64,
-   pub downloaded_bytes: u64,
-   pub uploaded_bytes: u64,
+   pub transfer: TransferMetrics,
 }
 
 impl PeerView {
    pub(crate) fn from_peer(peer: &Peer, connected: bool) -> Self {
+      Self::from_peer_with_rates(peer, connected, None)
+   }
+
+   pub(crate) fn from_peer_with_rates(
+      peer: &Peer, connected: bool, rates: Option<TransferRates>,
+   ) -> Self {
+      Self::from_peer_with_transfer(
+         peer,
+         connected,
+         TransferMetrics {
+            totals: TrafficTotals {
+               downloaded: ByteCount(u64::try_from(peer.bytes_downloaded()).unwrap_or(u64::MAX)),
+               uploaded: ByteCount(u64::try_from(peer.bytes_uploaded()).unwrap_or(u64::MAX)),
+            },
+            rates,
+         },
+      )
+   }
+
+   pub(crate) fn from_peer_with_transfer(
+      peer: &Peer, connected: bool, transfer: TransferMetrics,
+   ) -> Self {
       Self {
          address: Some(peer.socket_addr()),
          client: peer.id.map(|id| id.client_name().to_string()),
@@ -107,15 +102,14 @@ impl PeerView {
          client_choking: peer.choked(),
          client_interested: peer.am_interested(),
          available_pieces: u64::try_from(peer.pieces.count_ones()).unwrap_or(u64::MAX),
-         download_rate_bytes_per_second: u64::try_from(peer.download_rate())
-            .unwrap_or(u64::MAX)
-            .saturating_mul(1024),
-         upload_rate_bytes_per_second: u64::try_from(peer.upload_rate())
-            .unwrap_or(u64::MAX)
-            .saturating_mul(1024),
-         downloaded_bytes: u64::try_from(peer.bytes_downloaded()).unwrap_or(u64::MAX),
-         uploaded_bytes: u64::try_from(peer.bytes_uploaded()).unwrap_or(u64::MAX),
+         transfer,
       }
+   }
+}
+
+impl HasTransferMetrics for PeerView {
+   fn transfer_metrics(&self) -> &TransferMetrics {
+      &self.transfer
    }
 }
 
@@ -139,6 +133,8 @@ pub enum TrackerStatus {
    Healthy,
    /// The latest announce failed while the actor remained available.
    Degraded,
+   /// The actor stopped abnormally and supervision may restart it.
+   Restarting,
    /// The tracker actor stopped and will emit no more events.
    Stopped,
 }
@@ -154,9 +150,10 @@ impl TrackerStatus {
 #[cfg(test)]
 mod tests {
    use super::*;
+   use crate::frontend::BytesPerSecond;
 
    #[test]
-   fn torrent_transfer_aggregates_peer_rates_and_estimates_completion() {
+   fn peer_view_uses_canonical_byte_units() {
       let peer = PeerView {
          address: None,
          client: None,
@@ -166,16 +163,19 @@ mod tests {
          client_choking: false,
          client_interested: true,
          available_pieces: 1,
-         download_rate_bytes_per_second: 3,
-         upload_rate_bytes_per_second: 2,
-         downloaded_bytes: 0,
-         uploaded_bytes: 0,
+         transfer: TransferMetrics {
+            totals: TrafficTotals::default(),
+            rates: Some(TransferRates {
+               download: BytesPerSecond(3),
+               upload: BytesPerSecond(2),
+            }),
+         },
       };
 
-      let transfer = TorrentTransfer::from_peers([peer.clone(), peer], Some(13));
+      let peers = [peer.clone(), peer];
+      let rates = TransferRates::aggregate(&peers).unwrap();
 
-      assert_eq!(transfer.download_rate_bytes_per_second, Some(6));
-      assert_eq!(transfer.upload_rate_bytes_per_second, Some(4));
-      assert_eq!(transfer.eta_seconds, Some(3));
+      assert_eq!(rates.download, BytesPerSecond(6));
+      assert_eq!(rates.upload, BytesPerSecond(4));
    }
 }

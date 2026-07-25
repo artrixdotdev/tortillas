@@ -23,7 +23,7 @@ impl TorrentActor {
    pub async fn handle_incoming_piece(
       &mut self, peer_id: crate::peer::PeerId, index: usize, offset: usize, block: Bytes,
    ) {
-      let info_dict = match &self.info {
+      let info_dict = match self.info_dict() {
          Some(info) => info,
          None => {
             warn!("Received piece block before info dict was available");
@@ -33,7 +33,15 @@ impl TorrentActor {
 
       let piece_length = info_dict.piece_length as usize;
       let total_length = info_dict.total_length();
-      let last_piece_index = info_dict.piece_count().saturating_sub(1);
+      let piece_count = info_dict.piece_count();
+      if index >= piece_count {
+         warn!(
+            index,
+            piece_count, "Received piece block outside the piece range"
+         );
+         return;
+      }
+      let last_piece_index = piece_count.saturating_sub(1);
 
       // Compute concrete length for this specific piece
       let concrete_piece_len = if index == last_piece_index {
@@ -123,13 +131,15 @@ impl TorrentActor {
          trace!(%peer_id, "Requested replacement block from peer");
       }
 
-      self.frontend.progress_changed(self.live_view());
+      self.publish_live_view(|view| {
+         crate::frontend::TorrentEventKind::MetricsChanged(view.metrics.clone())
+      });
    }
 
    pub(super) async fn request_blocks_from_peer(
       &mut self, peer_id: crate::peer::PeerId, limit: usize,
    ) {
-      let Some(info) = self.info.as_ref() else {
+      let Some(info) = self.info_dict() else {
          return;
       };
       let Some(peer) = self.peers.get(&peer_id).cloned() else {
@@ -476,7 +486,7 @@ mod tests {
          trackers: HashMap::new(),
          bitfield: BitVec::<AtomicU8>::repeat(false, info.piece_count()),
          id: peer_id,
-         info: Some(info.clone()),
+         resolved_magnet_info: None,
          metainfo,
          tracker_server,
          scheduler: Scheduler::spawn(Scheduler::new()),
