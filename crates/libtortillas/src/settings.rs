@@ -1,3 +1,10 @@
+//! Runtime policy for the engine and its supervised protocol scopes.
+//!
+//! Settings control application-tunable behavior such as actor mailbox sizes,
+//! event capacities, request windows, timeouts, and supervision. Wire-format
+//! constants and BEP-mandated values remain next to the protocol code that
+//! implements them.
+
 use std::{net::SocketAddr, time::Duration};
 
 const DEFAULT_DHT_BOOTSTRAP_NODES: [&str; 3] = [

@@ -104,7 +104,7 @@ client, clock, listener, or storage executor.
 Frontends should use live listeners for updates and direct `Engine` and
 `Torrent` methods for operations rather than
 polling persistence snapshots. See the
-[frontend integration guide](docs/frontend-integration.md) and the
+[`libtortillas::frontend` API documentation](https://docs.rs/libtortillas/latest/libtortillas/frontend/) and the
 [`live_frontend` example](crates/libtortillas/examples/live_frontend.rs).
 
 ## 🤝 Contributing

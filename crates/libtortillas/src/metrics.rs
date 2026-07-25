@@ -1,5 +1,17 @@
 //! Canonical transfer and verified-content measurements shared by actors and
 //! presentation views.
+//!
+//! Bytes are the canonical unit. [`TransferMetrics`] is shared by peer state,
+//! peer statistics, live views, and torrent aggregation, so presentation code
+//! never performs a KiB/s conversion. [`TrafficTotals`] measures wire traffic
+//! and can include duplicate or rejected data; [`ContentProgress`] measures
+//! verified torrent payload and must remain separate.
+//!
+//! An absent rate sample means no sample has been collected. A present
+//! [`TransferRates`] containing zero means an interval was measured and no
+//! transfer occurred. ETA is derived from verified remaining bytes and the
+//! aggregate sampled download rate rather than stored as independently mutable
+//! state.
 
 use std::time::{Duration, Instant};
 

@@ -14,6 +14,19 @@
 //! - Each torrent is represented by a [`Torrent`] handle, which can be used to
 //!   interact with the torrent session.
 //!
+//! ## Peer discovery
+//!
+//! One engine-owned DHT actor serves every public torrent because [BEP 5]
+//! defines a DHT node as a client-wide UDP service. Private torrents are not
+//! registered with it because [BEP 27] restricts their discovery to declared
+//! trackers.
+//!
+//! DHT and tracker results enter a torrent through the same internal announce
+//! event while retaining their discovery source. Connection filtering,
+//! deduplication, and peer-actor creation therefore remain owned by the torrent
+//! regardless of where an endpoint was discovered. Valid DHT lookup tokens are
+//! used to announce the engine's peer port back to the closest nodes.
+//!
 //! ## Runtime
 //!
 //! The engine is Tokio-only. Construct and use [`Engine`] from tasks running on
@@ -41,6 +54,9 @@
 //!    println!("Started torrenting: {}", torrent.info_hash());
 //! }
 //! ```
+//!
+//! [BEP 5]: https://www.bittorrent.org/beps/bep_0005.html
+//! [BEP 27]: https://www.bittorrent.org/beps/bep_0027.html
 
 mod actor;
 mod messages;

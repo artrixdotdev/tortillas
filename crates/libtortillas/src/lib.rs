@@ -1,5 +1,35 @@
 //! Async BitTorrent engine for building Tortillas frontends.
 //!
+//! # Architecture
+//!
+//! The runtime is organized as a supervised actor tree:
+//!
+//! ```text
+//! EngineActor
+//! ├── DhtActor (one shared instance)
+//! └── TorrentActor (one per torrent)
+//!     ├── TrackerActor (one per tracker)
+//!     └── PeerActor (one per connected peer)
+//!
+//! DhtActor ───── discovered peers ────> TorrentActor
+//! TrackerActor ── discovered peers ────> TorrentActor
+//! ```
+//!
+//! Actors own operational protocol state. Public applications interact through
+//! [`engine::Engine`], [`torrent::Torrent`], and the transport-agnostic
+//! [`frontend`] views and event streams. Durable state is represented by
+//! [`engine::EngineSnapshot`] and [`torrent::TorrentSnapshot`], never by live
+//! presentation views.
+//!
+//! Stable public types are exported by module facades while actor messages and
+//! coordination details remain crate-private. Domain values such as lifecycle
+//! state, storage strategy, metrics, and snapshots live outside actor files so
+//! actors can focus on orchestration.
+//!
+//! See [`frontend`] for the source-of-truth, publication, lifecycle, and lock
+//! invariants. See [`torrent`] for transfer scheduling and persistence
+//! semantics.
+//!
 //! # Runtime boundary
 //!
 //! `libtortillas` is intentionally a Tokio-based library. Public handles such
@@ -11,6 +41,10 @@
 //! engine plus all torrent handles on work scheduled by that runtime. The crate
 //! does not promise runtime independence, HTTP client injection, clock
 //! injection, listener injection, or storage runtime abstraction.
+//! Synchronous adapter work should communicate with async engine tasks through
+//! channels or a dedicated adapter thread. [`tokio::task::spawn_blocking`] is
+//! appropriate for bounded blocking work, but not for a permanent input loop:
+//! a blocking task cannot be aborted after it starts and can delay shutdown.
 //!
 //! An application can use `#[tokio::main]` on its binary entry point, or create
 //! an explicit Tokio runtime before initializing `Engine`.
