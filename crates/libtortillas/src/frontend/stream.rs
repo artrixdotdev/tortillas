@@ -377,4 +377,13 @@ mod tests {
       let _subscription = publisher.subscribe();
       assert!(publisher.emit_without_view_change("event"));
    }
+
+   #[test]
+   fn publishers_without_listeners_do_not_allocate_event_channels() {
+      let publisher = LivePublisher::<_, ()>::new(0_u8, 8);
+
+      assert!(!publisher.has_event_channel());
+      let _listener = publisher.listener();
+      assert!(publisher.has_event_channel());
+   }
 }

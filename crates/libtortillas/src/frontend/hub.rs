@@ -565,3 +565,98 @@ impl Default for FrontendHub {
       Self::new()
    }
 }
+
+#[cfg(test)]
+mod tests {
+   use std::net::{Ipv4Addr, SocketAddr};
+
+   use super::{
+      super::{EventStreamError, TrackerStatus},
+      *,
+   };
+   use crate::{
+      metrics::{
+         ByteCount, ContentProgress, PeerMetrics, TorrentMetrics, TrackerMetrics, TransferMetrics,
+      },
+      peer::PeerId,
+      torrent::TorrentState,
+   };
+
+   fn connected_peer_view() -> PeerView {
+      PeerView {
+         address: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 6881))),
+         client: Some("Unknown".to_string()),
+         connected: true,
+         metrics: PeerMetrics {
+            peer_choking: true,
+            client_choking: true,
+            ..Default::default()
+         },
+      }
+   }
+
+   fn pending_tracker_view() -> TrackerView {
+      TrackerView {
+         endpoint: "https://tracker.example".to_string(),
+         status: TrackerStatus::Pending,
+         metrics: TrackerMetrics::default(),
+      }
+   }
+
+   fn torrent_view(info_hash: InfoHash) -> TorrentView {
+      TorrentView {
+         info_hash,
+         name: "removed".to_string(),
+         state: TorrentState::Downloading,
+         auto_start: true,
+         sufficient_peers: 1,
+         peer_count: 0,
+         tracker_count: 0,
+         output_path: None,
+         metrics: TorrentMetrics::new(
+            TransferMetrics::default(),
+            ContentProgress {
+               total_bytes: Some(ByteCount(1_000)),
+               verified_bytes: ByteCount::ZERO,
+               remaining_bytes: Some(ByteCount(1_000)),
+               progress_fraction: Some(0.0),
+               completed_pieces: 0,
+               partial_pieces: 0,
+               total_pieces: 1,
+            },
+         ),
+      }
+   }
+
+   #[tokio::test]
+   async fn torrent_removal_closes_every_child_scope_exactly_once() {
+      let frontend = FrontendHub::new();
+      let info_hash = InfoHash::from_bytes([4; 20]);
+      frontend.initialize_torrent_projection(torrent_view(info_hash));
+      let peer = frontend.register_peer_scope(
+         PeerIdentity {
+            torrent: info_hash,
+            peer: PeerId::Unknown([5; 20]),
+         },
+         connected_peer_view(),
+      );
+      let source = Tracker::Http("https://tracker.example/announce".to_string());
+      let tracker = frontend.register_tracker_scope(info_hash, &source, pending_tracker_view());
+      let mut peer_events = peer.subscribe();
+      let mut tracker_events = tracker.subscribe();
+
+      frontend.remove_torrent_scope(info_hash);
+      frontend.remove_torrent_scope(info_hash);
+
+      assert_eq!(
+         peer_events.recv().await.unwrap().kind,
+         PeerEventKind::Disconnected
+      );
+      assert_eq!(peer_events.recv().await, Err(EventStreamError::Closed));
+      assert_eq!(
+         tracker_events.recv().await.unwrap().kind,
+         TrackerEventKind::Stopped
+      );
+      assert_eq!(tracker_events.recv().await, Err(EventStreamError::Closed));
+   }
+}
