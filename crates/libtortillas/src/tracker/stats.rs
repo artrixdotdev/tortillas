@@ -9,6 +9,8 @@ use std::{
 use atomic_time::{AtomicInstant, AtomicOptionInstant};
 use tokio::time::Instant;
 
+use crate::metrics::{ByteCount, TrackerMetrics, TrafficTotals, TransferMetrics};
+
 /// Tracker statistics.
 ///
 /// All usages of [`AtomicOptionInstant`] or [`AtomicInstant`] are a bit hacky,
@@ -110,6 +112,31 @@ impl TrackerStats {
       self.bytes_received.fetch_add(value, Ordering::AcqRel);
    }
 
+   /// Returns all application bytes exchanged with this tracker.
+   #[must_use]
+   pub fn traffic_totals(&self) -> TrafficTotals {
+      TrafficTotals {
+         downloaded: ByteCount(u64::try_from(self.get_bytes_received()).unwrap_or(u64::MAX)),
+         uploaded: ByteCount(u64::try_from(self.get_bytes_sent()).unwrap_or(u64::MAX)),
+      }
+   }
+
+   /// Creates a typed snapshot with shared transfer metrics and tracker-only
+   /// counters.
+   #[must_use]
+   pub fn metrics(&self) -> TrackerMetrics {
+      TrackerMetrics {
+         transfer: TransferMetrics {
+            totals: self.traffic_totals(),
+            rates: None,
+         },
+         announce_attempts: u64::try_from(self.get_announce_attempts()).unwrap_or(u64::MAX),
+         announce_successes: u64::try_from(self.get_announce_successes()).unwrap_or(u64::MAX),
+         total_peers_received: u64::try_from(self.get_total_peers_received()).unwrap_or(u64::MAX),
+         latest_peers_returned: None,
+      }
+   }
+
    pub fn get_last_interaction(&self) -> Option<Instant> {
       Some(
          self
@@ -134,5 +161,35 @@ impl TrackerStats {
       self
          .session_start
          .store(Instant::now().into_std(), Ordering::Release)
+   }
+}
+
+#[cfg(test)]
+mod tests {
+   use super::*;
+
+   #[test]
+   fn tracker_stats_when_wire_bytes_are_recorded_then_exposes_canonical_totals() {
+      let stats = TrackerStats::default();
+
+      stats.increment_bytes_sent(12);
+      stats.increment_bytes_received(34);
+
+      assert_eq!(
+         stats.traffic_totals(),
+         TrafficTotals {
+            downloaded: ByteCount(34),
+            uploaded: ByteCount(12),
+         }
+      );
+      stats.increment_announce_attempts();
+      stats.increment_announce_successes();
+      stats.increment_total_peers_received(7);
+      let mut metrics = stats.metrics();
+      metrics.latest_peers_returned = Some(3);
+      assert_eq!(metrics.announce_attempts, 1);
+      assert_eq!(metrics.announce_successes, 1);
+      assert_eq!(metrics.total_peers_received, 7);
+      assert_eq!(metrics.latest_peers_returned, Some(3));
    }
 }

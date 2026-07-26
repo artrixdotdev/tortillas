@@ -6,7 +6,8 @@ use crate::{
    engine::EngineStatus,
    hashes::InfoHash,
    metrics::{
-      ByteCount, HasTransferMetrics, TorrentMetrics, TrafficTotals, TransferMetrics, TransferRates,
+      HasTransferMetrics, PeerMetrics, TorrentMetrics, TrackerMetrics, TransferMetrics,
+      TransferRates,
    },
    peer::Peer,
    torrent::TorrentState,
@@ -67,12 +68,7 @@ pub struct PeerView {
    pub client: Option<String>,
    /// Whether this peer is currently connected.
    pub connected: bool,
-   pub peer_choking: bool,
-   pub peer_interested: bool,
-   pub client_choking: bool,
-   pub client_interested: bool,
-   pub available_pieces: u64,
-   pub transfer: TransferMetrics,
+   pub metrics: PeerMetrics,
 }
 
 impl PeerView {
@@ -83,39 +79,26 @@ impl PeerView {
    pub(crate) fn from_peer_with_rates(
       peer: &Peer, connected: bool, rates: Option<TransferRates>,
    ) -> Self {
-      Self::from_peer_with_transfer(
-         peer,
-         connected,
-         TransferMetrics {
-            totals: TrafficTotals {
-               downloaded: ByteCount(u64::try_from(peer.bytes_downloaded()).unwrap_or(u64::MAX)),
-               uploaded: ByteCount(u64::try_from(peer.bytes_uploaded()).unwrap_or(u64::MAX)),
-            },
-            rates,
-         },
-      )
+      let mut metrics = peer.metrics();
+      metrics.transfer.rates = rates;
+      Self::from_peer_with_metrics(peer, connected, metrics)
    }
 
-   pub(crate) fn from_peer_with_transfer(
-      peer: &Peer, connected: bool, transfer: TransferMetrics,
+   pub(crate) fn from_peer_with_metrics(
+      peer: &Peer, connected: bool, metrics: PeerMetrics,
    ) -> Self {
       Self {
          address: Some(peer.socket_addr()),
          client: peer.id.map(|id| id.client_name().to_string()),
          connected,
-         peer_choking: peer.am_choked(),
-         peer_interested: peer.interested(),
-         client_choking: peer.choked(),
-         client_interested: peer.am_interested(),
-         available_pieces: u64::try_from(peer.pieces.count_ones()).unwrap_or(u64::MAX),
-         transfer,
+         metrics,
       }
    }
 }
 
 impl HasTransferMetrics for PeerView {
    fn transfer_metrics(&self) -> &TransferMetrics {
-      &self.transfer
+      self.metrics.transfer_metrics()
    }
 }
 
@@ -126,8 +109,13 @@ pub struct TrackerView {
    pub endpoint: String,
    /// Current actor and announce lifecycle.
    pub status: TrackerStatus,
-   /// Number of peers returned by the latest successful announce.
-   pub peers_returned: Option<u64>,
+   pub metrics: TrackerMetrics,
+}
+
+impl HasTransferMetrics for TrackerView {
+   fn transfer_metrics(&self) -> &TransferMetrics {
+      self.metrics.transfer_metrics()
+   }
 }
 
 /// Lifecycle and latest announce outcome for a tracker.
@@ -156,7 +144,7 @@ impl TrackerStatus {
 #[cfg(test)]
 mod tests {
    use super::*;
-   use crate::metrics::BytesPerSecond;
+   use crate::metrics::{BytesPerSecond, TrafficTotals};
 
    #[test]
    fn peer_view_uses_canonical_byte_units() {
@@ -164,17 +152,17 @@ mod tests {
          address: None,
          client: None,
          connected: true,
-         peer_choking: false,
-         peer_interested: true,
-         client_choking: false,
-         client_interested: true,
-         available_pieces: 1,
-         transfer: TransferMetrics {
-            totals: TrafficTotals::default(),
-            rates: Some(TransferRates {
-               download: BytesPerSecond(3),
-               upload: BytesPerSecond(2),
-            }),
+         metrics: PeerMetrics {
+            peer_interested: true,
+            available_pieces: 1,
+            transfer: TransferMetrics {
+               totals: TrafficTotals::default(),
+               rates: Some(TransferRates {
+                  download: BytesPerSecond(3),
+                  upload: BytesPerSecond(2),
+               }),
+            },
+            ..Default::default()
          },
       };
 

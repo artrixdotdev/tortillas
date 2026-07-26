@@ -69,7 +69,7 @@ pub(crate) fn select_unchoked_peers(
 ) -> ChokingDecision {
    let mut candidates: Vec<_> = peers
       .iter()
-      .filter(|peer| peer.interested)
+      .filter(|peer| peer.metrics.peer_interested)
       .copied()
       .collect();
    candidates.sort_by(|left, right| {
@@ -116,10 +116,12 @@ pub(crate) fn select_unchoked_peers(
 fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> BytesPerSecond {
    match torrent_state {
       TorrentState::Downloading => peer
+         .metrics
          .transfer
          .rates
          .map_or(BytesPerSecond::ZERO, |rates| rates.download),
       TorrentState::Seeding => peer
+         .metrics
          .transfer
          .rates
          .map_or(BytesPerSecond::ZERO, |rates| rates.upload),
@@ -137,7 +139,7 @@ fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> BytesPerSecond {
 #[cfg(test)]
 mod tests {
    use super::*;
-   use crate::metrics::{TransferMetrics, TransferRates};
+   use crate::metrics::{PeerMetrics, TransferMetrics, TransferRates};
 
    fn peer_id(value: u8) -> PeerId {
       PeerId::from([value; 20])
@@ -146,32 +148,38 @@ mod tests {
    fn stats(id: u8) -> PeerStats {
       PeerStats {
          id: peer_id(id),
-         interested: true,
-         choked: true,
-         transfer: TransferMetrics {
-            totals: Default::default(),
-            rates: Some(TransferRates::default()),
+         metrics: PeerMetrics {
+            peer_interested: true,
+            client_choking: true,
+            transfer: TransferMetrics {
+               totals: Default::default(),
+               rates: Some(TransferRates::default()),
+            },
+            ..Default::default()
          },
       }
    }
 
    fn with_rates(id: u8, download_rate: u64, upload_rate: u64) -> PeerStats {
       PeerStats {
-         transfer: TransferMetrics {
-            rates: Some(TransferRates {
-               download: BytesPerSecond(download_rate),
-               upload: BytesPerSecond(upload_rate),
-            }),
-            ..Default::default()
+         metrics: PeerMetrics {
+            transfer: TransferMetrics {
+               rates: Some(TransferRates {
+                  download: BytesPerSecond(download_rate),
+                  upload: BytesPerSecond(upload_rate),
+               }),
+               ..Default::default()
+            },
+            ..stats(id).metrics
          },
-         ..stats(id)
+         id: peer_id(id),
       }
    }
 
    #[test]
    fn selector_only_includes_interested_peers() {
       let mut not_interested = stats(2);
-      not_interested.interested = false;
+      not_interested.metrics.peer_interested = false;
       let peers = [stats(1), not_interested, stats(3)];
 
       let upload_slots = Settings::default().torrent.upload_slots;

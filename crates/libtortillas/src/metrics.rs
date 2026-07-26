@@ -117,7 +117,7 @@ impl TransferRates {
    /// Aggregates every available sample while preserving unknown-versus-zero
    /// semantics.
    #[must_use]
-   pub fn aggregate<'a, T: HasTransferMetrics + 'a>(
+   pub fn aggregate<'a, T: HasTransferMetrics + ?Sized + 'a>(
       sources: impl IntoIterator<Item = &'a T>,
    ) -> Option<Self> {
       let mut aggregate = None::<Self>;
@@ -165,6 +165,40 @@ pub struct TransferMetrics {
    pub rates: Option<TransferRates>,
 }
 
+/// Peer-specific metrics layered on top of the shared transfer measurements.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerMetrics {
+   pub transfer: TransferMetrics,
+   pub peer_choking: bool,
+   pub peer_interested: bool,
+   pub client_choking: bool,
+   pub client_interested: bool,
+   pub available_pieces: u64,
+}
+
+impl HasTransferMetrics for PeerMetrics {
+   fn transfer_metrics(&self) -> &TransferMetrics {
+      &self.transfer
+   }
+}
+
+/// Tracker-specific metrics layered on top of the shared transfer
+/// measurements.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackerMetrics {
+   pub transfer: TransferMetrics,
+   pub announce_attempts: u64,
+   pub announce_successes: u64,
+   pub total_peers_received: u64,
+   pub latest_peers_returned: Option<u64>,
+}
+
+impl HasTransferMetrics for TrackerMetrics {
+   fn transfer_metrics(&self) -> &TransferMetrics {
+      &self.transfer
+   }
+}
+
 /// Verified torrent payload progress, deliberately separate from peer wire
 /// traffic.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -204,6 +238,12 @@ impl TorrentMetrics {
       let remaining = progress.remaining_bytes?;
       let download_rate = rates?.download;
       (download_rate.0 > 0).then(|| Seconds(remaining.0.div_ceil(download_rate.0)))
+   }
+}
+
+impl HasTransferMetrics for TorrentMetrics {
+   fn transfer_metrics(&self) -> &TransferMetrics {
+      &self.traffic
    }
 }
 
@@ -292,6 +332,57 @@ mod tests {
          Some(TransferRates {
             download: BytesPerSecond(10),
             upload: BytesPerSecond(4),
+         })
+      );
+   }
+
+   #[test]
+   fn aggregate_rates_when_metric_scopes_differ_then_uses_shared_transfer_metrics() {
+      let peer = PeerMetrics {
+         transfer: TransferMetrics {
+            rates: Some(TransferRates {
+               download: BytesPerSecond(10),
+               upload: BytesPerSecond(4),
+            }),
+            ..Default::default()
+         },
+         ..Default::default()
+      };
+      let tracker = TrackerMetrics {
+         transfer: TransferMetrics {
+            rates: Some(TransferRates {
+               download: BytesPerSecond(2),
+               upload: BytesPerSecond(1),
+            }),
+            ..Default::default()
+         },
+         ..Default::default()
+      };
+      let torrent = TorrentMetrics::new(
+         TransferMetrics {
+            rates: Some(TransferRates {
+               download: BytesPerSecond(3),
+               upload: BytesPerSecond::ZERO,
+            }),
+            ..Default::default()
+         },
+         ContentProgress {
+            total_bytes: None,
+            verified_bytes: ByteCount::ZERO,
+            remaining_bytes: None,
+            progress_fraction: None,
+            completed_pieces: 0,
+            partial_pieces: 0,
+            total_pieces: 0,
+         },
+      );
+      let scopes: [&dyn HasTransferMetrics; 3] = [&peer, &tracker, &torrent];
+
+      assert_eq!(
+         TransferRates::aggregate(scopes),
+         Some(TransferRates {
+            download: BytesPerSecond(15),
+            upload: BytesPerSecond(5),
          })
       );
    }

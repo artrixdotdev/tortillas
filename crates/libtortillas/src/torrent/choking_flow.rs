@@ -6,9 +6,12 @@ use tokio::time::timeout;
 use tracing::{trace, warn};
 
 use super::TorrentActor;
-use crate::peer::{
-   PeerActor, PeerStats,
-   commands::{SetChoked, Stats},
+use crate::{
+   facade::TorrentEventKind,
+   peer::{
+      PeerActor, PeerId, PeerStats,
+      commands::{SetChoked, Stats},
+   },
 };
 
 impl TorrentActor {
@@ -27,9 +30,7 @@ impl TorrentActor {
       }
       // Peer actors publish their own high-frequency samples. The torrent
       // publishes one coalesced aggregate after the collection interval.
-      self.publish_live_view(|view| {
-         crate::frontend::TorrentEventKind::MetricsChanged(view.metrics.clone())
-      });
+      self.publish_live_view(|view| TorrentEventKind::MetricsChanged(view.metrics.clone()));
       self.try_update_tracker_progress();
       let decision = self.choking_scheduler.decide(&peer_stats, self.state);
       let unchoked: HashSet<_> = decision.unchoked.iter().copied().collect();
@@ -42,7 +43,7 @@ impl TorrentActor {
 
       for stats in peer_stats {
          let choked = !unchoked.contains(&stats.id);
-         if stats.choked == choked {
+         if stats.metrics.client_choking == choked {
             continue;
          }
 
@@ -64,7 +65,7 @@ impl TorrentActor {
    async fn peer_stats(&self) -> Vec<PeerStats> {
       let peer_stats_timeout = self.settings.torrent.peer_stats_timeout;
       let peer_stats_concurrency = self.settings.torrent.peer_stats_concurrency.max(1);
-      let actor_refs: Vec<(crate::peer::PeerId, ActorRef<PeerActor>)> = self
+      let actor_refs: Vec<(PeerId, ActorRef<PeerActor>)> = self
          .peers
          .iter()
          .filter(|(_, actor)| actor.is_alive())

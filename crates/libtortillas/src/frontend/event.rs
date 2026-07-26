@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::{EngineView, PeerHandle, TrackerHandle};
 use crate::{
    hashes::InfoHash,
-   metrics::{TorrentMetrics, TransferMetrics},
+   metrics::{PeerMetrics, TorrentMetrics},
    torrent::{Torrent, TorrentState},
 };
 
@@ -85,7 +85,7 @@ pub enum TorrentEventKind {
 #[non_exhaustive]
 pub enum PeerEventKind {
    StateChanged,
-   MetricsChanged(TransferMetrics),
+   MetricsChanged(PeerMetrics),
    Disconnected,
 }
 

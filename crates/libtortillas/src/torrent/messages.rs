@@ -44,6 +44,12 @@ pub(crate) mod events {
          }
       }
 
+      /// Publishes tracker traffic after an announce attempt.
+      #[message]
+      pub(crate) fn tracker_metrics_changed(&self) {
+         self.publish_live_view(|view| TorrentEventKind::MetricsChanged(view.metrics.clone()));
+      }
+
       /// Sent after an incoming peer initializes a handshake.
       /// The handshake will be preverified and routed to this torrent instance.
       ///

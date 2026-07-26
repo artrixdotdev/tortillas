@@ -15,7 +15,7 @@ use super::{
    EventListener, EventSubscription, FrontendHub, FrontendHubInner, LivePublisher, PeerEventKind,
    PeerView, TrackerEventKind, TrackerStatus, TrackerView,
 };
-use crate::{hashes::InfoHash, peer::PeerId};
+use crate::{hashes::InfoHash, metrics::TrackerMetrics, peer::PeerId};
 
 /// Shared live state behind an identity-bearing protocol handle.
 pub(crate) struct LiveScope<I, V, E> {
@@ -128,7 +128,7 @@ impl PeerHandle {
    }
 
    pub(crate) fn publish_metrics(&self, view: PeerView) {
-      let metrics = view.transfer;
+      let metrics = view.metrics;
       let _ = self
          .inner
          .live
@@ -262,10 +262,17 @@ impl TrackerHandle {
       self.inner.identity
    }
 
-   pub(crate) fn announce_succeeded(&self, peers_returned: u64) {
+   pub(crate) fn publish_metrics(&self, metrics: TrackerMetrics) {
+      let mut view = self.view();
+      view.metrics = metrics;
+      let _ = self.inner.live.replace_view(view);
+   }
+
+   pub(crate) fn announce_succeeded(&self, metrics: TrackerMetrics) {
       let mut view = self.view();
       view.status = TrackerStatus::Healthy;
-      view.peers_returned = Some(peers_returned);
+      view.metrics = metrics;
+      let peers_returned = metrics.latest_peers_returned.unwrap_or_default();
       let event = TrackerEventKind::AnnounceSucceeded { peers_returned };
       if self.inner.live.replace_view_and_emit(view, event)
          && let Some(frontend) = self.inner.frontend()
@@ -274,10 +281,10 @@ impl TrackerHandle {
       }
    }
 
-   pub(crate) fn announce_failed(&self) {
+   pub(crate) fn announce_failed(&self, metrics: TrackerMetrics) {
       let mut view = self.view();
       view.status = TrackerStatus::Degraded;
-      view.peers_returned = None;
+      view.metrics = metrics;
       if self
          .inner
          .live
@@ -350,3 +357,93 @@ impl fmt::Display for TrackerHandle {
 }
 
 pub type TrackerListener = EventListener<TrackerView, TrackerEventKind>;
+
+#[cfg(test)]
+mod tests {
+   use std::net::{Ipv4Addr, SocketAddr};
+
+   use super::{super::EventStreamError, *};
+   use crate::{
+      metrics::{ByteCount, PeerMetrics, TrafficTotals},
+      peer::PeerId,
+   };
+
+   fn connected_peer_view() -> PeerView {
+      PeerView {
+         address: Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 6881))),
+         client: Some("Unknown".to_string()),
+         connected: true,
+         metrics: PeerMetrics {
+            peer_choking: true,
+            client_choking: true,
+            ..Default::default()
+         },
+      }
+   }
+
+   fn peer_handle(frontend: &FrontendHub) -> PeerHandle {
+      frontend.register_peer_scope(
+         PeerIdentity {
+            torrent: InfoHash::from_bytes([1; 20]),
+            peer: PeerId::Unknown([2; 20]),
+         },
+         connected_peer_view(),
+      )
+   }
+
+   #[tokio::test]
+   async fn peer_handle_when_updated_then_only_its_listener_receives_event() {
+      let frontend = FrontendHub::new();
+      let peer = peer_handle(&frontend);
+      let mut listener = peer.listener();
+      let mut updated = peer.view();
+      updated.metrics.transfer.totals = TrafficTotals {
+         downloaded: ByteCount(16),
+         uploaded: ByteCount::ZERO,
+      };
+
+      peer.publish_metrics(updated);
+
+      let event = listener.recv().await.unwrap();
+      assert!(matches!(event.kind, PeerEventKind::MetricsChanged(_)));
+      assert_eq!(
+         listener.view().metrics.transfer.totals.downloaded,
+         ByteCount(16)
+      );
+   }
+
+   #[tokio::test]
+   async fn disconnected_peer_rejects_late_actor_updates() {
+      let frontend = FrontendHub::new();
+      let peer = peer_handle(&frontend);
+      let mut listener = peer.listener();
+      let mut late = peer.view();
+
+      peer.disconnected();
+      late.metrics.transfer.totals.downloaded = ByteCount(32);
+      peer.publish_metrics(late);
+
+      assert_eq!(
+         listener.recv().await.unwrap().kind,
+         PeerEventKind::Disconnected
+      );
+      assert_eq!(listener.recv().await, Err(EventStreamError::Closed));
+      assert!(!listener.view().connected);
+      assert_eq!(
+         listener.view().metrics.transfer.totals.downloaded,
+         ByteCount::ZERO
+      );
+   }
+
+   #[test]
+   fn live_handles_do_not_keep_their_frontend_hub_alive() {
+      let frontend = FrontendHub::new();
+      let hub = frontend.downgrade();
+      let peer = peer_handle(&frontend);
+
+      drop(frontend);
+
+      assert!(hub.upgrade().is_none());
+      assert!(peer.view().connected);
+   }
+}

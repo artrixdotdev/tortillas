@@ -30,8 +30,8 @@ use crate::{
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
    metrics::{
-      ByteCount, ContentProgress, HasTransferMetrics, TorrentMetrics, TrafficTotals,
-      TransferMetrics, TransferRates,
+      ByteCount, ContentProgress, HasTransferMetrics, TorrentMetrics, TrackerMetrics,
+      TrafficTotals, TransferMetrics, TransferRates,
    },
    peer::{PeerActor, PeerId, commands::SetChoked},
    pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
@@ -515,11 +515,26 @@ impl TorrentActor {
          .into_iter()
          .map(|peer| peer.view())
          .collect::<Vec<_>>();
-      let rates = TransferRates::aggregate(&peers);
-      let totals = peers
+      let trackers = self
+         .frontend
+         .tracker_handles(self.info_hash())
+         .into_iter()
+         .map(|tracker| tracker.view())
+         .collect::<Vec<_>>();
+      let metric_sources = peers
          .iter()
+         .map(|peer| peer as &dyn HasTransferMetrics)
+         .chain(
+            trackers
+               .iter()
+               .map(|tracker| tracker as &dyn HasTransferMetrics),
+         )
+         .collect::<Vec<_>>();
+      let rates = TransferRates::aggregate(metric_sources.iter().copied());
+      let totals = metric_sources
+         .into_iter()
          .map(HasTransferMetrics::transfer_metrics)
-         .map(|transfer| transfer.totals)
+         .map(|metrics| metrics.totals)
          .fold(TrafficTotals::default(), TrafficTotals::saturating_add);
       let metrics = TorrentMetrics::new(
          TransferMetrics { totals, rates },
@@ -736,7 +751,7 @@ impl Actor for TorrentActor {
             TrackerView {
                endpoint,
                status: TrackerStatus::Pending,
-               peers_returned: None,
+               metrics: TrackerMetrics::default(),
             },
          );
          let actor = TrackerActor::supervise(
@@ -885,7 +900,7 @@ mod tests {
       frontend::{PeerIdentity, PeerView},
       hashes::HashVec,
       metainfo::{InfoKeys, MetaInfo, TorrentFile},
-      metrics::BytesPerSecond,
+      metrics::{BytesPerSecond, PeerMetrics},
       protocol::{
          messages::{Handshake, PeerMessages},
          stream::{PeerRecv, PeerSend, PeerStream},
@@ -1835,20 +1850,42 @@ mod tests {
             address: None,
             client: None,
             connected: true,
-            peer_choking: false,
-            peer_interested: true,
-            client_choking: false,
-            client_interested: true,
-            available_pieces: 1,
-            transfer: TransferMetrics {
-               totals: TrafficTotals {
-                  downloaded: ByteCount(50_000),
-                  uploaded: ByteCount(5_000),
+            metrics: PeerMetrics {
+               peer_interested: true,
+               available_pieces: 1,
+               transfer: TransferMetrics {
+                  totals: TrafficTotals {
+                     downloaded: ByteCount(50_000),
+                     uploaded: ByteCount(5_000),
+                  },
+                  rates: Some(TransferRates {
+                     download: BytesPerSecond(100),
+                     upload: BytesPerSecond(20),
+                  }),
                },
-               rates: Some(TransferRates {
-                  download: BytesPerSecond(100),
-                  upload: BytesPerSecond(20),
-               }),
+               ..Default::default()
+            },
+         },
+      );
+      let _sampled_tracker = test_actor.frontend.register_tracker_scope(
+         info_hash,
+         &Tracker::Http("http://tracker.example/announce".to_string()),
+         TrackerView {
+            endpoint: "http://tracker.example".to_string(),
+            status: TrackerStatus::Healthy,
+            metrics: TrackerMetrics {
+               latest_peers_returned: Some(1),
+               transfer: TransferMetrics {
+                  totals: TrafficTotals {
+                     downloaded: ByteCount(250),
+                     uploaded: ByteCount(50),
+                  },
+                  rates: Some(TransferRates {
+                     download: BytesPerSecond(2),
+                     upload: BytesPerSecond(1),
+                  }),
+               },
+               ..Default::default()
             },
          },
       );
@@ -1884,21 +1921,28 @@ mod tests {
       assert_eq!(
          view.metrics.traffic.rates,
          Some(TransferRates {
-            download: BytesPerSecond(100),
-            upload: BytesPerSecond(20),
+            download: BytesPerSecond(102),
+            upload: BytesPerSecond(21),
          })
       );
-      assert_eq!(view.metrics.traffic.totals.downloaded, ByteCount(50_000));
+      assert_eq!(view.metrics.traffic.totals.downloaded, ByteCount(50_250));
+      assert_eq!(view.metrics.traffic.totals.uploaded, ByteCount(5_050));
       assert_eq!(view.metrics.progress.verified_bytes, verified_content);
       assert!(view.metrics.eta.is_some());
 
       test_actor.state = TorrentState::Seeding;
       assert_eq!(
          test_actor.live_view().metrics.traffic.rates.unwrap().upload,
-         BytesPerSecond(20)
+         BytesPerSecond(21)
       );
       sampled_peer.disconnected();
-      assert_eq!(test_actor.live_view().metrics.traffic.rates, None);
+      assert_eq!(
+         test_actor.live_view().metrics.traffic.rates,
+         Some(TransferRates {
+            download: BytesPerSecond(2),
+            upload: BytesPerSecond(1),
+         })
+      );
       test_actor.state = TorrentState::Ready;
 
       let snapshot = test_actor.snapshot().unwrap();

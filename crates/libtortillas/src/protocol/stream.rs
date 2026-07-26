@@ -22,22 +22,20 @@ use super::messages::{Handshake, PeerMessages};
 use crate::{
    errors::PeerActorError,
    hashes::InfoHash,
-   peer::{MAGIC_STRING, PeerId},
+   peer::{MAGIC_STRING, PeerId, PeerState},
 };
 
-/// A very simple enum to help differentiate between streams. TcpStream and
-/// UtpStream are so incredibly similar in functionality that it's ususally
-/// possible to simply make a blanket function as it implements both [AsyncRead]
-/// and [AsyncWrite]
-pub enum PeerStream {
-   Tcp {
-      stream: TcpStream,
-      read_buffer: BytesMut,
-   },
-   Utp {
-      stream: UtpStream,
-      read_buffer: BytesMut,
-   },
+enum PeerTransport {
+   Tcp(TcpStream),
+   Utp(UtpStream),
+}
+
+/// A TCP or uTP peer connection with buffered protocol reads and traffic
+/// accounting.
+pub struct PeerStream {
+   transport: PeerTransport,
+   read_buffer: BytesMut,
+   peer_state: PeerState,
 }
 
 #[async_trait]
@@ -132,17 +130,23 @@ pub trait PeerRecv: AsyncRead + Unpin {
 
 impl PeerStream {
    pub fn tcp(stream: TcpStream) -> Self {
-      Self::Tcp {
-         stream,
+      Self {
+         transport: PeerTransport::Tcp(stream),
          read_buffer: BytesMut::new(),
+         peer_state: PeerState::default(),
       }
    }
 
    pub fn utp(stream: UtpStream) -> Self {
-      Self::Utp {
-         stream,
+      Self {
+         transport: PeerTransport::Utp(stream),
          read_buffer: BytesMut::new(),
+         peer_state: PeerState::default(),
       }
+   }
+
+   pub(crate) fn peer_state(&self) -> PeerState {
+      self.peer_state.clone()
    }
 
    /// Connect to a peer with the given peer_addr (ip & port in the form of a
@@ -215,9 +219,9 @@ impl PeerStream {
 
    /// Returns the addr of the connected peer
    pub fn remote_addr(&self) -> Result<SocketAddr> {
-      match self {
-         PeerStream::Tcp { stream, .. } => Ok(stream.peer_addr()?),
-         PeerStream::Utp { stream, .. } => Ok(stream.remote_addr()),
+      match &self.transport {
+         PeerTransport::Tcp(stream) => Ok(stream.peer_addr()?),
+         PeerTransport::Utp(stream) => Ok(stream.remote_addr()),
       }
    }
 
@@ -228,36 +232,34 @@ impl PeerStream {
    /// `recv_handshake_message()` and other direct reads did not leave data for
    /// `PeerRecv::recv()` to process.
    pub fn split(self) -> (PeerReader, PeerWriter) {
-      match self {
-         PeerStream::Tcp {
-            stream,
-            read_buffer,
-         } => {
-            assert!(
-               read_buffer.is_empty(),
-               "PeerStream::split would discard buffered read data"
-            );
+      assert!(
+         self.read_buffer.is_empty(),
+         "PeerStream::split would discard buffered read data"
+      );
+      let peer_state = self.peer_state;
+      let (reader, writer) = match self.transport {
+         PeerTransport::Tcp(stream) => {
             let (reader, writer) = stream.into_split();
-            (PeerReader::Tcp(reader), PeerWriter::Tcp(writer))
+            (PeerReadHalf::Tcp(reader), PeerWriteHalf::Tcp(writer))
          }
-         PeerStream::Utp {
-            stream,
-            read_buffer,
-         } => {
-            assert!(
-               read_buffer.is_empty(),
-               "PeerStream::split would discard buffered read data"
-            );
+         PeerTransport::Utp(stream) => {
             let (reader, writer) = stream.split();
-            (PeerReader::Utp(reader), PeerWriter::Utp(writer))
+            (PeerReadHalf::Utp(reader), PeerWriteHalf::Utp(writer))
          }
-      }
+      };
+      (
+         PeerReader {
+            reader,
+            peer_state: peer_state.clone(),
+         },
+         PeerWriter { writer, peer_state },
+      )
    }
 
-   pub fn protocol(&self) -> String {
-      match self {
-         PeerStream::Tcp { .. } => "TCP".to_string(),
-         PeerStream::Utp { .. } => "uTP".to_string(),
+   pub fn protocol(&self) -> &'static str {
+      match &self.transport {
+         PeerTransport::Tcp(_) => "TCP",
+         PeerTransport::Utp(_) => "uTP",
       }
    }
 }
@@ -276,36 +278,20 @@ impl PeerSend for PeerStream {}
 impl PeerRecv for PeerStream {
    async fn recv(&mut self) -> Result<PeerMessages, PeerActorError> {
       loop {
-         match self {
-            PeerStream::Tcp {
-               stream,
-               read_buffer,
-            } => {
-               if let Some(message) = buffered_message(read_buffer) {
-                  return message;
-               }
-               if stream.read_buf(read_buffer).await? == 0 {
-                  return Err(PeerActorError::ReceiveFailed(io::Error::new(
-                     io::ErrorKind::UnexpectedEof,
-                     "peer closed connection",
-                  )));
-               }
-            }
-            PeerStream::Utp {
-               stream,
-               read_buffer,
-            } => {
-               if let Some(message) = buffered_message(read_buffer) {
-                  return message;
-               }
-               if stream.read_buf(read_buffer).await? == 0 {
-                  return Err(PeerActorError::ReceiveFailed(io::Error::new(
-                     io::ErrorKind::UnexpectedEof,
-                     "peer closed connection",
-                  )));
-               }
-            }
+         if let Some(message) = buffered_message(&mut self.read_buffer) {
+            return message;
          }
+         let bytes_read = match &mut self.transport {
+            PeerTransport::Tcp(stream) => stream.read_buf(&mut self.read_buffer).await?,
+            PeerTransport::Utp(stream) => stream.read_buf(&mut self.read_buffer).await?,
+         };
+         if bytes_read == 0 {
+            return Err(PeerActorError::ReceiveFailed(io::Error::new(
+               io::ErrorKind::UnexpectedEof,
+               "peer closed connection",
+            )));
+         }
+         self.peer_state.increment_bytes_downloaded(bytes_read);
       }
    }
 }
@@ -339,10 +325,17 @@ impl AsyncRead for PeerStream {
    fn poll_read(
       mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>,
    ) -> Poll<io::Result<()>> {
-      match &mut *self {
-         PeerStream::Tcp { stream, .. } => Pin::new(stream).poll_read(cx, buf),
-         PeerStream::Utp { stream, .. } => Pin::new(stream).poll_read(cx, buf),
+      let before = buf.filled().len();
+      let result = match &mut self.transport {
+         PeerTransport::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
+         PeerTransport::Utp(stream) => Pin::new(stream).poll_read(cx, buf),
+      };
+      if matches!(&result, Poll::Ready(Ok(()))) {
+         self
+            .peer_state
+            .increment_bytes_downloaded(buf.filled().len().saturating_sub(before));
       }
+      result
    }
 }
 
@@ -350,45 +343,66 @@ impl AsyncWrite for PeerStream {
    fn poll_write(
       mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8],
    ) -> Poll<Result<usize, io::Error>> {
-      match &mut *self {
-         PeerStream::Tcp { stream, .. } => Pin::new(stream).poll_write(cx, buf),
-         PeerStream::Utp { stream, .. } => Pin::new(stream).poll_write(cx, buf),
+      let result = match &mut self.transport {
+         PeerTransport::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
+         PeerTransport::Utp(stream) => Pin::new(stream).poll_write(cx, buf),
+      };
+      if let Poll::Ready(Ok(bytes_written)) = &result {
+         self.peer_state.increment_bytes_uploaded(*bytes_written);
       }
+      result
    }
 
    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-      match &mut *self {
-         PeerStream::Tcp { stream, .. } => Pin::new(stream).poll_flush(cx),
-         PeerStream::Utp { stream, .. } => Pin::new(stream).poll_flush(cx),
+      match &mut self.transport {
+         PeerTransport::Tcp(stream) => Pin::new(stream).poll_flush(cx),
+         PeerTransport::Utp(stream) => Pin::new(stream).poll_flush(cx),
       }
    }
 
    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-      match &mut *self {
-         PeerStream::Tcp { stream, .. } => Pin::new(stream).poll_shutdown(cx),
-         PeerStream::Utp { stream, .. } => Pin::new(stream).poll_shutdown(cx),
+      match &mut self.transport {
+         PeerTransport::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
+         PeerTransport::Utp(stream) => Pin::new(stream).poll_shutdown(cx),
       }
    }
 }
 
-pub enum PeerReader {
+enum PeerReadHalf {
    Tcp(tcp::OwnedReadHalf),
    Utp(UtpStreamReadHalf),
 }
 
-pub enum PeerWriter {
+enum PeerWriteHalf {
    Tcp(tcp::OwnedWriteHalf),
    Utp(UtpStreamWriteHalf),
+}
+
+pub struct PeerReader {
+   reader: PeerReadHalf,
+   peer_state: PeerState,
+}
+
+pub struct PeerWriter {
+   writer: PeerWriteHalf,
+   peer_state: PeerState,
 }
 
 impl AsyncRead for PeerReader {
    fn poll_read(
       mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>,
    ) -> Poll<io::Result<()>> {
-      match &mut *self {
-         PeerReader::Tcp(s) => Pin::new(s).poll_read(cx, buf),
-         PeerReader::Utp(s) => Pin::new(s).poll_read(cx, buf),
+      let before = buf.filled().len();
+      let result = match &mut self.reader {
+         PeerReadHalf::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
+         PeerReadHalf::Utp(stream) => Pin::new(stream).poll_read(cx, buf),
+      };
+      if matches!(&result, Poll::Ready(Ok(()))) {
+         self
+            .peer_state
+            .increment_bytes_downloaded(buf.filled().len().saturating_sub(before));
       }
+      result
    }
 }
 
@@ -396,23 +410,27 @@ impl AsyncWrite for PeerWriter {
    fn poll_write(
       mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8],
    ) -> Poll<Result<usize, io::Error>> {
-      match &mut *self {
-         PeerWriter::Tcp(s) => Pin::new(s).poll_write(cx, buf),
-         PeerWriter::Utp(s) => Pin::new(s).poll_write(cx, buf),
+      let result = match &mut self.writer {
+         PeerWriteHalf::Tcp(stream) => Pin::new(stream).poll_write(cx, buf),
+         PeerWriteHalf::Utp(stream) => Pin::new(stream).poll_write(cx, buf),
+      };
+      if let Poll::Ready(Ok(bytes_written)) = &result {
+         self.peer_state.increment_bytes_uploaded(*bytes_written);
       }
+      result
    }
 
    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-      match &mut *self {
-         PeerWriter::Tcp(s) => Pin::new(s).poll_flush(cx),
-         PeerWriter::Utp(s) => Pin::new(s).poll_flush(cx),
+      match &mut self.writer {
+         PeerWriteHalf::Tcp(stream) => Pin::new(stream).poll_flush(cx),
+         PeerWriteHalf::Utp(stream) => Pin::new(stream).poll_flush(cx),
       }
    }
 
    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-      match &mut *self {
-         PeerWriter::Tcp(s) => Pin::new(s).poll_shutdown(cx),
-         PeerWriter::Utp(s) => Pin::new(s).poll_shutdown(cx),
+      match &mut self.writer {
+         PeerWriteHalf::Tcp(stream) => Pin::new(stream).poll_shutdown(cx),
+         PeerWriteHalf::Utp(stream) => Pin::new(stream).poll_shutdown(cx),
       }
    }
 }
@@ -519,6 +537,57 @@ mod tests {
       client.await.expect("client task should not panic");
 
       assert_eq!(incoming_id, client_id);
+   }
+
+   #[tokio::test]
+   async fn peer_stream_when_frames_are_exchanged_then_counts_every_wire_byte() {
+      let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+      let addr = listener.local_addr().unwrap();
+      let info_hash = Arc::new(Hash::new([1u8; 20]));
+      let client_id = PeerId::new();
+      let server_id = PeerId::new();
+      let handshake_len = Handshake::new(info_hash.clone(), client_id)
+         .to_bytes()
+         .len();
+      let interested_len = PeerMessages::Interested.to_bytes().unwrap().len();
+      let piece = PeerMessages::Piece(2, 4, b"payload".as_slice().into());
+      let piece_len = piece.to_bytes().unwrap().len();
+
+      let server_info_hash = info_hash.clone();
+      let server = tokio::spawn(async move {
+         let (stream, _) = listener.accept().await.unwrap();
+         let mut stream = PeerStream::tcp(stream);
+         stream.recv_handshake_message().await.unwrap();
+         stream
+            .send_handshake(server_id, server_info_hash)
+            .await
+            .unwrap();
+         assert_eq!(stream.recv().await.unwrap(), PeerMessages::Interested);
+         stream.send(piece).await.unwrap();
+         stream.peer_state().traffic_totals()
+      });
+
+      let mut client = PeerStream::tcp(TcpStream::connect(addr).await.unwrap());
+      client.send_handshake(client_id, info_hash).await.unwrap();
+      client.recv_handshake_message().await.unwrap();
+      client.send(PeerMessages::Interested).await.unwrap();
+      assert!(matches!(
+         client.recv().await.unwrap(),
+         PeerMessages::Piece(2, 4, _)
+      ));
+
+      let client_totals = client.peer_state().traffic_totals();
+      let server_totals = server.await.unwrap();
+      assert_eq!(
+         client_totals.uploaded.0,
+         (handshake_len + interested_len) as u64
+      );
+      assert_eq!(
+         client_totals.downloaded.0,
+         (handshake_len + piece_len) as u64
+      );
+      assert_eq!(server_totals.uploaded, client_totals.downloaded);
+      assert_eq!(server_totals.downloaded, client_totals.uploaded);
    }
 
    #[tokio::test]

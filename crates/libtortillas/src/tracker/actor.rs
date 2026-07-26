@@ -1,4 +1,7 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{
+   net::SocketAddr,
+   time::{Duration, Instant},
+};
 
 use anyhow::Result;
 use kameo::{
@@ -20,6 +23,7 @@ use super::{
 use crate::{
    errors::TrackerActorError,
    frontend::TrackerHandle,
+   metrics::{TrackerMetrics, TransferMetrics, TransferSample},
    peer::PeerId,
    settings::TrackerSettings,
    torrent::{self, TorrentActor},
@@ -35,6 +39,7 @@ pub(crate) struct TrackerActor {
    actor_ref: ActorRef<Self>,
    settings: TrackerSettings,
    frontend: TrackerHandle,
+   last_rate_sample: TransferSample,
 }
 
 #[derive(Clone)]
@@ -119,6 +124,15 @@ impl Actor for TrackerActor {
       if let Some(left) = initial_left {
          tracker.update(TrackerUpdate::Left(left)).await?;
       }
+      let initial_metrics = tracker.stats().metrics();
+      let totals = initial_metrics.transfer.totals;
+      frontend.publish_metrics(initial_metrics);
+      if let Err(e) = supervisor
+         .tell(torrent::events::TrackerMetricsChanged)
+         .await
+      {
+         warn!(error = %e, "Failed to publish initial tracker metrics");
+      }
 
       let next_announce = scheduler
          .ask(SetTimeout::new(
@@ -138,12 +152,30 @@ impl Actor for TrackerActor {
          actor_ref,
          settings,
          frontend,
+         last_rate_sample: TransferSample::new(Instant::now(), totals),
       })
    }
 
    async fn on_stop(
       &mut self, _: WeakActorRef<Self>, reason: ActorStopReason,
    ) -> Result<(), Self::Error> {
+      if let Some(next_announce) = self.next_announce.take() {
+         next_announce.abort();
+      }
+
+      let _ = timeout(self.settings.stop_timeout, self.tracker.stop())
+         .await
+         .inspect_err(|e| warn!(e = %e.to_string(), "Tracker stop timed out"));
+      let metrics = self.snapshot_metrics(self.frontend.view().metrics.latest_peers_returned);
+      self.frontend.publish_metrics(metrics);
+      if let Err(e) = self
+         .supervisor
+         .tell(torrent::events::TrackerMetricsChanged)
+         .await
+      {
+         warn!(error = %e, "Failed to publish final tracker metrics");
+      }
+
       if reason.is_normal() {
          self.frontend.stopped();
       } else {
@@ -152,13 +184,6 @@ impl Actor for TrackerActor {
          // performs final tree cleanup.
          self.frontend.restarting();
       }
-      if let Some(next_announce) = self.next_announce.take() {
-         next_announce.abort();
-      }
-
-      let _ = timeout(self.settings.stop_timeout, self.tracker.stop())
-         .await
-         .inspect_err(|e| warn!(e = %e.to_string(), "Tracker stop timed out"));
 
       Ok(())
    }
@@ -166,6 +191,19 @@ impl Actor for TrackerActor {
 
 #[messages]
 impl TrackerActor {
+   fn snapshot_metrics(&mut self, latest_peers_returned: Option<u64>) -> TrackerMetrics {
+      let mut metrics = self.tracker.stats().metrics();
+      let totals = metrics.transfer.totals;
+      let sample = TransferSample::new(Instant::now(), totals);
+      metrics.transfer = TransferMetrics {
+         totals,
+         rates: Some(sample.rates_since(self.last_rate_sample)),
+      };
+      self.last_rate_sample = sample;
+      metrics.latest_peers_returned = latest_peers_returned;
+      metrics
+   }
+
    async fn schedule_next_announce(&mut self) {
       let interval = self.tracker.interval();
       let delay = if interval == usize::MAX || interval == u32::MAX as usize {
@@ -196,11 +234,15 @@ impl TrackerActor {
    /// Forces the tracker to make an announce request.
    #[message(derive(Debug, Clone, Copy))]
    pub(crate) async fn announce(&mut self) -> Option<TrackerStats> {
-      match self.tracker.announce().await {
+      let result = self.tracker.announce().await;
+      let latest_peers_returned = result
+         .as_ref()
+         .ok()
+         .map(|peers| u64::try_from(peers.len()).unwrap_or(u64::MAX));
+      let metrics = self.snapshot_metrics(latest_peers_returned);
+      match result {
          Ok(peers) => {
-            self
-               .frontend
-               .announce_succeeded(u64::try_from(peers.len()).unwrap_or(u64::MAX));
+            self.frontend.announce_succeeded(metrics);
             if let Err(e) = self
                .supervisor
                .tell(torrent::events::Announce {
@@ -214,8 +256,15 @@ impl TrackerActor {
          }
          Err(e) => {
             error!(error = %e, "Announce request failed");
-            self.frontend.announce_failed();
+            self.frontend.announce_failed(metrics);
          }
+      }
+      if let Err(e) = self
+         .supervisor
+         .tell(torrent::events::TrackerMetricsChanged)
+         .await
+      {
+         error!(error = %e, "Failed to publish tracker metrics");
       }
       self.schedule_next_announce().await;
       None

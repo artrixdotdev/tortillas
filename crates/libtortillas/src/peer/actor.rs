@@ -24,7 +24,7 @@ use crate::{
    errors::PeerActorError,
    frontend::{PeerHandle, PeerView},
    hashes::InfoHash,
-   metrics::{ByteCount, HasTransferMetrics, TrafficTotals, TransferMetrics, TransferSample},
+   metrics::{HasTransferMetrics, PeerMetrics, TransferMetrics, TransferSample},
    peer::{Peer, PeerId},
    protocol::{stream::PeerRecv, *},
    settings::PeerSettings,
@@ -34,21 +34,12 @@ use crate::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct PeerStats {
    pub(crate) id: PeerId,
-   pub(crate) interested: bool,
-   pub(crate) choked: bool,
-   pub(crate) transfer: TransferMetrics,
+   pub(crate) metrics: PeerMetrics,
 }
 
 impl HasTransferMetrics for PeerStats {
    fn transfer_metrics(&self) -> &TransferMetrics {
-      &self.transfer
-   }
-}
-
-fn peer_traffic_totals(peer: &Peer) -> TrafficTotals {
-   TrafficTotals {
-      downloaded: ByteCount(u64::try_from(peer.bytes_downloaded()).unwrap_or(u64::MAX)),
-      uploaded: ByteCount(u64::try_from(peer.bytes_uploaded()).unwrap_or(u64::MAX)),
+      self.metrics.transfer_metrics()
    }
 }
 
@@ -332,7 +323,7 @@ impl PeerActor {
    fn snapshot_stats(&mut self) -> Option<PeerStats> {
       let id = self.peer.id?;
       let now = Instant::now();
-      let totals = peer_traffic_totals(&self.peer);
+      let totals = self.peer.traffic_totals();
       let sample = TransferSample::new(now, totals);
       let rates = sample.rates_since(self.last_rate_sample);
       self.last_rate_sample = sample;
@@ -340,18 +331,13 @@ impl PeerActor {
          totals,
          rates: Some(rates),
       };
+      let mut metrics = self.peer.metrics();
+      metrics.transfer = transfer;
       self
          .frontend
-         .publish_metrics(PeerView::from_peer_with_transfer(
-            &self.peer, true, transfer,
-         ));
+         .publish_metrics(PeerView::from_peer_with_metrics(&self.peer, true, metrics));
 
-      Some(PeerStats {
-         id,
-         interested: self.peer.interested(),
-         choked: self.peer.choked(),
-         transfer,
-      })
+      Some(PeerStats { id, metrics })
    }
 }
 
@@ -369,7 +355,8 @@ impl Actor for PeerActor {
    /// At this point, the peer has already been handshaked with. No other
    /// messages have been sent or received from the peer.
    async fn on_start(args: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (peer, mut stream, supervisor, info_hash, settings, frontend) = args;
+      let (mut peer, mut stream, supervisor, info_hash, settings, frontend) = args;
+      peer.share_traffic_with(&stream.peer_state());
 
       info!(peer_id = %peer.id.unwrap(),  peer_addr = %stream, torrent_id = %info_hash, "Peer connected");
       let bitfield = match supervisor.ask(torrent::commands::GetBitfield).await {
@@ -395,7 +382,7 @@ impl Actor for PeerActor {
          .map_err(|e| PeerActorError::SupervisorCommunicationFailed(e.to_string()))?;
 
       Ok(Self {
-         last_rate_sample: TransferSample::new(Instant::now(), peer_traffic_totals(&peer)),
+         last_rate_sample: TransferSample::new(Instant::now(), peer.traffic_totals()),
          peer,
          stream,
          supervisor,
@@ -521,7 +508,6 @@ impl Message<PeerMessages> for PeerActor {
                   warn!("Received piece from peer without id; ignoring");
                   return;
                };
-               self.peer.increment_bytes_downloaded(data.len());
                let supervisor_msg = torrent::events::IncomingPiece {
                   peer_id,
                   index: index as usize,
@@ -623,13 +609,11 @@ impl Message<PeerMessages> for PeerActor {
 
             match data {
                Some(data) => {
-                  let uploaded_bytes = data.len();
                   self
                      .stream
                      .send(PeerMessages::Piece(index as u32, offset as u32, data))
                      .await
                      .expect("Failed to send piece");
-                  self.peer.increment_bytes_uploaded(uploaded_bytes);
                }
                None => {
                   warn!(
@@ -666,7 +650,7 @@ impl Message<PeerMessages> for PeerActor {
             warn!("Received unexpected handshake from peer");
          }
       }
-      let rates = self.frontend.view().transfer.rates;
+      let rates = self.frontend.view().metrics.transfer.rates;
       self
          .frontend
          .publish_state(PeerView::from_peer_with_rates(&self.peer, true, rates));

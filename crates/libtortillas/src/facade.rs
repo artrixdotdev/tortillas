@@ -26,8 +26,8 @@ pub use crate::{
       TrackerHandle, TrackerId, TrackerListener, TrackerStatus, TrackerView,
    },
    metrics::{
-      ByteCount, BytesPerSecond, ContentProgress, HasTransferMetrics, Seconds, TorrentMetrics,
-      TrafficTotals, TransferMetrics, TransferRates,
+      ByteCount, BytesPerSecond, ContentProgress, HasTransferMetrics, PeerMetrics, Seconds,
+      TorrentMetrics, TrackerMetrics, TrafficTotals, TransferMetrics, TransferRates,
    },
    torrent::{RestoreVerification, Torrent, TorrentSnapshot},
 };
