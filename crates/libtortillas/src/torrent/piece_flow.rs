@@ -9,7 +9,7 @@ use tracing::{debug, info, trace, warn};
 
 use super::{TorrentActor, util};
 #[cfg(test)]
-use crate::frontend::Hub;
+use crate::live::Hub;
 use crate::{
    errors::TorrentError,
    peer::commands::{CancelPiece, Have, NeedPiece},
@@ -273,7 +273,7 @@ impl TorrentActor {
 
       if !self.validate_and_commit_piece(index).await {
          self.publish_live_view(|view| {
-            crate::frontend::TorrentEventKind::MetricsChanged(view.metrics.clone())
+            crate::live::TorrentEventKind::MetricsChanged(view.metrics.clone())
          });
          self.fill_peer_request_window(peer_id);
          return;
@@ -293,7 +293,7 @@ impl TorrentActor {
       // Piece completion is the meaningful progress boundary. Publishing for
       // every 16 KiB block creates an event storm without improving the view.
       self.publish_live_view(|view| {
-         crate::frontend::TorrentEventKind::MetricsChanged(view.metrics.clone())
+         crate::live::TorrentEventKind::MetricsChanged(view.metrics.clone())
       });
 
       if self.piece_scheduler.next_piece() >= piece_count {
@@ -496,11 +496,11 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(base_path.clone()),
          settings: Settings::default(),
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
 
       TorrentActor {
-         frontend: Hub::default(),
+         hub: Hub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield: BitVec::<AtomicU8>::repeat(false, info.piece_count()),

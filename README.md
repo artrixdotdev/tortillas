@@ -20,7 +20,7 @@ See our roadmap [here](https://github.com/users/artrixdotdev/projects/6).
 
 
 ### 📈 Future Plans
-- Frontend TUI (Text User Interface)
+- TUI (Text User Interface)
 
 ### ❌ Not Planned
 - WebTorrent connections: Due to the lack of clear documentation and complex, undocumented protocols WebTorrent support is not currently planned.
@@ -70,7 +70,7 @@ Keep tests focused on one behavior, prefer deterministic fixtures with `include_
 
 ## 📦 Installation
 ### Tortillas
-Tortillas is the frontend TUI (Text User Interface) application (what most people want)
+Tortillas is the TUI (Text User Interface) application most people will use.
 
 There are plans to publish tortillas to registries such as [crates.io](https://crates.io) and [the AUR](https://aur.archlinux.org). However, for now, you can install it from source using cargo:
 ```bash
@@ -81,7 +81,8 @@ This will install `tortillas` to your local Rust toolchain.
 
 
 ### Libtortillas
-Libtortillas is the library that powers the frontend TUI application. It is a library that can be used to build your own frontend application or integrate with existing frontend applications.
+Libtortillas is the engine behind the TUI. It can also be embedded in other
+applications that need BitTorrent downloads, seeding, and observable progress.
 
 ```bash
 cargo add --git https://github.com/artrixdotdev/tortillas libtortillas
@@ -101,11 +102,11 @@ thread because `spawn_blocking` tasks cannot be aborted once they start. The
 library does not currently support swapping in a different async runtime, HTTP
 client, clock, listener, or storage executor.
 
-Frontends should use live listeners for updates and direct `Engine` and
-`Torrent` methods for operations rather than
-polling persistence snapshots. See the
-[`libtortillas::frontend` API documentation](https://docs.rs/libtortillas/latest/libtortillas/frontend/) and the
-[`live_frontend` example](crates/libtortillas/examples/live_frontend.rs).
+Use listeners for current state and incremental updates, and call `Engine` and
+`Torrent` methods for operations. Do not poll persistence snapshots to drive a
+display. See the
+[`libtortillas::live` API documentation](https://docs.rs/libtortillas/latest/libtortillas/live/) and the
+[`live` example](crates/libtortillas/examples/live.rs).
 
 ## 🤝 Contributing
 

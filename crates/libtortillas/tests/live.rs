@@ -4,7 +4,7 @@ use futures::StreamExt;
 use libtortillas::{
    engine::EngineStatus,
    errors::EngineError,
-   frontend::{
+   live::{
       EngineEventKind, EventStreamError, LivePublisher, TorrentEventKind, TrackerEventKind,
       TrackerStatus,
    },

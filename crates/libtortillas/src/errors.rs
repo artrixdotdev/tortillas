@@ -80,9 +80,9 @@ pub enum EngineError {
       reason: String,
    },
 
-   /// The actor owns a torrent that is missing its live public handle.
-   #[error("Torrent {info_hash} is missing its frontend handle")]
-   FrontendHandleMissing { info_hash: InfoHash },
+   /// The actor owns a torrent that is missing its public torrent handle.
+   #[error("Torrent {info_hash} is missing its public torrent handle")]
+   TorrentHandleMissing { info_hash: InfoHash },
 
    /// Any other engine-level error wrapped in [`anyhow::Error`]
    #[error(transparent)]

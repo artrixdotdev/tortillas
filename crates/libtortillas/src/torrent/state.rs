@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Expected transition shape:
 /// `Added` or `ResolvingMetadata` -> `Ready` -> `Downloading` -> `Seeding`.
-/// Future frontend commands may also move a torrent through `Paused`,
+/// Future commands may also move a torrent through `Paused`,
 /// `Restarting`, `Stopping`, `Stopped`, or `Failed` without collapsing those
 /// states into a generic inactive bucket.
 #[derive(
@@ -32,7 +32,7 @@ pub enum TorrentState {
    Ready,
    /// Torrent is downloading new pieces actively.
    Downloading,
-   /// Torrent is intentionally paused by a frontend or caller.
+   /// Torrent is intentionally paused by the caller.
    Paused,
    /// Torrent is seeding and has already completed the file.
    Seeding,

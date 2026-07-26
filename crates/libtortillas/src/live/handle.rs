@@ -21,7 +21,7 @@ use crate::{hashes::InfoHash, metrics::TrackerMetrics, peer::PeerId};
 pub(crate) struct LiveScope<I, V, E> {
    pub(crate) identity: I,
    hub: Weak<HubInner>,
-   pub(crate) live: LivePublisher<V, E>,
+   pub(crate) publisher: LivePublisher<V, E>,
 }
 
 impl<I, V, E> LiveScope<I, V, E>
@@ -33,23 +33,23 @@ where
       Self {
          identity,
          hub,
-         live: LivePublisher::new(view, event_capacity),
+         publisher: LivePublisher::new(view, event_capacity),
       }
    }
 
    fn subscribe(&self) -> EventSubscription<E> {
-      self.live.subscribe()
+      self.publisher.subscribe()
    }
 
    fn listener(&self) -> EventListener<V, E> {
-      self.live.listener()
+      self.publisher.listener()
    }
 
    fn view(&self) -> V {
-      self.live.view()
+      self.publisher.view()
    }
 
-   fn frontend(&self) -> Option<Hub> {
+   fn hub(&self) -> Option<Hub> {
       self.hub.upgrade().map(Hub::from_inner)
    }
 }
@@ -71,7 +71,7 @@ pub(crate) struct PeerIdentity {
    pub(crate) peer: PeerId,
 }
 
-/// Public identity and live frontend access for one connected peer.
+/// Public identity and current state for one connected peer.
 #[derive(Clone)]
 pub struct PeerHandle {
    pub(crate) inner: Arc<LiveScope<PeerIdentity, PeerView, PeerEventKind>>,
@@ -123,7 +123,7 @@ impl PeerHandle {
    pub(crate) fn publish_state(&self, view: PeerView) {
       let _ = self
          .inner
-         .live
+         .publisher
          .replace_view_and_emit(view, PeerEventKind::StateChanged);
    }
 
@@ -131,7 +131,7 @@ impl PeerHandle {
       let metrics = view.metrics;
       let _ = self
          .inner
-         .live
+         .publisher
          .replace_view_and_emit(view, PeerEventKind::MetricsChanged(metrics));
    }
 
@@ -140,11 +140,11 @@ impl PeerHandle {
       view.connected = false;
       if self
          .inner
-         .live
+         .publisher
          .close_with_terminal_event(view, PeerEventKind::Disconnected)
-         && let Some(frontend) = self.inner.frontend()
+         && let Some(hub) = self.inner.hub()
       {
-         frontend.mark_peer_disconnected(self);
+         hub.mark_peer_disconnected(self);
       }
    }
 
@@ -153,7 +153,7 @@ impl PeerHandle {
       view.connected = false;
       let _ = self
          .inner
-         .live
+         .publisher
          .close_with_terminal_event(view, PeerEventKind::Disconnected);
    }
 }
@@ -212,7 +212,7 @@ pub(crate) struct TrackerIdentity {
    pub(crate) id: TrackerId,
 }
 
-/// Public identity and live frontend access for one tracker.
+/// Public identity and current state for one tracker.
 #[derive(Clone)]
 pub struct TrackerHandle {
    pub(crate) inner: Arc<LiveScope<TrackerIdentity, TrackerView, TrackerEventKind>>,
@@ -264,7 +264,7 @@ impl TrackerHandle {
    pub(crate) fn publish_metrics(&self, metrics: TrackerMetrics) {
       let mut view = self.view();
       view.metrics = metrics;
-      let _ = self.inner.live.replace_view(view);
+      let _ = self.inner.publisher.replace_view(view);
    }
 
    pub(crate) fn announce_succeeded(&self, metrics: TrackerMetrics) {
@@ -273,10 +273,10 @@ impl TrackerHandle {
       view.metrics = metrics;
       let peers_returned = metrics.latest_peers_returned.unwrap_or_default();
       let event = TrackerEventKind::AnnounceSucceeded { peers_returned };
-      if self.inner.live.replace_view_and_emit(view, event)
-         && let Some(frontend) = self.inner.frontend()
+      if self.inner.publisher.replace_view_and_emit(view, event)
+         && let Some(hub) = self.inner.hub()
       {
-         frontend.emit_tracker_event(self, event);
+         hub.emit_tracker_event(self, event);
       }
    }
 
@@ -286,11 +286,11 @@ impl TrackerHandle {
       view.metrics = metrics;
       if self
          .inner
-         .live
+         .publisher
          .replace_view_and_emit(view, TrackerEventKind::AnnounceFailed)
-         && let Some(frontend) = self.inner.frontend()
+         && let Some(hub) = self.inner.hub()
       {
-         frontend.emit_tracker_event(self, TrackerEventKind::AnnounceFailed);
+         hub.emit_tracker_event(self, TrackerEventKind::AnnounceFailed);
       }
    }
 
@@ -299,11 +299,11 @@ impl TrackerHandle {
       view.status = TrackerStatus::Restarting;
       if self
          .inner
-         .live
+         .publisher
          .replace_view_and_emit(view, TrackerEventKind::Restarting)
-         && let Some(frontend) = self.inner.frontend()
+         && let Some(hub) = self.inner.hub()
       {
-         frontend.emit_tracker_event(self, TrackerEventKind::Restarting);
+         hub.emit_tracker_event(self, TrackerEventKind::Restarting);
       }
    }
 
@@ -312,11 +312,11 @@ impl TrackerHandle {
       view.status = TrackerStatus::Stopped;
       if self
          .inner
-         .live
+         .publisher
          .close_with_terminal_event(view, TrackerEventKind::Stopped)
-         && let Some(frontend) = self.inner.frontend()
+         && let Some(hub) = self.inner.hub()
       {
-         frontend.emit_tracker_event(self, TrackerEventKind::Stopped);
+         hub.emit_tracker_event(self, TrackerEventKind::Stopped);
       }
    }
 
@@ -325,7 +325,7 @@ impl TrackerHandle {
       view.status = TrackerStatus::Stopped;
       let _ = self
          .inner
-         .live
+         .publisher
          .close_with_terminal_event(view, TrackerEventKind::Stopped);
    }
 }
@@ -380,8 +380,8 @@ mod tests {
       }
    }
 
-   fn peer_handle(frontend: &Hub) -> PeerHandle {
-      frontend.register_peer_scope(
+   fn peer_handle(hub: &Hub) -> PeerHandle {
+      hub.register_peer_scope(
          PeerIdentity {
             torrent: InfoHash::from_bytes([1; 20]),
             peer: PeerId::Unknown([2; 20]),
@@ -392,8 +392,8 @@ mod tests {
 
    #[tokio::test]
    async fn peer_handle_when_updated_then_only_its_listener_receives_event() {
-      let frontend = Hub::new();
-      let peer = peer_handle(&frontend);
+      let hub = Hub::new();
+      let peer = peer_handle(&hub);
       let mut listener = peer.listener();
       let mut updated = peer.view();
       updated.metrics.transfer.totals = TrafficTotals {
@@ -413,8 +413,8 @@ mod tests {
 
    #[tokio::test]
    async fn disconnected_peer_rejects_late_actor_updates() {
-      let frontend = Hub::new();
-      let peer = peer_handle(&frontend);
+      let hub = Hub::new();
+      let peer = peer_handle(&hub);
       let mut listener = peer.listener();
       let mut late = peer.view();
 
@@ -435,14 +435,14 @@ mod tests {
    }
 
    #[test]
-   fn live_handles_do_not_keep_their_hub_alive() {
-      let frontend = Hub::new();
-      let hub = frontend.downgrade();
-      let peer = peer_handle(&frontend);
+   fn scoped_handles_do_not_keep_their_hub_alive() {
+      let hub = Hub::new();
+      let weak_hub = hub.downgrade();
+      let peer = peer_handle(&hub);
 
-      drop(frontend);
+      drop(hub);
 
-      assert!(hub.upgrade().is_none());
+      assert!(weak_hub.upgrade().is_none());
       assert!(peer.view().connected);
    }
 }

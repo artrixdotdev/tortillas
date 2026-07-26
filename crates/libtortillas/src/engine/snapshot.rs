@@ -58,7 +58,7 @@ impl EngineSnapshot {
    }
 }
 
-/// Coarse engine status for frontend displays.
+/// Coarse engine status for live-state consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EngineStatus {
    /// Runtime resources are still being initialized.

@@ -26,8 +26,8 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use super::{choking::ChokingScheduler, util};
 use crate::{
    errors::{SnapshotUnsupportedReason, TorrentError},
-   frontend::{FrontendHealthLevel, Hub, TorrentView, TrackerStatus, TrackerView},
    hashes::InfoHash,
+   live::{Hub, LiveHealthLevel, TorrentView, TrackerStatus, TrackerView},
    metainfo::{Info, MetaInfo},
    metrics::{
       ByteCount, ContentProgress, HasTransferMetrics, TorrentMetrics, TrackerMetrics,
@@ -100,7 +100,7 @@ impl PieceManager for PieceManagerProxy {
 }
 
 pub(crate) struct TorrentActor {
-   pub(super) frontend: Hub,
+   pub(super) hub: Hub,
    pub(crate) peers: HashMap<PeerId, ActorRef<PeerActor>>,
    pub(crate) trackers: HashMap<Tracker, ActorRef<TrackerActor>>,
 
@@ -220,9 +220,9 @@ impl TorrentActor {
       // Pre-start the piece manager before transitioning state
       if let Err(err) = self.piece_manager.pre_start(info.clone()).await {
          self.transition_state(TorrentState::Failed);
-         self.frontend.emit_health(
+         self.hub.emit_health(
             Some(self.info_hash()),
-            FrontendHealthLevel::Error,
+            LiveHealthLevel::Error,
             "torrent storage could not be initialized",
          );
          error!(?err, "Failed to pre-start piece manager; aborting start");
@@ -483,7 +483,7 @@ impl TorrentActor {
       })
    }
 
-   /// Builds the presentation state used by live application listeners.
+   /// Builds the current state exposed through listeners.
    pub fn live_view(&self) -> TorrentView {
       let info = self.info_dict();
       let total_bytes = info
@@ -510,13 +510,13 @@ impl TorrentActor {
          })
          .count();
       let peers = self
-         .frontend
+         .hub
          .peer_handles(self.info_hash())
          .into_iter()
          .map(|peer| peer.view())
          .collect::<Vec<_>>();
       let trackers = self
-         .frontend
+         .hub
          .tracker_handles(self.info_hash())
          .into_iter()
          .map(|tracker| tracker.view())
@@ -567,11 +567,11 @@ impl TorrentActor {
 
    /// The single publication entry point for torrent projection changes.
    pub(super) fn publish_live_view(
-      &self, event: impl FnOnce(&TorrentView) -> crate::frontend::TorrentEventKind,
+      &self, event: impl FnOnce(&TorrentView) -> crate::live::TorrentEventKind,
    ) {
       let view = self.live_view();
       let event = event(&view);
-      self.frontend.replace_torrent_view_and_emit(view, event);
+      self.hub.replace_torrent_view_and_emit(view, event);
    }
 
    pub(super) fn transition_state(&mut self, state: TorrentState) {
@@ -581,7 +581,7 @@ impl TorrentActor {
       }
 
       self.state = state;
-      self.publish_live_view(|_| crate::frontend::TorrentEventKind::StateChanged {
+      self.publish_live_view(|_| crate::live::TorrentEventKind::StateChanged {
          previous,
          current: state,
       });
@@ -667,8 +667,8 @@ pub struct TorrentActorArgs {
    /// Runtime behavior settings.
    pub settings: Settings,
 
-   /// Live frontend state shared with the owning engine.
-   pub(crate) frontend: Hub,
+   /// Projection hub shared with the owning engine.
+   pub(crate) hub: Hub,
 }
 
 impl Actor for TorrentActor {
@@ -692,7 +692,7 @@ impl Actor for TorrentActor {
          sufficient_peers,
          base_path,
          settings,
-         frontend,
+         hub,
       } = args;
 
       let torrent_id = metainfo.info_hash()?;
@@ -744,8 +744,8 @@ impl Actor for TorrentActor {
       let tracker_list = metainfo.announce_list();
       let mut trackers = HashMap::new();
       for tracker in tracker_list {
-         let endpoint = tracker.frontend_endpoint();
-         let tracker_frontend = frontend.register_tracker_scope(
+         let endpoint = tracker.redacted_endpoint();
+         let tracker_handle = hub.register_tracker_scope(
             torrent_id,
             &tracker,
             TrackerView {
@@ -765,7 +765,7 @@ impl Actor for TorrentActor {
                supervisor: us.clone(),
                scheduler: scheduler.clone(),
                settings: settings.tracker.clone(),
-               frontend: tracker_frontend,
+               live_handle: tracker_handle,
             },
          )
          .restart_policy(RestartPolicy::Transient)
@@ -789,7 +789,7 @@ impl Actor for TorrentActor {
          .await;
 
       let actor = Self {
-         frontend,
+         hub,
          peers: HashMap::new(),
          bitfield,
          tracker_server,
@@ -817,9 +817,7 @@ impl Actor for TorrentActor {
          piece_manager: PieceManagerProxy::Default(default_manager),
          settings,
       };
-      actor
-         .frontend
-         .initialize_torrent_projection(actor.live_view());
+      actor.hub.initialize_torrent_projection(actor.live_view());
 
       Ok(actor)
    }
@@ -841,10 +839,10 @@ impl Actor for TorrentActor {
          self.transition_state(TorrentState::Stopping);
       } else {
          // The engine supervises torrent actors transiently. Preserve the
-         // frontend scope and make the temporary state explicit.
+         // live scope and make the temporary state explicit.
          self.transition_state(TorrentState::Restarting);
          self
-            .frontend
+            .hub
             .close_peer_scopes_for_torrent_restart(self.info_hash());
       }
       info!(reason = %reason, "Torrent stopped");
@@ -871,9 +869,9 @@ impl Actor for TorrentActor {
       &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
       error!(?id, ?reason, "Linked child died");
-      self.frontend.emit_health(
+      self.hub.emit_health(
          Some(self.info_hash()),
-         FrontendHealthLevel::Error,
+         LiveHealthLevel::Error,
          "a torrent service stopped unexpectedly",
       );
 
@@ -897,8 +895,8 @@ mod tests {
 
    use super::*;
    use crate::{
-      frontend::{PeerIdentity, PeerView},
       hashes::HashVec,
+      live::{PeerIdentity, PeerView},
       metainfo::{InfoKeys, MetaInfo, TorrentFile},
       metrics::{BytesPerSecond, PeerMetrics},
       protocol::{
@@ -1100,7 +1098,7 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(file_path),
          settings,
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
       actor
          .tell(SetState {
@@ -1151,7 +1149,7 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(testing::torrent_temp_path()),
          settings,
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
       actor
          .tell(SetState {
@@ -1199,7 +1197,7 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(base_path.clone()),
          settings,
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
       actor
          .tell(SetState {
@@ -1303,7 +1301,7 @@ mod tests {
          sufficient_peers: Some(1),
          base_path: Some(fixture.path().to_path_buf()),
          settings,
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
       let torrent = Torrent::new(info_hash, actor.clone());
       actor.tell(AddPeer { peer: seed.peer() }).await.unwrap();
@@ -1364,7 +1362,7 @@ mod tests {
          sufficient_peers: Some(sufficient_peers),
          base_path: None,
          settings: Settings::default(),
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
 
       let torrent = Torrent::new(info_hash, actor.clone());
@@ -1398,7 +1396,7 @@ mod tests {
          sufficient_peers: None,
          base_path: None,
          settings: Settings::default(),
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
 
       // Blocking loop that runs until we get an info dict
@@ -1438,7 +1436,7 @@ mod tests {
          sufficient_peers: Some(0),
          base_path: None,
          settings: Settings::default(),
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
 
       assert_eq!(actor.ask(GetState).await.unwrap(), TorrentState::Ready);
@@ -1463,7 +1461,7 @@ mod tests {
          sufficient_peers: Some(0),
          base_path: None,
          settings: Settings::default(),
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
 
       assert_eq!(
@@ -1492,7 +1490,7 @@ mod tests {
          sufficient_peers: Some(0),
          base_path: None,
          settings: Settings::default(),
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
 
       actor
@@ -1552,7 +1550,7 @@ mod tests {
          sufficient_peers: None,
          base_path: Some(file_path),
          settings: Settings::default(),
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
 
       let torrent = Torrent::new(info_hash, actor.clone());
@@ -1628,7 +1626,7 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(file_path.clone()),
          settings: Settings::default(),
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
 
       // Build the bitfield with fake completed pieces
@@ -1652,7 +1650,7 @@ mod tests {
 
       // Construct the actor manually for snapshot testing
       let test_actor = TorrentActor {
-         frontend: Hub::default(),
+         hub: Hub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield,
@@ -1776,7 +1774,7 @@ mod tests {
       let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
          .await
          .unwrap();
-      let frontend = Hub::default();
+      let hub = Hub::default();
       let actor_ref = TorrentActor::spawn(TorrentActorArgs {
          peer_id,
          metainfo: metainfo.clone(),
@@ -1788,10 +1786,10 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(file_path.clone()),
          settings: Settings::default(),
-         frontend: frontend.clone(),
+         hub: hub.clone(),
       });
       actor_ref.ask(GetState).await.unwrap();
-      assert_eq!(frontend.torrent_view(info_hash).unwrap().tracker_count, 1);
+      assert_eq!(hub.torrent_view(info_hash).unwrap().tracker_count, 1);
 
       let piece_count = info_dict.piece_count();
       let bitfield: BitVec<AtomicU8> = BitVec::repeat(false, piece_count);
@@ -1811,7 +1809,7 @@ mod tests {
       piece_scheduler.set_piece_blocks(partial_piece_index, blocks);
 
       let mut test_actor = TorrentActor {
-         frontend: Hub::default(),
+         hub: Hub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield,
@@ -1841,7 +1839,7 @@ mod tests {
       };
 
       let verified_content = test_actor.live_view().metrics.progress.verified_bytes;
-      let sampled_peer = test_actor.frontend.register_peer_scope(
+      let sampled_peer = test_actor.hub.register_peer_scope(
          PeerIdentity {
             torrent: info_hash,
             peer: PeerId::Unknown([9; 20]),
@@ -1867,7 +1865,7 @@ mod tests {
             },
          },
       );
-      let _sampled_tracker = test_actor.frontend.register_tracker_scope(
+      let _sampled_tracker = test_actor.hub.register_tracker_scope(
          info_hash,
          &Tracker::Http("http://tracker.example/announce".to_string()),
          TrackerView {
@@ -2013,11 +2011,11 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(file_path.clone()),
          settings: Settings::default(),
-         frontend: Hub::default(),
+         hub: Hub::default(),
       });
 
       let mut actor = TorrentActor {
-         frontend: Hub::default(),
+         hub: Hub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield: BitVec::repeat(false, piece_count),

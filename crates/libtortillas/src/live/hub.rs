@@ -15,16 +15,16 @@ use std::{
 use dashmap::DashMap;
 
 use super::{
-   EngineEventKind, EngineView, EventSubscription, FrontendHealth, FrontendHealthLevel,
-   LivePublisher, PeerEventKind, PeerHandle, PeerView, TorrentEventKind, TorrentView,
-   TrackerEventKind, TrackerHandle, TrackerView,
+   EngineEventKind, EngineView, EventSubscription, LiveHealth, LiveHealthLevel, LivePublisher,
+   PeerEventKind, PeerHandle, PeerView, TorrentEventKind, TorrentView, TrackerEventKind,
+   TrackerHandle, TrackerView,
    handle::{LiveScope, PeerIdentity, TrackerId, TrackerIdentity},
 };
 use crate::{
    engine::EngineStatus,
    hashes::InfoHash,
    peer::PeerId,
-   settings::FrontendSettings,
+   settings::LiveSettings,
    torrent::{Torrent, TorrentInner},
    tracker::Tracker,
 };
@@ -100,14 +100,14 @@ where
 
 #[derive(Debug)]
 struct EngineScope {
-   live: LivePublisher<EngineStatus, EngineEventKind>,
+   publisher: LivePublisher<EngineStatus, EngineEventKind>,
 }
 
 /// One self-contained torrent projection tree.
 #[derive(Debug)]
 pub(crate) struct TorrentScope {
    pub(crate) info_hash: InfoHash,
-   pub(crate) live: Arc<LivePublisher<Option<TorrentView>, TorrentEventKind>>,
+   pub(crate) publisher: Arc<LivePublisher<Option<TorrentView>, TorrentEventKind>>,
    peers: ScopeRegistry<PeerId, LiveScope<PeerIdentity, PeerView, PeerEventKind>>,
    trackers: ScopeRegistry<Tracker, LiveScope<TrackerIdentity, TrackerView, TrackerEventKind>>,
    torrent: OnceLock<Arc<TorrentInner>>,
@@ -119,7 +119,7 @@ impl TorrentScope {
    fn new(info_hash: InfoHash, event_capacity: usize) -> Self {
       Self {
          info_hash,
-         live: Arc::new(LivePublisher::new(None, event_capacity)),
+         publisher: Arc::new(LivePublisher::new(None, event_capacity)),
          peers: ScopeRegistry::new(),
          trackers: ScopeRegistry::new(),
          torrent: OnceLock::new(),
@@ -164,7 +164,7 @@ impl TorrentScope {
 pub(crate) struct HubInner {
    engine: EngineScope,
    torrents: ScopeRegistry<InfoHash, TorrentScope>,
-   settings: FrontendSettings,
+   settings: LiveSettings,
    next_tracker_id: AtomicU64,
 }
 
@@ -198,14 +198,17 @@ impl Hub {
    // Engine projection
 
    pub(crate) fn new() -> Self {
-      Self::with_settings(FrontendSettings::default())
+      Self::with_settings(LiveSettings::default())
    }
 
-   pub(crate) fn with_settings(settings: FrontendSettings) -> Self {
+   pub(crate) fn with_settings(settings: LiveSettings) -> Self {
       Self {
          inner: HubReference::Strong(Arc::new(HubInner {
             engine: EngineScope {
-               live: LivePublisher::new(EngineStatus::Starting, settings.engine_event_capacity),
+               publisher: LivePublisher::new(
+                  EngineStatus::Starting,
+                  settings.engine_event_capacity,
+               ),
             },
             torrents: ScopeRegistry::new(),
             settings,
@@ -243,7 +246,7 @@ impl Hub {
    }
 
    pub(crate) fn subscribe(&self) -> EventSubscription {
-      self.inner().engine.live.subscribe()
+      self.inner().engine.publisher.subscribe()
    }
 
    /// Derives the root projection from engine lifecycle and registered child
@@ -255,21 +258,21 @@ impl Hub {
          .values()
          .into_iter()
          .filter(|scope| scope.is_registered())
-         .filter_map(|scope| scope.live.view())
+         .filter_map(|scope| scope.publisher.view())
          .collect::<Vec<_>>();
       torrents.sort_by(|left, right| left.info_hash.as_bytes().cmp(right.info_hash.as_bytes()));
       EngineView {
-         status: inner.engine.live.view(),
+         status: inner.engine.publisher.view(),
          torrents,
       }
    }
 
    pub(crate) fn engine_started(&self) {
       let inner = self.inner();
-      let _ = inner.engine.live.replace_view(EngineStatus::Running);
+      let _ = inner.engine.publisher.replace_view(EngineStatus::Running);
       let _ = inner
          .engine
-         .live
+         .publisher
          .emit_without_view_change(EngineEventKind::EngineStarted(self.view()));
    }
 
@@ -277,7 +280,7 @@ impl Hub {
       let _ = self
          .inner()
          .engine
-         .live
+         .publisher
          .replace_view(EngineStatus::Stopping);
    }
 
@@ -287,7 +290,7 @@ impl Hub {
       let _ = self
          .inner()
          .engine
-         .live
+         .publisher
          .close_with_terminal_event(EngineStatus::Stopped, EngineEventKind::Shutdown(view));
    }
 
@@ -310,12 +313,12 @@ impl Hub {
          .inner()
          .torrents
          .get(&torrent)
-         .and_then(|scope| scope.live.view())
+         .and_then(|scope| scope.publisher.view())
    }
 
    pub(crate) fn initialize_torrent_projection(&self, torrent: TorrentView) {
       let scope = self.ensure_torrent_scope(torrent.info_hash);
-      let _ = scope.live.replace_view(Some(torrent));
+      let _ = scope.publisher.replace_view(Some(torrent));
    }
 
    pub(crate) fn register_torrent_scope(&self, torrent: Torrent) {
@@ -324,7 +327,7 @@ impl Hub {
       if !scope.register(&torrent) {
          return;
       }
-      if let Some(view) = scope.live.view() {
+      if let Some(view) = scope.publisher.view() {
          self.replace_torrent_view_and_emit(view, TorrentEventKind::Added);
       }
    }
@@ -341,7 +344,7 @@ impl Hub {
       };
       let _publication = scope.publication_lock();
       if !scope
-         .live
+         .publisher
          .replace_view_and_emit(Some(torrent), event.clone())
       {
          return;
@@ -349,7 +352,7 @@ impl Hub {
       let _ = self
          .inner()
          .engine
-         .live
+         .publisher
          .emit_without_view_change(EngineEventKind::Torrent {
             torrent: handle,
             event,
@@ -357,9 +360,9 @@ impl Hub {
    }
 
    pub(crate) fn emit_health(
-      &self, torrent: Option<InfoHash>, level: FrontendHealthLevel, message: impl Into<String>,
+      &self, torrent: Option<InfoHash>, level: LiveHealthLevel, message: impl Into<String>,
    ) {
-      let health = FrontendHealth {
+      let health = LiveHealth {
          torrent,
          level,
          message: message.into(),
@@ -372,7 +375,7 @@ impl Hub {
          let _ = self
             .inner()
             .engine
-            .live
+            .publisher
             .emit_without_view_change(EngineEventKind::Health(health));
       }
    }
@@ -404,7 +407,7 @@ impl Hub {
       }
 
       if !scope
-         .live
+         .publisher
          .close_with_terminal_event(None, TorrentEventKind::Removed)
       {
          return;
@@ -415,7 +418,7 @@ impl Hub {
          let _ = self
             .inner()
             .engine
-            .live
+            .publisher
             .emit_without_view_change(EngineEventKind::Torrent {
                torrent,
                event: TorrentEventKind::Removed,
@@ -428,13 +431,13 @@ impl Hub {
          return;
       };
       let _publication = scope.publication_lock();
-      if !scope.live.emit_without_view_change(event.clone()) {
+      if !scope.publisher.emit_without_view_change(event.clone()) {
          return;
       }
       let _ = self
          .inner()
          .engine
-         .live
+         .publisher
          .emit_without_view_change(EngineEventKind::Torrent { torrent, event });
    }
 
@@ -630,10 +633,10 @@ mod tests {
 
    #[tokio::test]
    async fn torrent_removal_closes_every_child_scope_exactly_once() {
-      let frontend = Hub::new();
+      let hub = Hub::new();
       let info_hash = InfoHash::from_bytes([4; 20]);
-      frontend.initialize_torrent_projection(torrent_view(info_hash));
-      let peer = frontend.register_peer_scope(
+      hub.initialize_torrent_projection(torrent_view(info_hash));
+      let peer = hub.register_peer_scope(
          PeerIdentity {
             torrent: info_hash,
             peer: PeerId::Unknown([5; 20]),
@@ -641,12 +644,12 @@ mod tests {
          connected_peer_view(),
       );
       let source = Tracker::Http("https://tracker.example/announce".to_string());
-      let tracker = frontend.register_tracker_scope(info_hash, &source, pending_tracker_view());
+      let tracker = hub.register_tracker_scope(info_hash, &source, pending_tracker_view());
       let mut peer_events = peer.subscribe();
       let mut tracker_events = tracker.subscribe();
 
-      frontend.remove_torrent_scope(info_hash);
-      frontend.remove_torrent_scope(info_hash);
+      hub.remove_torrent_scope(info_hash);
+      hub.remove_torrent_scope(info_hash);
 
       assert_eq!(
          peer_events.recv().await.unwrap().kind,

@@ -23,7 +23,7 @@ fn mutex_lock<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
       .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Generic current-state and event publisher for live application APIs.
+/// Generic publisher for coherent current state and incremental events.
 ///
 /// The same primitive backs engine, torrent, peer, and tracker listeners. It
 /// can also be reused by future protocol integrations without introducing
@@ -271,15 +271,15 @@ impl<E> fmt::Debug for EventSubscription<E> {
    }
 }
 
-/// Errors produced while receiving live frontend events.
+/// Errors produced while receiving live events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum EventStreamError {
    /// This consumer fell behind and the specified number of events were
    /// dropped. The subscription remains usable.
-   #[error("frontend event subscriber lagged by {0} events")]
+   #[error("live event subscriber lagged by {0} events")]
    Lagged(u64),
    /// The publisher closed the event stream.
-   #[error("frontend event stream closed")]
+   #[error("live event stream closed")]
    Closed,
 }
 
@@ -339,7 +339,7 @@ impl<V, E> fmt::Debug for EventListener<V, E> {
    }
 }
 
-/// Live engine listener with typed events and current presentation state.
+/// Engine listener with typed events and current state.
 pub type EngineListener = EventListener<EngineView>;
 
 /// Live listener scoped to one torrent.
@@ -354,19 +354,19 @@ mod tests {
    #[test]
    fn concurrent_update_and_close_never_accepts_an_update_after_terminal() {
       for _ in 0..100 {
-         let live = Arc::new(LivePublisher::new(0_u64, 8));
-         let update = Arc::clone(&live);
-         let close = Arc::clone(&live);
+         let publisher = Arc::new(LivePublisher::new(0_u64, 8));
+         let update = Arc::clone(&publisher);
+         let close = Arc::clone(&publisher);
          let update_thread = thread::spawn(move || update.replace_view_and_emit(1, "updated"));
          let close_thread = thread::spawn(move || close.close_with_terminal_event(2, "closed"));
          let update_accepted = update_thread.join().unwrap();
          let close_accepted = close_thread.join().unwrap();
 
          assert!(close_accepted);
-         assert!(!live.replace_view_and_emit(3, "late"));
-         assert_eq!(live.view(), 2);
+         assert!(!publisher.replace_view_and_emit(3, "late"));
+         assert_eq!(publisher.view(), 2);
          if update_accepted {
-            assert_eq!(live.view(), 2);
+            assert_eq!(publisher.view(), 2);
          }
       }
    }

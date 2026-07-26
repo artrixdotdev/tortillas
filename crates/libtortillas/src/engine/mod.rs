@@ -78,8 +78,8 @@ use self::{
 };
 use crate::{
    errors::{EngineError, map_engine_send_error},
-   frontend::{EngineListener, EngineView, EventSubscription, Hub},
    hashes::InfoHash,
+   live::{EngineListener, EngineView, EventSubscription, Hub},
    peer::PeerId,
    settings::Settings,
    torrent::{PieceStorageStrategy, RestoreVerification, Torrent},
@@ -93,8 +93,8 @@ use crate::{
 /// - Managing peer connections and tracker communication
 ///
 /// `Engine` must be created and used from a Tokio runtime. Applications should
-/// create one runtime at the frontend boundary and run all engine and torrent
-/// operations on that runtime.
+/// create one runtime at the application boundary and run all engine and
+/// torrent operations on that runtime.
 ///
 /// Typically, you create a single `Engine` instance per application and attach
 /// multiple [`Torrent`] instances to it.
@@ -128,7 +128,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct Engine {
    actor: ActorRef<EngineActor>,
-   frontend: Hub,
+   hub: Hub,
 }
 
 #[bon::bon]
@@ -226,7 +226,7 @@ impl Engine {
          None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
       };
 
-      let frontend = Hub::with_settings(settings.frontend);
+      let hub = Hub::with_settings(settings.live);
       let args = EngineActorArgs {
          tcp_addr,
          utp_addr,
@@ -235,12 +235,12 @@ impl Engine {
          piece_storage_strategy,
          settings,
          default_base_path: Some(output_path),
-         frontend: frontend.clone(),
+         hub: hub.clone(),
       };
 
       let actor = EngineActor::spawn(args);
 
-      Engine { actor, frontend }
+      Engine { actor, hub }
    }
 
    /// Just a helper function so we don't have to write `&self.0` all the time.
@@ -252,7 +252,7 @@ impl Engine {
    /// automatically contacts trackers and connects to peers. The spawned
    /// [Torrent Actor](Torrent) will be controlled by the [Engine].
    ///
-   /// This function accepts a typed [`TorrentSource`] so frontends can pass
+   /// This function accepts a typed [`TorrentSource`] so callers can pass
    /// explicit user intent instead of relying on string-prefix detection.
    ///
    ///
@@ -303,7 +303,7 @@ impl Engine {
          .await
          .map_err(|error| map_engine_send_error("add torrent", error))?;
 
-      self.frontend_torrent(info_hash)
+      self.torrent_handle(info_hash)
       // We don't need to assign link or insert the ref here because its already
       // done by the engine actor
    }
@@ -338,7 +338,7 @@ impl Engine {
          .await
          .map_err(|error| map_engine_send_error("restore torrent", error))?;
 
-      self.frontend_torrent(info_hash)
+      self.torrent_handle(info_hash)
    }
 
    /// Restores all torrent sessions from an engine persistence snapshot.
@@ -367,7 +367,7 @@ impl Engine {
          .map_err(|error| map_engine_send_error("restore engine", error))?;
       info_hashes
          .into_iter()
-         .map(|info_hash| self.frontend_torrent(info_hash))
+         .map(|info_hash| self.torrent_handle(info_hash))
          .collect()
    }
    /// Starts all torrents managed by the engine.
@@ -389,7 +389,7 @@ impl Engine {
          .await
          .map_err(|error| map_engine_send_error("get torrent", error))?;
 
-      self.frontend_torrent(info_hash)
+      self.torrent_handle(info_hash)
    }
 
    /// Removes a torrent from the engine and stops its actor gracefully.
@@ -402,7 +402,7 @@ impl Engine {
 
       let stop_result = torrent.stop_gracefully().await;
       torrent.wait_for_shutdown().await;
-      self.frontend.remove_torrent_scope(info_hash);
+      self.hub.remove_torrent_scope(info_hash);
       stop_result.map_err(|error| EngineError::ActorCommunicationFailed {
          operation: "stop torrent",
          reason: error.to_string(),
@@ -425,8 +425,9 @@ impl Engine {
    /// Captures all managed torrent sessions in a Serde-compatible persistence
    /// snapshot.
    ///
-   /// Use [`Self::listener`] for live frontend state. Snapshot frequency is an
-   /// application persistence decision, not a UI refresh mechanism.
+   /// Use [`Self::listener`] for current state and incremental updates.
+   /// Snapshot frequency is an application persistence decision, not a
+   /// live-update mechanism.
    pub async fn snapshot(&self) -> Result<EngineSnapshot, EngineError> {
       self
          .actor()
@@ -437,34 +438,32 @@ impl Engine {
 
    /// Subscribes to typed engine and torrent events as they happen.
    ///
-   /// The returned stream is bounded. A lagging frontend can read
-   /// [`Self::view`] to rebuild its display state and then continue
+   /// The returned stream is bounded. A lagging consumer can read
+   /// [`Self::view`] to rebuild its current state and then continue
    /// receiving events.
    #[must_use]
    pub fn subscribe(&self) -> EventSubscription {
-      self.frontend.subscribe()
+      self.hub.subscribe()
    }
 
-   /// Creates a live listener with typed events and coherent current display
-   /// state.
+   /// Creates a listener with typed events and coherent current state.
    #[must_use]
    pub fn listener(&self) -> EngineListener {
-      let frontend = self.frontend.clone();
-      EngineListener::new(self.subscribe(), move || frontend.view())
+      let hub = self.hub.clone();
+      EngineListener::new(self.subscribe(), move || hub.view())
    }
 
-   /// Returns the current display-oriented engine state maintained by the live
-   /// event publisher.
+   /// Returns the current engine state maintained by the projection tree.
    #[must_use]
    pub fn view(&self) -> EngineView {
-      self.frontend.view()
+      self.hub.view()
    }
 
-   fn frontend_torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
+   fn torrent_handle(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
       self
-         .frontend
+         .hub
          .torrent_handle(info_hash)
-         .ok_or_else(|| EngineError::FrontendHandleMissing { info_hash })
+         .ok_or_else(|| EngineError::TorrentHandleMissing { info_hash })
    }
 }
 
@@ -537,7 +536,7 @@ mod tests {
       },
       engine::{Engine, TorrentSource},
       errors::EngineError,
-      frontend::{EngineEventKind, TorrentEventKind},
+      live::{EngineEventKind, TorrentEventKind},
       settings::{DhtSettings, Settings},
       testing::{
          BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_TORRENT_FILE, LocalPeer, peer_id,
@@ -670,7 +669,7 @@ mod tests {
    }
 
    #[tokio::test]
-   async fn torrent_removal_reconciles_frontend_after_actor_shutdown_failure() {
+   async fn torrent_removal_reconciles_projection_after_actor_shutdown_failure() {
       let engine = Engine::builder()
          .settings(deterministic_settings())
          .autostart(false)
@@ -708,10 +707,10 @@ mod tests {
       let info_hash = torrent.info_hash();
       let late_view = torrent.view().unwrap();
 
-      engine.frontend.remove_torrent_scope(info_hash);
+      engine.hub.remove_torrent_scope(info_hash);
       engine
-         .frontend
-         .replace_torrent_view_and_emit(late_view, crate::frontend::TorrentEventKind::Updated);
+         .hub
+         .replace_torrent_view_and_emit(late_view, crate::live::TorrentEventKind::Updated);
 
       assert!(torrent.view().is_none());
       assert_eq!(engine.view().torrent_count(), 0);
@@ -725,7 +724,7 @@ mod tests {
          .settings(deterministic_settings())
          .autostart(false)
          .build();
-      let hub = engine.frontend.downgrade();
+      let hub = engine.hub.downgrade();
       let torrent = engine
          .add_torrent(TorrentSource::torrent_file_path(torrent_fixture_path(
             BIG_BUCK_BUNNY_TORRENT_FILE,
@@ -836,7 +835,7 @@ mod tests {
             let event = listener.recv().await.unwrap();
             if let EngineEventKind::Torrent {
                torrent,
-               event: crate::frontend::TorrentEventKind::PeerConnected(peer),
+               event: crate::live::TorrentEventKind::PeerConnected(peer),
             } = event.kind
             {
                break (torrent, peer);

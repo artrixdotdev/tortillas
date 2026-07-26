@@ -17,11 +17,11 @@ use super::{
 };
 use crate::{
    errors::{TorrentError, map_torrent_send_error},
-   frontend::{
+   hashes::InfoHash,
+   live::{
       EventSubscription, Hub, HubInner, LivePublisher, PeerHandle, TorrentEventKind,
       TorrentListener, TorrentView, TrackerHandle,
    },
-   hashes::InfoHash,
    pieces::PieceManager,
 };
 
@@ -30,7 +30,7 @@ pub(crate) struct TorrentInner {
    pub(crate) info_hash: InfoHash,
    pub(crate) actor: ActorRef<TorrentActor>,
    pub(crate) hub: Weak<HubInner>,
-   pub(crate) live: Arc<LivePublisher<Option<TorrentView>, TorrentEventKind>>,
+   pub(crate) publisher: Arc<LivePublisher<Option<TorrentView>, TorrentEventKind>>,
 }
 
 /// A handle to a torrent managed by the engine.
@@ -57,22 +57,22 @@ impl Torrent {
    /// to its underlying [`TorrentActor`].
    #[cfg(test)]
    pub(crate) fn new(info_hash: InfoHash, actor_ref: ActorRef<TorrentActor>) -> Self {
-      Self::new_with_frontend(info_hash, actor_ref, &Hub::default(), None)
+      Self::new_with_hub(info_hash, actor_ref, &Hub::default(), None)
    }
 
-   pub(crate) fn new_with_frontend(
-      info_hash: InfoHash, actor: ActorRef<TorrentActor>, frontend: &Hub,
+   pub(crate) fn new_with_hub(
+      info_hash: InfoHash, actor: ActorRef<TorrentActor>, hub: &Hub,
       initial_view: Option<TorrentView>,
    ) -> Self {
-      let scope = frontend.ensure_torrent_scope(info_hash);
+      let scope = hub.ensure_torrent_scope(info_hash);
       if let Some(view) = initial_view {
-         let _ = scope.live.replace_view(Some(view));
+         let _ = scope.publisher.replace_view(Some(view));
       }
       let inner = Arc::new(TorrentInner {
          info_hash,
          actor,
-         hub: frontend.downgrade(),
-         live: Arc::clone(&scope.live),
+         hub: hub.downgrade(),
+         publisher: Arc::clone(&scope.publisher),
       });
       Self { inner }
    }
@@ -168,7 +168,7 @@ impl Torrent {
    /// Captures this torrent's metadata, storage configuration, and verified or
    /// partial piece state in a Serde-compatible persistence snapshot.
    ///
-   /// Use [`Self::listener`] for live frontend state.
+   /// Use [`Self::listener`] for current state and incremental updates.
    pub async fn snapshot(&self) -> Result<TorrentSnapshot, TorrentError> {
       self
          .actor()
@@ -215,40 +215,40 @@ impl Torrent {
    /// Subscribes to live events for this torrent only.
    #[must_use]
    pub fn subscribe(&self) -> EventSubscription<TorrentEventKind> {
-      self.inner.live.subscribe()
+      self.inner.publisher.subscribe()
    }
 
    /// Creates a live listener scoped to this torrent.
    #[must_use]
    pub fn listener(&self) -> TorrentListener {
-      self.inner.live.listener()
+      self.inner.publisher.listener()
    }
 
-   /// Returns the latest display-oriented state maintained for this torrent.
+   /// Returns the latest state maintained for this torrent.
    ///
    /// This returns `None` after the torrent has been removed from its engine.
    #[must_use]
    pub fn view(&self) -> Option<TorrentView> {
-      self.inner.live.view()
+      self.inner.publisher.view()
    }
 
    /// Returns handles for this torrent's currently connected peers.
    #[must_use]
    pub fn peers(&self) -> Vec<PeerHandle> {
       self
-         .frontend()
-         .map_or_else(Vec::new, |frontend| frontend.peer_handles(self.info_hash()))
+         .hub()
+         .map_or_else(Vec::new, |hub| hub.peer_handles(self.info_hash()))
    }
 
    /// Returns handles for this torrent's configured trackers.
    #[must_use]
    pub fn trackers(&self) -> Vec<TrackerHandle> {
-      self.frontend().map_or_else(Vec::new, |frontend| {
-         frontend.tracker_handles(self.info_hash())
-      })
+      self
+         .hub()
+         .map_or_else(Vec::new, |live| live.tracker_handles(self.info_hash()))
    }
 
-   fn frontend(&self) -> Option<Hub> {
+   fn hub(&self) -> Option<Hub> {
       self.inner.hub.upgrade().map(Hub::from_inner)
    }
 }

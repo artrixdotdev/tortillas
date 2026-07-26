@@ -13,11 +13,11 @@ use crate::{
    torrent::TorrentState,
 };
 
-/// Current live engine state maintained by a frontend listener.
+/// Current engine state maintained by a listener.
 ///
-/// Unlike persistence snapshots, views are presentation-oriented projections
-/// updated by the actor hierarchy. A listener always reads the current
-/// projection directly, including after a lagged event subscription.
+/// Unlike persistence snapshots, views are current projections updated by the
+/// actor hierarchy. A listener always reads the projection directly, including
+/// after a lagged event subscription.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EngineView {
    pub status: EngineStatus,
@@ -31,7 +31,7 @@ impl EngineView {
    }
 }
 
-/// Current live state of one torrent.
+/// Current state of one torrent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TorrentView {
    pub info_hash: InfoHash,
@@ -59,7 +59,7 @@ impl TorrentView {
    }
 }
 
-/// Live view of a connected or recently disconnected peer.
+/// Current state of a connected or recently disconnected peer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerView {
    /// Network address for the peer, when known.
@@ -102,7 +102,7 @@ impl HasTransferMetrics for PeerView {
    }
 }
 
-/// Frontend-safe live tracker identity and latest announce outcome.
+/// Public tracker identity and latest announce outcome.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackerView {
    /// Credential-free tracker endpoint label.

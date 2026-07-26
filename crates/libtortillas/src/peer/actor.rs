@@ -22,8 +22,8 @@ use tracing::{Span, debug, info, instrument, trace, warn};
 
 use crate::{
    errors::PeerActorError,
-   frontend::{PeerHandle, PeerView},
    hashes::InfoHash,
+   live::{PeerHandle, PeerView},
    metrics::{HasTransferMetrics, PeerMetrics, TransferMetrics, TransferSample},
    peer::{Peer, PeerId},
    protocol::{stream::PeerRecv, *},
@@ -56,7 +56,7 @@ pub(crate) struct PeerActor {
    pending_message_requests: VecDeque<PeerMessages>,
    last_rate_sample: TransferSample,
    settings: PeerSettings,
-   frontend: PeerHandle,
+   live_handle: PeerHandle,
 }
 
 impl PeerActor {
@@ -334,7 +334,7 @@ impl PeerActor {
       let mut metrics = self.peer.metrics();
       metrics.transfer = transfer;
       self
-         .frontend
+         .live_handle
          .publish_metrics(PeerView::from_peer_with_metrics(&self.peer, true, metrics));
 
       Some(PeerStats { id, metrics })
@@ -355,7 +355,7 @@ impl Actor for PeerActor {
    /// At this point, the peer has already been handshaked with. No other
    /// messages have been sent or received from the peer.
    async fn on_start(args: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (mut peer, mut stream, supervisor, info_hash, settings, frontend) = args;
+      let (mut peer, mut stream, supervisor, info_hash, settings, live_handle) = args;
       peer.share_traffic_with(&stream.peer_state());
 
       info!(peer_id = %peer.id.unwrap(),  peer_addr = %stream, torrent_id = %info_hash, "Peer connected");
@@ -389,7 +389,7 @@ impl Actor for PeerActor {
          pending_block_requests: HashSet::new(),
          pending_message_requests: VecDeque::with_capacity(settings.pending_message_capacity),
          settings,
-         frontend,
+         live_handle,
       })
    }
 
@@ -401,7 +401,7 @@ impl Actor for PeerActor {
             .supervisor
             .tell(torrent::commands::KillPeer {
                id: peer_id,
-               frontend: self.frontend.clone(),
+               handle: self.live_handle.clone(),
             })
             .await
       {
@@ -431,7 +431,7 @@ impl Actor for PeerActor {
                .supervisor
                .tell(torrent::commands::KillPeer {
                   id,
-                  frontend: self.frontend.clone(),
+                  handle: self.live_handle.clone(),
                })
                .await
             {
@@ -650,9 +650,9 @@ impl Message<PeerMessages> for PeerActor {
             warn!("Received unexpected handshake from peer");
          }
       }
-      let rates = self.frontend.view().metrics.transfer.rates;
+      let rates = self.live_handle.view().metrics.transfer.rates;
       self
-         .frontend
+         .live_handle
          .publish_state(PeerView::from_peer_with_rates(&self.peer, true, rates));
    }
 }

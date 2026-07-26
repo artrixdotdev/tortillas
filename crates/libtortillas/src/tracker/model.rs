@@ -118,8 +118,8 @@ impl Tracker {
       }
    }
 
-   /// Returns a credential-free endpoint label for frontend events.
-   pub(crate) fn frontend_endpoint(&self) -> String {
+   /// Returns a credential-free endpoint label for public views.
+   pub(crate) fn redacted_endpoint(&self) -> String {
       let uri = self.uri();
       let Ok(url) = reqwest::Url::parse(&uri) else {
          return self.scheme().to_string();
@@ -291,12 +291,12 @@ mod tests {
    use super::*;
 
    #[test]
-   fn frontend_endpoint_removes_tracker_credentials_and_paths() {
+   fn redacted_endpoint_removes_tracker_credentials_and_paths() {
       let tracker = Tracker::Http(
          "https://alice:password@tracker.example/secret-passkey/announce?token=secret".to_string(),
       );
 
-      let endpoint = tracker.frontend_endpoint();
+      let endpoint = tracker.redacted_endpoint();
 
       assert_eq!(endpoint, "https://tracker.example/");
       assert!(!endpoint.contains("alice"));
@@ -306,12 +306,12 @@ mod tests {
    }
 
    #[test]
-   fn udp_frontend_endpoint_removes_tracker_credentials() {
+   fn udp_redacted_endpoint_removes_tracker_credentials() {
       let tracker = Tracker::Udp(
          "udp://alice:password@tracker.example:6969/announce?token=secret".to_string(),
       );
 
-      let endpoint = tracker.frontend_endpoint();
+      let endpoint = tracker.redacted_endpoint();
 
       assert_eq!(endpoint, "udp://tracker.example:6969/");
       assert!(!endpoint.contains("alice"));
@@ -323,6 +323,6 @@ mod tests {
    fn invalid_tracker_endpoint_falls_back_to_protocol_only() {
       let tracker = Tracker::Udp("udp://[invalid".to_string());
 
-      assert_eq!(tracker.frontend_endpoint(), "udp");
+      assert_eq!(tracker.redacted_endpoint(), "udp");
    }
 }

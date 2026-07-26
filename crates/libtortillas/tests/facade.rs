@@ -4,7 +4,7 @@ use libtortillas::{
 };
 
 #[test]
-fn prelude_exposes_frontend_facade_types() {
+fn prelude_exposes_live_facade_types() {
    fn accepts_torrent_events(_: Option<EventSubscription<TorrentEventKind>>) {}
    fn accepts_peer_events(_: Option<EventSubscription<PeerEventKind>>) {}
    fn accepts_tracker_events(_: Option<EventSubscription<TrackerEventKind>>) {}

@@ -1,22 +1,22 @@
-//! Transport-agnostic live application API.
+//! Current state and incremental events for running engines and torrents.
 //!
-//! Terminal interfaces, HTTP or WebSocket servers, websites, and desktop
-//! applications all consume this same API. Rendering, transport, input, and
-//! application routing policy remain outside `libtortillas`.
+//! A listener combines a coherent current view with a bounded stream of future
+//! changes. Terminals, servers, websites, and desktop applications can all
+//! consume that contract without coupling the library to rendering, transport,
+//! input, or application routing.
 //!
 //! # Public model
 //!
-//! The module is organized by the way an application reads it:
+//! The module is organized around observation:
 //!
 //! - [`EngineView`], [`TorrentView`], [`PeerView`], and [`TrackerView`] are
-//!   current presentation state.
+//!   current read models.
 //! - Shared measurements live in [`crate::metrics`] and are re-exported here.
 //! - Event enums describe discrete changes.
 //! - [`EventSubscription`] is events only; [`EventListener`] pairs events with
 //!   a coherent current view.
 //! - [`PeerHandle`] and [`TrackerHandle`] provide scoped identity and access.
-//! - The private hub owns the complete live projection tree and coordinates
-//!   publication.
+//! - The private hub owns the projection tree and coordinates publication.
 //!
 //! [`crate::engine::Engine`] and [`crate::torrent::Torrent`] remain the sole
 //! public command API. There is no parallel command enum or generic `send`
@@ -25,8 +25,8 @@
 //! # Listening to an engine
 //!
 //! Create a listener before starting operations when the application must not
-//! miss their events. Use [`EventListener::view`] for initial rendering and
-//! lag recovery, and [`EventListener::recv`] for future changes.
+//! miss their events. Use [`EventListener::view`] for initial state and lag
+//! recovery, and [`EventListener::recv`] for future changes.
 //!
 //! ```no_run
 //! use libtortillas::prelude::{Engine, EngineEventKind, EventStreamError};
@@ -47,7 +47,7 @@
 //!          }
 //!       }
 //!       Err(EventStreamError::Lagged(_)) => {
-//!          // Discard adapter-local assumptions and redraw from current state.
+//!          // Discard consumer-local assumptions and reload current state.
 //!          let current_view = listener.view();
 //!          let _ = current_view;
 //!       }
@@ -70,7 +70,7 @@
 //! application to descend into detailed streams only when needed.
 //!
 //! Use `subscribe()` when only discrete events are needed. Use `listener()`
-//! when initial rendering or recovery requires a current view as well.
+//! when initialization or recovery requires a current view as well.
 //!
 //! # Ownership and source of truth
 //!
@@ -99,10 +99,10 @@
 //!
 //! # Architectural invariants
 //!
-//! These rules define the live API's source of truth:
+//! These rules define the source of truth for views and events:
 //!
 //! 1. Actors own operational domain state.
-//! 2. A live scope owns only its frontend projection.
+//! 2. An observation scope owns only its current projection.
 //! 3. Parent views are derived from child scopes; they do not maintain manually
 //!    synchronized child-view copies.
 //! 4. Every scope has one view-and-event publication entry point.
@@ -122,7 +122,7 @@
 //!
 //! Channels are allocated lazily on first subscription. Defaults retain 256
 //! engine or torrent events and 64 peer or tracker events; all capacities are
-//! configurable with [`crate::settings::FrontendSettings`]. A slow consumer
+//! configurable with [`crate::settings::LiveSettings`]. A slow consumer
 //! receives [`EventStreamError::Lagged`] instead of causing unbounded memory
 //! growth. Sequence numbers increase monotonically within each scope.
 //!
@@ -150,15 +150,16 @@
 //!
 //! # Views and persistence
 //!
-//! Views are presentation contracts suitable for rendering, API responses,
+//! Views are current-state contracts suitable for rendering, API responses,
 //! and transport serialization. [`crate::engine::EngineSnapshot`] and
 //! [`crate::torrent::TorrentSnapshot`] are durable persistence contracts.
-//! Applications must not poll snapshots to refresh a frontend. See
+//! Applications must not poll snapshots to refresh current state. See
 //! [`crate::torrent`] for restore validation and storage reconciliation rules.
 //!
-//! Application-specific action routing can use an adapter-owned Tokio channel
-//! whose consumer invokes methods on `Engine` and `Torrent`. That keeps UI or
-//! server commands outside the library without duplicating its public API.
+//! Application-specific action routing can use an application-owned Tokio
+//! channel whose consumer invokes methods on `Engine` and `Torrent`. That keeps
+//! caller-specific commands outside the library without duplicating its public
+//! API.
 
 mod event;
 mod handle;
@@ -167,7 +168,7 @@ mod stream;
 mod view;
 
 pub use event::{
-   EngineEvent, EngineEventKind, FrontendHealth, FrontendHealthLevel, PeerEvent, PeerEventKind,
+   EngineEvent, EngineEventKind, LiveHealth, LiveHealthLevel, PeerEvent, PeerEventKind,
    SequencedEvent, TorrentEvent, TorrentEventKind, TrackerEvent, TrackerEventKind,
 };
 pub(crate) use handle::PeerIdentity;
@@ -242,13 +243,13 @@ mod tests {
 
    #[tokio::test]
    async fn peer_metrics_do_not_republish_the_torrent_projection() {
-      let frontend = Hub::new();
+      let hub = Hub::new();
       let info_hash = InfoHash::from_bytes([1; 20]);
       let torrent = benchmark_torrent_view(info_hash, "isolated");
-      frontend.initialize_torrent_projection(torrent.clone());
-      let scope = frontend.ensure_torrent_scope(info_hash);
-      let mut torrent_events = scope.live.subscribe();
-      let peer = frontend.register_peer_scope(
+      hub.initialize_torrent_projection(torrent.clone());
+      let scope = hub.ensure_torrent_scope(info_hash);
+      let mut torrent_events = scope.publisher.subscribe();
+      let peer = hub.register_peer_scope(
          PeerIdentity {
             torrent: info_hash,
             peer: PeerId::Unknown([2; 20]),
@@ -260,7 +261,7 @@ mod tests {
 
       peer.publish_metrics(peer_view);
 
-      assert_eq!(scope.live.view(), Some(torrent));
+      assert_eq!(scope.publisher.view(), Some(torrent));
       assert!(
          tokio::time::timeout(Duration::from_millis(20), torrent_events.recv())
             .await
@@ -270,9 +271,9 @@ mod tests {
 
    #[tokio::test]
    async fn tracker_restart_keeps_listener_open_until_final_stop() {
-      let frontend = Hub::new();
+      let hub = Hub::new();
       let source = Tracker::Http("https://tracker.example/announce".to_string());
-      let tracker = frontend.register_tracker_scope(
+      let tracker = hub.register_tracker_scope(
          InfoHash::from_bytes([3; 20]),
          &source,
          pending_tracker_view(),
@@ -286,7 +287,7 @@ mod tests {
       );
       assert_eq!(listener.view().status, TrackerStatus::Restarting);
 
-      let restarted = frontend.register_tracker_scope(
+      let restarted = hub.register_tracker_scope(
          InfoHash::from_bytes([3; 20]),
          &source,
          pending_tracker_view(),
@@ -316,21 +317,20 @@ mod tests {
    fn large_scope_tree_benchmark() {
       use std::time::Instant;
 
-      let frontend = Hub::new();
+      let hub = Hub::new();
       let started = Instant::now();
       for torrent_index in 0_u16..100 {
          let bytes = torrent_index.to_be_bytes();
          let mut hash = [0_u8; 20];
          hash[..2].copy_from_slice(&bytes);
-         frontend.initialize_torrent_projection(benchmark_torrent_view(
+         hub.initialize_torrent_projection(benchmark_torrent_view(
             InfoHash::from_bytes(hash),
             &format!("torrent-{torrent_index}"),
          ));
-         frontend
-            .ensure_torrent_scope(InfoHash::from_bytes(hash))
+         hub.ensure_torrent_scope(InfoHash::from_bytes(hash))
             .mark_registered_for_benchmark();
          for peer_index in 0_u8..10 {
-            frontend.register_peer_scope(
+            hub.register_peer_scope(
                PeerIdentity {
                   torrent: InfoHash::from_bytes(hash),
                   peer: PeerId::Unknown([peer_index; 20]),
@@ -347,7 +347,7 @@ mod tests {
             let bytes = torrent_index.to_be_bytes();
             let mut hash = [0_u8; 20];
             hash[..2].copy_from_slice(&bytes);
-            for peer in frontend.peer_handles(InfoHash::from_bytes(hash)) {
+            for peer in hub.peer_handles(InfoHash::from_bytes(hash)) {
                peer.publish_metrics(peer.view());
             }
          }
@@ -355,7 +355,7 @@ mod tests {
       let updates = started.elapsed();
 
       let started = Instant::now();
-      let view = frontend.view();
+      let view = hub.view();
       let view_construction = started.elapsed();
       assert_eq!(view.torrent_count(), 100);
       assert!(
@@ -366,13 +366,13 @@ mod tests {
       );
 
       let removal_hash = InfoHash::from_bytes([255; 20]);
-      frontend.initialize_torrent_projection(benchmark_torrent_view(removal_hash, "removal"));
+      hub.initialize_torrent_projection(benchmark_torrent_view(removal_hash, "removal"));
       let removal_peers = (0_u16..1_000)
          .map(|peer_index| {
             let bytes = peer_index.to_be_bytes();
             let mut id = [0_u8; 20];
             id[..2].copy_from_slice(&bytes);
-            frontend.register_peer_scope(
+            hub.register_peer_scope(
                PeerIdentity {
                   torrent: removal_hash,
                   peer: PeerId::Unknown(id),
@@ -383,14 +383,14 @@ mod tests {
          .collect::<Vec<_>>();
       let zero_listener_slots = removal_peers
          .iter()
-         .map(|peer| peer.inner.live.allocated_event_slots())
+         .map(|peer| peer.inner.publisher.allocated_event_slots())
          .sum::<usize>();
       let zero_listener_memory_lower_bound = removal_peers
          .iter()
-         .map(|peer| peer.inner.live.allocation_lower_bound_bytes())
+         .map(|peer| peer.inner.publisher.allocation_lower_bound_bytes())
          .sum::<usize>();
       let started = Instant::now();
-      frontend.remove_torrent_scope(removal_hash);
+      hub.remove_torrent_scope(removal_hash);
       let removal = started.elapsed();
 
       let burst = LivePublisher::new(0_u64, 8);

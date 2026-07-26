@@ -17,8 +17,8 @@ use super::{
 };
 use crate::{
    errors::TorrentError,
-   frontend::{TorrentEventKind, TorrentView},
    hashes::InfoHash,
+   live::{TorrentEventKind, TorrentView},
    metainfo::Info,
    peer::{Peer, PeerId, commands::HaveInfoDict},
    pieces::{PieceManager, PieceScheduler},
@@ -169,13 +169,13 @@ pub(crate) mod commands {
    #[messages]
    impl TorrentActor {
       #[message]
-      pub(crate) fn kill_peer(&mut self, id: PeerId, frontend: crate::frontend::PeerHandle) {
+      pub(crate) fn kill_peer(&mut self, id: PeerId, handle: crate::live::PeerHandle) {
          self.piece_scheduler.peer_disconnected(id);
          // Kill the actor quietly.
          if let Some(actor) = self.peers.remove(&id) {
             actor.kill();
          }
-         frontend.disconnected();
+         handle.disconnected();
          self.publish_live_view(|_| TorrentEventKind::Updated);
          self.fill_all_peer_request_windows();
       }

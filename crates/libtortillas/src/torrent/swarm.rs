@@ -10,7 +10,7 @@ use tracing::{debug, instrument, trace, warn};
 
 use super::TorrentActor;
 use crate::{
-   frontend::{PeerIdentity, PeerView},
+   live::{PeerIdentity, PeerView},
    peer::{Peer, PeerActor, PeerId},
    protocol::{
       messages::{Handshake, PeerMessages},
@@ -109,7 +109,7 @@ impl TorrentActor {
          return;
       }
 
-      let peer_frontend = self.frontend.register_peer_scope(
+      let peer_handle = self.hub.register_peer_scope(
          PeerIdentity {
             torrent: info_hash,
             peer: id,
@@ -124,7 +124,7 @@ impl TorrentActor {
             actor_ref,
             info_hash,
             peer_settings,
-            peer_frontend.clone(),
+            peer_handle.clone(),
          ),
          match peer_mailbox_size {
             0 => mailbox::unbounded(),
@@ -132,8 +132,8 @@ impl TorrentActor {
          },
       );
       self.peers.insert(id, peer_actor);
-      self.publish_live_view(|_| crate::frontend::TorrentEventKind::Updated);
-      self.frontend.emit_peer_connected(&peer_frontend);
+      self.publish_live_view(|_| crate::live::TorrentEventKind::Updated);
+      self.hub.emit_peer_connected(&peer_handle);
    }
 
    #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]
@@ -174,7 +174,7 @@ impl TorrentActor {
       }
       for id in dead_peers {
          self.peers.remove(&id);
-         self.publish_live_view(|_| crate::frontend::TorrentEventKind::Updated);
+         self.publish_live_view(|_| crate::live::TorrentEventKind::Updated);
       }
    }
 

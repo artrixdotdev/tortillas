@@ -3,7 +3,7 @@
 //! # Getting started
 //!
 //! A basic downloader only needs an [`Engine`](engine::Engine) and a
-//! [`TorrentSource`](engine::TorrentSource). The live frontend API is optional.
+//! [`TorrentSource`](engine::TorrentSource). Live updates are optional.
 //!
 //! Add the library and its Tokio runtime to a binary crate:
 //!
@@ -54,7 +54,7 @@
 //!
 //! Every source is passed to
 //! [`Engine::add_torrent`](engine::Engine::add_torrent) in the same way. There
-//! is no frontend-specific setup.
+//! is no live-specific setup.
 //!
 //! For example, downloading from a magnet link only changes the source:
 //!
@@ -120,19 +120,19 @@
 //!
 //! Browse the repository's
 //! [examples directory](https://github.com/artrixdotdev/tortillas/tree/main/crates/libtortillas/examples)
-//! for complete runnable programs, including live frontend integration.
+//! for complete runnable programs, including event-driven progress reporting.
 //!
-//! # Live updates are optional
+//! # Observing live state
 //!
-//! Applications that only need to download and seed files do not need
-//! [`frontend`] listeners, events, views, or metrics. Those APIs exist for
-//! applications that want to display live progress or forward state through a
-//! terminal, web server, website, or desktop application.
+//! Applications that only download and seed files do not need [`live`]
+//! listeners, events, views, or metrics. The module is for consumers that need
+//! current progress and incremental changes, whether they render a terminal,
+//! serve an API, update a website, or drive a desktop application.
 //!
-//! When live updates are useful, start with
-//! [`EventListener`](frontend::EventListener) and its
-//! [`view`](frontend::EventListener::view). The [`frontend`] module documents
-//! the complete transport-agnostic model.
+//! Start with [`EventListener`](live::EventListener): read its
+//! [`view`](live::EventListener::view) for current state and receive events to
+//! learn when that state changes. The [`live`] module documents the complete
+//! transport-agnostic model.
 //!
 //! This helper waits for changes and prints verified payload progress until the
 //! torrent finishes downloading:
@@ -168,10 +168,10 @@
 //! methods that must be driven inside a Tokio runtime, and the crate uses Tokio
 //! tasks, sockets, timers, channels, and filesystem APIs internally.
 //!
-//! Frontends should create one application-level Tokio runtime and keep the
-//! engine plus all torrent handles on work scheduled by that runtime. The crate
-//! does not promise runtime independence, HTTP client injection, clock
-//! injection, listener injection, or storage runtime abstraction.
+//! Applications should create one Tokio runtime and keep the engine plus all
+//! torrent handles on work scheduled by that runtime. The crate does not
+//! promise runtime independence, HTTP client injection, clock injection,
+//! listener injection, or storage runtime abstraction.
 //! Synchronous adapter work should communicate with async engine tasks through
 //! channels or a dedicated adapter thread. [`tokio::task::spawn_blocking`] is
 //! appropriate for bounded blocking work, but not for a permanent input loop:
@@ -187,9 +187,9 @@
 //! internals when an equivalent [`facade`] type exists. [`prelude`] re-exports
 //! the types most applications need.
 //!
-//! Engine and torrent handles expose listeners for live UI updates. Persistence
-//! snapshots are intentionally separate and should not be polled for display
-//! changes.
+//! Engine and torrent handles expose listeners for current state and
+//! incremental updates. Persistence snapshots are intentionally separate and
+//! should not be polled for live changes.
 //!
 //! # Internal architecture
 //!
@@ -211,17 +211,16 @@
 //!
 //! Actors own operational protocol state. Public applications interact through
 //! [`Engine`](engine::Engine), [`Torrent`](torrent::Torrent), and the
-//! transport-agnostic [`frontend`] views and event streams. Durable state is
+//! transport-agnostic [`live`] views and event streams. Durable state is
 //! represented by [`EngineSnapshot`](engine::EngineSnapshot) and
-//! [`TorrentSnapshot`](torrent::TorrentSnapshot), never by live presentation
-//! views.
+//! [`TorrentSnapshot`](torrent::TorrentSnapshot), never by live views.
 //!
 //! Stable public types are exported by module facades while actor messages and
 //! coordination details remain crate-private. Domain values such as lifecycle
 //! state, storage strategy, metrics, and snapshots live outside actor files so
 //! actors can focus on orchestration.
 //!
-//! See [`frontend`] for the source-of-truth, publication, lifecycle, and lock
+//! See [`live`] for the source-of-truth, publication, lifecycle, and lock
 //! invariants. See [`torrent`] for transfer scheduling and persistence
 //! semantics.
 
@@ -229,8 +228,8 @@ pub(crate) mod dht;
 pub mod engine;
 pub mod errors;
 pub mod facade;
-pub mod frontend;
 pub mod hashes;
+pub mod live;
 pub mod metainfo;
 pub mod metrics;
 pub mod peer;

@@ -8,7 +8,7 @@ use tracing::{error, info, warn};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
    tracing_subscriber::fmt()
-      .with_env_filter("live_frontend=trace,off")
+      .with_env_filter("live=trace,off")
       .init();
    let mut args = std::env::args_os().skip(1).map(PathBuf::from);
    let Some(torrent_path) = args.next() else {
@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                   sequence = event.sequence,
                   torrent_count = view.torrent_count(),
                   ?event.kind,
-                  "frontend received a live engine event"
+                  "received an engine event"
                );
                if matches!(event.kind, EngineEventKind::Shutdown(_)) {
                   break;
@@ -41,11 +41,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                warn!(
                   events,
                   torrent_count = view.torrent_count(),
-                  "redrawing live state after lag"
+                  "refreshing current state after lag"
                );
             }
             Err(EventStreamError::Closed) => {
-               info!("frontend event stream closed");
+               info!("engine event stream closed");
                break;
             }
          }
