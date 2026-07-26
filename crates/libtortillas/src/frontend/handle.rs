@@ -12,15 +12,15 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-   EventListener, EventSubscription, FrontendHub, FrontendHubInner, LivePublisher, PeerEventKind,
-   PeerView, TrackerEventKind, TrackerStatus, TrackerView,
+   EventListener, EventSubscription, Hub, HubInner, LivePublisher, PeerEventKind, PeerView,
+   TrackerEventKind, TrackerStatus, TrackerView,
 };
 use crate::{hashes::InfoHash, metrics::TrackerMetrics, peer::PeerId};
 
 /// Shared live state behind an identity-bearing protocol handle.
 pub(crate) struct LiveScope<I, V, E> {
    pub(crate) identity: I,
-   hub: Weak<FrontendHubInner>,
+   hub: Weak<HubInner>,
    pub(crate) live: LivePublisher<V, E>,
 }
 
@@ -29,7 +29,7 @@ where
    V: Clone + Send + Sync + 'static,
    E: Clone + Send + 'static,
 {
-   fn new(identity: I, view: V, hub: Weak<FrontendHubInner>, event_capacity: usize) -> Self {
+   fn new(identity: I, view: V, hub: Weak<HubInner>, event_capacity: usize) -> Self {
       Self {
          identity,
          hub,
@@ -49,8 +49,8 @@ where
       self.live.view()
    }
 
-   fn frontend(&self) -> Option<FrontendHub> {
-      self.hub.upgrade().map(FrontendHub::from_inner)
+   fn frontend(&self) -> Option<Hub> {
+      self.hub.upgrade().map(Hub::from_inner)
    }
 }
 
@@ -79,7 +79,7 @@ pub struct PeerHandle {
 
 impl PeerHandle {
    pub(crate) fn new(
-      identity: PeerIdentity, view: PeerView, hub: Weak<FrontendHubInner>, event_capacity: usize,
+      identity: PeerIdentity, view: PeerView, hub: Weak<HubInner>, event_capacity: usize,
    ) -> Self {
       Self {
          inner: Arc::new(LiveScope::new(identity, view, hub, event_capacity)),
@@ -220,8 +220,7 @@ pub struct TrackerHandle {
 
 impl TrackerHandle {
    pub(crate) fn new(
-      identity: TrackerIdentity, view: TrackerView, hub: Weak<FrontendHubInner>,
-      event_capacity: usize,
+      identity: TrackerIdentity, view: TrackerView, hub: Weak<HubInner>, event_capacity: usize,
    ) -> Self {
       Self {
          inner: Arc::new(LiveScope::new(identity, view, hub, event_capacity)),
@@ -381,7 +380,7 @@ mod tests {
       }
    }
 
-   fn peer_handle(frontend: &FrontendHub) -> PeerHandle {
+   fn peer_handle(frontend: &Hub) -> PeerHandle {
       frontend.register_peer_scope(
          PeerIdentity {
             torrent: InfoHash::from_bytes([1; 20]),
@@ -393,7 +392,7 @@ mod tests {
 
    #[tokio::test]
    async fn peer_handle_when_updated_then_only_its_listener_receives_event() {
-      let frontend = FrontendHub::new();
+      let frontend = Hub::new();
       let peer = peer_handle(&frontend);
       let mut listener = peer.listener();
       let mut updated = peer.view();
@@ -414,7 +413,7 @@ mod tests {
 
    #[tokio::test]
    async fn disconnected_peer_rejects_late_actor_updates() {
-      let frontend = FrontendHub::new();
+      let frontend = Hub::new();
       let peer = peer_handle(&frontend);
       let mut listener = peer.listener();
       let mut late = peer.view();
@@ -436,8 +435,8 @@ mod tests {
    }
 
    #[test]
-   fn live_handles_do_not_keep_their_frontend_hub_alive() {
-      let frontend = FrontendHub::new();
+   fn live_handles_do_not_keep_their_hub_alive() {
+      let frontend = Hub::new();
       let hub = frontend.downgrade();
       let peer = peer_handle(&frontend);
 

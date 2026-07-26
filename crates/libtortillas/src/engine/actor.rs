@@ -17,7 +17,7 @@ use super::commands;
 use crate::{
    dht::{DhtActor, DhtActorArgs},
    errors::EngineError,
-   frontend::{FrontendHealthLevel, FrontendHub},
+   frontend::{FrontendHealthLevel, Hub},
    hashes::InfoHash,
    peer::PeerId,
    protocol::stream::PeerStream,
@@ -32,7 +32,7 @@ use crate::{
 /// actor.
 pub struct EngineActor {
    /// Live projection coordinator shared with managed torrents.
-   pub(super) frontend: FrontendHub,
+   pub(super) frontend: Hub,
    /// Engine-wide DHT service shared by every torrent.
    pub(super) dht: Option<ActorRef<DhtActor>>,
    /// Listener to wait for incoming TCP connections from peers
@@ -107,7 +107,7 @@ pub struct EngineActorArgs {
    pub default_base_path: Option<PathBuf>,
 
    /// Live frontend state shared by the engine handle and actor hierarchy.
-   pub(crate) frontend: FrontendHub,
+   pub(crate) frontend: Hub,
 }
 
 impl Actor for EngineActor {

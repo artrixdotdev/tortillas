@@ -76,7 +76,7 @@
 //!
 //! ```text
 //! EngineActor ── owns operational engine state
-//! FrontendHub
+//! Hub
 //! ├── engine lifecycle and event publisher
 //! └── keyed torrent scopes
 //!     └── torrent view and event publisher
@@ -172,7 +172,7 @@ pub use event::{
 };
 pub(crate) use handle::PeerIdentity;
 pub use handle::{PeerHandle, PeerListener, TrackerHandle, TrackerId, TrackerListener};
-pub(crate) use hub::{FrontendHub, FrontendHubInner};
+pub(crate) use hub::{Hub, HubInner};
 pub use stream::{
    EngineListener, EventListener, EventStreamError, EventSubscription, LivePublisher,
    TorrentListener,
@@ -242,7 +242,7 @@ mod tests {
 
    #[tokio::test]
    async fn peer_metrics_do_not_republish_the_torrent_projection() {
-      let frontend = FrontendHub::new();
+      let frontend = Hub::new();
       let info_hash = InfoHash::from_bytes([1; 20]);
       let torrent = benchmark_torrent_view(info_hash, "isolated");
       frontend.initialize_torrent_projection(torrent.clone());
@@ -270,7 +270,7 @@ mod tests {
 
    #[tokio::test]
    async fn tracker_restart_keeps_listener_open_until_final_stop() {
-      let frontend = FrontendHub::new();
+      let frontend = Hub::new();
       let source = Tracker::Http("https://tracker.example/announce".to_string());
       let tracker = frontend.register_tracker_scope(
          InfoHash::from_bytes([3; 20]),
@@ -316,7 +316,7 @@ mod tests {
    fn large_scope_tree_benchmark() {
       use std::time::Instant;
 
-      let frontend = FrontendHub::new();
+      let frontend = Hub::new();
       let started = Instant::now();
       for torrent_index in 0_u16..100 {
          let bytes = torrent_index.to_be_bytes();

@@ -161,14 +161,14 @@ impl TorrentScope {
 
 /// Ownership root for transport-agnostic live projections.
 #[derive(Debug)]
-pub(crate) struct FrontendHubInner {
+pub(crate) struct HubInner {
    engine: EngineScope,
    torrents: ScopeRegistry<InfoHash, TorrentScope>,
    settings: FrontendSettings,
    next_tracker_id: AtomicU64,
 }
 
-impl FrontendHubInner {
+impl HubInner {
    fn torrent_handle(&self, info_hash: InfoHash) -> Option<Torrent> {
       self
          .torrents
@@ -181,8 +181,8 @@ impl FrontendHubInner {
 
 #[derive(Debug, Clone)]
 enum HubReference {
-   Strong(Arc<FrontendHubInner>),
-   Weak(Weak<FrontendHubInner>),
+   Strong(Arc<HubInner>),
+   Weak(Weak<HubInner>),
 }
 
 /// Cloneable coordinator for the complete live projection tree.
@@ -190,11 +190,11 @@ enum HubReference {
 /// The engine owns a strong instance. Supervised actors receive weak instances
 /// so the projection tree cannot participate in an ownership cycle.
 #[derive(Debug, Clone)]
-pub(crate) struct FrontendHub {
+pub(crate) struct Hub {
    inner: HubReference,
 }
 
-impl FrontendHub {
+impl Hub {
    // Engine projection
 
    pub(crate) fn new() -> Self {
@@ -203,7 +203,7 @@ impl FrontendHub {
 
    pub(crate) fn with_settings(settings: FrontendSettings) -> Self {
       Self {
-         inner: HubReference::Strong(Arc::new(FrontendHubInner {
+         inner: HubReference::Strong(Arc::new(HubInner {
             engine: EngineScope {
                live: LivePublisher::new(EngineStatus::Starting, settings.engine_event_capacity),
             },
@@ -214,7 +214,7 @@ impl FrontendHub {
       }
    }
 
-   pub(crate) fn from_inner(inner: Arc<FrontendHubInner>) -> Self {
+   pub(crate) fn from_inner(inner: Arc<HubInner>) -> Self {
       Self {
          inner: HubReference::Strong(inner),
       }
@@ -226,19 +226,19 @@ impl FrontendHub {
       }
    }
 
-   pub(crate) fn downgrade(&self) -> Weak<FrontendHubInner> {
+   pub(crate) fn downgrade(&self) -> Weak<HubInner> {
       match &self.inner {
          HubReference::Strong(inner) => Arc::downgrade(inner),
          HubReference::Weak(inner) => inner.clone(),
       }
    }
 
-   fn inner(&self) -> Arc<FrontendHubInner> {
+   fn inner(&self) -> Arc<HubInner> {
       match &self.inner {
          HubReference::Strong(inner) => Arc::clone(inner),
          HubReference::Weak(inner) => inner
             .upgrade()
-            .expect("frontend hub outlived by its actor hierarchy"),
+            .expect("live hub outlived by its actor hierarchy"),
       }
    }
 
@@ -560,7 +560,7 @@ impl FrontendHub {
    }
 }
 
-impl Default for FrontendHub {
+impl Default for Hub {
    fn default() -> Self {
       Self::new()
    }
@@ -630,7 +630,7 @@ mod tests {
 
    #[tokio::test]
    async fn torrent_removal_closes_every_child_scope_exactly_once() {
-      let frontend = FrontendHub::new();
+      let frontend = Hub::new();
       let info_hash = InfoHash::from_bytes([4; 20]);
       frontend.initialize_torrent_projection(torrent_view(info_hash));
       let peer = frontend.register_peer_scope(

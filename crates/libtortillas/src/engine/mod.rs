@@ -78,7 +78,7 @@ use self::{
 };
 use crate::{
    errors::{EngineError, map_engine_send_error},
-   frontend::{EngineListener, EngineView, EventSubscription, FrontendHub},
+   frontend::{EngineListener, EngineView, EventSubscription, Hub},
    hashes::InfoHash,
    peer::PeerId,
    settings::Settings,
@@ -128,7 +128,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct Engine {
    actor: ActorRef<EngineActor>,
-   frontend: FrontendHub,
+   frontend: Hub,
 }
 
 #[bon::bon]
@@ -226,7 +226,7 @@ impl Engine {
          None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
       };
 
-      let frontend = FrontendHub::with_settings(settings.frontend);
+      let frontend = Hub::with_settings(settings.frontend);
       let args = EngineActorArgs {
          tcp_addr,
          utp_addr,
@@ -720,7 +720,7 @@ mod tests {
    }
 
    #[tokio::test]
-   async fn buffered_torrent_events_do_not_retain_the_frontend_hub() {
+   async fn buffered_torrent_events_do_not_retain_the_hub() {
       let engine = Engine::builder()
          .settings(deterministic_settings())
          .autostart(false)

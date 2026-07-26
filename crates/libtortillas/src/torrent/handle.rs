@@ -18,8 +18,8 @@ use super::{
 use crate::{
    errors::{TorrentError, map_torrent_send_error},
    frontend::{
-      EventSubscription, FrontendHub, FrontendHubInner, LivePublisher, PeerHandle,
-      TorrentEventKind, TorrentListener, TorrentView, TrackerHandle,
+      EventSubscription, Hub, HubInner, LivePublisher, PeerHandle, TorrentEventKind,
+      TorrentListener, TorrentView, TrackerHandle,
    },
    hashes::InfoHash,
    pieces::PieceManager,
@@ -29,7 +29,7 @@ use crate::{
 pub(crate) struct TorrentInner {
    pub(crate) info_hash: InfoHash,
    pub(crate) actor: ActorRef<TorrentActor>,
-   pub(crate) hub: Weak<FrontendHubInner>,
+   pub(crate) hub: Weak<HubInner>,
    pub(crate) live: Arc<LivePublisher<Option<TorrentView>, TorrentEventKind>>,
 }
 
@@ -57,11 +57,11 @@ impl Torrent {
    /// to its underlying [`TorrentActor`].
    #[cfg(test)]
    pub(crate) fn new(info_hash: InfoHash, actor_ref: ActorRef<TorrentActor>) -> Self {
-      Self::new_with_frontend(info_hash, actor_ref, &FrontendHub::default(), None)
+      Self::new_with_frontend(info_hash, actor_ref, &Hub::default(), None)
    }
 
    pub(crate) fn new_with_frontend(
-      info_hash: InfoHash, actor: ActorRef<TorrentActor>, frontend: &FrontendHub,
+      info_hash: InfoHash, actor: ActorRef<TorrentActor>, frontend: &Hub,
       initial_view: Option<TorrentView>,
    ) -> Self {
       let scope = frontend.ensure_torrent_scope(info_hash);
@@ -248,7 +248,7 @@ impl Torrent {
       })
    }
 
-   fn frontend(&self) -> Option<FrontendHub> {
-      self.inner.hub.upgrade().map(FrontendHub::from_inner)
+   fn frontend(&self) -> Option<Hub> {
+      self.inner.hub.upgrade().map(Hub::from_inner)
    }
 }

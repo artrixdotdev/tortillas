@@ -26,7 +26,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use super::{choking::ChokingScheduler, util};
 use crate::{
    errors::{SnapshotUnsupportedReason, TorrentError},
-   frontend::{FrontendHealthLevel, FrontendHub, TorrentView, TrackerStatus, TrackerView},
+   frontend::{FrontendHealthLevel, Hub, TorrentView, TrackerStatus, TrackerView},
    hashes::InfoHash,
    metainfo::{Info, MetaInfo},
    metrics::{
@@ -100,7 +100,7 @@ impl PieceManager for PieceManagerProxy {
 }
 
 pub(crate) struct TorrentActor {
-   pub(super) frontend: FrontendHub,
+   pub(super) frontend: Hub,
    pub(crate) peers: HashMap<PeerId, ActorRef<PeerActor>>,
    pub(crate) trackers: HashMap<Tracker, ActorRef<TrackerActor>>,
 
@@ -668,7 +668,7 @@ pub struct TorrentActorArgs {
    pub settings: Settings,
 
    /// Live frontend state shared with the owning engine.
-   pub(crate) frontend: FrontendHub,
+   pub(crate) frontend: Hub,
 }
 
 impl Actor for TorrentActor {
@@ -1100,7 +1100,7 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(file_path),
          settings,
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
       });
       actor
          .tell(SetState {
@@ -1151,7 +1151,7 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(testing::torrent_temp_path()),
          settings,
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
       });
       actor
          .tell(SetState {
@@ -1199,7 +1199,7 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(base_path.clone()),
          settings,
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
       });
       actor
          .tell(SetState {
@@ -1303,7 +1303,7 @@ mod tests {
          sufficient_peers: Some(1),
          base_path: Some(fixture.path().to_path_buf()),
          settings,
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
       });
       let torrent = Torrent::new(info_hash, actor.clone());
       actor.tell(AddPeer { peer: seed.peer() }).await.unwrap();
@@ -1364,7 +1364,7 @@ mod tests {
          sufficient_peers: Some(sufficient_peers),
          base_path: None,
          settings: Settings::default(),
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
       });
 
       let torrent = Torrent::new(info_hash, actor.clone());
@@ -1398,7 +1398,7 @@ mod tests {
          sufficient_peers: None,
          base_path: None,
          settings: Settings::default(),
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
       });
 
       // Blocking loop that runs until we get an info dict
@@ -1438,7 +1438,7 @@ mod tests {
          sufficient_peers: Some(0),
          base_path: None,
          settings: Settings::default(),
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
       });
 
       assert_eq!(actor.ask(GetState).await.unwrap(), TorrentState::Ready);
@@ -1463,7 +1463,7 @@ mod tests {
          sufficient_peers: Some(0),
          base_path: None,
          settings: Settings::default(),
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
       });
 
       assert_eq!(
@@ -1492,7 +1492,7 @@ mod tests {
          sufficient_peers: Some(0),
          base_path: None,
          settings: Settings::default(),
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
       });
 
       actor
@@ -1552,7 +1552,7 @@ mod tests {
          sufficient_peers: None,
          base_path: Some(file_path),
          settings: Settings::default(),
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
       });
 
       let torrent = Torrent::new(info_hash, actor.clone());
@@ -1628,7 +1628,7 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(file_path.clone()),
          settings: Settings::default(),
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
       });
 
       // Build the bitfield with fake completed pieces
@@ -1652,7 +1652,7 @@ mod tests {
 
       // Construct the actor manually for snapshot testing
       let test_actor = TorrentActor {
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield,
@@ -1776,7 +1776,7 @@ mod tests {
       let utp_server = UtpSocket::new_udp(testing::ephemeral_socket_addr())
          .await
          .unwrap();
-      let frontend = FrontendHub::default();
+      let frontend = Hub::default();
       let actor_ref = TorrentActor::spawn(TorrentActorArgs {
          peer_id,
          metainfo: metainfo.clone(),
@@ -1811,7 +1811,7 @@ mod tests {
       piece_scheduler.set_piece_blocks(partial_piece_index, blocks);
 
       let mut test_actor = TorrentActor {
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield,
@@ -2013,11 +2013,11 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(file_path.clone()),
          settings: Settings::default(),
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
       });
 
       let mut actor = TorrentActor {
-         frontend: FrontendHub::default(),
+         frontend: Hub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield: BitVec::repeat(false, piece_count),
