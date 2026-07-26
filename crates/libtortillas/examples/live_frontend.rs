@@ -7,11 +7,16 @@ use tracing::{error, info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+   tracing_subscriber::fmt()
+      .with_env_filter("live_frontend=trace,off")
+      .init();
    let mut args = std::env::args_os().skip(1).map(PathBuf::from);
    let Some(torrent_path) = args.next() else {
       error!("pass a .torrent file path and optional session path to run the example");
       return Ok(());
    };
+
+   println!("Torrent path: {:?}", torrent_path);
    let session_path = args.next();
 
    let engine = Engine::default();
