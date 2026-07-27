@@ -584,6 +584,16 @@ impl Message<PeerMessages> for PeerActor {
       &mut self, msg: PeerMessages, _: &mut KameoContext<Self, Self::Reply>,
    ) -> Self::Reply {
       self.peer.update_last_message_received();
+      #[cfg(feature = "live")]
+      let publish_live_state = matches!(
+         &msg,
+         PeerMessages::Choke
+            | PeerMessages::Unchoke
+            | PeerMessages::Interested
+            | PeerMessages::NotInterested
+            | PeerMessages::Have(_)
+            | PeerMessages::Bitfield(_)
+      );
       match msg {
          PeerMessages::Piece(index, offset, data) => {
             trace!(
@@ -742,7 +752,8 @@ impl Message<PeerMessages> for PeerActor {
             warn!("Received unexpected handshake from peer");
          }
       }
-      crate::live_only! {
+      #[cfg(feature = "live")]
+      if publish_live_state {
          let samples = self.live_handle.view().metrics.transfer.samples;
          self
             .live_handle

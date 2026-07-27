@@ -25,8 +25,10 @@ impl BlockRequest {
 pub(crate) struct PieceScheduler {
    completed_pieces: BitVec,
    completed_blocks: HashMap<usize, BitVec>,
-   in_flight: HashMap<(usize, usize), InFlightBlock>,
+   in_flight: HashMap<usize, Vec<Option<InFlightBlock>>>,
+   in_flight_per_peer: HashMap<PeerId, usize>,
    peer_availability: HashMap<PeerId, Arc<BitVec<AtomicU8>>>,
+   request_cursors: HashMap<PeerId, usize>,
    next_piece: usize,
 }
 
@@ -42,7 +44,9 @@ impl PieceScheduler {
          completed_pieces: BitVec::repeat(false, piece_count),
          completed_blocks: HashMap::new(),
          in_flight: HashMap::new(),
+         in_flight_per_peer: HashMap::new(),
          peer_availability: HashMap::new(),
+         request_cursors: HashMap::new(),
          next_piece: 0,
       }
    }
@@ -82,10 +86,9 @@ impl PieceScheduler {
       if block_index < blocks.len() {
          blocks.set(block_index, true);
       }
-      self
-         .in_flight
-         .remove(&(piece_index, block_index))
-         .map(|request| request.peer_id)
+      let request = self.remove_in_flight(piece_index, block_index)?;
+      self.decrement_in_flight(request.peer_id);
+      Some(request.peer_id)
    }
 
    pub(crate) fn remove_piece_blocks(&mut self, piece_index: usize) -> Option<BitVec> {
@@ -118,18 +121,40 @@ impl PieceScheduler {
          return requests;
       }
 
+      let piece_count = self.completed_pieces.len();
+      if piece_count == 0 {
+         return requests;
+      }
+
       let Some(available_pieces) = self.peer_availability.get(&peer_id) else {
          return requests;
       };
 
-      let last_piece_index = self.completed_pieces.len().saturating_sub(1);
+      let blocks_per_piece = piece_length.div_ceil(BLOCK_SIZE);
+      if blocks_per_piece == 0 {
+         return requests;
+      }
+
+      let last_piece_index = piece_count - 1;
       let last_piece_len = if total_length.is_multiple_of(piece_length) {
          piece_length
       } else {
          total_length % piece_length
       };
+      let first_slot = self.next_piece.saturating_mul(blocks_per_piece);
+      let total_slots = last_piece_index
+         .saturating_mul(blocks_per_piece)
+         .saturating_add(last_piece_len.div_ceil(BLOCK_SIZE));
+      let cursor = self
+         .request_cursors
+         .get(&peer_id)
+         .copied()
+         .unwrap_or(first_slot)
+         .clamp(first_slot, total_slots);
 
-      for piece_index in self.next_piece..self.completed_pieces.len() {
+      for slot in (cursor..total_slots).chain(first_slot..cursor) {
+         let piece_index = slot / blocks_per_piece;
+         let block_index = slot % blocks_per_piece;
          if self.completed_pieces[piece_index]
             || !available_pieces
                .get(piece_index)
@@ -147,30 +172,41 @@ impl PieceScheduler {
             piece_length
          };
          let total_blocks = piece_len.div_ceil(BLOCK_SIZE);
+         if block_index >= total_blocks {
+            continue;
+         }
 
-         for block_index in 0..total_blocks {
-            let key = (piece_index, block_index);
-            if self.in_flight.contains_key(&key)
-               || self
-                  .completed_blocks
-                  .get(&piece_index)
-                  .and_then(|blocks| blocks.get(block_index).as_deref().copied())
-                  .unwrap_or(false)
-            {
-               continue;
-            }
+         if self.is_in_flight(piece_index, block_index)
+            || self
+               .completed_blocks
+               .get(&piece_index)
+               .and_then(|blocks| blocks.get(block_index).as_deref().copied())
+               .unwrap_or(false)
+         {
+            continue;
+         }
 
-            self.in_flight.insert(
-               key,
-               InFlightBlock {
-                  peer_id,
-                  requested_at: Instant::now(),
-               },
-            );
-            requests.push(self.block_request(piece_index, block_index, piece_len));
-            if requests.len() >= limit {
-               return requests;
-            }
+         let blocks = self.in_flight.entry(piece_index).or_default();
+         if blocks.len() <= block_index {
+            blocks.resize_with(block_index + 1, || None);
+         }
+         blocks[block_index] = Some(InFlightBlock {
+            peer_id,
+            requested_at: Instant::now(),
+         });
+         *self.in_flight_per_peer.entry(peer_id).or_default() += 1;
+         let next_cursor = slot.saturating_add(1);
+         self.request_cursors.insert(
+            peer_id,
+            if next_cursor < total_slots {
+               next_cursor
+            } else {
+               first_slot
+            },
+         );
+         requests.push(self.block_request(piece_index, block_index, piece_len));
+         if requests.len() >= limit {
+            return requests;
          }
       }
 
@@ -178,11 +214,7 @@ impl PieceScheduler {
    }
 
    pub(crate) fn in_flight_for_peer(&self, peer_id: PeerId) -> usize {
-      self
-         .in_flight
-         .values()
-         .filter(|request| request.peer_id == peer_id)
-         .count()
+      self.in_flight_per_peer.get(&peer_id).copied().unwrap_or(0)
    }
 
    pub(crate) fn update_peer_availability(
@@ -192,31 +224,56 @@ impl PieceScheduler {
    }
 
    pub(crate) fn peer_disconnected(&mut self, peer_id: PeerId) {
-      self
-         .in_flight
-         .retain(|_, request| request.peer_id != peer_id);
+      self.in_flight.retain(|_, blocks| {
+         for block in blocks.iter_mut() {
+            if block
+               .as_ref()
+               .is_some_and(|request| request.peer_id == peer_id)
+            {
+               *block = None;
+            }
+         }
+         blocks.iter().any(Option::is_some)
+      });
+      self.in_flight_per_peer.remove(&peer_id);
       self.peer_availability.remove(&peer_id);
+      self.request_cursors.remove(&peer_id);
    }
 
    pub(crate) fn release_stale_requests(&mut self, timeout: Duration) -> usize {
-      let before = self.in_flight.len();
       let now = Instant::now();
-      self
-         .in_flight
-         .retain(|_, request| now.saturating_duration_since(request.requested_at) < timeout);
-      before.saturating_sub(self.in_flight.len())
+      let mut released = 0;
+      let mut in_flight_per_peer = HashMap::new();
+      self.in_flight.retain(|_, blocks| {
+         for block in blocks.iter_mut() {
+            let Some(request) = block else {
+               continue;
+            };
+            if now.saturating_duration_since(request.requested_at) >= timeout {
+               *block = None;
+               released += 1;
+            } else {
+               *in_flight_per_peer.entry(request.peer_id).or_default() += 1;
+            }
+         }
+         blocks.iter().any(Option::is_some)
+      });
+      self.in_flight_per_peer = in_flight_per_peer;
+      released
    }
 
    pub(crate) fn release_peer_request(
       &mut self, peer_id: PeerId, piece_index: usize, offset: usize,
    ) {
-      let key = (piece_index, offset / BLOCK_SIZE);
       if self
          .in_flight
-         .get(&key)
+         .get(&piece_index)
+         .and_then(|blocks| blocks.get(offset / BLOCK_SIZE))
+         .and_then(Option::as_ref)
          .is_some_and(|request| request.peer_id == peer_id)
       {
-         self.in_flight.remove(&key);
+         self.remove_in_flight(piece_index, offset / BLOCK_SIZE);
+         self.decrement_in_flight(peer_id);
       }
    }
 
@@ -239,6 +296,39 @@ impl PieceScheduler {
          block_index,
          length,
       }
+   }
+
+   fn decrement_in_flight(&mut self, peer_id: PeerId) {
+      let remove = self
+         .in_flight_per_peer
+         .get_mut(&peer_id)
+         .is_some_and(|count| {
+            *count = count.saturating_sub(1);
+            *count == 0
+         });
+      if remove {
+         self.in_flight_per_peer.remove(&peer_id);
+      }
+   }
+
+   fn is_in_flight(&self, piece_index: usize, block_index: usize) -> bool {
+      self
+         .in_flight
+         .get(&piece_index)
+         .and_then(|blocks| blocks.get(block_index))
+         .is_some_and(Option::is_some)
+   }
+
+   fn remove_in_flight(&mut self, piece_index: usize, block_index: usize) -> Option<InFlightBlock> {
+      let (request, piece_has_requests) = {
+         let blocks = self.in_flight.get_mut(&piece_index)?;
+         let request = blocks.get_mut(block_index)?.take()?;
+         (request, blocks.iter().any(Option::is_some))
+      };
+      if !piece_has_requests {
+         self.in_flight.remove(&piece_index);
+      }
+      Some(request)
    }
 }
 
@@ -275,6 +365,26 @@ mod tests {
 
       assert_eq!(scheduler.release_stale_requests(Duration::ZERO), 1);
       assert_eq!(scheduler.in_flight_for_peer(peer_id), 0);
+   }
+
+   #[test]
+   fn scheduler_when_request_is_released_then_wraps_cursor() {
+      let peer_id = PeerId::Unknown([5; 20]);
+      let mut scheduler = PieceScheduler::new(2);
+      scheduler.update_peer_availability(peer_id, Arc::new([true, false].into_iter().collect()));
+      assert_eq!(
+         scheduler
+            .requests_for_peer(peer_id, 1, BLOCK_SIZE, BLOCK_SIZE * 2)
+            .len(),
+         1
+      );
+
+      scheduler.release_peer_request(peer_id, 0, 0);
+      let requests = scheduler.requests_for_peer(peer_id, 1, BLOCK_SIZE, BLOCK_SIZE * 2);
+
+      assert_eq!(requests.len(), 1);
+      assert_eq!(requests[0].piece_index, 0);
+      assert_eq!(requests[0].block_index, 0);
    }
 
    #[test]
