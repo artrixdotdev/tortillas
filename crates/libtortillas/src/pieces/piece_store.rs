@@ -2,7 +2,7 @@ use std::{io::Result as IoResult, path::PathBuf};
 
 use bytes::Bytes;
 use kameo::{Actor, actor::ActorRef, messages};
-use tokio::fs::read;
+use tokio::{fs::read, task::spawn_blocking};
 
 use crate::{errors::TorrentError, hashes::Hash, torrent::util};
 
@@ -30,7 +30,11 @@ impl PieceStoreActor {
    pub(crate) async fn validate_and_read(
       &mut self, path: PathBuf, hash: Hash<20>,
    ) -> anyhow::Result<Bytes> {
-      util::validate_piece_file(path.clone(), hash).await?;
-      Ok(read(&path).await?.into())
+      let data: Bytes = read(path).await?.into();
+      spawn_blocking(move || -> anyhow::Result<Bytes> {
+         util::validate_piece_bytes(&data, hash)?;
+         Ok(data)
+      })
+      .await?
    }
 }
