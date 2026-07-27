@@ -85,7 +85,7 @@ pub(crate) mod commands {
             return;
          }
 
-         let info_hash = *handshake.info_hash;
+         let info_hash = handshake.info_hash;
          let mut peer = Peer::from_socket_addr(peer_addr);
 
          // Populate peer fields from parsed handshake.
@@ -151,7 +151,7 @@ pub(crate) mod commands {
          Ok(torrent)
       }
 
-      /// Creates a new [`Torrent`](crate::torrent::Torrent) actor.
+      /// Creates a new [`Torrent`] actor.
       #[message]
       pub(crate) async fn create_torrent(
          &mut self, request: CreateTorrentRequest,

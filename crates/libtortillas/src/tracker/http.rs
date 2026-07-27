@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::Result;
 use async_trait::async_trait;
+use reqwest::Client;
 use serde::{
    Deserialize,
    de::{self, Visitor},
@@ -130,6 +131,7 @@ impl TrackerRequest {
 #[derive(Clone, Debug)]
 pub struct HttpTracker {
    uri: String,
+   client: Client,
    pub peer_id: PeerId,
    info_hash: InfoHash,
    params: Arc<RwLock<TrackerRequest>>,
@@ -186,6 +188,7 @@ impl HttpTracker {
       HttpTracker {
          interval: Arc::new(usize::MAX.into()),
          uri,
+         client: Client::new(),
          peer_id,
          params,
          info_hash,
@@ -236,7 +239,12 @@ impl TrackerBase for HttpTracker {
       // HTTP request phase
       let request_start = Instant::now();
 
-      let response = reqwest::get(&uri).await.map_err(TrackerActorError::Http)?;
+      let response = self
+         .client
+         .get(&uri)
+         .send()
+         .await
+         .map_err(TrackerActorError::Http)?;
       self.stats.increment_bytes_sent(uri.len());
 
       let response_bytes = response.bytes().await.map_err(TrackerActorError::Http)?;
@@ -597,8 +605,10 @@ mod tests {
             let announce_list = file.announce_list();
             println!("announce_list: {:?}", announce_list);
 
-            // An HTTP tracker
-            let announce_uri = announce_list[1].uri();
+            let announce_uri = announce_list
+               .first()
+               .expect("fixture should contain an HTTP tracker")
+               .uri();
             let http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None, None);
             http_tracker
                .update(TrackerUpdate::Left(file.info.total_length()))

@@ -1,9 +1,14 @@
-use std::path::PathBuf;
+use std::{
+   path::PathBuf,
+   time::{Duration, Instant},
+};
 
 use libtortillas::prelude::{
    Engine, EngineEventKind, EventStreamError, TorrentEventKind, TorrentSource, TorrentState,
 };
 use tracing::{error, info, warn};
+
+const METRICS_LOG_INTERVAL: Duration = Duration::from_secs(1);
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,16 +27,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
    let engine = Engine::default();
    let mut listener = engine.listener();
    let event_task = tokio::spawn(async move {
+      let mut last_metrics_log = None;
       loop {
          match listener.recv().await {
             Ok(event) => {
                let view = listener.view();
-               info!(
-                  sequence = event.sequence,
-                  torrent_count = view.torrent_count(),
-                  ?event.kind,
-                  "received an engine event"
-               );
+               match &event.kind {
+                  EngineEventKind::Torrent {
+                     torrent,
+                     event: TorrentEventKind::MetricsChanged(metrics),
+                  } => {
+                     let complete = metrics
+                        .progress
+                        .remaining_bytes
+                        .is_some_and(|bytes| bytes.0 == 0);
+                     let now = Instant::now();
+                     if complete
+                        || last_metrics_log
+                           .is_none_or(|last| now.duration_since(last) >= METRICS_LOG_INTERVAL)
+                     {
+                        last_metrics_log = Some(now);
+                        info!(
+                           sequence = event.sequence,
+                           torrent_id = %torrent.info_hash(),
+                           downloaded_bytes = metrics.traffic.totals.downloaded.0,
+                           verified_bytes = metrics.progress.verified_bytes.0,
+                           total_bytes = ?metrics.progress.total_bytes.map(|bytes| bytes.0),
+                           "received torrent metrics"
+                        );
+                     }
+                  }
+                  _ => info!(
+                     sequence = event.sequence,
+                     torrent_count = view.torrent_count(),
+                     ?event.kind,
+                     "received an engine event"
+                  ),
+               }
                if matches!(event.kind, EngineEventKind::Shutdown(_)) {
                   break;
                }

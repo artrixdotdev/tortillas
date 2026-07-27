@@ -119,7 +119,6 @@ impl Tracker {
    }
 }
 
-#[cfg(feature = "live")]
 impl Tracker {
    /// Returns a credential-free endpoint label for public views.
    pub(crate) fn redacted_endpoint(&self) -> String {

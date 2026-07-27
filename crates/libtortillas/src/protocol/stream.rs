@@ -1,6 +1,8 @@
 use std::{
    fmt,
    fmt::Display,
+   future::Future,
+   io::IoSlice,
    net::SocketAddr,
    pin::Pin,
    sync::Arc,
@@ -8,7 +10,6 @@ use std::{
 };
 
 use anyhow::Result;
-use async_trait::async_trait;
 use bytes::{Buf, BytesMut};
 use librqbit_utp::{UtpSocketUdp, UtpStream, UtpStreamReadHalf, UtpStreamWriteHalf};
 use tokio::{
@@ -18,12 +19,16 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{error, instrument, trace};
 
-use super::messages::{Handshake, PeerMessages};
+use super::messages::{EncodedPeerMessage, Handshake, PeerMessages};
 use crate::{
    errors::PeerActorError,
    hashes::InfoHash,
    peer::{MAGIC_STRING, PeerId, PeerState},
 };
+
+/// BEP 3 piece blocks and BEP 9 metadata pieces are 16 KiB. This leaves room
+/// for extension dictionaries and large bitfields while bounding peer input.
+const MAX_FRAME_PAYLOAD_LENGTH: usize = 1024 * 1024;
 
 enum PeerTransport {
    Tcp(TcpStream),
@@ -38,91 +43,116 @@ pub struct PeerStream {
    peer_state: PeerState,
 }
 
-#[async_trait]
 pub trait PeerSend: AsyncWrite + Unpin {
    /// Sends a PeerMessage to a peer.
-   async fn send(&mut self, data: PeerMessages) -> Result<(), PeerActorError> {
-      let bytes = data.to_bytes()?;
-      self.write_all(&bytes).await.map_err(|e| {
-         error!(error = %e, "Failed to send message to peer");
-         PeerActorError::SendFailed(e.to_string())
-      })
+   fn send(&mut self, data: PeerMessages) -> impl Future<Output = Result<(), PeerActorError>> + Send
+   where
+      Self: Send,
+   {
+      async move {
+         let mut writer = self;
+         let result = match data.encode()? {
+            EncodedPeerMessage::Contiguous(bytes) => writer.write_all(&bytes).await,
+            EncodedPeerMessage::Piece { header, block } => {
+               let mut frame = Buf::chain(header.as_slice(), block.as_ref());
+               AsyncWriteExt::write_all_buf(&mut writer, &mut frame).await
+            }
+         };
+         result.map_err(|e| {
+            error!(error = %e, "Failed to send message to peer");
+            PeerActorError::SendFailed(e.to_string())
+         })
+      }
    }
 
    /// Sends a message to a peer with a cancellation support, returning an
    /// error if the operation is cancel
-   async fn send_with_cancel(
+   fn send_with_cancel(
       &mut self, data: PeerMessages, token: CancellationToken,
-   ) -> Result<(), PeerActorError> {
-      tokio::select! {
-         _ = token.cancelled() => {
-            trace!("Sending message to peer was cancelled");
-            return Err(PeerActorError::MessageCancelled);
+   ) -> impl Future<Output = Result<(), PeerActorError>> + Send
+   where
+      Self: Send,
+   {
+      async move {
+         tokio::select! {
+            _ = token.cancelled() => {
+               trace!("Sending message to peer was cancelled");
+               Err(PeerActorError::MessageCancelled)
 
-         },
-         result = self.send(data) => {
-            result
+            },
+            result = self.send(data) => {
+               result
+            }
          }
       }
    }
 }
 
-#[async_trait]
 pub trait PeerRecv: AsyncRead + Unpin {
    /// Receives data from a peers stream. In other words, if you wish to
    /// directly contact a peer, use this function.
-   async fn recv(&mut self) -> Result<PeerMessages, PeerActorError> {
-      // First 4 bytes is the big endian encoded length field and the 5th byte is a
-      // PeerMessage tag
-      let mut length_buf = [0u8; 4];
+   fn recv(&mut self) -> impl Future<Output = Result<PeerMessages, PeerActorError>> + Send
+   where
+      Self: Send,
+   {
+      async move {
+         // First 4 bytes is the big endian encoded length field and the 5th byte is a
+         // PeerMessage tag
+         let mut length_buf = [0u8; 4];
 
-      self
-         .read_exact(&mut length_buf)
-         .await
-         .map_err(PeerActorError::ReceiveFailed)?;
+         self
+            .read_exact(&mut length_buf)
+            .await
+            .map_err(PeerActorError::ReceiveFailed)?;
 
-      let length = u32::from_be_bytes(length_buf);
+         let length = u32::from_be_bytes(length_buf);
 
-      // Safety check -- BitTorrent docs do not specify if KeepAlive messages have an
-      // ID (and I'm pretty sure they don't)
-      if length == 0 {
-         return Ok(PeerMessages::KeepAlive);
+         // Safety check -- BitTorrent docs do not specify if KeepAlive messages have an
+         // ID (and I'm pretty sure they don't)
+         if length == 0 {
+            return Ok(PeerMessages::KeepAlive);
+         }
+         validate_frame_payload_length(length as usize)?;
+
+         let frame_length = 4 + length as usize;
+         let mut message_buf = BytesMut::with_capacity(frame_length);
+         message_buf.extend_from_slice(&length_buf);
+
+         let mut message_type = [0u8; 1];
+         self.read_exact(&mut message_type).await.map_err(|e| {
+            error!(error = %e, "Failed to read message type from peer");
+            PeerActorError::ReceiveFailed(e)
+         })?;
+
+         message_buf.extend_from_slice(&message_type);
+
+         // Read the rest of the message payload
+         message_buf.resize(frame_length, 0);
+         self
+            .read_exact(&mut message_buf[5..])
+            .await
+            .map_err(PeerActorError::ReceiveFailed)?;
+
+         PeerMessages::from_bytes(message_buf.freeze())
       }
-
-      let mut message_buf = BytesMut::with_capacity(4 + length as usize);
-      message_buf.extend_from_slice(&length_buf);
-
-      let mut message_type = [0u8; 1];
-      self.read_exact(&mut message_type).await.map_err(|e| {
-         error!(error = %e, "Failed to read message type from peer");
-         PeerActorError::ReceiveFailed(e)
-      })?;
-
-      message_buf.extend_from_slice(&message_type);
-
-      // Read the rest of the message payload
-      let mut rest = vec![0u8; (length - 1) as usize];
-      self
-         .read_exact(&mut rest)
-         .await
-         .map_err(PeerActorError::ReceiveFailed)?;
-
-      message_buf.extend_from_slice(&rest);
-
-      PeerMessages::from_bytes(message_buf.freeze())
    }
    /// Receives a message from a peer with cancellation support, returning
    /// an error if the operation is cancelled
-   async fn recv_with_cancel(
+   fn recv_with_cancel(
       &mut self, token: CancellationToken,
-   ) -> Result<PeerMessages, PeerActorError> {
-      tokio::select! {
-         _ = token.cancelled() => {
-            trace!("Receiving message from peer was cancelled");
-            return Err(PeerActorError::MessageCancelled);
-         },
-         result = self.recv() => {
-            result
+   ) -> impl Future<Output = Result<PeerMessages, PeerActorError>> + Send
+   where
+      Self: Send,
+   {
+      async move {
+         tokio::select! {
+            _ = token.cancelled() => {
+               trace!("Receiving message from peer was cancelled");
+               Err(PeerActorError::MessageCancelled)
+            },
+            result = self.recv() => {
+               result
+            }
          }
       }
    }
@@ -183,9 +213,9 @@ impl PeerStream {
    /// Sends a handshake to a peer. Returns nothing if the handshake is sent
    /// without error.
    pub async fn send_handshake(
-      &mut self, our_id: PeerId, info_hash: Arc<InfoHash>,
+      &mut self, our_id: PeerId, info_hash: InfoHash,
    ) -> Result<(), PeerActorError> {
-      let handshake = Handshake::new(info_hash.clone(), our_id);
+      let handshake = Handshake::new(info_hash, our_id);
 
       self.write_all(&handshake.to_bytes()).await?;
       Ok(())
@@ -194,12 +224,11 @@ impl PeerStream {
    /// Receives an incoming handshake from a peer.
    pub async fn recv_handshake_message(&mut self) -> Result<Handshake, PeerActorError> {
       let protocol_len = self.read_u8().await?;
-      let mut buf = Vec::with_capacity(1 + protocol_len as usize + 8 + 40);
+      let handshake_length = 1 + protocol_len as usize + 8 + 40;
+      let mut buf = Vec::with_capacity(handshake_length);
       buf.push(protocol_len);
-
-      let mut rest = vec![0u8; protocol_len as usize + 8 + 40];
-      self.read_exact(&mut rest).await?;
-      buf.extend_from_slice(&rest);
+      buf.resize(handshake_length, 0);
+      self.read_exact(&mut buf[1..]).await?;
 
       Handshake::from_bytes(&buf).map_err(|e| PeerActorError::HandshakeFailed {
          reason: e.to_string(),
@@ -273,7 +302,6 @@ impl Display for PeerStream {
 }
 
 impl PeerSend for PeerStream {}
-#[async_trait]
 impl PeerRecv for PeerStream {
    async fn recv(&mut self) -> Result<PeerMessages, PeerActorError> {
       loop {
@@ -305,12 +333,15 @@ fn buffered_message(read_buffer: &mut BytesMut) -> Option<Result<PeerMessages, P
          .try_into()
          .expect("slice has exactly 4 bytes"),
    ) as usize;
-   let frame_len = 4 + length;
 
    if length == 0 {
       read_buffer.advance(4);
       return Some(Ok(PeerMessages::KeepAlive));
    }
+   if let Err(error) = validate_frame_payload_length(length) {
+      return Some(Err(error));
+   }
+   let frame_len = 4 + length;
 
    if read_buffer.len() < frame_len {
       return None;
@@ -318,6 +349,15 @@ fn buffered_message(read_buffer: &mut BytesMut) -> Option<Result<PeerMessages, P
 
    let frame = read_buffer.split_to(frame_len).freeze();
    Some(PeerMessages::from_bytes(frame))
+}
+
+fn validate_frame_payload_length(length: usize) -> Result<(), PeerActorError> {
+   if length > MAX_FRAME_PAYLOAD_LENGTH {
+      return Err(PeerActorError::ProtocolViolation(format!(
+         "peer frame payload length {length} exceeds maximum {MAX_FRAME_PAYLOAD_LENGTH}"
+      )));
+   }
+   Ok(())
 }
 
 impl AsyncRead for PeerStream {
@@ -350,6 +390,26 @@ impl AsyncWrite for PeerStream {
          self.peer_state.increment_bytes_uploaded(*bytes_written);
       }
       result
+   }
+
+   fn poll_write_vectored(
+      mut self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[IoSlice<'_>],
+   ) -> Poll<Result<usize, io::Error>> {
+      let result = match &mut self.transport {
+         PeerTransport::Tcp(stream) => Pin::new(stream).poll_write_vectored(cx, bufs),
+         PeerTransport::Utp(stream) => Pin::new(stream).poll_write_vectored(cx, bufs),
+      };
+      if let Poll::Ready(Ok(bytes_written)) = &result {
+         self.peer_state.increment_bytes_uploaded(*bytes_written);
+      }
+      result
+   }
+
+   fn is_write_vectored(&self) -> bool {
+      match &self.transport {
+         PeerTransport::Tcp(stream) => stream.is_write_vectored(),
+         PeerTransport::Utp(stream) => stream.is_write_vectored(),
+      }
    }
 
    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
@@ -425,6 +485,26 @@ impl AsyncWrite for PeerWriter {
       result
    }
 
+   fn poll_write_vectored(
+      mut self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[IoSlice<'_>],
+   ) -> Poll<Result<usize, io::Error>> {
+      let result = match &mut self.writer {
+         PeerWriteHalf::Tcp(stream) => Pin::new(stream).poll_write_vectored(cx, bufs),
+         PeerWriteHalf::Utp(stream) => Pin::new(stream).poll_write_vectored(cx, bufs),
+      };
+      if let Poll::Ready(Ok(bytes_written)) = &result {
+         self.peer_state.increment_bytes_uploaded(*bytes_written);
+      }
+      result
+   }
+
+   fn is_write_vectored(&self) -> bool {
+      match &self.writer {
+         PeerWriteHalf::Tcp(stream) => stream.is_write_vectored(),
+         PeerWriteHalf::Utp(stream) => stream.is_write_vectored(),
+      }
+   }
+
    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
       match &mut self.writer {
          PeerWriteHalf::Tcp(stream) => Pin::new(stream).poll_flush(cx),
@@ -447,12 +527,12 @@ impl PeerSend for PeerWriter {}
 /// Takes in a received handshake and returns the handshake we should respond
 /// with as well as the new peer. It preassigns the our_id to the peer.
 pub fn validate_handshake(
-   received_handshake: &Handshake, peer_addr: SocketAddr, info_hash: Arc<InfoHash>,
+   received_handshake: &Handshake, peer_addr: SocketAddr, info_hash: InfoHash,
 ) -> Result<(), PeerActorError> {
    validate_handshake_protocol(received_handshake, peer_addr)?;
 
    // Validate info hash
-   if info_hash.clone() != received_handshake.info_hash {
+   if info_hash != received_handshake.info_hash {
       error!(
           peer_addr = %peer_addr,
           received_info_hash = %received_handshake.info_hash.to_hex(),
@@ -461,7 +541,7 @@ pub fn validate_handshake(
       );
       return Err(PeerActorError::HandshakeInfoHashMismatch {
          received: received_handshake.info_hash.to_hex(),
-         expected: info_hash.clone().to_hex(),
+         expected: info_hash.to_hex(),
       });
    }
 
@@ -497,6 +577,7 @@ pub fn validate_handshake_protocol(
 mod tests {
    use std::time::Duration;
 
+   use bytes::Bytes;
    use tokio::{io::AsyncWriteExt, net::TcpListener, time::timeout};
    use tracing_test::traced_test;
 
@@ -508,17 +589,100 @@ mod tests {
       testing::{self, LocalPeer},
    };
 
+   #[derive(Default)]
+   struct VectoredWriter {
+      bytes: Vec<u8>,
+      vectored_writes: usize,
+   }
+
+   impl AsyncWrite for VectoredWriter {
+      fn poll_write(
+         self: Pin<&mut Self>, _: &mut Context<'_>, _: &[u8],
+      ) -> Poll<Result<usize, io::Error>> {
+         panic!("piece messages should use vectored writes")
+      }
+
+      fn poll_write_vectored(
+         mut self: Pin<&mut Self>, _: &mut Context<'_>, bufs: &[IoSlice<'_>],
+      ) -> Poll<Result<usize, io::Error>> {
+         self.vectored_writes += 1;
+         let written = bufs.iter().map(|buffer| buffer.len()).sum();
+         for buffer in bufs {
+            self.bytes.extend_from_slice(buffer);
+         }
+         Poll::Ready(Ok(written))
+      }
+
+      fn is_write_vectored(&self) -> bool {
+         true
+      }
+
+      fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+         Poll::Ready(Ok(()))
+      }
+
+      fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+         Poll::Ready(Ok(()))
+      }
+   }
+
+   impl PeerSend for VectoredWriter {}
+
+   async fn stream_with_frame_length(length: u32) -> PeerStream {
+      let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+      let address = listener.local_addr().unwrap();
+      let client = tokio::spawn(async move {
+         let mut stream = TcpStream::connect(address).await.unwrap();
+         stream.write_all(&length.to_be_bytes()).await.unwrap();
+      });
+      let (stream, _) = listener.accept().await.unwrap();
+      client.await.unwrap();
+      PeerStream::tcp(stream)
+   }
+
+   #[tokio::test]
+   async fn peer_send_when_message_is_piece_then_uses_vectored_write() {
+      let message = PeerMessages::Piece(2, 4, Bytes::from_static(b"payload"));
+      let expected = message.to_bytes().unwrap();
+      let mut writer = VectoredWriter::default();
+
+      writer.send(message).await.unwrap();
+
+      assert_eq!(writer.vectored_writes, 1);
+      assert_eq!(writer.bytes, expected);
+   }
+
+   #[tokio::test]
+   async fn peer_reader_when_frame_payload_exceeds_limit_then_rejects_header() {
+      let stream = stream_with_frame_length((MAX_FRAME_PAYLOAD_LENGTH + 1) as u32).await;
+      let (mut reader, _) = stream.split();
+
+      let error = reader.recv().await.unwrap_err();
+
+      assert!(matches!(error, PeerActorError::ProtocolViolation(_)));
+   }
+
+   #[test]
+   fn buffered_message_when_frame_payload_exceeds_limit_then_rejects_header() {
+      let length = (MAX_FRAME_PAYLOAD_LENGTH + 1) as u32;
+      let mut buffer = BytesMut::from(length.to_be_bytes().as_slice());
+
+      let message = buffered_message(&mut buffer).unwrap();
+
+      assert!(matches!(message, Err(PeerActorError::ProtocolViolation(_))));
+   }
+
    #[tokio::test]
    #[traced_test]
    async fn peer_stream_when_handshake_is_valid_then_returns_peer_id() {
       let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
       let addr = listener.local_addr().unwrap();
 
-      let info_hash = Arc::new(Hash::new([1u8; 20]));
+      let info_hash = Hash::new([1u8; 20]);
       let client_id = PeerId::new();
 
       // Spawn client that sends handshake
-      let client_info_hash = info_hash.clone();
+      let client_info_hash = info_hash;
       let client = tokio::spawn(async move {
          let mut stream = PeerStream::tcp(TcpStream::connect(addr).await.unwrap());
 
@@ -549,17 +713,15 @@ mod tests {
    async fn peer_stream_when_frames_are_exchanged_then_counts_every_wire_byte() {
       let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
       let addr = listener.local_addr().unwrap();
-      let info_hash = Arc::new(Hash::new([1u8; 20]));
+      let info_hash = Hash::new([1u8; 20]);
       let client_id = PeerId::new();
       let server_id = PeerId::new();
-      let handshake_len = Handshake::new(info_hash.clone(), client_id)
-         .to_bytes()
-         .len();
+      let handshake_len = Handshake::new(info_hash, client_id).to_bytes().len();
       let interested_len = PeerMessages::Interested.to_bytes().unwrap().len();
       let piece = PeerMessages::Piece(2, 4, b"payload".as_slice().into());
       let piece_len = piece.to_bytes().unwrap().len();
 
-      let server_info_hash = info_hash.clone();
+      let server_info_hash = info_hash;
       let server = tokio::spawn(async move {
          let (stream, _) = listener.accept().await.unwrap();
          let mut stream = PeerStream::tcp(stream);
@@ -622,13 +784,10 @@ mod tests {
       let mut stream = PeerStream::connect(local_peer.peer().socket_addr(), None)
          .await
          .unwrap();
-      let info_hash = Arc::new(testing::test_info_hash());
+      let info_hash = testing::test_info_hash();
       let client_id = PeerId::new();
 
-      stream
-         .send_handshake(client_id, info_hash.clone())
-         .await
-         .unwrap();
+      stream.send_handshake(client_id, info_hash).await.unwrap();
       let (received_peer_id, _) = timeout(Duration::from_secs(1), stream.recv_handshake())
          .await
          .expect("handshake should arrive before timeout")
@@ -650,7 +809,7 @@ mod tests {
       let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
       let addr = listener.local_addr().unwrap();
 
-      let info_hash = Arc::new(Hash::new([1u8; 20]));
+      let info_hash = Hash::new([1u8; 20]);
       let mut handshake = Handshake::new(info_hash, PeerId::new());
       handshake.protocol = "not bittorrent".into();
       let handshake_bytes = handshake.to_bytes();
@@ -678,8 +837,8 @@ mod tests {
 
    #[test]
    fn validate_handshake_when_protocol_is_invalid_then_returns_magic_mismatch() {
-      let info_hash = Arc::new(Hash::new([1u8; 20]));
-      let mut handshake = Handshake::new(info_hash.clone(), PeerId::new());
+      let info_hash = Hash::new([1u8; 20]);
+      let mut handshake = Handshake::new(info_hash, PeerId::new());
       handshake.protocol = "not bittorrent".into();
 
       let error =
@@ -693,7 +852,7 @@ mod tests {
 
    #[test]
    fn validate_handshake_protocol_when_protocol_is_invalid_then_returns_magic_mismatch() {
-      let info_hash = Arc::new(Hash::new([1u8; 20]));
+      let info_hash = Hash::new([1u8; 20]);
       let mut handshake = Handshake::new(info_hash, PeerId::new());
       handshake.protocol = "not bittorrent".into();
 
@@ -708,8 +867,8 @@ mod tests {
 
    #[test]
    fn validate_handshake_when_info_hash_differs_then_returns_info_hash_mismatch() {
-      let expected_info_hash = Arc::new(Hash::new([1u8; 20]));
-      let received_info_hash = Arc::new(Hash::new([2u8; 20]));
+      let expected_info_hash = Hash::new([1u8; 20]);
+      let received_info_hash = Hash::new([2u8; 20]);
       let handshake = Handshake::new(received_info_hash, PeerId::new());
 
       let error = validate_handshake(

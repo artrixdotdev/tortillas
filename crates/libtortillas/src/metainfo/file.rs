@@ -40,10 +40,12 @@ impl TorrentFile {
    }
 
    pub fn announce_list(&self) -> Vec<Tracker> {
-      let mut announce_list: Vec<Tracker> = self.announce.clone().into_iter().collect();
-      if let Some(list) = self.announce_list.clone() {
-         for tracker in list.into_iter().flatten() {
-            announce_list.push(tracker);
+      let mut announce_list: Vec<Tracker> = self.announce.iter().cloned().collect();
+      if let Some(list) = &self.announce_list {
+         for tracker in list.iter().flatten() {
+            if !announce_list.contains(tracker) {
+               announce_list.push(tracker.clone());
+            }
          }
       }
       announce_list
@@ -184,5 +186,22 @@ mod tests {
       assert_eq!(torrent.info.name, testing::ARCH_LINUX_NAME);
       assert!(torrent.announce.is_none());
       assert!(torrent.announce_list().is_empty());
+   }
+
+   #[tokio::test]
+   async fn torrent_file_when_announce_is_repeated_then_returns_it_once() {
+      let metainfo = testing::read_torrent_fixture(testing::WIRED_CD_TORRENT_FILE).await;
+      let MetaInfo::Torrent(torrent) = metainfo else {
+         panic!("Expected Torrent");
+      };
+      let trackers = torrent.announce_list();
+
+      assert_eq!(
+         trackers
+            .iter()
+            .filter(|tracker| Some(*tracker) == torrent.announce.as_ref())
+            .count(),
+         1
+      );
    }
 }

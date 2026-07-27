@@ -194,6 +194,7 @@
 //! transport-agnostic live views and event streams. Durable state is
 //! represented by [`EngineSnapshot`](engine::EngineSnapshot) and
 //! [`TorrentSnapshot`](torrent::TorrentSnapshot), never by live views.
+
 // `cfg!` type-checks both branches; this drops disabled live code before name
 // resolution.
 macro_rules! live_only {
@@ -263,6 +264,7 @@ pub(crate) mod testing {
    pub(crate) const BIG_BUCK_BUNNY_NAME: &str = "Big Buck Bunny";
    pub(crate) const BIG_BUCK_BUNNY_INFO_HASH: &str = "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c";
    pub(crate) const BIG_BUCK_BUNNY_TORRENT_FILE: &str = "big-buck-bunny.torrent";
+   pub(crate) const WIRED_CD_TORRENT_FILE: &str = "wired-cd.torrent";
    pub(crate) const KNOPPIX_TORRENT_FILE: &str = "KNOPPIX_V9.1DVD-2021-01-25-EN.torrent";
 
    pub(crate) fn fixture_path(relative_path: &str) -> PathBuf {
@@ -562,7 +564,7 @@ pub(crate) mod testing {
       let handshake = stream.recv_handshake_message().await?;
       handshakes.lock().await.push(handshake.clone());
 
-      let response = Handshake::new(handshake.info_hash.clone(), peer_id);
+      let response = Handshake::new(handshake.info_hash, peer_id);
       stream.write_all(&response.to_bytes()).await?;
 
       for message in messages.iter() {
@@ -590,7 +592,7 @@ pub(crate) mod testing {
 
    #[cfg(test)]
    mod tests {
-      use std::{net::Ipv4Addr, sync::Arc};
+      use std::net::Ipv4Addr;
 
       use tokio::time::{Duration, timeout};
 
@@ -623,11 +625,8 @@ pub(crate) mod testing {
          let mut stream = PeerStream::connect(local_peer.peer().socket_addr(), None)
             .await
             .unwrap();
-         let info_hash = Arc::new(test_info_hash());
-         stream
-            .send_handshake(peer_id(), info_hash.clone())
-            .await
-            .unwrap();
+         let info_hash = test_info_hash();
+         stream.send_handshake(peer_id(), info_hash).await.unwrap();
 
          let (received_peer_id, _) = stream.recv_handshake().await.unwrap();
          let message = timeout(Duration::from_secs(1), stream.recv())
