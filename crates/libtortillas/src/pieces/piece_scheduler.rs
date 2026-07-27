@@ -145,12 +145,16 @@ impl PieceScheduler {
       let total_slots = last_piece_index
          .saturating_mul(blocks_per_piece)
          .saturating_add(last_piece_len.div_ceil(BLOCK_SIZE));
-      let cursor = self
-         .request_cursors
-         .get(&peer_id)
-         .copied()
-         .unwrap_or(first_slot)
-         .clamp(first_slot, total_slots);
+      let cursor = if self.next_piece == piece_count {
+         total_slots
+      } else {
+         self
+            .request_cursors
+            .get(&peer_id)
+            .copied()
+            .unwrap_or(first_slot)
+            .clamp(first_slot, total_slots)
+      };
 
       for slot in (cursor..total_slots).chain(first_slot..cursor) {
          let piece_index = slot / blocks_per_piece;
@@ -385,6 +389,38 @@ mod tests {
       assert_eq!(requests.len(), 1);
       assert_eq!(requests[0].piece_index, 0);
       assert_eq!(requests[0].block_index, 0);
+   }
+
+   #[test]
+   fn scheduler_when_all_pieces_are_complete_then_returns_no_requests() {
+      let peer_id = PeerId::Unknown([6; 20]);
+      let piece_length = BLOCK_SIZE * 2;
+      let mut scheduler = PieceScheduler::new(2);
+      scheduler.update_peer_availability(peer_id, Arc::new([true, true].into_iter().collect()));
+      scheduler.mark_piece_complete(0);
+      scheduler.mark_piece_complete(1);
+
+      let requests =
+         scheduler.requests_for_peer(peer_id, 1, piece_length, piece_length + BLOCK_SIZE / 2);
+
+      assert!(requests.is_empty());
+   }
+
+   #[test]
+   fn scheduler_when_final_piece_is_partial_then_requests_available_block() {
+      let peer_id = PeerId::Unknown([7; 20]);
+      let piece_length = BLOCK_SIZE * 2;
+      let mut scheduler = PieceScheduler::new(2);
+      scheduler.update_peer_availability(peer_id, Arc::new([true, true].into_iter().collect()));
+      scheduler.mark_piece_complete(0);
+
+      let requests =
+         scheduler.requests_for_peer(peer_id, 2, piece_length, piece_length + BLOCK_SIZE / 2);
+
+      assert_eq!(requests.len(), 1);
+      assert_eq!(requests[0].piece_index, 1);
+      assert_eq!(requests[0].block_index, 0);
+      assert_eq!(requests[0].length, BLOCK_SIZE / 2);
    }
 
    #[test]
