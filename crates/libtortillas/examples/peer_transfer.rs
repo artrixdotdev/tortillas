@@ -25,7 +25,9 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
       for expected_index in 0..BLOCK_COUNT {
          match stream.recv().await? {
             PeerMessages::Piece(index, 0, block)
-               if index == expected_index as u32 && block.len() == BLOCK_LENGTH =>
+               if index == expected_index as u32
+                  && block.len() == BLOCK_LENGTH
+                  && block.iter().all(|byte| *byte == 0xa5) =>
             {
                bytes_received += block.len();
             }

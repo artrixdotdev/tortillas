@@ -765,7 +765,7 @@ impl Actor for TorrentActor {
       for tracker in tracker_list {
          if matches!(tracker, Tracker::Websocket(_)) {
             warn!(
-               tracker_uri = %tracker.uri(),
+               tracker_uri = %tracker.redacted_endpoint(),
                "Skipping unsupported websocket tracker"
             );
             continue;

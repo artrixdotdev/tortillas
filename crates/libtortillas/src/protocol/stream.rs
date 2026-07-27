@@ -26,6 +26,10 @@ use crate::{
    peer::{MAGIC_STRING, PeerId, PeerState},
 };
 
+/// BEP 3 piece blocks and BEP 9 metadata pieces are 16 KiB. This leaves room
+/// for extension dictionaries and large bitfields while bounding peer input.
+const MAX_FRAME_PAYLOAD_LENGTH: usize = 1024 * 1024;
+
 enum PeerTransport {
    Tcp(TcpStream),
    Utp(UtpStream),
@@ -108,6 +112,7 @@ pub trait PeerRecv: AsyncRead + Unpin {
          if length == 0 {
             return Ok(PeerMessages::KeepAlive);
          }
+         validate_frame_payload_length(length as usize)?;
 
          let frame_length = 4 + length as usize;
          let mut message_buf = BytesMut::with_capacity(frame_length);
@@ -328,12 +333,15 @@ fn buffered_message(read_buffer: &mut BytesMut) -> Option<Result<PeerMessages, P
          .try_into()
          .expect("slice has exactly 4 bytes"),
    ) as usize;
-   let frame_len = 4 + length;
 
    if length == 0 {
       read_buffer.advance(4);
       return Some(Ok(PeerMessages::KeepAlive));
    }
+   if let Err(error) = validate_frame_payload_length(length) {
+      return Some(Err(error));
+   }
+   let frame_len = 4 + length;
 
    if read_buffer.len() < frame_len {
       return None;
@@ -341,6 +349,15 @@ fn buffered_message(read_buffer: &mut BytesMut) -> Option<Result<PeerMessages, P
 
    let frame = read_buffer.split_to(frame_len).freeze();
    Some(PeerMessages::from_bytes(frame))
+}
+
+fn validate_frame_payload_length(length: usize) -> Result<(), PeerActorError> {
+   if length > MAX_FRAME_PAYLOAD_LENGTH {
+      return Err(PeerActorError::ProtocolViolation(format!(
+         "peer frame payload length {length} exceeds maximum {MAX_FRAME_PAYLOAD_LENGTH}"
+      )));
+   }
+   Ok(())
 }
 
 impl AsyncRead for PeerStream {
@@ -611,6 +628,18 @@ mod tests {
 
    impl PeerSend for VectoredWriter {}
 
+   async fn stream_with_frame_length(length: u32) -> PeerStream {
+      let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+      let address = listener.local_addr().unwrap();
+      let client = tokio::spawn(async move {
+         let mut stream = TcpStream::connect(address).await.unwrap();
+         stream.write_all(&length.to_be_bytes()).await.unwrap();
+      });
+      let (stream, _) = listener.accept().await.unwrap();
+      client.await.unwrap();
+      PeerStream::tcp(stream)
+   }
+
    #[tokio::test]
    async fn peer_send_when_message_is_piece_then_uses_vectored_write() {
       let message = PeerMessages::Piece(2, 4, Bytes::from_static(b"payload"));
@@ -621,6 +650,26 @@ mod tests {
 
       assert_eq!(writer.vectored_writes, 1);
       assert_eq!(writer.bytes, expected);
+   }
+
+   #[tokio::test]
+   async fn peer_reader_when_frame_payload_exceeds_limit_then_rejects_header() {
+      let stream = stream_with_frame_length((MAX_FRAME_PAYLOAD_LENGTH + 1) as u32).await;
+      let (mut reader, _) = stream.split();
+
+      let error = reader.recv().await.unwrap_err();
+
+      assert!(matches!(error, PeerActorError::ProtocolViolation(_)));
+   }
+
+   #[test]
+   fn buffered_message_when_frame_payload_exceeds_limit_then_rejects_header() {
+      let length = (MAX_FRAME_PAYLOAD_LENGTH + 1) as u32;
+      let mut buffer = BytesMut::from(length.to_be_bytes().as_slice());
+
+      let message = buffered_message(&mut buffer).unwrap();
+
+      assert!(matches!(message, Err(PeerActorError::ProtocolViolation(_))));
    }
 
    #[tokio::test]
