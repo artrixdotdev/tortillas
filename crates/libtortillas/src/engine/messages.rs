@@ -151,7 +151,7 @@ pub(crate) mod commands {
          Ok(torrent)
       }
 
-      /// Creates a new [`Torrent`](crate::torrent::Torrent) actor.
+      /// Creates a new [`Torrent`] actor.
       #[message]
       pub(crate) async fn create_torrent(
          &mut self, request: CreateTorrentRequest,
