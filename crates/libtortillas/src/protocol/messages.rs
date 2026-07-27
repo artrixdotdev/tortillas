@@ -565,14 +565,14 @@ pub struct Handshake {
    /// Reserved bytes for protocol extensions
    pub reserved: [u8; 8],
    /// 20-byte SHA1 hash of the info dictionary
-   pub info_hash: Arc<Hash<20>>,
+   pub info_hash: Hash<20>,
    /// 20-byte peer identifier
    pub peer_id: PeerId,
 }
 
 impl Handshake {
    /// Create a new handshake with the given info hash and peer ID
-   pub fn new(info_hash: Arc<Hash<20>>, peer_id: PeerId) -> Self {
+   pub fn new(info_hash: Hash<20>, peer_id: PeerId) -> Self {
       let mut reserved = [0u8; 8];
 
       // We support BEP 0010
@@ -613,14 +613,19 @@ impl Handshake {
       ensure!(bytes.len() >= total_expected_len, "handshake too short");
 
       // Extract protocol string
-      let protocol = Bytes::copy_from_slice(&bytes[1..1 + protocol_len]);
+      let protocol_bytes = &bytes[1..1 + protocol_len];
+      let protocol = if protocol_bytes == MAGIC_STRING {
+         Bytes::from_static(MAGIC_STRING)
+      } else {
+         Bytes::copy_from_slice(protocol_bytes)
+      };
 
       // Extract reserved bytes
       let reserved = bytes[1 + protocol_len..1 + protocol_len + 8].try_into()?;
 
       // Extract info hash
       let info_hash_bytes = bytes[1 + protocol_len + 8..1 + protocol_len + 8 + 20].try_into()?;
-      let info_hash = Arc::new(Hash::new(info_hash_bytes));
+      let info_hash = Hash::new(info_hash_bytes);
 
       // Extract peer ID
       let peer_id_bytes: [u8; 20] =

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use futures::{StreamExt, stream};
 use kameo::{
    actor::{ActorRef, Spawn},
@@ -24,7 +22,7 @@ use crate::{
 impl TorrentActor {
    #[instrument(skip(self, peer, stream), fields(%self, peer_addr = ?peer.socket_addr(), torrent_id = %self.info_hash()))]
    pub(super) fn append_peer(&self, mut peer: Peer, stream: Option<PeerStream>) {
-      let info_hash = Arc::new(self.info_hash());
+      let info_hash = self.info_hash();
       let actor_ref = self.actor_ref.clone();
       let our_id = self.id;
       let utp_server = self.utp_server.clone();
@@ -33,7 +31,7 @@ impl TorrentActor {
          let mut id = peer.id;
          let stream = match stream {
             Some(mut stream) => {
-               let handshake = Handshake::new(info_hash.clone(), our_id);
+               let handshake = Handshake::new(info_hash, our_id);
                if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
                   debug!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer");
                   return;
@@ -43,34 +41,30 @@ impl TorrentActor {
             None => {
                let stream = PeerStream::connect(peer.socket_addr(), Some(utp_server)).await;
                match stream {
-                  Ok(mut stream) => {
-                     match stream.send_handshake(our_id, Arc::clone(&info_hash)).await {
-                        Ok(_) => match stream.recv_handshake_message().await {
-                           Ok(handshake) => {
-                              if let Err(err) = validate_handshake(
-                                 &handshake,
-                                 peer.socket_addr(),
-                                 Arc::clone(&info_hash),
-                              ) {
-                                 trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to validate peer handshake; exiting");
-                                 return;
-                              }
-                              id = Some(handshake.peer_id);
-                              peer.reserved = handshake.reserved;
-                              peer.determine_supported().await;
-                              stream
-                           }
-                           Err(err) => {
-                              trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to receive handshake from peer; exiting");
+                  Ok(mut stream) => match stream.send_handshake(our_id, info_hash).await {
+                     Ok(_) => match stream.recv_handshake_message().await {
+                        Ok(handshake) => {
+                           if let Err(err) =
+                              validate_handshake(&handshake, peer.socket_addr(), info_hash)
+                           {
+                              trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to validate peer handshake; exiting");
                               return;
                            }
-                        },
+                           id = Some(handshake.peer_id);
+                           peer.reserved = handshake.reserved;
+                           peer.determine_supported().await;
+                           stream
+                        }
                         Err(err) => {
-                           trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer; exiting");
+                           trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to receive handshake from peer; exiting");
                            return;
                         }
+                     },
+                     Err(err) => {
+                        trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer; exiting");
+                        return;
                      }
-                  }
+                  },
                   Err(err) => {
                      trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to connect to peer; exiting");
                      return;

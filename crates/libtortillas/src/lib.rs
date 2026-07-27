@@ -562,7 +562,7 @@ pub(crate) mod testing {
       let handshake = stream.recv_handshake_message().await?;
       handshakes.lock().await.push(handshake.clone());
 
-      let response = Handshake::new(handshake.info_hash.clone(), peer_id);
+      let response = Handshake::new(handshake.info_hash, peer_id);
       stream.write_all(&response.to_bytes()).await?;
 
       for message in messages.iter() {
@@ -590,7 +590,7 @@ pub(crate) mod testing {
 
    #[cfg(test)]
    mod tests {
-      use std::{net::Ipv4Addr, sync::Arc};
+      use std::net::Ipv4Addr;
 
       use tokio::time::{Duration, timeout};
 
@@ -623,11 +623,8 @@ pub(crate) mod testing {
          let mut stream = PeerStream::connect(local_peer.peer().socket_addr(), None)
             .await
             .unwrap();
-         let info_hash = Arc::new(test_info_hash());
-         stream
-            .send_handshake(peer_id(), info_hash.clone())
-            .await
-            .unwrap();
+         let info_hash = test_info_hash();
+         stream.send_handshake(peer_id(), info_hash).await.unwrap();
 
          let (received_peer_id, _) = stream.recv_handshake().await.unwrap();
          let message = timeout(Duration::from_secs(1), stream.recv())
