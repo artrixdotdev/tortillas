@@ -763,6 +763,13 @@ impl Actor for TorrentActor {
       let tracker_list = metainfo.announce_list();
       let mut trackers = HashMap::new();
       for tracker in tracker_list {
+         if matches!(tracker, Tracker::Websocket(_)) {
+            warn!(
+               tracker_uri = %tracker.uri(),
+               "Skipping unsupported websocket tracker"
+            );
+            continue;
+         }
          #[cfg(feature = "live")]
          let endpoint = tracker.redacted_endpoint();
          #[cfg(feature = "live")]

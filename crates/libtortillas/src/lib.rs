@@ -194,6 +194,7 @@
 //! transport-agnostic live views and event streams. Durable state is
 //! represented by [`EngineSnapshot`](engine::EngineSnapshot) and
 //! [`TorrentSnapshot`](torrent::TorrentSnapshot), never by live views.
+
 // `cfg!` type-checks both branches; this drops disabled live code before name
 // resolution.
 macro_rules! live_only {
@@ -263,6 +264,7 @@ pub(crate) mod testing {
    pub(crate) const BIG_BUCK_BUNNY_NAME: &str = "Big Buck Bunny";
    pub(crate) const BIG_BUCK_BUNNY_INFO_HASH: &str = "dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c";
    pub(crate) const BIG_BUCK_BUNNY_TORRENT_FILE: &str = "big-buck-bunny.torrent";
+   pub(crate) const WIRED_CD_TORRENT_FILE: &str = "wired-cd.torrent";
    pub(crate) const KNOPPIX_TORRENT_FILE: &str = "KNOPPIX_V9.1DVD-2021-01-25-EN.torrent";
 
    pub(crate) fn fixture_path(relative_path: &str) -> PathBuf {
