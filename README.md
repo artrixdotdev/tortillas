@@ -88,6 +88,16 @@ applications that need BitTorrent downloads, seeding, and observable progress.
 cargo add --git https://github.com/artrixdotdev/tortillas libtortillas
 ```
 
+The `live` feature is enabled by default and provides views, metrics, event
+streams, and listener handles. Applications that only need actor-backed
+commands and direct state queries can remove that projection and publication
+overhead:
+
+```toml
+[dependencies]
+libtortillas = { git = "https://github.com/artrixdotdev/tortillas", default-features = false }
+```
+
 #### Runtime Contract
 
 `libtortillas` is a Tokio-first library. Applications that use it must run
@@ -102,9 +112,9 @@ thread because `spawn_blocking` tasks cannot be aborted once they start. The
 library does not currently support swapping in a different async runtime, HTTP
 client, clock, listener, or storage executor.
 
-Use listeners for current state and incremental updates, and call `Engine` and
-`Torrent` methods for operations. Do not poll persistence snapshots to drive a
-display. See the
+With the default `live` feature, use listeners for current state and
+incremental updates, and call `Engine` and `Torrent` methods for operations. Do
+not poll persistence snapshots to drive a display. See the
 [`libtortillas::live` API documentation](https://docs.rs/libtortillas/latest/libtortillas/live/) and the
 [`live` example](crates/libtortillas/examples/live.rs).
 

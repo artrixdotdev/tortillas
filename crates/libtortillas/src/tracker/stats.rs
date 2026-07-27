@@ -9,6 +9,7 @@ use std::{
 use atomic_time::{AtomicInstant, AtomicOptionInstant};
 use tokio::time::Instant;
 
+#[cfg(feature = "live")]
 use crate::metrics::{ByteCount, TrackerMetrics, TrafficTotals, TransferMetrics};
 
 /// Tracker statistics.
@@ -113,8 +114,9 @@ impl TrackerStats {
    }
 
    /// Returns all application bytes exchanged with this tracker.
+   #[cfg(feature = "live")]
    #[must_use]
-   pub fn traffic_totals(&self) -> TrafficTotals {
+   pub(crate) fn traffic_totals(&self) -> TrafficTotals {
       TrafficTotals {
          downloaded: ByteCount(u64::try_from(self.get_bytes_received()).unwrap_or(u64::MAX)),
          uploaded: ByteCount(u64::try_from(self.get_bytes_sent()).unwrap_or(u64::MAX)),
@@ -123,8 +125,9 @@ impl TrackerStats {
 
    /// Creates a typed snapshot with shared transfer metrics and tracker-only
    /// counters.
+   #[cfg(feature = "live")]
    #[must_use]
-   pub fn metrics(&self) -> TrackerMetrics {
+   pub(crate) fn metrics(&self) -> TrackerMetrics {
       TrackerMetrics {
          transfer: TransferMetrics {
             totals: self.traffic_totals(),

@@ -9,8 +9,9 @@ use kameo::{
 use tracing::{debug, instrument, trace, warn};
 
 use super::TorrentActor;
+#[cfg(feature = "live")]
+use crate::live::{PeerIdentity, PeerView};
 use crate::{
-   live::{PeerIdentity, PeerView},
    peer::{Peer, PeerActor, PeerId},
    protocol::{
       messages::{Handshake, PeerMessages},
@@ -109,6 +110,7 @@ impl TorrentActor {
          return;
       }
 
+      #[cfg(feature = "live")]
       let Some(peer_handle) = self.hub.register_peer_scope(
          PeerIdentity {
             torrent: info_hash,
@@ -119,22 +121,28 @@ impl TorrentActor {
          return;
       };
 
+      #[cfg(feature = "live")]
+      let peer_args = (
+         peer,
+         stream,
+         actor_ref,
+         info_hash,
+         peer_settings,
+         peer_handle.clone(),
+      );
+      #[cfg(not(feature = "live"))]
+      let peer_args = (peer, stream, actor_ref, info_hash, peer_settings);
       let peer_actor = PeerActor::spawn_with_mailbox(
-         (
-            peer,
-            stream,
-            actor_ref,
-            info_hash,
-            peer_settings,
-            peer_handle.clone(),
-         ),
+         peer_args,
          match peer_mailbox_size {
             0 => mailbox::unbounded(),
             size => mailbox::bounded(size),
          },
       );
       self.peers.insert(id, peer_actor);
+      #[cfg(feature = "live")]
       self.publish_live_view(|_| crate::live::TorrentEventKind::Updated);
+      #[cfg(feature = "live")]
       self.hub.emit_peer_connected(&peer_handle);
    }
 
@@ -179,6 +187,7 @@ impl TorrentActor {
          self.peers.remove(&id);
       }
       if removed_dead_peers {
+         #[cfg(feature = "live")]
          self.publish_live_view(|_| crate::live::TorrentEventKind::Updated);
       }
    }

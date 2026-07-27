@@ -27,12 +27,7 @@ use super::{choking::ChokingScheduler, util};
 use crate::{
    errors::{SnapshotUnsupportedReason, TorrentError},
    hashes::InfoHash,
-   live::{Hub, LiveHealthLevel, TorrentView, TrackerStatus, TrackerView},
    metainfo::{Info, MetaInfo},
-   metrics::{
-      ByteCount, ContentProgress, HasTransferMetrics, TorrentMetrics, TrackerMetrics,
-      TransferMetrics,
-   },
    peer::{PeerActor, PeerId, commands::SetChoked},
    pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
    settings::Settings,
@@ -42,6 +37,14 @@ use crate::{
    },
    tracker::{
       Announce, Event, Tracker, TrackerActor, TrackerActorArgs, TrackerUpdate, udp::UdpServer,
+   },
+};
+#[cfg(feature = "live")]
+use crate::{
+   live::{Hub, LiveHealthLevel, TorrentView, TrackerStatus, TrackerView},
+   metrics::{
+      ByteCount, ContentProgress, HasTransferMetrics, TorrentMetrics, TrackerMetrics,
+      TransferMetrics,
    },
 };
 
@@ -100,6 +103,7 @@ impl PieceManager for PieceManagerProxy {
 }
 
 pub(crate) struct TorrentActor {
+   #[cfg(feature = "live")]
    pub(super) hub: Hub,
    pub(crate) peers: HashMap<PeerId, ActorRef<PeerActor>>,
    pub(crate) trackers: HashMap<Tracker, ActorRef<TrackerActor>>,
@@ -220,6 +224,7 @@ impl TorrentActor {
       // Pre-start the piece manager before transitioning state
       if let Err(err) = self.piece_manager.pre_start(info.clone()).await {
          self.transition_state(TorrentState::Failed);
+         #[cfg(feature = "live")]
          self.hub.emit_health(
             Some(self.info_hash()),
             LiveHealthLevel::Error,
@@ -386,6 +391,7 @@ impl TorrentActor {
       Some(total_bytes)
    }
 
+   #[cfg(feature = "live")]
    fn total_verified_bytes(&self) -> Option<usize> {
       let info = self.info_dict()?;
       let total_length = info.total_length();
@@ -484,6 +490,7 @@ impl TorrentActor {
    }
 
    /// Builds the current state exposed through listeners.
+   #[cfg(feature = "live")]
    pub fn live_view(&self) -> TorrentView {
       let info = self.info_dict();
       let total_bytes = info
@@ -560,6 +567,7 @@ impl TorrentActor {
    }
 
    /// The single publication entry point for torrent projection changes.
+   #[cfg(feature = "live")]
    pub(super) fn publish_live_view(
       &self, event: impl FnOnce(&TorrentView) -> crate::live::TorrentEventKind,
    ) {
@@ -575,6 +583,7 @@ impl TorrentActor {
       }
 
       self.state = state;
+      #[cfg(feature = "live")]
       self.publish_live_view(|_| crate::live::TorrentEventKind::StateChanged {
          previous,
          current: state,
@@ -585,6 +594,7 @@ impl TorrentActor {
       u64::try_from(value).unwrap_or(u64::MAX)
    }
 
+   #[cfg(feature = "live")]
    fn display_name(&self) -> &str {
       match &self.metainfo {
          MetaInfo::Torrent(torrent) => &torrent.info.name,
@@ -662,6 +672,7 @@ pub struct TorrentActorArgs {
    pub settings: Settings,
 
    /// Projection hub shared with the owning engine.
+   #[cfg(feature = "live")]
    pub(crate) hub: Hub,
 }
 
@@ -686,6 +697,7 @@ impl Actor for TorrentActor {
          sufficient_peers,
          base_path,
          settings,
+         #[cfg(feature = "live")]
          hub,
       } = args;
 
@@ -738,7 +750,9 @@ impl Actor for TorrentActor {
       let tracker_list = metainfo.announce_list();
       let mut trackers = HashMap::new();
       for tracker in tracker_list {
+         #[cfg(feature = "live")]
          let endpoint = tracker.redacted_endpoint();
+         #[cfg(feature = "live")]
          let Some(tracker_handle) = hub.register_tracker_scope(
             torrent_id,
             &tracker,
@@ -764,6 +778,7 @@ impl Actor for TorrentActor {
                supervisor: us.clone(),
                scheduler: scheduler.clone(),
                settings: settings.tracker.clone(),
+               #[cfg(feature = "live")]
                live_handle: tracker_handle,
             },
          )
@@ -788,6 +803,7 @@ impl Actor for TorrentActor {
          .await;
 
       let actor = Self {
+         #[cfg(feature = "live")]
          hub,
          peers: HashMap::new(),
          bitfield,
@@ -816,6 +832,7 @@ impl Actor for TorrentActor {
          piece_manager: PieceManagerProxy::Default(default_manager),
          settings,
       };
+      #[cfg(feature = "live")]
       actor.hub.initialize_torrent_projection(actor.live_view());
 
       Ok(actor)
@@ -840,6 +857,7 @@ impl Actor for TorrentActor {
          // The engine supervises torrent actors transiently. Preserve the
          // live scope and make the temporary state explicit.
          self.transition_state(TorrentState::Restarting);
+         #[cfg(feature = "live")]
          self
             .hub
             .close_peer_scopes_for_torrent_restart(self.info_hash());
@@ -868,6 +886,7 @@ impl Actor for TorrentActor {
       &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
       error!(?id, ?reason, "Linked child died");
+      #[cfg(feature = "live")]
       if !reason.is_normal() {
          self.hub.emit_health(
             Some(self.info_hash()),

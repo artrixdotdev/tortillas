@@ -124,15 +124,19 @@
 //!
 //! # Observing live state
 //!
-//! Applications that only download and seed files do not need [`live`]
+//! Live observation is provided by the default `live` Cargo feature. Consumers
+//! that only need actor-backed commands and direct queries can disable default
+//! features to omit the projection tree, event publishers, listener handles,
+//! and live metrics.
+//!
+//! Applications that only download and seed files do not need live
 //! listeners, events, views, or metrics. The module is for consumers that need
 //! current progress and incremental changes, whether they render a terminal,
 //! serve an API, update a website, or drive a desktop application.
 //!
-//! Start with [`EventListener`](live::EventListener): read its
-//! [`view`](live::EventListener::view) for current state and receive events to
-//! learn when that state changes. The [`live`] module documents the complete
-//! transport-agnostic model.
+//! Start with `live::EventListener`: read its `view` for current state and
+//! receive events to learn when that state changes. The `live` module
+//! documents the complete transport-agnostic model.
 //!
 //! This helper waits for changes and prints verified payload progress until the
 //! torrent finishes downloading:
@@ -211,7 +215,7 @@
 //!
 //! Actors own operational protocol state. Public applications interact through
 //! [`Engine`](engine::Engine), [`Torrent`](torrent::Torrent), and the
-//! transport-agnostic [`live`] views and event streams. Durable state is
+//! transport-agnostic live views and event streams. Durable state is
 //! represented by [`EngineSnapshot`](engine::EngineSnapshot) and
 //! [`TorrentSnapshot`](torrent::TorrentSnapshot), never by live views.
 //!
@@ -220,8 +224,8 @@
 //! state, storage strategy, metrics, and snapshots live outside actor files so
 //! actors can focus on orchestration.
 //!
-//! See [`live`] for the source-of-truth, publication, lifecycle, and lock
-//! invariants. See [`torrent`] for transfer scheduling and persistence
+//! See the `live` module for the source-of-truth, publication, lifecycle, and
+//! lock invariants. See [`torrent`] for transfer scheduling and persistence
 //! semantics.
 
 pub(crate) mod dht;
@@ -229,8 +233,10 @@ pub mod engine;
 pub mod errors;
 pub mod facade;
 pub mod hashes;
+#[cfg(feature = "live")]
 pub mod live;
 pub mod metainfo;
+#[cfg(feature = "live")]
 pub mod metrics;
 pub mod peer;
 pub mod pieces;
@@ -704,10 +710,11 @@ pub(crate) mod testing {
 /// use libtortillas::prelude::*;
 /// ```
 pub mod prelude {
+   #[cfg(feature = "live")]
+   pub use crate::facade::*;
    pub use crate::{
       engine::*,
       errors::*,
-      facade::*,
       hashes::InfoHash,
       metainfo::*,
       peer::{Peer, PeerId},

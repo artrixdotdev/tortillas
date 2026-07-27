@@ -14,11 +14,12 @@ use tokio::net::TcpListener;
 use tracing::{Span, error, instrument};
 
 use super::commands;
+#[cfg(feature = "live")]
+use crate::live::{Hub, LiveHealthLevel};
 use crate::{
    dht::{DhtActor, DhtActorArgs},
    errors::EngineError,
    hashes::InfoHash,
-   live::{Hub, LiveHealthLevel},
    peer::PeerId,
    protocol::stream::PeerStream,
    settings::Settings,
@@ -32,6 +33,7 @@ use crate::{
 /// actor.
 pub struct EngineActor {
    /// Live projection coordinator shared with managed torrents.
+   #[cfg(feature = "live")]
    pub(super) hub: Hub,
    /// Engine-wide DHT service shared by every torrent.
    pub(super) dht: Option<ActorRef<DhtActor>>,
@@ -107,6 +109,7 @@ pub struct EngineActorArgs {
    pub default_base_path: Option<PathBuf>,
 
    /// Projection hub shared by the engine handle and actor hierarchy.
+   #[cfg(feature = "live")]
    pub(crate) hub: Hub,
 }
 
@@ -136,6 +139,7 @@ impl Actor for EngineActor {
          piece_storage_strategy,
          settings,
          default_base_path,
+         #[cfg(feature = "live")]
          hub,
       } = args;
 
@@ -144,11 +148,13 @@ impl Actor for EngineActor {
       let udp_addr = udp_addr.unwrap_or(settings.engine.udp_addr);
       let tcp_socket = TcpListener::bind(tcp_addr).await.map_err(|error| {
          let error = EngineError::NetworkSetupFailed(format!("tcp bind {tcp_addr}: {error}"));
+         #[cfg(feature = "live")]
          hub.engine_start_failed(error.to_string());
          error
       })?;
       let utp_socket = UtpSocketUdp::new_udp(utp_addr).await.map_err(|error| {
          let error = EngineError::NetworkSetupFailed(format!("utp bind {utp_addr}: {error}"));
+         #[cfg(feature = "live")]
          hub.engine_start_failed(error.to_string());
          error
       })?;
@@ -159,6 +165,7 @@ impl Actor for EngineActor {
       .await
       .map_err(|error| {
          let error = EngineError::NetworkSetupFailed(format!("udp bind {udp_addr}: {error}"));
+         #[cfg(feature = "live")]
          hub.engine_start_failed(error.to_string());
          error
       })?;
@@ -182,9 +189,11 @@ impl Actor for EngineActor {
          None
       };
 
+      #[cfg(feature = "live")]
       hub.engine_started();
 
       Ok(Self {
+         #[cfg(feature = "live")]
          hub,
          dht,
          tcp_socket,
@@ -204,6 +213,7 @@ impl Actor for EngineActor {
       &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
       error!(?id, ?reason, "Linked child died");
+      #[cfg(feature = "live")]
       self.hub.emit_health(
          None,
          LiveHealthLevel::Error,
@@ -238,6 +248,7 @@ impl Actor for EngineActor {
             }
             Err(err) => {
                error!("Failed to accept incoming peer: {}", err);
+               #[cfg(feature = "live")]
                self.hub.emit_health(
                   None,
                   LiveHealthLevel::Warning,
@@ -266,6 +277,7 @@ impl Actor for EngineActor {
             }
             Err(err) => {
                error!("Failed to accept incoming peer: {}", err);
+               #[cfg(feature = "live")]
                self.hub.emit_health(
                   None,
                   LiveHealthLevel::Warning,
@@ -280,6 +292,7 @@ impl Actor for EngineActor {
    async fn on_stop(
       &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
    ) -> Result<(), Self::Error> {
+      #[cfg(feature = "live")]
       self.hub.engine_stopping();
       let torrents = self
          .torrents
@@ -293,6 +306,7 @@ impl Actor for EngineActor {
          }
          torrent.wait_for_shutdown().await;
          self.torrents.remove(&info_hash);
+         #[cfg(feature = "live")]
          self.hub.remove_torrent_scope(info_hash);
       }
 
@@ -301,6 +315,7 @@ impl Actor for EngineActor {
          dht.wait_for_shutdown().await;
       }
 
+      #[cfg(feature = "live")]
       self.hub.engine_stopped();
 
       Ok(())

@@ -1,5 +1,4 @@
 use crate::{
-   metrics::BytesPerSecond,
    peer::{PeerId, PeerStats},
    settings::Settings,
    torrent::TorrentState,
@@ -69,7 +68,7 @@ pub(crate) fn select_unchoked_peers(
 ) -> ChokingDecision {
    let mut candidates: Vec<_> = peers
       .iter()
-      .filter(|peer| peer.metrics.peer_interested)
+      .filter(|peer| peer.interested())
       .cloned()
       .collect();
    candidates.sort_by(|left, right| {
@@ -113,18 +112,10 @@ pub(crate) fn select_unchoked_peers(
    }
 }
 
-fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> BytesPerSecond {
+fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> u64 {
    match torrent_state {
-      TorrentState::Downloading => peer
-         .metrics
-         .transfer
-         .rates()
-         .map_or(BytesPerSecond::ZERO, |rates| rates.download),
-      TorrentState::Seeding => peer
-         .metrics
-         .transfer
-         .rates()
-         .map_or(BytesPerSecond::ZERO, |rates| rates.upload),
+      TorrentState::Downloading => peer.download_rate(),
+      TorrentState::Seeding => peer.upload_rate(),
       TorrentState::Added
       | TorrentState::ResolvingMetadata
       | TorrentState::Ready
@@ -132,7 +123,7 @@ fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> BytesPerSecond {
       | TorrentState::Restarting
       | TorrentState::Stopping
       | TorrentState::Stopped
-      | TorrentState::Failed => BytesPerSecond::ZERO,
+      | TorrentState::Failed => 0,
    }
 }
 

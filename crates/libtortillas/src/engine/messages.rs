@@ -4,6 +4,8 @@ use tokio::time::timeout;
 use tracing::{error, warn};
 
 use super::{ENGINE_SNAPSHOT_VERSION, EngineActor, EngineSnapshot};
+#[cfg(feature = "live")]
+use crate::torrent::Torrent;
 use crate::{
    dht::messages::commands::{RegisterTorrent, UnregisterTorrent},
    errors::{EngineError, map_torrent_send_error},
@@ -12,8 +14,8 @@ use crate::{
    peer::Peer,
    protocol::stream::{PeerStream, validate_handshake_protocol},
    torrent::{
-      self, RestoreVerification, Torrent, TorrentActor, TorrentActorArgs, TorrentSnapshot,
-      TorrentState, ValidatedTorrentSnapshot,
+      self, RestoreVerification, TorrentActor, TorrentActorArgs, TorrentSnapshot, TorrentState,
+      ValidatedTorrentSnapshot,
    },
 };
 
@@ -48,6 +50,7 @@ pub(crate) mod commands {
          if let Err(error) = torrent.stop_gracefully().await {
             warn!(error = %error, %info_hash, "Failed to stop rejected restored torrent");
          }
+         #[cfg(feature = "live")]
          self.hub.remove_torrent_scope(info_hash);
       }
    }
@@ -215,6 +218,7 @@ pub(crate) mod commands {
                sufficient_peers: restoring.then_some(usize::MAX),
                base_path,
                settings: self.settings.clone(),
+               #[cfg(feature = "live")]
                hub: self.hub.weak(),
             },
          )
@@ -292,22 +296,25 @@ pub(crate) mod commands {
                error,
             )));
          }
-         let initial_view = match torrent_ref.ask(torrent::commands::GetLiveView).await {
-            Ok(view) => *view,
-            Err(error) => {
-               self.discard_failed_torrent(info_hash, &torrent_ref).await;
-               return Err(EngineError::ActorCommunicationFailed {
-                  operation: "initialize torrent live state",
-                  reason: error.to_string(),
-               });
-            }
-         };
-         self.hub.register_torrent_scope(Torrent::new_with_hub(
-            info_hash,
-            torrent_ref.clone(),
-            &self.hub,
-            Some(initial_view),
-         ));
+         #[cfg(feature = "live")]
+         {
+            let initial_view = match torrent_ref.ask(torrent::commands::GetLiveView).await {
+               Ok(view) => *view,
+               Err(error) => {
+                  self.discard_failed_torrent(info_hash, &torrent_ref).await;
+                  return Err(EngineError::ActorCommunicationFailed {
+                     operation: "initialize torrent live state",
+                     reason: error.to_string(),
+                  });
+               }
+            };
+            self.hub.register_torrent_scope(Torrent::new_with_hub(
+               info_hash,
+               torrent_ref.clone(),
+               &self.hub,
+               Some(initial_view),
+            ));
+         }
          Ok(torrent_ref)
       }
 
@@ -342,6 +349,7 @@ pub(crate) mod commands {
                      match self.remove_torrent(info_hash).await {
                         Ok(torrent) => {
                            torrent.kill();
+                           #[cfg(feature = "live")]
                            self.hub.remove_torrent_scope(info_hash);
                         }
                         Err(remove_error) => {

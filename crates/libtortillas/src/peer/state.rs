@@ -9,6 +9,7 @@ use std::{
 use atomic_time::AtomicOptionInstant;
 
 use super::Peer;
+#[cfg(feature = "live")]
 use crate::metrics::{ByteCount, PeerMetrics, TrafficTotals, TransferMetrics};
 
 /// A helper struct for Peer that maintains a given peers state. This state
@@ -86,6 +87,7 @@ impl PeerState {
       self.bytes_uploaded = state.bytes_uploaded.clone();
    }
 
+   #[cfg(feature = "live")]
    pub(crate) fn traffic_totals(&self) -> TrafficTotals {
       TrafficTotals {
          downloaded: ByteCount(
@@ -184,10 +186,12 @@ impl Peer {
       self.state.bytes_uploaded.load(Ordering::Relaxed)
    }
 
+   #[cfg(feature = "live")]
    pub(crate) fn traffic_totals(&self) -> TrafficTotals {
       self.state.traffic_totals()
    }
 
+   #[cfg(feature = "live")]
    pub(crate) fn metrics(&self) -> PeerMetrics {
       PeerMetrics {
          transfer: TransferMetrics {

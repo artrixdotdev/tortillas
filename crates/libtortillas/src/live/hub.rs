@@ -23,8 +23,8 @@ use super::{
 use crate::{
    engine::EngineStatus,
    hashes::InfoHash,
+   live::LiveSettings,
    peer::PeerId,
-   settings::LiveSettings,
    torrent::{Torrent, TorrentInner},
    tracker::Tracker,
 };

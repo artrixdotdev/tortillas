@@ -76,10 +76,11 @@ use self::{
    commands::{CreateTorrent, GetTorrent, RemoveTorrent, RestoreEngine, SnapshotEngine, StartAll},
    messages::{CreateTorrentRequest, RestoreSnapshotInput},
 };
+#[cfg(feature = "live")]
+use crate::live::{EngineListener, EngineView, EventSubscription, Hub};
 use crate::{
    errors::{EngineError, map_engine_send_error},
    hashes::InfoHash,
-   live::{EngineListener, EngineView, EventSubscription, Hub},
    peer::PeerId,
    settings::Settings,
    torrent::{PieceStorageStrategy, RestoreVerification, Torrent},
@@ -128,6 +129,7 @@ use crate::{
 #[derive(Debug, Clone)]
 pub struct Engine {
    actor: ActorRef<EngineActor>,
+   #[cfg(feature = "live")]
    hub: Hub,
 }
 
@@ -226,6 +228,7 @@ impl Engine {
          None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
       };
 
+      #[cfg(feature = "live")]
       let hub = Hub::with_settings(settings.live);
       let args = EngineActorArgs {
          tcp_addr,
@@ -235,12 +238,17 @@ impl Engine {
          piece_storage_strategy,
          settings,
          default_base_path: Some(output_path),
+         #[cfg(feature = "live")]
          hub: hub.clone(),
       };
 
       let actor = EngineActor::spawn(args);
 
-      Engine { actor, hub }
+      Engine {
+         actor,
+         #[cfg(feature = "live")]
+         hub,
+      }
    }
 
    /// Just a helper function so we don't have to write `&self.0` all the time.
@@ -295,7 +303,7 @@ impl Engine {
       let metainfo = source.into_metainfo().await?;
       let info_hash = metainfo.info_hash()?;
 
-      self
+      let torrent_ref = self
          .actor()
          .ask(CreateTorrent {
             request: CreateTorrentRequest::New(Box::new(metainfo)),
@@ -303,7 +311,16 @@ impl Engine {
          .await
          .map_err(|error| map_engine_send_error("add torrent", error))?;
 
-      self.torrent_handle(info_hash)
+      #[cfg(feature = "live")]
+      let _ = &torrent_ref;
+      #[cfg(feature = "live")]
+      {
+         self.torrent_handle(info_hash)
+      }
+      #[cfg(not(feature = "live"))]
+      {
+         Ok(Torrent::new(info_hash, torrent_ref))
+      }
       // We don't need to assign link or insert the ref here because its already
       // done by the engine actor
    }
@@ -327,7 +344,7 @@ impl Engine {
    ) -> Result<Torrent, EngineError> {
       let info_hash = snapshot.info_hash;
 
-      self
+      let torrent_ref = self
          .actor()
          .ask(CreateTorrent {
             request: CreateTorrentRequest::Restore {
@@ -338,7 +355,16 @@ impl Engine {
          .await
          .map_err(|error| map_engine_send_error("restore torrent", error))?;
 
-      self.torrent_handle(info_hash)
+      #[cfg(feature = "live")]
+      let _ = &torrent_ref;
+      #[cfg(feature = "live")]
+      {
+         self.torrent_handle(info_hash)
+      }
+      #[cfg(not(feature = "live"))]
+      {
+         Ok(Torrent::new(info_hash, torrent_ref))
+      }
    }
 
    /// Restores all torrent sessions from an engine persistence snapshot.
@@ -365,10 +391,26 @@ impl Engine {
          })
          .await
          .map_err(|error| map_engine_send_error("restore engine", error))?;
-      info_hashes
-         .into_iter()
-         .map(|info_hash| self.torrent_handle(info_hash))
-         .collect()
+      #[cfg(feature = "live")]
+      {
+         info_hashes
+            .into_iter()
+            .map(|info_hash| self.torrent_handle(info_hash))
+            .collect()
+      }
+      #[cfg(not(feature = "live"))]
+      {
+         let mut torrents = Vec::with_capacity(info_hashes.len());
+         for info_hash in info_hashes {
+            let torrent_ref = self
+               .actor()
+               .ask(GetTorrent { info_hash })
+               .await
+               .map_err(|error| map_engine_send_error("get restored torrent", error))?;
+            torrents.push(Torrent::new(info_hash, torrent_ref));
+         }
+         Ok(torrents)
+      }
    }
    /// Starts all torrents managed by the engine.
    /// See [`Torrent::start`] for more information.
@@ -383,13 +425,22 @@ impl Engine {
 
    /// Returns a public handle for a torrent managed by this engine.
    pub async fn torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
-      self
+      let torrent_ref = self
          .actor()
          .ask(GetTorrent { info_hash })
          .await
          .map_err(|error| map_engine_send_error("get torrent", error))?;
 
-      self.torrent_handle(info_hash)
+      #[cfg(feature = "live")]
+      let _ = &torrent_ref;
+      #[cfg(feature = "live")]
+      {
+         self.torrent_handle(info_hash)
+      }
+      #[cfg(not(feature = "live"))]
+      {
+         Ok(Torrent::new(info_hash, torrent_ref))
+      }
    }
 
    /// Removes a torrent from the engine and stops its actor gracefully.
@@ -402,6 +453,7 @@ impl Engine {
 
       let stop_result = torrent.stop_gracefully().await;
       torrent.wait_for_shutdown().await;
+      #[cfg(feature = "live")]
       self.hub.remove_torrent_scope(info_hash);
       stop_result.map_err(|error| EngineError::ActorCommunicationFailed {
          operation: "stop torrent",
@@ -425,7 +477,8 @@ impl Engine {
    /// Captures all managed torrent sessions in a Serde-compatible persistence
    /// snapshot.
    ///
-   /// Use [`Self::listener`] for current state and incremental updates.
+   /// With the `live` feature, use the engine listener for current state and
+   /// incremental updates.
    /// Snapshot frequency is an application persistence decision, not a
    /// live-update mechanism.
    pub async fn snapshot(&self) -> Result<EngineSnapshot, EngineError> {
@@ -441,12 +494,14 @@ impl Engine {
    /// The returned stream is bounded. A lagging consumer can read
    /// [`Self::view`] to rebuild its current state and then continue
    /// receiving events.
+   #[cfg(feature = "live")]
    #[must_use]
    pub fn subscribe(&self) -> EventSubscription {
       self.hub.subscribe()
    }
 
    /// Creates a listener with typed events and coherent current state.
+   #[cfg(feature = "live")]
    #[must_use]
    pub fn listener(&self) -> EngineListener {
       let hub = self.hub.clone();
@@ -454,11 +509,13 @@ impl Engine {
    }
 
    /// Returns the current engine state maintained by the projection tree.
+   #[cfg(feature = "live")]
    #[must_use]
    pub fn view(&self) -> EngineView {
       self.hub.view()
    }
 
+   #[cfg(feature = "live")]
    fn torrent_handle(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
       self
          .hub

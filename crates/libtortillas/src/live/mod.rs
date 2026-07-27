@@ -164,6 +164,29 @@ mod hub;
 mod stream;
 mod view;
 
+/// Bounded event capacities for each live scope.
+///
+/// Channels are allocated lazily when the first listener subscribes, so these
+/// capacities do not impose a per-scope allocation on unobserved peers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LiveSettings {
+   pub engine_event_capacity: usize,
+   pub torrent_event_capacity: usize,
+   pub peer_event_capacity: usize,
+   pub tracker_event_capacity: usize,
+}
+
+impl Default for LiveSettings {
+   fn default() -> Self {
+      Self {
+         engine_event_capacity: 256,
+         torrent_event_capacity: 256,
+         peer_event_capacity: 64,
+         tracker_event_capacity: 64,
+      }
+   }
+}
+
 pub use event::{
    EngineEvent, EngineEventKind, LiveHealth, LiveHealthLevel, PeerEvent, PeerEventKind,
    SequencedEvent, TorrentEvent, TorrentEventKind, TrackerEvent, TrackerEventKind,

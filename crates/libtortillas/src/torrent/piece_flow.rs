@@ -8,7 +8,7 @@ use tokio::{
 use tracing::{debug, info, trace, warn};
 
 use super::{TorrentActor, util};
-#[cfg(test)]
+#[cfg(all(test, feature = "live"))]
 use crate::live::Hub;
 use crate::{
    errors::TorrentError,
@@ -275,6 +275,7 @@ impl TorrentActor {
       let piece_count = info_dict.piece_count();
 
       if !self.validate_and_commit_piece(index).await {
+         #[cfg(feature = "live")]
          self.publish_live_view(|view| {
             crate::live::TorrentEventKind::MetricsChanged(view.metrics.clone())
          });
@@ -295,6 +296,7 @@ impl TorrentActor {
 
       // Piece completion is the meaningful progress boundary. Publishing for
       // every 16 KiB block creates an event storm without improving the view.
+      #[cfg(feature = "live")]
       self.publish_live_view(|view| {
          crate::live::TorrentEventKind::MetricsChanged(view.metrics.clone())
       });

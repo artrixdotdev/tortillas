@@ -1,8 +1,6 @@
-use std::{
-   fmt,
-   path::PathBuf,
-   sync::{Arc, Weak},
-};
+#[cfg(feature = "live")]
+use std::sync::Weak;
+use std::{fmt, path::PathBuf, sync::Arc};
 
 use kameo::actor::ActorRef;
 use tokio::sync::oneshot;
@@ -15,13 +13,14 @@ use super::{
       SetSufficientPeers, SnapshotState,
    },
 };
+#[cfg(feature = "live")]
+use crate::live::{
+   EventSubscription, Hub, HubInner, LivePublisher, PeerHandle, TorrentEventKind, TorrentListener,
+   TorrentView, TrackerHandle,
+};
 use crate::{
    errors::{TorrentError, map_torrent_send_error},
    hashes::InfoHash,
-   live::{
-      EventSubscription, Hub, HubInner, LivePublisher, PeerHandle, TorrentEventKind,
-      TorrentListener, TorrentView, TrackerHandle,
-   },
    pieces::PieceManager,
 };
 
@@ -29,7 +28,9 @@ use crate::{
 pub(crate) struct TorrentInner {
    pub(crate) info_hash: InfoHash,
    pub(crate) actor: ActorRef<TorrentActor>,
+   #[cfg(feature = "live")]
    pub(crate) hub: Weak<HubInner>,
+   #[cfg(feature = "live")]
    pub(crate) publisher: Arc<LivePublisher<Option<TorrentView>, TorrentEventKind>>,
 }
 
@@ -55,11 +56,19 @@ impl fmt::Debug for Torrent {
 impl Torrent {
    /// Creates a new [`Torrent`] handle from an [`InfoHash`] and a reference
    /// to its underlying [`TorrentActor`].
-   #[cfg(test)]
+   #[cfg(all(test, feature = "live"))]
    pub(crate) fn new(info_hash: InfoHash, actor_ref: ActorRef<TorrentActor>) -> Self {
       Self::new_with_hub(info_hash, actor_ref, &Hub::default(), None)
    }
 
+   #[cfg(not(feature = "live"))]
+   pub(crate) fn new(info_hash: InfoHash, actor: ActorRef<TorrentActor>) -> Self {
+      Self {
+         inner: Arc::new(TorrentInner { info_hash, actor }),
+      }
+   }
+
+   #[cfg(feature = "live")]
    pub(crate) fn new_with_hub(
       info_hash: InfoHash, actor: ActorRef<TorrentActor>, hub: &Hub,
       initial_view: Option<TorrentView>,
@@ -170,7 +179,8 @@ impl Torrent {
    /// Captures this torrent's metadata, storage configuration, and verified or
    /// partial piece state in a Serde-compatible persistence snapshot.
    ///
-   /// Use [`Self::listener`] for current state and incremental updates.
+   /// With the `live` feature, use the torrent listener for current state and
+   /// incremental updates.
    pub async fn snapshot(&self) -> Result<TorrentSnapshot, TorrentError> {
       self
          .actor()
@@ -215,12 +225,14 @@ impl Torrent {
    }
 
    /// Subscribes to live events for this torrent only.
+   #[cfg(feature = "live")]
    #[must_use]
    pub fn subscribe(&self) -> EventSubscription<TorrentEventKind> {
       self.inner.publisher.subscribe()
    }
 
    /// Creates a live listener scoped to this torrent.
+   #[cfg(feature = "live")]
    #[must_use]
    pub fn listener(&self) -> TorrentListener {
       self.inner.publisher.listener()
@@ -229,12 +241,14 @@ impl Torrent {
    /// Returns the latest state maintained for this torrent.
    ///
    /// This returns `None` after the torrent has been removed from its engine.
+   #[cfg(feature = "live")]
    #[must_use]
    pub fn view(&self) -> Option<TorrentView> {
       self.inner.publisher.view()
    }
 
    /// Returns handles for this torrent's currently connected peers.
+   #[cfg(feature = "live")]
    #[must_use]
    pub fn peers(&self) -> Vec<PeerHandle> {
       self
@@ -243,6 +257,7 @@ impl Torrent {
    }
 
    /// Returns handles for this torrent's configured trackers.
+   #[cfg(feature = "live")]
    #[must_use]
    pub fn trackers(&self) -> Vec<TrackerHandle> {
       self
@@ -250,6 +265,7 @@ impl Torrent {
          .map_or_else(Vec::new, |live| live.tracker_handles(self.info_hash()))
    }
 
+   #[cfg(feature = "live")]
    fn hub(&self) -> Option<Hub> {
       self.inner.hub.upgrade().map(Hub::from_inner)
    }

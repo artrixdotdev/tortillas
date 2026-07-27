@@ -6,12 +6,11 @@ use tokio::time::timeout;
 use tracing::{trace, warn};
 
 use super::TorrentActor;
-use crate::{
-   facade::TorrentEventKind,
-   peer::{
-      PeerActor, PeerId, PeerStats,
-      commands::{SetChoked, Stats},
-   },
+#[cfg(feature = "live")]
+use crate::live::TorrentEventKind;
+use crate::peer::{
+   PeerActor, PeerId, PeerStats,
+   commands::{SetChoked, Stats},
 };
 
 impl TorrentActor {
@@ -30,6 +29,7 @@ impl TorrentActor {
       }
       // Peer actors publish their own high-frequency samples. The torrent
       // publishes one coalesced aggregate after the collection interval.
+      #[cfg(feature = "live")]
       self.publish_live_view(|view| TorrentEventKind::MetricsChanged(view.metrics.clone()));
       self.try_update_tracker_progress();
       let decision = self.choking_scheduler.decide(&peer_stats, self.state);
@@ -43,7 +43,7 @@ impl TorrentActor {
 
       for stats in peer_stats {
          let choked = !unchoked.contains(&stats.id);
-         if stats.metrics.client_choking == choked {
+         if stats.client_choking() == choked {
             continue;
          }
 

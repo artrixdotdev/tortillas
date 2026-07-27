@@ -5,8 +5,8 @@
 //! `TorrentActor` is the authoritative owner of torrent state. It coordinates
 //! one peer actor per connection, one tracker actor per endpoint, piece
 //! scheduling, verified progress, and storage. The public [`Torrent`] handle
-//! exposes commands while [`crate::live::TorrentListener`] exposes the
-//! current projection and typed events.
+//! exposes commands while the live torrent listener exposes the current
+//! projection and typed events.
 //!
 //! High-frequency peer protocol state remains local to peer scopes. Torrent
 //! transfer metrics are aggregated after periodic peer-stat collection rather
@@ -97,6 +97,7 @@ pub(crate) use actor::{TorrentActor, TorrentActorArgs};
 pub use block::{BLOCK_SIZE, BlockMap};
 pub use discovery::AnnounceFrom;
 pub use handle::Torrent;
+#[cfg(feature = "live")]
 pub(crate) use handle::TorrentInner;
 pub(crate) use messages::*;
 pub use snapshot::{

@@ -119,6 +119,7 @@ impl Tracker {
    }
 
    /// Returns a credential-free endpoint label for public views.
+   #[cfg(feature = "live")]
    pub(crate) fn redacted_endpoint(&self) -> String {
       let uri = self.uri();
       let Ok(url) = reqwest::Url::parse(&uri) else {
@@ -138,6 +139,7 @@ impl Tracker {
       format!("{}://{host}{port}/", url.scheme())
    }
 
+   #[cfg(feature = "live")]
    fn scheme(&self) -> &'static str {
       match self {
          Self::Http(_) => "http",

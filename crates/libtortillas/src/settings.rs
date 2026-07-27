@@ -34,6 +34,7 @@ pub struct Settings {
    /// Engine actor and incoming socket settings.
    pub engine: EngineSettings,
    /// Live view and event-channel settings.
+   #[cfg(feature = "live")]
    pub live: LiveSettings,
    /// Per-torrent actor settings.
    pub torrent: TorrentSettings,
@@ -47,24 +48,8 @@ pub struct Settings {
 ///
 /// Channels are allocated lazily when the first listener subscribes, so these
 /// capacities do not impose a per-scope allocation on unobserved peers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LiveSettings {
-   pub engine_event_capacity: usize,
-   pub torrent_event_capacity: usize,
-   pub peer_event_capacity: usize,
-   pub tracker_event_capacity: usize,
-}
-
-impl Default for LiveSettings {
-   fn default() -> Self {
-      Self {
-         engine_event_capacity: 256,
-         torrent_event_capacity: 256,
-         peer_event_capacity: 64,
-         tracker_event_capacity: 64,
-      }
-   }
-}
+#[cfg(feature = "live")]
+pub use crate::live::LiveSettings;
 
 /// Mainline [BEP 5] DHT networking and lookup settings.
 ///

@@ -18,6 +18,10 @@
 
 pub use crate::{
    engine::{Engine, EngineSnapshot, EngineStatus, TorrentSource},
+   torrent::{RestoreVerification, Torrent, TorrentSnapshot},
+};
+#[cfg(feature = "live")]
+pub use crate::{
    live::{
       EngineEvent, EngineEventKind, EngineListener, EngineView, EventListener, EventStreamError,
       EventSubscription, LiveHealth, LiveHealthLevel, LivePublisher, PeerEvent, PeerEventKind,
@@ -30,5 +34,4 @@ pub use crate::{
       TorrentMetrics, TrackerMetrics, TrafficTotals, TransferMetrics, TransferRates,
       TransferSample,
    },
-   torrent::{RestoreVerification, Torrent, TorrentSnapshot},
 };
