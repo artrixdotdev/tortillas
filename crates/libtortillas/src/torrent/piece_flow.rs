@@ -477,6 +477,7 @@ mod tests {
       piece_storage: PieceStorageStrategy, base_path: std::path::PathBuf,
    ) -> TorrentActor {
       let info = test_info();
+      let info_hash = info.hash().unwrap();
       let metainfo = test_metainfo(info.clone());
       let peer_id = testing::peer_id();
       let tracker_server = UdpServer::new(None).await.unwrap();
@@ -506,6 +507,7 @@ mod tests {
          trackers: HashMap::new(),
          bitfield: BitVec::<AtomicU8>::repeat(false, info.piece_count()),
          id: peer_id,
+         info_hash,
          resolved_magnet_info: None,
          metainfo,
          tracker_server,

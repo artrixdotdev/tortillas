@@ -110,6 +110,7 @@ pub(crate) struct TorrentActor {
 
    pub(crate) bitfield: BitVec<AtomicU8>,
    pub(super) id: PeerId,
+   pub(super) info_hash: InfoHash,
    /// Metadata resolved from a magnet source. `.torrent` metadata remains
    /// canonical inside `metainfo`.
    pub(super) resolved_magnet_info: Option<Info>,
@@ -166,16 +167,7 @@ impl TorrentActor {
    }
 
    pub fn info_hash(&self) -> InfoHash {
-      if let Some(info) = &self.info_dict() {
-         info.hash().expect("Failed to compute info hash")
-      } else {
-         match &self.metainfo {
-            MetaInfo::Torrent(t) => t.info.hash().expect("Failed to compute info hash"),
-            MetaInfo::MagnetUri(m) => m
-               .info_hash()
-               .expect("Magnet URIs should always have info hashes"),
-         }
-      }
+      self.info_hash
    }
    /// Checks if the torrent is empty (we haven't downloaded any pieces yet) by
    /// checking if our bitfield is filled with zeros.
@@ -833,6 +825,7 @@ impl Actor for TorrentActor {
          utp_server,
          trackers,
          id: peer_id,
+         info_hash: torrent_id,
          metainfo,
          resolved_magnet_info: None,
          actor_ref: us,
@@ -1697,6 +1690,7 @@ mod tests {
          trackers: HashMap::new(),
          bitfield,
          id: peer_id,
+         info_hash,
          resolved_magnet_info: None,
          metainfo: metainfo.clone(),
          tracker_server: udp_server.clone(),
@@ -1856,6 +1850,7 @@ mod tests {
          trackers: HashMap::new(),
          bitfield,
          id: peer_id,
+         info_hash,
          resolved_magnet_info: None,
          metainfo: metainfo.clone(),
          tracker_server: udp_server,
@@ -2047,6 +2042,7 @@ mod tests {
          _ => unreachable!(),
       };
       let piece_count = info_dict.piece_count();
+      let info_hash = metainfo.info_hash().unwrap();
 
       let peer_id = testing::peer_id();
       let udp_server = testing::udp_server().await;
@@ -2076,6 +2072,7 @@ mod tests {
          trackers: HashMap::new(),
          bitfield: BitVec::repeat(false, piece_count),
          id: peer_id,
+         info_hash,
          resolved_magnet_info: None,
          metainfo,
          tracker_server: udp_server,
