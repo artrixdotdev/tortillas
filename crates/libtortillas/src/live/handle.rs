@@ -128,7 +128,7 @@ impl PeerHandle {
    }
 
    pub(crate) fn publish_metrics(&self, view: PeerView) {
-      let metrics = view.metrics;
+      let metrics = view.metrics.clone();
       let _ = self
          .inner
          .publisher
@@ -270,8 +270,8 @@ impl TrackerHandle {
    pub(crate) fn announce_succeeded(&self, metrics: TrackerMetrics) {
       let mut view = self.view();
       view.status = TrackerStatus::Healthy;
-      view.metrics = metrics;
       let peers_returned = metrics.latest_peers_returned.unwrap_or_default();
+      view.metrics = metrics;
       let event = TrackerEventKind::AnnounceSucceeded { peers_returned };
       if self.inner.publisher.replace_view_and_emit(view, event)
          && let Some(hub) = self.inner.hub()
@@ -310,13 +310,15 @@ impl TrackerHandle {
    pub(crate) fn stopped(&self) {
       let mut view = self.view();
       view.status = TrackerStatus::Stopped;
-      if self
+      let closed = self
          .inner
          .publisher
-         .close_with_terminal_event(view, TrackerEventKind::Stopped)
-         && let Some(hub) = self.inner.hub()
-      {
-         hub.emit_tracker_event(self, TrackerEventKind::Stopped);
+         .close_with_terminal_event(view, TrackerEventKind::Stopped);
+      if let Some(hub) = self.inner.hub() {
+         hub.remove_tracker_scope(self);
+         if closed {
+            hub.emit_tracker_event(self, TrackerEventKind::Stopped);
+         }
       }
    }
 
@@ -327,6 +329,9 @@ impl TrackerHandle {
          .inner
          .publisher
          .close_with_terminal_event(view, TrackerEventKind::Stopped);
+      if let Some(hub) = self.inner.hub() {
+         hub.remove_tracker_scope(self);
+      }
    }
 }
 
@@ -388,6 +393,7 @@ mod tests {
          },
          connected_peer_view(),
       )
+      .unwrap()
    }
 
    #[tokio::test]

@@ -128,7 +128,7 @@ impl TrackerStats {
       TrackerMetrics {
          transfer: TransferMetrics {
             totals: self.traffic_totals(),
-            rates: None,
+            samples: Vec::new(),
          },
          announce_attempts: u64::try_from(self.get_announce_attempts()).unwrap_or(u64::MAX),
          announce_successes: u64::try_from(self.get_announce_successes()).unwrap_or(u64::MAX),

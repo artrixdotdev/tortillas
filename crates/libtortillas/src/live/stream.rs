@@ -76,12 +76,7 @@ where
    pub fn subscribe(&self) -> EventSubscription<E> {
       let state = mutex_lock(&self.state);
       if state.closed {
-         return {
-            let (sender, receiver) = broadcast::channel(1);
-            let weak = sender.downgrade();
-            drop(sender);
-            EventSubscription::from_receiver(receiver, weak)
-         };
+         return EventSubscription::closed();
       }
       let mut slot = mutex_lock(&self.channel.sender);
       let sender = slot.get_or_insert_with(|| {
@@ -123,10 +118,14 @@ where
       mutex_lock(&self.state).view.clone()
    }
 
+   pub(crate) fn is_closed(&self) -> bool {
+      mutex_lock(&self.state).closed
+   }
+
    /// Replaces the current view without emitting an event.
    ///
    /// Returns `false` when the publisher has already closed.
-   pub fn replace_view(&self, view: V) -> bool {
+   pub(crate) fn replace_view(&self, view: V) -> bool {
       let mut state = mutex_lock(&self.state);
       if state.closed {
          return false;
@@ -138,14 +137,14 @@ where
    /// Replaces the current view and emits the corresponding event.
    ///
    /// Returns `false` when the publisher has already closed.
-   pub fn replace_view_and_emit(&self, view: V, event: E) -> bool {
+   pub(crate) fn replace_view_and_emit(&self, view: V, event: E) -> bool {
       self.apply_and_emit(|current| *current = view, event)
    }
 
    /// Emits an event using this publisher's monotonic sequence.
    ///
    /// Returns `false` when the publisher has already closed.
-   pub fn emit_without_view_change(&self, event: E) -> bool {
+   pub(crate) fn emit_without_view_change(&self, event: E) -> bool {
       self.apply_and_emit(|_| {}, event)
    }
 
@@ -153,7 +152,7 @@ where
    /// delivering one terminal event.
    ///
    /// Returns `false` if another caller already closed the publisher.
-   pub fn close_with_terminal_event(&self, view: V, event: E) -> bool {
+   pub(crate) fn close_with_terminal_event(&self, view: V, event: E) -> bool {
       let mut state = mutex_lock(&self.state);
       if state.closed {
          return false;
@@ -192,6 +191,21 @@ where
    }
 }
 
+impl<V, E> LivePublisher<Option<V>, E>
+where
+   V: Clone + Send + Sync + 'static,
+   E: Clone + Send + 'static,
+{
+   pub(crate) fn install_initial_view(&self, view: V) -> bool {
+      let mut state = mutex_lock(&self.state);
+      if state.closed || state.view.is_some() {
+         return false;
+      }
+      state.view = Some(view);
+      true
+   }
+}
+
 // Subscription
 
 /// A generic, lag-aware subscription to events from a live publisher.
@@ -219,7 +233,7 @@ impl<E: Clone + Send + 'static> EventSubscription<E> {
       }
    }
 
-   fn closed() -> Self {
+   pub(crate) fn closed() -> Self {
       let (sender, receiver) = broadcast::channel(1);
       let weak = sender.downgrade();
       drop(sender);
@@ -385,5 +399,14 @@ mod tests {
       assert!(!publisher.has_event_channel());
       let _listener = publisher.listener();
       assert!(publisher.has_event_channel());
+   }
+
+   #[test]
+   fn initial_view_installation_does_not_overwrite_a_published_view() {
+      let publisher = LivePublisher::<_, ()>::new(None, 8);
+
+      assert!(publisher.install_initial_view(1_u8));
+      assert!(!publisher.install_initial_view(2));
+      assert_eq!(publisher.view(), Some(1));
    }
 }

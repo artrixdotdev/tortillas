@@ -109,13 +109,15 @@ impl TorrentActor {
          return;
       }
 
-      let peer_handle = self.hub.register_peer_scope(
+      let Some(peer_handle) = self.hub.register_peer_scope(
          PeerIdentity {
             torrent: info_hash,
             peer: id,
          },
          PeerView::from_peer(&peer, true),
-      );
+      ) else {
+         return;
+      };
 
       let peer_actor = PeerActor::spawn_with_mailbox(
          (
@@ -172,8 +174,11 @@ impl TorrentActor {
             dead_peers.push(*id);
          }
       }
+      let removed_dead_peers = !dead_peers.is_empty();
       for id in dead_peers {
          self.peers.remove(&id);
+      }
+      if removed_dead_peers {
          self.publish_live_view(|_| crate::live::TorrentEventKind::Updated);
       }
    }

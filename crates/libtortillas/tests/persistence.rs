@@ -351,6 +351,17 @@ async fn custom_piece_manager_snapshot_returns_typed_unsupported_error() {
       .set_piece_manager(CustomPieceManager::default())
       .await
       .unwrap();
+   let storage_error = torrent
+      .set_piece_storage(PieceStorageStrategy::InFile)
+      .await
+      .unwrap_err();
+   assert!(matches!(
+      storage_error,
+      TorrentError::InvalidOperation {
+         operation: "set piece storage",
+         ..
+      }
+   ));
 
    let error = torrent.snapshot().await.unwrap_err();
 
@@ -452,9 +463,8 @@ fn engine_snapshot_golden_fixtures_migrate_and_round_trip() {
       migrated.version,
       libtortillas::engine::ENGINE_SNAPSHOT_VERSION
    );
+   migrated.validate().unwrap();
 
-   let current: libtortillas::engine::EngineSnapshot =
-      serde_json::from_str(ENGINE_SNAPSHOT_V2).unwrap();
    let expected: serde_json::Value = serde_json::from_str(ENGINE_SNAPSHOT_V2).unwrap();
-   assert_eq!(serde_json::to_value(current).unwrap(), expected);
+   assert_eq!(serde_json::to_value(migrated).unwrap(), expected);
 }

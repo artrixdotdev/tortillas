@@ -227,17 +227,15 @@ impl PeerStream {
 
    /// Splits the PeerStream into separate reader and writer halves.
    ///
-   /// Panics if `read_buffer` contains bytes buffered by `PeerRecv::recv()`.
-   /// Callers must split before using buffered reads, or ensure
-   /// `recv_handshake_message()` and other direct reads did not leave data for
-   /// `PeerRecv::recv()` to process.
+   /// Any bytes already buffered by [`PeerRecv::recv`] are transferred to the
+   /// reader and returned before it reads from the transport.
    pub fn split(self) -> (PeerReader, PeerWriter) {
-      assert!(
-         self.read_buffer.is_empty(),
-         "PeerStream::split would discard buffered read data"
-      );
-      let peer_state = self.peer_state;
-      let (reader, writer) = match self.transport {
+      let Self {
+         transport,
+         read_buffer,
+         peer_state,
+      } = self;
+      let (reader, writer) = match transport {
          PeerTransport::Tcp(stream) => {
             let (reader, writer) = stream.into_split();
             (PeerReadHalf::Tcp(reader), PeerWriteHalf::Tcp(writer))
@@ -250,6 +248,7 @@ impl PeerStream {
       (
          PeerReader {
             reader,
+            read_buffer,
             peer_state: peer_state.clone(),
          },
          PeerWriter { writer, peer_state },
@@ -380,6 +379,7 @@ enum PeerWriteHalf {
 
 pub struct PeerReader {
    reader: PeerReadHalf,
+   read_buffer: BytesMut,
    peer_state: PeerState,
 }
 
@@ -392,6 +392,11 @@ impl AsyncRead for PeerReader {
    fn poll_read(
       mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>,
    ) -> Poll<io::Result<()>> {
+      if !self.read_buffer.is_empty() {
+         let length = buf.remaining().min(self.read_buffer.len());
+         buf.put_slice(&self.read_buffer.split_to(length));
+         return Poll::Ready(Ok(()));
+      }
       let before = buf.filled().len();
       let result = match &mut self.reader {
          PeerReadHalf::Tcp(stream) => Pin::new(stream).poll_read(cx, buf),
@@ -588,6 +593,23 @@ mod tests {
       );
       assert_eq!(server_totals.uploaded, client_totals.downloaded);
       assert_eq!(server_totals.downloaded, client_totals.uploaded);
+   }
+
+   #[tokio::test]
+   async fn peer_stream_transfers_buffered_data_to_split_reader() {
+      let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+      let address = listener.local_addr().unwrap();
+      let connect = tokio::spawn(TcpStream::connect(address));
+      let (stream, _) = listener.accept().await.unwrap();
+      let _client = connect.await.unwrap().unwrap();
+      let mut stream = PeerStream::tcp(stream);
+      stream.read_buffer.extend_from_slice(&[0, 0, 0, 0]);
+      let (mut reader, _writer) = stream.split();
+      let mut buffered = [1; 4];
+
+      reader.read_exact(&mut buffered).await.unwrap();
+
+      assert_eq!(buffered, [0; 4]);
    }
 
    #[tokio::test]

@@ -202,6 +202,14 @@ pub(crate) mod commands {
                reason: "piece storage cannot change after data has been received".to_string(),
             });
          }
+         if matches!(&self.piece_manager, PieceManagerProxy::Custom(_))
+            && !matches!(&strategy, PieceStorageStrategy::Disk(_))
+         {
+            return Err(TorrentError::InvalidOperation {
+               operation: "set piece storage",
+               reason: "custom piece managers require disk piece storage".to_string(),
+            });
+         }
          if let PieceStorageStrategy::Disk(dir) = &strategy {
             util::create_dir(dir)
                .await
@@ -211,6 +219,9 @@ pub(crate) mod commands {
                })?;
          }
          self.piece_storage = strategy;
+         if self.state == TorrentState::Failed {
+            self.transition_state(TorrentState::Paused);
+         }
          self.publish_live_view(|_| TorrentEventKind::Updated);
          Ok(())
       }
@@ -270,6 +281,9 @@ pub(crate) mod commands {
             })?;
          if let PieceManagerProxy::Default(manager) = &mut self.piece_manager {
             manager.set_path(path);
+         }
+         if self.state == TorrentState::Failed {
+            self.transition_state(TorrentState::Paused);
          }
          self.publish_live_view(|_| TorrentEventKind::Updated);
          Ok(())

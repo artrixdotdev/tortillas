@@ -5,10 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
    engine::EngineStatus,
    hashes::InfoHash,
-   metrics::{
-      HasTransferMetrics, PeerMetrics, TorrentMetrics, TrackerMetrics, TransferMetrics,
-      TransferRates,
-   },
+   metrics::{HasTransferMetrics, PeerMetrics, TorrentMetrics, TrackerMetrics, TransferMetrics},
    peer::Peer,
    torrent::TorrentState,
 };
@@ -73,14 +70,14 @@ pub struct PeerView {
 
 impl PeerView {
    pub(crate) fn from_peer(peer: &Peer, connected: bool) -> Self {
-      Self::from_peer_with_rates(peer, connected, None)
+      Self::from_peer_with_samples(peer, connected, Vec::new())
    }
 
-   pub(crate) fn from_peer_with_rates(
-      peer: &Peer, connected: bool, rates: Option<TransferRates>,
+   pub(crate) fn from_peer_with_samples(
+      peer: &Peer, connected: bool, samples: Vec<crate::metrics::TransferSample>,
    ) -> Self {
       let mut metrics = peer.metrics();
-      metrics.transfer.rates = rates;
+      metrics.transfer.samples = samples;
       Self::from_peer_with_metrics(peer, connected, metrics)
    }
 
@@ -143,8 +140,10 @@ impl TrackerStatus {
 
 #[cfg(test)]
 mod tests {
+   use std::time::Duration;
+
    use super::*;
-   use crate::metrics::{BytesPerSecond, TrafficTotals};
+   use crate::metrics::{ByteCount, BytesPerSecond, TrafficTotals, TransferRates, TransferSample};
 
    #[test]
    fn peer_view_uses_canonical_byte_units() {
@@ -155,13 +154,14 @@ mod tests {
          metrics: PeerMetrics {
             peer_interested: true,
             available_pieces: 1,
-            transfer: TransferMetrics {
-               totals: TrafficTotals::default(),
-               rates: Some(TransferRates {
-                  download: BytesPerSecond(3),
-                  upload: BytesPerSecond(2),
-               }),
-            },
+            transfer: TransferMetrics::from_sample(TransferSample {
+               previous_totals: TrafficTotals::default(),
+               current_totals: TrafficTotals {
+                  downloaded: ByteCount(3),
+                  uploaded: ByteCount(2),
+               },
+               elapsed: Duration::from_secs(1),
+            }),
             ..Default::default()
          },
       };

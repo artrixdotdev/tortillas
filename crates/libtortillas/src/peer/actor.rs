@@ -24,14 +24,14 @@ use crate::{
    errors::PeerActorError,
    hashes::InfoHash,
    live::{PeerHandle, PeerView},
-   metrics::{HasTransferMetrics, PeerMetrics, TransferMetrics, TransferSample},
+   metrics::{HasTransferMetrics, PeerMetrics, TimedTransferSample, TransferMetrics},
    peer::{Peer, PeerId},
    protocol::{stream::PeerRecv, *},
    settings::PeerSettings,
    torrent::{self, BLOCK_SIZE, TorrentActor},
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PeerStats {
    pub(crate) id: PeerId,
    pub(crate) metrics: PeerMetrics,
@@ -54,7 +54,7 @@ pub(crate) struct PeerActor {
 
    pending_block_requests: HashSet<(usize, usize, usize)>,
    pending_message_requests: VecDeque<PeerMessages>,
-   last_rate_sample: TransferSample,
+   last_rate_sample: TimedTransferSample,
    settings: PeerSettings,
    live_handle: PeerHandle,
 }
@@ -324,18 +324,19 @@ impl PeerActor {
       let id = self.peer.id?;
       let now = Instant::now();
       let totals = self.peer.traffic_totals();
-      let sample = TransferSample::new(now, totals);
-      let rates = sample.rates_since(self.last_rate_sample);
+      let sample = TimedTransferSample::new(now, totals);
+      let transfer_sample = sample.sample_since(self.last_rate_sample);
       self.last_rate_sample = sample;
-      let transfer = TransferMetrics {
-         totals,
-         rates: Some(rates),
-      };
+      let transfer = TransferMetrics::from_sample(transfer_sample);
       let mut metrics = self.peer.metrics();
       metrics.transfer = transfer;
       self
          .live_handle
-         .publish_metrics(PeerView::from_peer_with_metrics(&self.peer, true, metrics));
+         .publish_metrics(PeerView::from_peer_with_metrics(
+            &self.peer,
+            true,
+            metrics.clone(),
+         ));
 
       Some(PeerStats { id, metrics })
    }
@@ -382,7 +383,7 @@ impl Actor for PeerActor {
          .map_err(|e| PeerActorError::SupervisorCommunicationFailed(e.to_string()))?;
 
       Ok(Self {
-         last_rate_sample: TransferSample::new(Instant::now(), peer.traffic_totals()),
+         last_rate_sample: TimedTransferSample::new(Instant::now(), peer.traffic_totals()),
          peer,
          stream,
          supervisor,
@@ -650,10 +651,10 @@ impl Message<PeerMessages> for PeerActor {
             warn!("Received unexpected handshake from peer");
          }
       }
-      let rates = self.live_handle.view().metrics.transfer.rates;
+      let samples = self.live_handle.view().metrics.transfer.samples;
       self
          .live_handle
-         .publish_state(PeerView::from_peer_with_rates(&self.peer, true, rates));
+         .publish_state(PeerView::from_peer_with_samples(&self.peer, true, samples));
    }
 }
 

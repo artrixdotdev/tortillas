@@ -83,7 +83,8 @@ pub trait PieceManager: Send + Sync {
    /// underlying file storage layout.
    fn piece_to_paths(&self, index: usize) -> anyhow::Result<Vec<(PathBuf, usize, usize)>> {
       let info = self.info().ok_or_else(|| anyhow::anyhow!("info not set"))?;
-      let piece_len = info.piece_length as usize;
+      let piece_len = usize::try_from(info.piece_length)
+         .context("piece length cannot be represented on this platform")?;
       let total_len = info.total_length();
 
       let piece_start = index
@@ -107,7 +108,8 @@ pub trait PieceManager: Send + Sync {
       match &info.file {
          InfoKeys::Single { length, .. } => {
             // Single-file torrents just map to a single path = `name`
-            let file_len = *length as usize;
+            let file_len = usize::try_from(*length)
+               .context("single-file length cannot be represented on this platform")?;
 
             if piece_start < file_len {
                let offset_in_file = piece_start;

@@ -28,6 +28,7 @@ pub use crate::{
    metrics::{
       ByteCount, BytesPerSecond, ContentProgress, HasTransferMetrics, PeerMetrics, Seconds,
       TorrentMetrics, TrackerMetrics, TrafficTotals, TransferMetrics, TransferRates,
+      TransferSample,
    },
    torrent::{RestoreVerification, Torrent, TorrentSnapshot},
 };

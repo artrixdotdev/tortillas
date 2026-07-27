@@ -36,7 +36,7 @@ pub(crate) mod commands {
    use super::*;
 
    impl EngineActor {
-      async fn discard_restored_torrent(
+      async fn discard_failed_torrent(
          &mut self, info_hash: InfoHash, torrent: &ActorRef<TorrentActor>,
       ) {
          if self.torrents.remove(&info_hash).is_some()
@@ -243,12 +243,12 @@ pub(crate) mod commands {
                Ok(result) => match result.0 {
                   Ok(_) => {}
                   Err(error) => {
-                     self.discard_restored_torrent(info_hash, &torrent_ref).await;
+                     self.discard_failed_torrent(info_hash, &torrent_ref).await;
                      return Err(error.into());
                   }
                },
                Err(error) => {
-                  self.discard_restored_torrent(info_hash, &torrent_ref).await;
+                  self.discard_failed_torrent(info_hash, &torrent_ref).await;
                   return Err(EngineError::ActorCommunicationFailed {
                      operation: "restore torrent snapshot",
                      reason: error.to_string(),
@@ -286,7 +286,7 @@ pub(crate) mod commands {
                })
                .await
          {
-            self.discard_restored_torrent(info_hash, &torrent_ref).await;
+            self.discard_failed_torrent(info_hash, &torrent_ref).await;
             return Err(EngineError::Torrent(map_torrent_send_error(
                "resume restored torrent",
                error,
@@ -295,7 +295,7 @@ pub(crate) mod commands {
          let initial_view = match torrent_ref.ask(torrent::commands::GetLiveView).await {
             Ok(view) => *view,
             Err(error) => {
-               self.discard_restored_torrent(info_hash, &torrent_ref).await;
+               self.discard_failed_torrent(info_hash, &torrent_ref).await;
                return Err(EngineError::ActorCommunicationFailed {
                   operation: "initialize torrent live state",
                   reason: error.to_string(),

@@ -31,7 +31,7 @@ use crate::{
    metainfo::{Info, MetaInfo},
    metrics::{
       ByteCount, ContentProgress, HasTransferMetrics, TorrentMetrics, TrackerMetrics,
-      TrafficTotals, TransferMetrics, TransferRates,
+      TransferMetrics,
    },
    peer::{PeerActor, PeerId, commands::SetChoked},
    pieces::{FilePieceManager, PieceManager, PieceScheduler, PieceStoreActor},
@@ -530,14 +530,8 @@ impl TorrentActor {
                .map(|tracker| tracker as &dyn HasTransferMetrics),
          )
          .collect::<Vec<_>>();
-      let rates = TransferRates::aggregate(metric_sources.iter().copied());
-      let totals = metric_sources
-         .into_iter()
-         .map(HasTransferMetrics::transfer_metrics)
-         .map(|metrics| metrics.totals)
-         .fold(TrafficTotals::default(), TrafficTotals::saturating_add);
       let metrics = TorrentMetrics::new(
-         TransferMetrics { totals, rates },
+         TransferMetrics::aggregate(metric_sources),
          ContentProgress {
             total_bytes,
             verified_bytes,
@@ -745,7 +739,7 @@ impl Actor for TorrentActor {
       let mut trackers = HashMap::new();
       for tracker in tracker_list {
          let endpoint = tracker.redacted_endpoint();
-         let tracker_handle = hub.register_tracker_scope(
+         let Some(tracker_handle) = hub.register_tracker_scope(
             torrent_id,
             &tracker,
             TrackerView {
@@ -753,7 +747,12 @@ impl Actor for TorrentActor {
                status: TrackerStatus::Pending,
                metrics: TrackerMetrics::default(),
             },
-         );
+         ) else {
+            return Err(TorrentError::ActorCommunicationFailed {
+               operation: "register tracker live scope",
+               reason: "live hub is no longer available".to_string(),
+            });
+         };
          let actor = TrackerActor::supervise(
             &us,
             TrackerActorArgs {
@@ -869,11 +868,13 @@ impl Actor for TorrentActor {
       &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
       error!(?id, ?reason, "Linked child died");
-      self.hub.emit_health(
-         Some(self.info_hash()),
-         LiveHealthLevel::Error,
-         "a torrent service stopped unexpectedly",
-      );
+      if !reason.is_normal() {
+         self.hub.emit_health(
+            Some(self.info_hash()),
+            LiveHealthLevel::Error,
+            "a torrent service stopped unexpectedly",
+         );
+      }
 
       Ok(ControlFlow::Continue(()))
    }
@@ -898,7 +899,7 @@ mod tests {
       hashes::HashVec,
       live::{PeerIdentity, PeerView},
       metainfo::{InfoKeys, MetaInfo, TorrentFile},
-      metrics::{BytesPerSecond, PeerMetrics},
+      metrics::{BytesPerSecond, PeerMetrics, TrafficTotals, TransferRates, TransferSample},
       protocol::{
          messages::{Handshake, PeerMessages},
          stream::{PeerRecv, PeerSend, PeerStream},
@@ -1839,54 +1840,62 @@ mod tests {
       };
 
       let verified_content = test_actor.live_view().metrics.progress.verified_bytes;
-      let sampled_peer = test_actor.hub.register_peer_scope(
-         PeerIdentity {
-            torrent: info_hash,
-            peer: PeerId::Unknown([9; 20]),
-         },
-         PeerView {
-            address: None,
-            client: None,
-            connected: true,
-            metrics: PeerMetrics {
-               peer_interested: true,
-               available_pieces: 1,
-               transfer: TransferMetrics {
-                  totals: TrafficTotals {
-                     downloaded: ByteCount(50_000),
-                     uploaded: ByteCount(5_000),
-                  },
-                  rates: Some(TransferRates {
-                     download: BytesPerSecond(100),
-                     upload: BytesPerSecond(20),
-                  }),
-               },
-               ..Default::default()
+      let sampled_peer = test_actor
+         .hub
+         .register_peer_scope(
+            PeerIdentity {
+               torrent: info_hash,
+               peer: PeerId::Unknown([9; 20]),
             },
-         },
-      );
-      let _sampled_tracker = test_actor.hub.register_tracker_scope(
-         info_hash,
-         &Tracker::Http("http://tracker.example/announce".to_string()),
-         TrackerView {
-            endpoint: "http://tracker.example".to_string(),
-            status: TrackerStatus::Healthy,
-            metrics: TrackerMetrics {
-               latest_peers_returned: Some(1),
-               transfer: TransferMetrics {
-                  totals: TrafficTotals {
-                     downloaded: ByteCount(250),
-                     uploaded: ByteCount(50),
-                  },
-                  rates: Some(TransferRates {
-                     download: BytesPerSecond(2),
-                     upload: BytesPerSecond(1),
+            PeerView {
+               address: None,
+               client: None,
+               connected: true,
+               metrics: PeerMetrics {
+                  peer_interested: true,
+                  available_pieces: 1,
+                  transfer: TransferMetrics::from_sample(TransferSample {
+                     previous_totals: TrafficTotals {
+                        downloaded: ByteCount(49_900),
+                        uploaded: ByteCount(4_980),
+                     },
+                     current_totals: TrafficTotals {
+                        downloaded: ByteCount(50_000),
+                        uploaded: ByteCount(5_000),
+                     },
+                     elapsed: Duration::from_secs(1),
                   }),
+                  ..Default::default()
                },
-               ..Default::default()
             },
-         },
-      );
+         )
+         .unwrap();
+      let _sampled_tracker = test_actor
+         .hub
+         .register_tracker_scope(
+            info_hash,
+            &Tracker::Http("http://tracker.example/announce".to_string()),
+            TrackerView {
+               endpoint: "http://tracker.example".to_string(),
+               status: TrackerStatus::Healthy,
+               metrics: TrackerMetrics {
+                  latest_peers_returned: Some(1),
+                  transfer: TransferMetrics::from_sample(TransferSample {
+                     previous_totals: TrafficTotals {
+                        downloaded: ByteCount(248),
+                        uploaded: ByteCount(49),
+                     },
+                     current_totals: TrafficTotals {
+                        downloaded: ByteCount(250),
+                        uploaded: ByteCount(50),
+                     },
+                     elapsed: Duration::from_secs(1),
+                  }),
+                  ..Default::default()
+               },
+            },
+         )
+         .unwrap();
       let view = test_actor.live_view();
 
       assert_eq!(view.info_hash, info_hash);
@@ -1917,7 +1926,7 @@ mod tests {
       );
       assert!(view.metrics.progress.progress_fraction.unwrap() > 0.0);
       assert_eq!(
-         view.metrics.traffic.rates,
+         view.metrics.traffic.rates(),
          Some(TransferRates {
             download: BytesPerSecond(102),
             upload: BytesPerSecond(21),
@@ -1930,12 +1939,18 @@ mod tests {
 
       test_actor.state = TorrentState::Seeding;
       assert_eq!(
-         test_actor.live_view().metrics.traffic.rates.unwrap().upload,
+         test_actor
+            .live_view()
+            .metrics
+            .traffic
+            .rates()
+            .unwrap()
+            .upload,
          BytesPerSecond(21)
       );
       sampled_peer.disconnected();
       assert_eq!(
-         test_actor.live_view().metrics.traffic.rates,
+         test_actor.live_view().metrics.traffic.rates(),
          Some(TransferRates {
             download: BytesPerSecond(2),
             upload: BytesPerSecond(1),

@@ -142,18 +142,26 @@ impl Actor for EngineActor {
       let tcp_addr = tcp_addr.unwrap_or(settings.engine.tcp_addr);
       let utp_addr = utp_addr.unwrap_or(settings.engine.utp_addr);
       let udp_addr = udp_addr.unwrap_or(settings.engine.udp_addr);
-      let tcp_socket = TcpListener::bind(tcp_addr)
-         .await
-         .map_err(|e| EngineError::NetworkSetupFailed(format!("tcp bind {tcp_addr}: {e}")))?;
-      let utp_socket = UtpSocketUdp::new_udp(utp_addr)
-         .await
-         .map_err(|e| EngineError::NetworkSetupFailed(format!("utp bind {utp_addr}: {e}")))?;
+      let tcp_socket = TcpListener::bind(tcp_addr).await.map_err(|error| {
+         let error = EngineError::NetworkSetupFailed(format!("tcp bind {tcp_addr}: {error}"));
+         hub.engine_start_failed(error.to_string());
+         error
+      })?;
+      let utp_socket = UtpSocketUdp::new_udp(utp_addr).await.map_err(|error| {
+         let error = EngineError::NetworkSetupFailed(format!("utp bind {utp_addr}: {error}"));
+         hub.engine_start_failed(error.to_string());
+         error
+      })?;
       let udp_server = UdpServer::new_with_receive_buffer_size(
          Some(udp_addr),
          settings.tracker.udp_receive_buffer_size,
       )
       .await
-      .map_err(|e| EngineError::NetworkSetupFailed(format!("udp bind {udp_addr}: {e}")))?;
+      .map_err(|error| {
+         let error = EngineError::NetworkSetupFailed(format!("udp bind {udp_addr}: {error}"));
+         hub.engine_start_failed(error.to_string());
+         error
+      })?;
 
       let peer_id = peer_id.unwrap_or_default();
       let dht = if settings.dht.enabled {

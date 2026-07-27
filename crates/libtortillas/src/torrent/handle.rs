@@ -64,9 +64,11 @@ impl Torrent {
       info_hash: InfoHash, actor: ActorRef<TorrentActor>, hub: &Hub,
       initial_view: Option<TorrentView>,
    ) -> Self {
-      let scope = hub.ensure_torrent_scope(info_hash);
+      let scope = hub
+         .ensure_torrent_scope(info_hash)
+         .expect("torrent handles require a live engine hub");
       if let Some(view) = initial_view {
-         let _ = scope.publisher.replace_view(Some(view));
+         let _ = scope.publisher.install_initial_view(view);
       }
       let inner = Arc::new(TorrentInner {
          info_hash,

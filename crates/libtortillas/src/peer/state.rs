@@ -192,7 +192,7 @@ impl Peer {
       PeerMetrics {
          transfer: TransferMetrics {
             totals: self.traffic_totals(),
-            rates: None,
+            samples: Vec::new(),
          },
          peer_choking: self.am_choked(),
          peer_interested: self.interested(),

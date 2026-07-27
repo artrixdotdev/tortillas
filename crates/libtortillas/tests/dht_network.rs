@@ -2,6 +2,7 @@ use std::{env, path::PathBuf, process, time::Duration};
 
 use libtortillas::{
    engine::{Engine, TorrentSource},
+   live::EventStreamError,
    metainfo::{MetaInfo, TorrentFile},
    settings::Settings,
 };
@@ -49,7 +50,12 @@ async fn arch_linux_torrent_when_public_dht_is_available_then_downloads_data() {
          if view.metrics.progress.verified_bytes.0 > 0 {
             return view;
          }
-         timeout(POLL_INTERVAL, listener.recv()).await.ok();
+         match timeout(POLL_INTERVAL, listener.recv()).await {
+            Ok(Err(EventStreamError::Closed)) => {
+               panic!("torrent event stream closed before any data was downloaded");
+            }
+            Ok(Ok(_)) | Ok(Err(EventStreamError::Lagged(_))) | Err(_) => {}
+         }
       }
    })
    .await;

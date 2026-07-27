@@ -7,11 +7,12 @@
 //! and can include duplicate or rejected data; [`ContentProgress`] measures
 //! verified torrent payload and must remain separate.
 //!
-//! An absent rate sample means no sample has been collected. A present
-//! [`TransferRates`] containing zero means an interval was measured and no
-//! transfer occurred. ETA is derived from verified remaining bytes and the
-//! aggregate sampled download rate rather than stored as independently mutable
-//! state.
+//! Rates are never stored as mutable metrics. [`TransferMetrics`] retains raw
+//! cumulative byte counters and the raw counter samples needed to derive a
+//! rate. An absent sample means no interval has been collected. A present
+//! sample whose counters did not change is a known zero-rate interval. ETA is
+//! likewise derived from verified remaining bytes and the sampled download
+//! rate rather than stored independently.
 
 use std::time::{Duration, Instant};
 
@@ -122,7 +123,7 @@ impl TransferRates {
    ) -> Option<Self> {
       let mut aggregate = None::<Self>;
       for source in sources {
-         let Some(rates) = source.transfer_metrics().rates else {
+         let Some(rates) = source.transfer_rates() else {
             continue;
          };
          let current = aggregate.get_or_insert_default();
@@ -133,9 +134,7 @@ impl TransferRates {
    }
 
    #[must_use]
-   pub(crate) fn between(
-      previous: TrafficTotals, current: TrafficTotals, elapsed: Duration,
-   ) -> Self {
+   fn between(previous: TrafficTotals, current: TrafficTotals, elapsed: Duration) -> Self {
       fn rate(previous: ByteCount, current: ByteCount, elapsed: Duration) -> BytesPerSecond {
          let elapsed_nanos = elapsed.as_nanos();
          if elapsed_nanos == 0 || current < previous {
@@ -156,17 +155,79 @@ impl TransferRates {
    }
 }
 
-/// Traffic totals and the latest interval rate sample.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// A raw pair of cumulative counter observations and the time between them.
+///
+/// The sample deliberately stores totals and elapsed time rather than bytes per
+/// second. Consumers derive the rate through [`TransferSample::rates`] or
+/// [`HasTransferMetrics::transfer_rates`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferSample {
+   pub previous_totals: TrafficTotals,
+   pub current_totals: TrafficTotals,
+   pub elapsed: Duration,
+}
+
+impl TransferSample {
+   #[must_use]
+   pub fn rates(self) -> TransferRates {
+      TransferRates::between(self.previous_totals, self.current_totals, self.elapsed)
+   }
+}
+
+/// Cumulative traffic totals and the raw intervals available for deriving a
+/// current rate.
+///
+/// A leaf actor normally publishes one sample. Aggregated scopes retain one
+/// sample per child because each child can have a different sampling interval.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransferMetrics {
    pub totals: TrafficTotals,
-   /// `None` means no sample has been collected. `Some(default())` is a known
-   /// zero-rate sample.
-   pub rates: Option<TransferRates>,
+   #[serde(default, skip_serializing_if = "Vec::is_empty")]
+   pub samples: Vec<TransferSample>,
+}
+
+impl TransferMetrics {
+   #[must_use]
+   pub fn from_sample(sample: TransferSample) -> Self {
+      Self {
+         totals: sample.current_totals,
+         samples: vec![sample],
+      }
+   }
+
+   /// Derives the latest aggregate rate from raw byte-counter samples.
+   ///
+   /// `None` means no interval has been sampled. `Some(default())` means at
+   /// least one interval was measured and no traffic occurred.
+   #[must_use]
+   pub fn rates(&self) -> Option<TransferRates> {
+      let mut aggregate = None::<TransferRates>;
+      for sample in &self.samples {
+         let rates = sample.rates();
+         let current = aggregate.get_or_insert_default();
+         current.download = current.download.saturating_add(rates.download);
+         current.upload = current.upload.saturating_add(rates.upload);
+      }
+      aggregate
+   }
+
+   /// Combines raw counters and samples from every child metric scope.
+   #[must_use]
+   pub fn aggregate<'a, T: HasTransferMetrics + ?Sized + 'a>(
+      sources: impl IntoIterator<Item = &'a T>,
+   ) -> Self {
+      let mut aggregate = Self::default();
+      for source in sources {
+         let metrics = source.transfer_metrics();
+         aggregate.totals = aggregate.totals.saturating_add(metrics.totals);
+         aggregate.samples.extend_from_slice(&metrics.samples);
+      }
+      aggregate
+   }
 }
 
 /// Peer-specific metrics layered on top of the shared transfer measurements.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerMetrics {
    pub transfer: TransferMetrics,
    pub peer_choking: bool,
@@ -184,7 +245,7 @@ impl HasTransferMetrics for PeerMetrics {
 
 /// Tracker-specific metrics layered on top of the shared transfer
 /// measurements.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackerMetrics {
    pub transfer: TransferMetrics,
    pub announce_attempts: u64,
@@ -223,7 +284,7 @@ pub struct TorrentMetrics {
 impl TorrentMetrics {
    #[must_use]
    pub fn new(traffic: TransferMetrics, progress: ContentProgress) -> Self {
-      let eta = Self::calculate_eta(&progress, traffic.rates);
+      let eta = Self::calculate_eta(&progress, traffic.rates());
       Self {
          traffic,
          progress,
@@ -250,27 +311,33 @@ impl HasTransferMetrics for TorrentMetrics {
 /// Narrow capability used by transfer aggregation algorithms.
 pub trait HasTransferMetrics {
    fn transfer_metrics(&self) -> &TransferMetrics;
+
+   /// Calculates transfer rates from raw cumulative counter samples.
+   #[must_use]
+   fn transfer_rates(&self) -> Option<TransferRates> {
+      self.transfer_metrics().rates()
+   }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct TransferSample {
+pub(crate) struct TimedTransferSample {
    at: Instant,
    totals: TrafficTotals,
 }
 
-impl TransferSample {
+impl TimedTransferSample {
    #[must_use]
    pub(crate) fn new(at: Instant, totals: TrafficTotals) -> Self {
       Self { at, totals }
    }
 
    #[must_use]
-   pub(crate) fn rates_since(self, previous: Self) -> TransferRates {
-      TransferRates::between(
-         previous.totals,
-         self.totals,
-         self.at.saturating_duration_since(previous.at),
-      )
+   pub(crate) fn sample_since(self, previous: Self) -> TransferSample {
+      TransferSample {
+         previous_totals: previous.totals,
+         current_totals: self.totals,
+         elapsed: self.at.saturating_duration_since(previous.at),
+      }
    }
 }
 
@@ -287,6 +354,17 @@ mod tests {
       }
    }
 
+   fn one_second_sample(downloaded: u64, uploaded: u64) -> TransferSample {
+      TransferSample {
+         previous_totals: TrafficTotals::default(),
+         current_totals: TrafficTotals {
+            downloaded: ByteCount(downloaded),
+            uploaded: ByteCount(uploaded),
+         },
+         elapsed: Duration::from_secs(1),
+      }
+   }
+
    #[test]
    fn aggregate_rates_when_no_peers_are_sampled_then_returns_unknown() {
       let peers = [Source(TransferMetrics::default())];
@@ -295,21 +373,18 @@ mod tests {
 
    #[test]
    fn transfer_rates_when_sample_is_zero_then_are_known_zero() {
-      let rates = TransferSample::new(
+      let sample = TimedTransferSample::new(
          Instant::now() + Duration::from_secs(1),
          TrafficTotals::default(),
       )
-      .rates_since(TransferSample::new(
+      .sample_since(TimedTransferSample::new(
          Instant::now(),
          TrafficTotals::default(),
       ));
 
-      assert_eq!(rates, TransferRates::default());
+      assert_eq!(sample.rates(), TransferRates::default());
       assert_eq!(
-         TransferRates::aggregate(&[Source(TransferMetrics {
-            rates: Some(rates),
-            ..TransferMetrics::default()
-         })]),
+         TransferRates::aggregate(&[Source(TransferMetrics::from_sample(sample))]),
          Some(TransferRates::default())
       );
    }
@@ -318,13 +393,7 @@ mod tests {
    fn aggregate_rates_when_some_peers_are_unsampled_then_ignores_them() {
       let peers = [
          Source(TransferMetrics::default()),
-         Source(TransferMetrics {
-            rates: Some(TransferRates {
-               download: BytesPerSecond(10),
-               upload: BytesPerSecond(4),
-            }),
-            ..TransferMetrics::default()
-         }),
+         Source(TransferMetrics::from_sample(one_second_sample(10, 4))),
       ];
 
       assert_eq!(
@@ -339,33 +408,15 @@ mod tests {
    #[test]
    fn aggregate_rates_when_metric_scopes_differ_then_uses_shared_transfer_metrics() {
       let peer = PeerMetrics {
-         transfer: TransferMetrics {
-            rates: Some(TransferRates {
-               download: BytesPerSecond(10),
-               upload: BytesPerSecond(4),
-            }),
-            ..Default::default()
-         },
+         transfer: TransferMetrics::from_sample(one_second_sample(10, 4)),
          ..Default::default()
       };
       let tracker = TrackerMetrics {
-         transfer: TransferMetrics {
-            rates: Some(TransferRates {
-               download: BytesPerSecond(2),
-               upload: BytesPerSecond(1),
-            }),
-            ..Default::default()
-         },
+         transfer: TransferMetrics::from_sample(one_second_sample(2, 1)),
          ..Default::default()
       };
       let torrent = TorrentMetrics::new(
-         TransferMetrics {
-            rates: Some(TransferRates {
-               download: BytesPerSecond(3),
-               upload: BytesPerSecond::ZERO,
-            }),
-            ..Default::default()
-         },
+         TransferMetrics::from_sample(one_second_sample(3, 0)),
          ContentProgress {
             total_bytes: None,
             verified_bytes: ByteCount::ZERO,
@@ -377,9 +428,17 @@ mod tests {
          },
       );
       let scopes: [&dyn HasTransferMetrics; 3] = [&peer, &tracker, &torrent];
+      let aggregate = TransferMetrics::aggregate(scopes.iter().copied());
 
       assert_eq!(
-         TransferRates::aggregate(scopes),
+         aggregate.totals,
+         TrafficTotals {
+            downloaded: ByteCount(15),
+            uploaded: ByteCount(5),
+         }
+      );
+      assert_eq!(
+         aggregate.rates(),
          Some(TransferRates {
             download: BytesPerSecond(15),
             upload: BytesPerSecond(5),
@@ -446,21 +505,31 @@ mod tests {
 
    #[test]
    fn serialized_metrics_round_trip_without_unit_conversion() {
-      let metrics = TransferMetrics {
-         totals: TrafficTotals {
+      let metrics = TransferMetrics::from_sample(TransferSample {
+         previous_totals: TrafficTotals {
+            downloaded: ByteCount(724),
+            uploaded: ByteCount(412),
+         },
+         current_totals: TrafficTotals {
             downloaded: ByteCount(1_024),
             uploaded: ByteCount(512),
          },
-         rates: Some(TransferRates {
-            download: BytesPerSecond(300),
-            upload: BytesPerSecond(100),
-         }),
-      };
+         elapsed: Duration::from_secs(1),
+      });
 
       let json = serde_json::to_string(&metrics).unwrap();
+      assert!(!json.contains("rates"));
+      assert!(!json.contains("bytes_per_second"));
       assert_eq!(
          serde_json::from_str::<TransferMetrics>(&json).unwrap(),
          metrics
+      );
+      assert_eq!(
+         metrics.rates(),
+         Some(TransferRates {
+            download: BytesPerSecond(300),
+            upload: BytesPerSecond(100),
+         })
       );
    }
 }

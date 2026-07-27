@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::atomic::AtomicU8};
+use std::{
+   collections::{BTreeMap, HashSet},
+   path::PathBuf,
+   sync::atomic::AtomicU8,
+};
 
 use bitvec::vec::BitVec;
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
@@ -179,9 +183,15 @@ impl TorrentSnapshot {
             self.bitfield.len()
          )));
       }
+      let mut partial_piece_indices = HashSet::with_capacity(self.block_map.len());
       for entry in &self.block_map {
          let index = usize::try_from(entry.piece_index)
             .map_err(|_| self.invalid("partial piece index cannot be represented"))?;
+         if !partial_piece_indices.insert(index) {
+            return Err(self.invalid(format!(
+               "partial piece index {index} appears more than once"
+            )));
+         }
          if index >= piece_count {
             return Err(self.invalid("partial piece index is outside the metadata piece range"));
          }
@@ -323,11 +333,15 @@ impl ValidatedTorrentSnapshot {
                      .await
                      .is_ok(),
                   RestoreVerification::FileMetadata => {
-                     fs::metadata(path).await.is_ok_and(|metadata| {
-                        metadata.len()
-                           >= u64::try_from(piece_length(&info, index).unwrap_or(usize::MAX))
-                              .unwrap_or(u64::MAX)
-                     })
+                     let expected_length =
+                        u64::try_from(piece_length(&info, index)?).map_err(|_| {
+                           TorrentError::InvalidSnapshot {
+                              reason: "piece length cannot be represented as u64".to_string(),
+                           }
+                        })?;
+                     fs::metadata(path)
+                        .await
+                        .is_ok_and(|metadata| metadata.len() >= expected_length)
                   }
                   RestoreVerification::TrustSnapshot => true,
                }
@@ -476,6 +490,26 @@ mod tests {
          .unwrap();
 
       assert!(validated.snapshot().block_map.is_empty());
+   }
+
+   #[tokio::test]
+   async fn duplicate_partial_piece_indices_are_rejected() {
+      let mut snapshot = snapshot_with_storage(PieceStorageStrategy::InFile).await;
+      snapshot.bitfield.fill(false);
+      let block_count = piece_length(snapshot.resolved_info().unwrap(), 0)
+         .unwrap()
+         .div_ceil(BLOCK_SIZE);
+      let entry = PieceBlockSnapshot {
+         piece_index: 0,
+         blocks: vec![false; block_count],
+      };
+      snapshot.block_map = vec![entry.clone(), entry];
+
+      let error = snapshot.validate().unwrap_err();
+
+      assert!(
+         matches!(error, TorrentError::InvalidSnapshot { reason } if reason.contains("appears more than once"))
+      );
    }
 
    #[tokio::test]

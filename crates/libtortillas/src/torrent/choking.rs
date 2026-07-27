@@ -70,7 +70,7 @@ pub(crate) fn select_unchoked_peers(
    let mut candidates: Vec<_> = peers
       .iter()
       .filter(|peer| peer.metrics.peer_interested)
-      .copied()
+      .cloned()
       .collect();
    candidates.sort_by(|left, right| {
       rate_for(right, torrent_state)
@@ -118,12 +118,12 @@ fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> BytesPerSecond {
       TorrentState::Downloading => peer
          .metrics
          .transfer
-         .rates
+         .rates()
          .map_or(BytesPerSecond::ZERO, |rates| rates.download),
       TorrentState::Seeding => peer
          .metrics
          .transfer
-         .rates
+         .rates()
          .map_or(BytesPerSecond::ZERO, |rates| rates.upload),
       TorrentState::Added
       | TorrentState::ResolvingMetadata
@@ -138,8 +138,10 @@ fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> BytesPerSecond {
 
 #[cfg(test)]
 mod tests {
+   use std::time::Duration;
+
    use super::*;
-   use crate::metrics::{PeerMetrics, TransferMetrics, TransferRates};
+   use crate::metrics::{ByteCount, PeerMetrics, TrafficTotals, TransferMetrics, TransferSample};
 
    fn peer_id(value: u8) -> PeerId {
       PeerId::from([value; 20])
@@ -151,10 +153,11 @@ mod tests {
          metrics: PeerMetrics {
             peer_interested: true,
             client_choking: true,
-            transfer: TransferMetrics {
-               totals: Default::default(),
-               rates: Some(TransferRates::default()),
-            },
+            transfer: TransferMetrics::from_sample(TransferSample {
+               previous_totals: TrafficTotals::default(),
+               current_totals: TrafficTotals::default(),
+               elapsed: Duration::from_secs(1),
+            }),
             ..Default::default()
          },
       }
@@ -163,13 +166,14 @@ mod tests {
    fn with_rates(id: u8, download_rate: u64, upload_rate: u64) -> PeerStats {
       PeerStats {
          metrics: PeerMetrics {
-            transfer: TransferMetrics {
-               rates: Some(TransferRates {
-                  download: BytesPerSecond(download_rate),
-                  upload: BytesPerSecond(upload_rate),
-               }),
-               ..Default::default()
-            },
+            transfer: TransferMetrics::from_sample(TransferSample {
+               previous_totals: TrafficTotals::default(),
+               current_totals: TrafficTotals {
+                  downloaded: ByteCount(download_rate),
+                  uploaded: ByteCount(upload_rate),
+               },
+               elapsed: Duration::from_secs(1),
+            }),
             ..stats(id).metrics
          },
          id: peer_id(id),

@@ -168,6 +168,9 @@ impl TorrentActor {
    }
 
    fn fill_peer_request_window_to(&mut self, peer_id: crate::peer::PeerId, target_size: usize) {
+      if self.state != TorrentState::Downloading || !self.is_ready() {
+         return;
+      }
       let Some(info) = self.info_dict() else {
          return;
       };

@@ -5,12 +5,15 @@ use libtortillas::{
    engine::EngineStatus,
    errors::EngineError,
    live::{
-      EngineEventKind, EventStreamError, LivePublisher, TorrentEventKind, TrackerEventKind,
-      TrackerStatus,
+      EngineEventKind, EventStreamError, LiveHealthLevel, LivePublisher, TorrentEventKind,
+      TrackerEventKind, TrackerStatus,
    },
    prelude::{Engine, Settings, TorrentSource, TorrentState},
 };
-use tokio::time::{sleep, timeout};
+use tokio::{
+   net::TcpListener,
+   time::{sleep, timeout},
+};
 
 const BIG_BUCK_BUNNY: &[u8] = include_bytes!("torrents/big-buck-bunny.torrent");
 
@@ -114,19 +117,6 @@ async fn engine_listener_receives_live_torrent_lifecycle() {
 }
 
 #[tokio::test]
-async fn generic_live_publisher_implements_async_stream() {
-   let publisher = LivePublisher::new(0_u8, 4);
-   let mut listener = publisher.listener();
-
-   publisher.replace_view_and_emit(1, "changed");
-
-   let event = listener.next().await.unwrap().unwrap();
-   assert_eq!(event.sequence, 1);
-   assert_eq!(event.kind, "changed");
-   assert_eq!(listener.view(), 1);
-}
-
-#[tokio::test]
 async fn live_listener_closes_when_its_publisher_is_dropped() {
    let publisher = LivePublisher::<_, &'static str>::new(0_u8, 4);
    let mut listener = publisher.listener();
@@ -141,52 +131,33 @@ async fn live_listener_closes_when_its_publisher_is_dropped() {
 }
 
 #[tokio::test]
-async fn closed_live_publisher_rejects_late_updates() {
-   let publisher = LivePublisher::new(0_u8, 4);
-   let mut listener = publisher.listener();
+async fn engine_startup_failure_publishes_terminal_failed_status() {
+   let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+   let address = occupied.local_addr().unwrap();
+   let engine = Engine::builder()
+      .tcp_addr(address)
+      .settings({
+         let mut settings = Settings::default();
+         settings.dht.enabled = false;
+         settings
+      })
+      .build();
+   let mut listener = engine.listener();
 
-   assert!(publisher.close_with_terminal_event(1, "closed"));
-   assert!(!publisher.replace_view_and_emit(2, "late"));
+   let event = timeout(Duration::from_secs(2), listener.recv())
+      .await
+      .expect("engine startup failure was not published")
+      .unwrap();
 
-   assert_eq!(listener.recv().await.unwrap().kind, "closed");
+   let EngineEventKind::Health(health) = event.kind else {
+      panic!("startup failure should publish a health event");
+   };
+   assert_eq!(health.level, LiveHealthLevel::Error);
+   assert_eq!(listener.view().status, EngineStatus::Failed);
    assert!(matches!(
       listener.recv().await,
       Err(EventStreamError::Closed)
    ));
-   assert_eq!(listener.view(), 1);
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn concurrent_live_updates_are_delivered_in_sequence_order() {
-   const UPDATE_COUNT: u64 = 64;
-   let publisher = LivePublisher::new(0_u64, UPDATE_COUNT as usize);
-   let mut events = publisher.subscribe();
-   let updates = (1..=UPDATE_COUNT)
-      .map(|view| {
-         let publisher = publisher.clone();
-         tokio::spawn(async move { publisher.replace_view_and_emit(view, view) })
-      })
-      .collect::<Vec<_>>();
-
-   for update in updates {
-      update.await.unwrap();
-   }
-   for sequence in 1..=UPDATE_COUNT {
-      assert_eq!(events.recv().await.unwrap().sequence, sequence);
-   }
-}
-
-#[tokio::test]
-async fn listener_view_is_never_older_than_its_accepted_update() {
-   let publisher = LivePublisher::new(0_u64, 64);
-   let mut listener = publisher.listener();
-
-   for value in 1..=32 {
-      assert!(publisher.replace_view_and_emit(value, value));
-      let event = listener.recv().await.unwrap();
-      assert_eq!(event.kind, value);
-      assert!(listener.view() >= event.kind);
-   }
 }
 
 #[tokio::test]

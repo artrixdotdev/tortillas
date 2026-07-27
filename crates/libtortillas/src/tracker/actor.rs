@@ -23,7 +23,7 @@ use super::{
 use crate::{
    errors::TrackerActorError,
    live::TrackerHandle,
-   metrics::{TrackerMetrics, TransferMetrics, TransferSample},
+   metrics::{TimedTransferSample, TrackerMetrics, TransferMetrics},
    peer::PeerId,
    settings::TrackerSettings,
    torrent::{self, TorrentActor},
@@ -39,7 +39,7 @@ pub(crate) struct TrackerActor {
    actor_ref: ActorRef<Self>,
    settings: TrackerSettings,
    live_handle: TrackerHandle,
-   last_rate_sample: TransferSample,
+   last_rate_sample: TimedTransferSample,
 }
 
 #[derive(Clone)]
@@ -152,7 +152,7 @@ impl Actor for TrackerActor {
          actor_ref,
          settings,
          live_handle,
-         last_rate_sample: TransferSample::new(Instant::now(), totals),
+         last_rate_sample: TimedTransferSample::new(Instant::now(), totals),
       })
    }
 
@@ -194,11 +194,8 @@ impl TrackerActor {
    fn snapshot_metrics(&mut self, latest_peers_returned: Option<u64>) -> TrackerMetrics {
       let mut metrics = self.tracker.stats().metrics();
       let totals = metrics.transfer.totals;
-      let sample = TransferSample::new(Instant::now(), totals);
-      metrics.transfer = TransferMetrics {
-         totals,
-         rates: Some(sample.rates_since(self.last_rate_sample)),
-      };
+      let sample = TimedTransferSample::new(Instant::now(), totals);
+      metrics.transfer = TransferMetrics::from_sample(sample.sample_since(self.last_rate_sample));
       self.last_rate_sample = sample;
       metrics.latest_peers_returned = latest_peers_returned;
       metrics

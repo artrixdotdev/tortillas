@@ -126,12 +126,9 @@
 //! receives [`EventStreamError::Lagged`] instead of causing unbounded memory
 //! growth. Sequence numbers increase monotonically within each scope.
 //!
-//! [`LivePublisher`] mutation names describe their full effect:
-//! [`LivePublisher::replace_view`] changes only the projection,
-//! [`LivePublisher::replace_view_and_emit`] performs a coherent view/event
-//! transition, [`LivePublisher::emit_without_view_change`] emits a discrete
-//! event, and [`LivePublisher::close_with_terminal_event`] performs the one
-//! irreversible close transition.
+//! Projection mutation and terminal closure are crate-internal. Applications
+//! can observe publishers through their view, listener, and subscription APIs
+//! without being able to alter actor-owned state.
 //!
 //! Supervised torrent and tracker actors publish a restarting state after
 //! abnormal termination and keep their streams open. Final ownership teardown
@@ -182,7 +179,7 @@ pub use view::{EngineView, PeerView, TorrentView, TrackerStatus, TrackerView};
 
 pub use crate::metrics::{
    ByteCount, BytesPerSecond, ContentProgress, HasTransferMetrics, PeerMetrics, Seconds,
-   TorrentMetrics, TrackerMetrics, TrafficTotals, TransferMetrics, TransferRates,
+   TorrentMetrics, TrackerMetrics, TrafficTotals, TransferMetrics, TransferRates, TransferSample,
 };
 
 #[cfg(test)]
@@ -247,17 +244,23 @@ mod tests {
       let info_hash = InfoHash::from_bytes([1; 20]);
       let torrent = benchmark_torrent_view(info_hash, "isolated");
       hub.initialize_torrent_projection(torrent.clone());
-      let scope = hub.ensure_torrent_scope(info_hash);
+      let scope = hub.ensure_torrent_scope(info_hash).unwrap();
       let mut torrent_events = scope.publisher.subscribe();
-      let peer = hub.register_peer_scope(
-         PeerIdentity {
-            torrent: info_hash,
-            peer: PeerId::Unknown([2; 20]),
-         },
-         connected_peer_view(),
-      );
+      let peer = hub
+         .register_peer_scope(
+            PeerIdentity {
+               torrent: info_hash,
+               peer: PeerId::Unknown([2; 20]),
+            },
+            connected_peer_view(),
+         )
+         .unwrap();
       let mut peer_view = peer.view();
-      peer_view.metrics.transfer.rates = Some(Default::default());
+      peer_view.metrics.transfer.samples.push(TransferSample {
+         previous_totals: Default::default(),
+         current_totals: Default::default(),
+         elapsed: Duration::from_secs(1),
+      });
 
       peer.publish_metrics(peer_view);
 
@@ -273,11 +276,13 @@ mod tests {
    async fn tracker_restart_keeps_listener_open_until_final_stop() {
       let hub = Hub::new();
       let source = Tracker::Http("https://tracker.example/announce".to_string());
-      let tracker = hub.register_tracker_scope(
-         InfoHash::from_bytes([3; 20]),
-         &source,
-         pending_tracker_view(),
-      );
+      let tracker = hub
+         .register_tracker_scope(
+            InfoHash::from_bytes([3; 20]),
+            &source,
+            pending_tracker_view(),
+         )
+         .unwrap();
       let mut listener = tracker.listener();
 
       tracker.restarting();
@@ -287,11 +292,13 @@ mod tests {
       );
       assert_eq!(listener.view().status, TrackerStatus::Restarting);
 
-      let restarted = hub.register_tracker_scope(
-         InfoHash::from_bytes([3; 20]),
-         &source,
-         pending_tracker_view(),
-      );
+      let restarted = hub
+         .register_tracker_scope(
+            InfoHash::from_bytes([3; 20]),
+            &source,
+            pending_tracker_view(),
+         )
+         .unwrap();
       assert_eq!(restarted.id(), tracker.id());
       restarted.announce_succeeded(TrackerMetrics {
          latest_peers_returned: Some(2),
@@ -310,6 +317,16 @@ mod tests {
          TrackerEventKind::Stopped
       );
       assert_eq!(listener.recv().await, Err(EventStreamError::Closed));
+
+      let replacement = hub
+         .register_tracker_scope(
+            InfoHash::from_bytes([3; 20]),
+            &source,
+            pending_tracker_view(),
+         )
+         .unwrap();
+      assert_ne!(replacement.id(), tracker.id());
+      assert_eq!(replacement.view().status, TrackerStatus::Pending);
    }
 
    #[test]
@@ -328,6 +345,7 @@ mod tests {
             &format!("torrent-{torrent_index}"),
          ));
          hub.ensure_torrent_scope(InfoHash::from_bytes(hash))
+            .unwrap()
             .mark_registered_for_benchmark();
          for peer_index in 0_u8..10 {
             hub.register_peer_scope(
@@ -336,7 +354,8 @@ mod tests {
                   peer: PeerId::Unknown([peer_index; 20]),
                },
                connected_peer_view(),
-            );
+            )
+            .unwrap();
          }
       }
       let construction = started.elapsed();
@@ -379,6 +398,7 @@ mod tests {
                },
                connected_peer_view(),
             )
+            .unwrap()
          })
          .collect::<Vec<_>>();
       let zero_listener_slots = removal_peers

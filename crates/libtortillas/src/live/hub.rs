@@ -75,6 +75,20 @@ where
       self.values.remove(key).map(|(_, value)| value)
    }
 
+   fn remove_value(&self, value: &Arc<V>) -> bool {
+      let key = self
+         .values
+         .iter()
+         .find(|entry| Arc::ptr_eq(entry.value(), value))
+         .map(|entry| entry.key().clone());
+      key.is_some_and(|key| {
+         self
+            .values
+            .remove_if(&key, |_, current| Arc::ptr_eq(current, value))
+            .is_some()
+      })
+   }
+
    fn values(&self) -> Vec<Arc<V>> {
       self
          .values
@@ -185,6 +199,15 @@ enum HubReference {
    Weak(Weak<HubInner>),
 }
 
+impl HubReference {
+   fn inner(&self) -> Option<Arc<HubInner>> {
+      match self {
+         Self::Strong(inner) => Some(Arc::clone(inner)),
+         Self::Weak(inner) => inner.upgrade(),
+      }
+   }
+}
+
 /// Cloneable coordinator for the complete live projection tree.
 ///
 /// The engine owns a strong instance. Supervised actors receive weak instances
@@ -236,23 +259,27 @@ impl Hub {
       }
    }
 
-   fn inner(&self) -> Arc<HubInner> {
-      match &self.inner {
-         HubReference::Strong(inner) => Arc::clone(inner),
-         HubReference::Weak(inner) => inner
-            .upgrade()
-            .expect("live hub outlived by its actor hierarchy"),
-      }
+   fn inner(&self) -> Option<Arc<HubInner>> {
+      self.inner.inner()
    }
 
    pub(crate) fn subscribe(&self) -> EventSubscription {
-      self.inner().engine.publisher.subscribe()
+      self
+         .inner()
+         .map_or_else(EventSubscription::closed, |inner| {
+            inner.engine.publisher.subscribe()
+         })
    }
 
    /// Derives the root projection from engine lifecycle and registered child
    /// scopes. The root never caches torrent views.
    pub(crate) fn view(&self) -> EngineView {
-      let inner = self.inner();
+      let Some(inner) = self.inner() else {
+         return EngineView {
+            status: EngineStatus::Stopped,
+            torrents: Vec::new(),
+         };
+      };
       let mut torrents = inner
          .torrents
          .values()
@@ -268,7 +295,9 @@ impl Hub {
    }
 
    pub(crate) fn engine_started(&self) {
-      let inner = self.inner();
+      let Some(inner) = self.inner() else {
+         return;
+      };
       let _ = inner.engine.publisher.replace_view(EngineStatus::Running);
       let _ = inner
          .engine
@@ -276,19 +305,35 @@ impl Hub {
          .emit_without_view_change(EngineEventKind::EngineStarted(self.view()));
    }
 
-   pub(crate) fn engine_stopping(&self) {
-      let _ = self
-         .inner()
+   pub(crate) fn engine_start_failed(&self, message: impl Into<String>) {
+      let Some(inner) = self.inner() else {
+         return;
+      };
+      let health = LiveHealth {
+         torrent: None,
+         level: LiveHealthLevel::Error,
+         message: message.into(),
+      };
+      let _ = inner
          .engine
          .publisher
-         .replace_view(EngineStatus::Stopping);
+         .close_with_terminal_event(EngineStatus::Failed, EngineEventKind::Health(health));
+   }
+
+   pub(crate) fn engine_stopping(&self) {
+      let Some(inner) = self.inner() else {
+         return;
+      };
+      let _ = inner.engine.publisher.replace_view(EngineStatus::Stopping);
    }
 
    pub(crate) fn engine_stopped(&self) {
+      let Some(inner) = self.inner() else {
+         return;
+      };
       let mut view = self.view();
       view.status = EngineStatus::Stopped;
-      let _ = self
-         .inner()
+      let _ = inner
          .engine
          .publisher
          .close_with_terminal_event(EngineStatus::Stopped, EngineEventKind::Shutdown(view));
@@ -296,52 +341,71 @@ impl Hub {
 
    // Torrent scopes
 
-   pub(crate) fn ensure_torrent_scope(&self, info_hash: InfoHash) -> Arc<TorrentScope> {
-      let inner = self.inner();
-      inner.torrents.get_or_insert_with(info_hash, || {
+   pub(crate) fn ensure_torrent_scope(&self, info_hash: InfoHash) -> Option<Arc<TorrentScope>> {
+      let inner = self.inner()?;
+      Some(inner.torrents.get_or_insert_with(info_hash, || {
          TorrentScope::new(info_hash, inner.settings.torrent_event_capacity)
-      })
+      }))
    }
 
    pub(crate) fn torrent_handle(&self, torrent: InfoHash) -> Option<Torrent> {
-      self.inner().torrent_handle(torrent)
+      self.inner()?.torrent_handle(torrent)
    }
 
    #[cfg(test)]
    pub(crate) fn torrent_view(&self, torrent: InfoHash) -> Option<TorrentView> {
       self
-         .inner()
+         .inner()?
          .torrents
          .get(&torrent)
          .and_then(|scope| scope.publisher.view())
    }
 
    pub(crate) fn initialize_torrent_projection(&self, torrent: TorrentView) {
-      let scope = self.ensure_torrent_scope(torrent.info_hash);
+      let Some(scope) = self.ensure_torrent_scope(torrent.info_hash) else {
+         return;
+      };
       let _ = scope.publisher.replace_view(Some(torrent));
    }
 
    pub(crate) fn register_torrent_scope(&self, torrent: Torrent) {
       let info_hash = torrent.info_hash();
-      let scope = self.ensure_torrent_scope(info_hash);
-      if !scope.register(&torrent) {
+      let Some(inner) = self.inner() else {
+         return;
+      };
+      let scope = inner.torrents.get_or_insert_with(info_hash, || {
+         TorrentScope::new(info_hash, inner.settings.torrent_event_capacity)
+      });
+      if !scope.register(&torrent) || scope.publisher.view().is_none() {
          return;
       }
-      if let Some(view) = scope.publisher.view() {
-         self.replace_torrent_view_and_emit(view, TorrentEventKind::Added);
+      let _publication = scope.publication_lock();
+      if !scope
+         .publisher
+         .emit_without_view_change(TorrentEventKind::Added)
+      {
+         return;
       }
+      let _ = inner
+         .engine
+         .publisher
+         .emit_without_view_change(EngineEventKind::Torrent {
+            torrent,
+            event: TorrentEventKind::Added,
+         });
    }
 
    pub(crate) fn replace_torrent_view_and_emit(
       &self, torrent: TorrentView, event: TorrentEventKind,
    ) {
       let info_hash = torrent.info_hash;
-      let Some(scope) = self.inner().torrents.get(&info_hash) else {
+      let Some(inner) = self.inner() else {
          return;
       };
-      let Some(handle) = self.torrent_handle(info_hash) else {
+      let Some(scope) = inner.torrents.get(&info_hash) else {
          return;
       };
+      debug_assert_eq!(scope.info_hash, info_hash);
       let _publication = scope.publication_lock();
       if !scope
          .publisher
@@ -349,8 +413,10 @@ impl Hub {
       {
          return;
       }
-      let _ = self
-         .inner()
+      let Some(handle) = scope.handle() else {
+         return;
+      };
+      let _ = inner
          .engine
          .publisher
          .emit_without_view_change(EngineEventKind::Torrent {
@@ -362,18 +428,20 @@ impl Hub {
    pub(crate) fn emit_health(
       &self, torrent: Option<InfoHash>, level: LiveHealthLevel, message: impl Into<String>,
    ) {
+      let Some(inner) = self.inner() else {
+         return;
+      };
       let health = LiveHealth {
          torrent,
          level,
          message: message.into(),
       };
       if let Some(info_hash) = torrent
-         && let Some(scope) = self.inner().torrents.get(&info_hash)
+         && let Some(scope) = inner.torrents.get(&info_hash)
       {
-         self.emit_without_torrent_view_change(&scope, TorrentEventKind::Health(health));
+         Self::emit_without_torrent_view_change(&inner, &scope, TorrentEventKind::Health(health));
       } else {
-         let _ = self
-            .inner()
+         let _ = inner
             .engine
             .publisher
             .emit_without_view_change(EngineEventKind::Health(health));
@@ -381,10 +449,13 @@ impl Hub {
    }
 
    pub(crate) fn remove_torrent_scope(&self, info_hash: InfoHash) {
-      let Some(scope) = self.inner().torrents.get(&info_hash) else {
+      let Some(inner) = self.inner() else {
          return;
       };
-      let torrent = self.torrent_handle(info_hash);
+      let Some(scope) = inner.torrents.get(&info_hash) else {
+         return;
+      };
+      let torrent = scope.handle();
       let peers = scope
          .peers
          .values()
@@ -413,10 +484,9 @@ impl Hub {
          return;
       }
       drop(publication);
-      self.inner().torrents.remove(&info_hash);
+      inner.torrents.remove(&info_hash);
       if let Some(torrent) = torrent {
-         let _ = self
-            .inner()
+         let _ = inner
             .engine
             .publisher
             .emit_without_view_change(EngineEventKind::Torrent {
@@ -426,16 +496,17 @@ impl Hub {
       }
    }
 
-   fn emit_without_torrent_view_change(&self, scope: &TorrentScope, event: TorrentEventKind) {
-      let Some(torrent) = self.torrent_handle(scope.info_hash) else {
+   fn emit_without_torrent_view_change(
+      inner: &HubInner, scope: &TorrentScope, event: TorrentEventKind,
+   ) {
+      let Some(torrent) = scope.handle() else {
          return;
       };
       let _publication = scope.publication_lock();
       if !scope.publisher.emit_without_view_change(event.clone()) {
          return;
       }
-      let _ = self
-         .inner()
+      let _ = inner
          .engine
          .publisher
          .emit_without_view_change(EngineEventKind::Torrent { torrent, event });
@@ -444,24 +515,27 @@ impl Hub {
    // Peer scopes
 
    pub(crate) fn peer_handles(&self, torrent: InfoHash) -> Vec<PeerHandle> {
-      self
-         .inner()
-         .torrents
-         .get(&torrent)
-         .map_or_else(Vec::new, |scope| {
-            scope
-               .peers
-               .values()
-               .into_iter()
-               .map(|inner| PeerHandle { inner })
-               .filter(|peer| peer.view().connected)
-               .collect()
-         })
+      let Some(inner) = self.inner() else {
+         return Vec::new();
+      };
+      inner.torrents.get(&torrent).map_or_else(Vec::new, |scope| {
+         scope
+            .peers
+            .values()
+            .into_iter()
+            .map(|inner| PeerHandle { inner })
+            .filter(|peer| peer.view().connected)
+            .collect()
+      })
    }
 
-   pub(crate) fn register_peer_scope(&self, identity: PeerIdentity, view: PeerView) -> PeerHandle {
-      let inner = self.inner();
-      let scope = self.ensure_torrent_scope(identity.torrent);
+   pub(crate) fn register_peer_scope(
+      &self, identity: PeerIdentity, view: PeerView,
+   ) -> Option<PeerHandle> {
+      let inner = self.inner()?;
+      let scope = inner.torrents.get_or_insert_with(identity.torrent, || {
+         TorrentScope::new(identity.torrent, inner.settings.torrent_event_capacity)
+      });
       let peer = PeerHandle::new(
          identity,
          view,
@@ -469,15 +543,19 @@ impl Hub {
          inner.settings.peer_event_capacity,
       );
       scope.peers.insert(identity.peer, &peer.inner);
-      peer
+      Some(peer)
    }
 
    pub(crate) fn emit_peer_connected(&self, peer: &PeerHandle) {
-      let Some(scope) = self.inner().torrents.get(&peer.torrent()) else {
+      let Some(inner) = self.inner() else {
+         return;
+      };
+      let Some(scope) = inner.torrents.get(&peer.torrent()) else {
          return;
       };
       if scope.peers.get(&peer.id()).is_some() {
-         self.emit_without_torrent_view_change(
+         Self::emit_without_torrent_view_change(
+            &inner,
             &scope,
             TorrentEventKind::PeerConnected(peer.clone()),
          );
@@ -485,20 +563,27 @@ impl Hub {
    }
 
    pub(crate) fn mark_peer_disconnected(&self, peer: &PeerHandle) {
-      let Some(scope) = self.inner().torrents.get(&peer.torrent()) else {
+      let Some(inner) = self.inner() else {
+         return;
+      };
+      let Some(scope) = inner.torrents.get(&peer.torrent()) else {
          return;
       };
       if scope.peers.remove(&peer.id()).is_none() {
          return;
       }
-      self.emit_without_torrent_view_change(
+      Self::emit_without_torrent_view_change(
+         &inner,
          &scope,
          TorrentEventKind::PeerDisconnected(peer.clone()),
       );
    }
 
    pub(crate) fn close_peer_scopes_for_torrent_restart(&self, torrent: InfoHash) {
-      let Some(scope) = self.inner().torrents.get(&torrent) else {
+      let Some(inner) = self.inner() else {
+         return;
+      };
+      let Some(scope) = inner.torrents.get(&torrent) else {
          return;
       };
       for inner in scope.peers.remove_all() {
@@ -509,27 +594,31 @@ impl Hub {
    // Tracker scopes
 
    pub(crate) fn tracker_handles(&self, torrent: InfoHash) -> Vec<TrackerHandle> {
-      self
-         .inner()
-         .torrents
-         .get(&torrent)
-         .map_or_else(Vec::new, |scope| {
-            scope
-               .trackers
-               .values()
-               .into_iter()
-               .map(|inner| TrackerHandle { inner })
-               .collect()
-         })
+      let Some(inner) = self.inner() else {
+         return Vec::new();
+      };
+      inner.torrents.get(&torrent).map_or_else(Vec::new, |scope| {
+         scope
+            .trackers
+            .values()
+            .into_iter()
+            .map(|inner| TrackerHandle { inner })
+            .collect()
+      })
    }
 
    pub(crate) fn register_tracker_scope(
       &self, torrent: InfoHash, source: &Tracker, view: TrackerView,
-   ) -> TrackerHandle {
-      let inner = self.inner();
-      let torrent_scope = self.ensure_torrent_scope(torrent);
-      if let Some(inner) = torrent_scope.trackers.get(source) {
-         return TrackerHandle { inner };
+   ) -> Option<TrackerHandle> {
+      let inner = self.inner()?;
+      let torrent_scope = inner.torrents.get_or_insert_with(torrent, || {
+         TorrentScope::new(torrent, inner.settings.torrent_event_capacity)
+      });
+      if let Some(existing) = torrent_scope.trackers.get(source) {
+         if !existing.publisher.is_closed() {
+            return Some(TrackerHandle { inner: existing });
+         }
+         let _ = torrent_scope.trackers.remove_value(&existing);
       }
       let id = TrackerId::new(inner.next_tracker_id.fetch_add(1, Ordering::Relaxed));
       let identity = TrackerIdentity { torrent, id };
@@ -542,11 +631,24 @@ impl Hub {
       torrent_scope
          .trackers
          .insert(source.clone(), &tracker.inner);
-      tracker
+      Some(tracker)
+   }
+
+   pub(crate) fn remove_tracker_scope(&self, tracker: &TrackerHandle) {
+      let Some(inner) = self.inner() else {
+         return;
+      };
+      let Some(scope) = inner.torrents.get(&tracker.torrent()) else {
+         return;
+      };
+      let _ = scope.trackers.remove_value(&tracker.inner);
    }
 
    pub(crate) fn emit_tracker_event(&self, tracker: &TrackerHandle, event: TrackerEventKind) {
-      let Some(scope) = self.inner().torrents.get(&tracker.torrent()) else {
+      let Some(inner) = self.inner() else {
+         return;
+      };
+      let Some(scope) = inner.torrents.get(&tracker.torrent()) else {
          return;
       };
       let torrent_event = match event {
@@ -559,7 +661,7 @@ impl Hub {
          TrackerEventKind::Restarting => TorrentEventKind::TrackerRestarting(tracker.clone()),
          TrackerEventKind::Stopped => TorrentEventKind::TrackerStopped(tracker.clone()),
       };
-      self.emit_without_torrent_view_change(&scope, torrent_event);
+      Self::emit_without_torrent_view_change(&inner, &scope, torrent_event);
    }
 }
 
@@ -636,15 +738,19 @@ mod tests {
       let hub = Hub::new();
       let info_hash = InfoHash::from_bytes([4; 20]);
       hub.initialize_torrent_projection(torrent_view(info_hash));
-      let peer = hub.register_peer_scope(
-         PeerIdentity {
-            torrent: info_hash,
-            peer: PeerId::Unknown([5; 20]),
-         },
-         connected_peer_view(),
-      );
+      let peer = hub
+         .register_peer_scope(
+            PeerIdentity {
+               torrent: info_hash,
+               peer: PeerId::Unknown([5; 20]),
+            },
+            connected_peer_view(),
+         )
+         .unwrap();
       let source = Tracker::Http("https://tracker.example/announce".to_string());
-      let tracker = hub.register_tracker_scope(info_hash, &source, pending_tracker_view());
+      let tracker = hub
+         .register_tracker_scope(info_hash, &source, pending_tracker_view())
+         .unwrap();
       let mut peer_events = peer.subscribe();
       let mut tracker_events = tracker.subscribe();
 
@@ -661,5 +767,34 @@ mod tests {
          TrackerEventKind::Stopped
       );
       assert_eq!(tracker_events.recv().await, Err(EventStreamError::Closed));
+   }
+
+   #[test]
+   fn torrent_view_updates_before_handle_registration() {
+      let hub = Hub::new();
+      let info_hash = InfoHash::from_bytes([6; 20]);
+      let mut updated = torrent_view(info_hash);
+      updated.name = "newer".to_string();
+
+      hub.initialize_torrent_projection(torrent_view(info_hash));
+      hub.replace_torrent_view_and_emit(updated.clone(), TorrentEventKind::Updated);
+
+      assert_eq!(hub.torrent_view(info_hash), Some(updated));
+   }
+
+   #[tokio::test]
+   async fn expired_weak_hub_publication_is_a_no_op() {
+      let hub = Hub::new();
+      let weak = hub.weak();
+      drop(hub);
+
+      weak.emit_health(None, LiveHealthLevel::Error, "late");
+      weak.engine_stopping();
+
+      assert_eq!(weak.view().status, EngineStatus::Stopped);
+      assert!(matches!(
+         weak.subscribe().recv().await,
+         Err(EventStreamError::Closed)
+      ));
    }
 }

@@ -63,6 +63,8 @@ impl EngineSnapshot {
 pub enum EngineStatus {
    /// Runtime resources are still being initialized.
    Starting,
+   /// Runtime resource initialization failed and the engine cannot recover.
+   Failed,
    /// The engine is accepting commands and managing torrents.
    Running,
    /// Graceful shutdown is in progress.
