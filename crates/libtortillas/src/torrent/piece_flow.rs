@@ -275,10 +275,7 @@ impl TorrentActor {
       let piece_count = info_dict.piece_count();
 
       if !self.validate_and_commit_piece(index).await {
-         #[cfg(feature = "live")]
-         self.publish_live_view(|view| {
-            crate::live::TorrentEventKind::MetricsChanged(view.metrics.clone())
-         });
+         self.publish_metrics_changed();
          self.fill_peer_request_window(peer_id);
          return;
       }
@@ -296,10 +293,7 @@ impl TorrentActor {
 
       // Piece completion is the meaningful progress boundary. Publishing for
       // every 16 KiB block creates an event storm without improving the view.
-      #[cfg(feature = "live")]
-      self.publish_live_view(|view| {
-         crate::live::TorrentEventKind::MetricsChanged(view.metrics.clone())
-      });
+      self.publish_metrics_changed();
 
       if self.piece_scheduler.next_piece() >= piece_count {
          self.update_tracker_progress().await;

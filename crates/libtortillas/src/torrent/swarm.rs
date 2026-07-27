@@ -12,7 +12,7 @@ use super::TorrentActor;
 #[cfg(feature = "live")]
 use crate::live::{PeerIdentity, PeerView};
 use crate::{
-   peer::{Peer, PeerActor, PeerId},
+   peer::{Peer, PeerActor, PeerActorArgs, PeerId},
    protocol::{
       messages::{Handshake, PeerMessages},
       stream::{PeerSend, PeerStream, validate_handshake},
@@ -121,17 +121,15 @@ impl TorrentActor {
          return;
       };
 
-      #[cfg(feature = "live")]
-      let peer_args = (
+      let peer_args = PeerActorArgs {
          peer,
          stream,
-         actor_ref,
+         supervisor: actor_ref,
          info_hash,
-         peer_settings,
-         peer_handle.clone(),
-      );
-      #[cfg(not(feature = "live"))]
-      let peer_args = (peer, stream, actor_ref, info_hash, peer_settings);
+         settings: peer_settings,
+         #[cfg(feature = "live")]
+         live_handle: peer_handle.clone(),
+      };
       let peer_actor = PeerActor::spawn_with_mailbox(
          peer_args,
          match peer_mailbox_size {
@@ -140,8 +138,7 @@ impl TorrentActor {
          },
       );
       self.peers.insert(id, peer_actor);
-      #[cfg(feature = "live")]
-      self.publish_live_view(|_| crate::live::TorrentEventKind::Updated);
+      self.publish_updated();
       #[cfg(feature = "live")]
       self.hub.emit_peer_connected(&peer_handle);
    }
@@ -187,8 +184,7 @@ impl TorrentActor {
          self.peers.remove(&id);
       }
       if removed_dead_peers {
-         #[cfg(feature = "live")]
-         self.publish_live_view(|_| crate::live::TorrentEventKind::Updated);
+         self.publish_updated();
       }
    }
 

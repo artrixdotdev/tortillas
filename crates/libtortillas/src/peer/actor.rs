@@ -34,10 +34,14 @@ use crate::{
    metrics::{HasTransferMetrics, PeerMetrics, TimedTransferSample, TransferMetrics},
 };
 
-#[cfg(feature = "live")]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PeerStats {
    pub(crate) id: PeerId,
+   pub(crate) interested: bool,
+   pub(crate) client_choking: bool,
+   pub(crate) download_rate: u64,
+   pub(crate) upload_rate: u64,
+   #[cfg(feature = "live")]
    pub(crate) metrics: PeerMetrics,
 }
 
@@ -45,70 +49,6 @@ pub(crate) struct PeerStats {
 impl HasTransferMetrics for PeerStats {
    fn transfer_metrics(&self) -> &TransferMetrics {
       self.metrics.transfer_metrics()
-   }
-}
-
-#[cfg(not(feature = "live"))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct PeerStats {
-   pub(crate) id: PeerId,
-   pub(crate) interested: bool,
-   pub(crate) choked: bool,
-   pub(crate) download_rate: usize,
-   pub(crate) upload_rate: usize,
-}
-
-impl PeerStats {
-   pub(crate) fn interested(&self) -> bool {
-      #[cfg(feature = "live")]
-      {
-         self.metrics.peer_interested
-      }
-      #[cfg(not(feature = "live"))]
-      {
-         self.interested
-      }
-   }
-
-   pub(crate) fn client_choking(&self) -> bool {
-      #[cfg(feature = "live")]
-      {
-         self.metrics.client_choking
-      }
-      #[cfg(not(feature = "live"))]
-      {
-         self.choked
-      }
-   }
-
-   pub(crate) fn download_rate(&self) -> u64 {
-      #[cfg(feature = "live")]
-      {
-         self
-            .metrics
-            .transfer
-            .rates()
-            .map_or(0, |rates| rates.download.0)
-      }
-      #[cfg(not(feature = "live"))]
-      {
-         u64::try_from(self.download_rate).unwrap_or(u64::MAX)
-      }
-   }
-
-   pub(crate) fn upload_rate(&self) -> u64 {
-      #[cfg(feature = "live")]
-      {
-         self
-            .metrics
-            .transfer
-            .rates()
-            .map_or(0, |rates| rates.upload.0)
-      }
-      #[cfg(not(feature = "live"))]
-      {
-         u64::try_from(self.upload_rate).unwrap_or(u64::MAX)
-      }
    }
 }
 
@@ -149,6 +89,16 @@ pub(crate) struct PeerActor {
    settings: PeerSettings,
    #[cfg(feature = "live")]
    live_handle: PeerHandle,
+}
+
+pub(crate) struct PeerActorArgs {
+   pub(crate) peer: Peer,
+   pub(crate) stream: PeerStream,
+   pub(crate) supervisor: ActorRef<TorrentActor>,
+   pub(crate) info_hash: InfoHash,
+   pub(crate) settings: PeerSettings,
+   #[cfg(feature = "live")]
+   pub(crate) live_handle: PeerHandle,
 }
 
 impl PeerActor {
@@ -423,7 +373,6 @@ impl PeerActor {
       let transfer = TransferMetrics::from_sample(transfer_sample);
       let mut metrics = self.peer.metrics();
       metrics.transfer = transfer;
-      #[cfg(feature = "live")]
       self
          .live_handle
          .publish_metrics(PeerView::from_peer_with_metrics(
@@ -432,7 +381,15 @@ impl PeerActor {
             metrics.clone(),
          ));
 
-      Some(PeerStats { id, metrics })
+      let rates = metrics.transfer.rates().unwrap_or_default();
+      Some(PeerStats {
+         id,
+         interested: metrics.peer_interested,
+         client_choking: metrics.client_choking,
+         download_rate: rates.download.0,
+         upload_rate: rates.upload.0,
+         metrics,
+      })
    }
 
    #[cfg(not(feature = "live"))]
@@ -458,40 +415,29 @@ impl PeerActor {
       Some(PeerStats {
          id,
          interested: self.peer.interested(),
-         choked: self.peer.choked(),
-         download_rate,
-         upload_rate,
+         client_choking: self.peer.choked(),
+         download_rate: u64::try_from(download_rate).unwrap_or(u64::MAX),
+         upload_rate: u64::try_from(upload_rate).unwrap_or(u64::MAX),
       })
    }
 }
 
 impl Actor for PeerActor {
-   #[cfg(feature = "live")]
-   type Args = (
-      Peer,
-      PeerStream,
-      ActorRef<TorrentActor>,
-      InfoHash,
-      PeerSettings,
-      PeerHandle,
-   );
-   #[cfg(not(feature = "live"))]
-   type Args = (
-      Peer,
-      PeerStream,
-      ActorRef<TorrentActor>,
-      InfoHash,
-      PeerSettings,
-   );
+   type Args = PeerActorArgs;
    type Error = PeerActorError;
 
    /// At this point, the peer has already been handshaked with. No other
    /// messages have been sent or received from the peer.
    async fn on_start(args: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
-      #[cfg(feature = "live")]
-      let (mut peer, mut stream, supervisor, info_hash, settings, live_handle) = args;
-      #[cfg(not(feature = "live"))]
-      let (mut peer, mut stream, supervisor, info_hash, settings) = args;
+      let PeerActorArgs {
+         mut peer,
+         mut stream,
+         supervisor,
+         info_hash,
+         settings,
+         #[cfg(feature = "live")]
+         live_handle,
+      } = args;
       peer.share_traffic_with(&stream.peer_state());
 
       info!(peer_id = %peer.id.unwrap(),  peer_addr = %stream, torrent_id = %info_hash, "Peer connected");

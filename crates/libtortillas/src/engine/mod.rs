@@ -83,7 +83,7 @@ use crate::{
    hashes::InfoHash,
    peer::PeerId,
    settings::Settings,
-   torrent::{PieceStorageStrategy, RestoreVerification, Torrent},
+   torrent::{PieceStorageStrategy, RestoreVerification, Torrent, TorrentActor},
 };
 
 /// The main entry point for managing torrents.
@@ -311,16 +311,7 @@ impl Engine {
          .await
          .map_err(|error| map_engine_send_error("add torrent", error))?;
 
-      #[cfg(feature = "live")]
-      let _ = &torrent_ref;
-      #[cfg(feature = "live")]
-      {
-         self.torrent_handle(info_hash)
-      }
-      #[cfg(not(feature = "live"))]
-      {
-         Ok(Torrent::new(info_hash, torrent_ref))
-      }
+      self.torrent_from_actor(info_hash, torrent_ref)
       // We don't need to assign link or insert the ref here because its already
       // done by the engine actor
    }
@@ -355,16 +346,7 @@ impl Engine {
          .await
          .map_err(|error| map_engine_send_error("restore torrent", error))?;
 
-      #[cfg(feature = "live")]
-      let _ = &torrent_ref;
-      #[cfg(feature = "live")]
-      {
-         self.torrent_handle(info_hash)
-      }
-      #[cfg(not(feature = "live"))]
-      {
-         Ok(Torrent::new(info_hash, torrent_ref))
-      }
+      self.torrent_from_actor(info_hash, torrent_ref)
    }
 
    /// Restores all torrent sessions from an engine persistence snapshot.
@@ -391,26 +373,11 @@ impl Engine {
          })
          .await
          .map_err(|error| map_engine_send_error("restore engine", error))?;
-      #[cfg(feature = "live")]
-      {
-         info_hashes
-            .into_iter()
-            .map(|info_hash| self.torrent_handle(info_hash))
-            .collect()
+      let mut torrents = Vec::with_capacity(info_hashes.len());
+      for info_hash in info_hashes {
+         torrents.push(self.restored_torrent(info_hash).await?);
       }
-      #[cfg(not(feature = "live"))]
-      {
-         let mut torrents = Vec::with_capacity(info_hashes.len());
-         for info_hash in info_hashes {
-            let torrent_ref = self
-               .actor()
-               .ask(GetTorrent { info_hash })
-               .await
-               .map_err(|error| map_engine_send_error("get restored torrent", error))?;
-            torrents.push(Torrent::new(info_hash, torrent_ref));
-         }
-         Ok(torrents)
-      }
+      Ok(torrents)
    }
    /// Starts all torrents managed by the engine.
    /// See [`Torrent::start`] for more information.
@@ -431,16 +398,7 @@ impl Engine {
          .await
          .map_err(|error| map_engine_send_error("get torrent", error))?;
 
-      #[cfg(feature = "live")]
-      let _ = &torrent_ref;
-      #[cfg(feature = "live")]
-      {
-         self.torrent_handle(info_hash)
-      }
-      #[cfg(not(feature = "live"))]
-      {
-         Ok(Torrent::new(info_hash, torrent_ref))
-      }
+      self.torrent_from_actor(info_hash, torrent_ref)
    }
 
    /// Removes a torrent from the engine and stops its actor gracefully.
@@ -521,6 +479,35 @@ impl Engine {
          .hub
          .torrent_handle(info_hash)
          .ok_or_else(|| EngineError::TorrentHandleMissing { info_hash })
+   }
+
+   #[cfg(feature = "live")]
+   fn torrent_from_actor(
+      &self, info_hash: InfoHash, _actor: ActorRef<TorrentActor>,
+   ) -> Result<Torrent, EngineError> {
+      self.torrent_handle(info_hash)
+   }
+
+   #[cfg(not(feature = "live"))]
+   fn torrent_from_actor(
+      &self, info_hash: InfoHash, actor: ActorRef<TorrentActor>,
+   ) -> Result<Torrent, EngineError> {
+      Ok(Torrent::new(info_hash, actor))
+   }
+
+   #[cfg(feature = "live")]
+   async fn restored_torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
+      self.torrent_handle(info_hash)
+   }
+
+   #[cfg(not(feature = "live"))]
+   async fn restored_torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
+      let actor = self
+         .actor()
+         .ask(GetTorrent { info_hash })
+         .await
+         .map_err(|error| map_engine_send_error("get restored torrent", error))?;
+      self.torrent_from_actor(info_hash, actor)
    }
 }
 

@@ -16,7 +16,7 @@ use super::{
    util,
 };
 #[cfg(feature = "live")]
-use crate::live::{TorrentEventKind, TorrentView};
+use crate::live::TorrentView;
 use crate::{
    errors::TorrentError,
    hashes::InfoHash,
@@ -123,8 +123,7 @@ pub(crate) mod events {
             if self.state == TorrentState::ResolvingMetadata {
                self.transition_state(TorrentState::Added);
             }
-            #[cfg(feature = "live")]
-            self.publish_live_view(|_| TorrentEventKind::MetadataResolved);
+            self.publish_metadata_resolved();
             self
                .broadcast_to_peers(HaveInfoDict {
                   bitfield: Arc::new(self.bitfield.clone()),
@@ -164,7 +163,7 @@ pub(crate) mod events {
       /// Publishes tracker traffic after an announce attempt.
       #[message]
       pub(crate) fn tracker_metrics_changed(&self) {
-         self.publish_live_view(|view| TorrentEventKind::MetricsChanged(view.metrics.clone()));
+         self.publish_metrics_changed();
       }
    }
 }
@@ -180,8 +179,7 @@ pub(crate) mod commands {
          if let Some(actor) = self.trackers.get(&tracker) {
             actor.kill();
             self.trackers.remove(&tracker);
-            #[cfg(feature = "live")]
-            self.publish_live_view(|_| TorrentEventKind::Updated);
+            self.publish_updated();
          } else {
             warn!("Received kill tracker message for unknown tracker");
          }
@@ -217,8 +215,7 @@ pub(crate) mod commands {
          if self.state == TorrentState::Failed {
             self.transition_state(TorrentState::Paused);
          }
-         #[cfg(feature = "live")]
-         self.publish_live_view(|_| TorrentEventKind::Updated);
+         self.publish_updated();
          Ok(())
       }
 
@@ -249,8 +246,7 @@ pub(crate) mod commands {
             });
          }
          self.piece_manager = PieceManagerProxy::Custom(manager);
-         #[cfg(feature = "live")]
-         self.publish_live_view(|_| TorrentEventKind::Updated);
+         self.publish_updated();
          Ok(())
       }
 
@@ -282,8 +278,7 @@ pub(crate) mod commands {
          if self.state == TorrentState::Failed {
             self.transition_state(TorrentState::Paused);
          }
-         #[cfg(feature = "live")]
-         self.publish_live_view(|_| TorrentEventKind::Updated);
+         self.publish_updated();
          Ok(())
       }
 
@@ -305,8 +300,7 @@ pub(crate) mod commands {
          if !self.pending_start {
             self.autostart().await;
          }
-         #[cfg(feature = "live")]
-         self.publish_live_view(|_| TorrentEventKind::Updated);
+         self.publish_updated();
          Ok(())
       }
 
@@ -318,8 +312,7 @@ pub(crate) mod commands {
          if !self.pending_start {
             self.autostart().await;
          }
-         #[cfg(feature = "live")]
-         self.publish_live_view(|_| TorrentEventKind::Updated);
+         self.publish_updated();
          Ok(())
       }
 
@@ -370,8 +363,7 @@ pub(crate) mod commands {
                }
             })?;
             self.transition_state(restored_state);
-            #[cfg(feature = "live")]
-            self.publish_live_view(|_| TorrentEventKind::Updated);
+            self.publish_updated();
 
             Ok(())
          })();
@@ -556,12 +548,9 @@ pub(crate) mod commands {
    impl TorrentActor {
       #[message]
       pub(crate) fn kill_peer(&mut self, id: PeerId, handle: crate::live::PeerHandle) {
-         self.piece_scheduler.peer_disconnected(id);
-         if let Some(actor) = self.peers.remove(&id) {
-            actor.kill();
-         }
+         self.remove_peer(id);
          handle.disconnected();
-         self.publish_live_view(|_| TorrentEventKind::Updated);
+         self.publish_updated();
          self.fill_all_peer_request_windows();
       }
 
@@ -576,10 +565,7 @@ pub(crate) mod commands {
    impl TorrentActor {
       #[message]
       pub(crate) fn kill_peer(&mut self, id: PeerId) {
-         self.piece_scheduler.peer_disconnected(id);
-         if let Some(actor) = self.peers.remove(&id) {
-            actor.kill();
-         }
+         self.remove_peer(id);
          self.fill_all_peer_request_windows();
       }
    }

@@ -576,6 +576,33 @@ impl TorrentActor {
       self.hub.replace_torrent_view_and_emit(view, event);
    }
 
+   #[inline]
+   pub(super) fn publish_updated(&self) {
+      #[cfg(feature = "live")]
+      self.publish_live_view(|_| crate::live::TorrentEventKind::Updated);
+   }
+
+   #[inline]
+   pub(super) fn publish_metrics_changed(&self) {
+      #[cfg(feature = "live")]
+      self.publish_live_view(|view| {
+         crate::live::TorrentEventKind::MetricsChanged(view.metrics.clone())
+      });
+   }
+
+   #[inline]
+   pub(super) fn publish_metadata_resolved(&self) {
+      #[cfg(feature = "live")]
+      self.publish_live_view(|_| crate::live::TorrentEventKind::MetadataResolved);
+   }
+
+   pub(super) fn remove_peer(&mut self, id: PeerId) {
+      self.piece_scheduler.peer_disconnected(id);
+      if let Some(actor) = self.peers.remove(&id) {
+         actor.kill();
+      }
+   }
+
    pub(super) fn transition_state(&mut self, state: TorrentState) {
       let previous = self.state;
       if previous == state {
