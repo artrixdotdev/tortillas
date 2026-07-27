@@ -14,12 +14,26 @@
 //! - Each torrent is represented by a [`Torrent`] handle, which can be used to
 //!   interact with the torrent session.
 //!
+//! ## Peer discovery
+//!
+//! One engine-owned DHT actor serves every public torrent because [BEP 5]
+//! defines a DHT node as a client-wide UDP service. Private torrents are not
+//! registered with it because [BEP 27] restricts their discovery to declared
+//! trackers.
+//!
+//! DHT and tracker results enter a torrent through the same internal announce
+//! event while retaining their discovery source. Connection filtering,
+//! deduplication, and peer-actor creation therefore remain owned by the torrent
+//! regardless of where an endpoint was discovered. Valid DHT lookup tokens are
+//! used to announce the engine's peer port back to the closest nodes.
+//!
 //! ## Runtime
 //!
 //! The engine is Tokio-only. Construct and use [`Engine`] from tasks running on
-//! a Tokio runtime, such as a TUI binary with `#[tokio::main]`. `Engine` starts
-//! actor tasks, binds Tokio TCP and uTP sockets, uses Tokio timers, and
-//! performs async filesystem and HTTP work through the same runtime.
+//! a Tokio runtime, such as an application binary with `#[tokio::main]`.
+//! `Engine` starts actor tasks, binds Tokio TCP and uTP sockets, uses Tokio
+//! timers, and performs async filesystem and HTTP work through the same
+//! runtime.
 //!
 //! ## Example
 //!
@@ -37,9 +51,12 @@
 //!       .await
 //!       .expect("Failed to add torrent");
 //!
-//!    println!("Started torrenting: {}", torrent.key());
+//!    println!("Started torrenting: {}", torrent.info_hash());
 //! }
 //! ```
+//!
+//! [BEP 5]: https://www.bittorrent.org/beps/bep_0005.html
+//! [BEP 27]: https://www.bittorrent.org/beps/bep_0027.html
 
 mod actor;
 mod messages;
@@ -50,21 +67,23 @@ use std::{net::SocketAddr, path::PathBuf};
 
 pub(crate) use actor::*;
 use bon;
-use kameo::{
-   actor::{ActorRef, Spawn},
-   error::SendError,
-};
+use kameo::actor::{ActorRef, Spawn};
 pub(crate) use messages::*;
 pub use source::TorrentSource;
 
-use self::commands::{CreateTorrent, RemoveTorrent, SnapshotEngine, StartAll};
-pub use self::snapshot::{EngineSnapshot, EngineStatus};
+pub use self::snapshot::{ENGINE_SNAPSHOT_VERSION, EngineSnapshot, EngineStatus};
+use self::{
+   commands::{CreateTorrent, GetTorrent, RemoveTorrent, RestoreEngine, SnapshotEngine, StartAll},
+   messages::{CreateTorrentRequest, RestoreSnapshotInput},
+};
+#[cfg(feature = "live")]
+use crate::live::{EngineListener, EngineView, EventSubscription, Hub};
 use crate::{
-   errors::EngineError,
+   errors::{EngineError, map_engine_send_error},
    hashes::InfoHash,
    peer::PeerId,
    settings::Settings,
-   torrent::{PieceStorageStrategy, Torrent},
+   torrent::{PieceStorageStrategy, RestoreVerification, Torrent, TorrentActor, TorrentSnapshot},
 };
 
 /// The main entry point for managing torrents.
@@ -75,8 +94,8 @@ use crate::{
 /// - Managing peer connections and tracker communication
 ///
 /// `Engine` must be created and used from a Tokio runtime. Applications should
-/// create one runtime at the frontend boundary and run all engine and torrent
-/// operations on that runtime.
+/// create one runtime at the application boundary and run all engine and
+/// torrent operations on that runtime.
 ///
 /// Typically, you create a single `Engine` instance per application and attach
 /// multiple [`Torrent`] instances to it.
@@ -108,7 +127,11 @@ use crate::{
 /// }
 /// ```
 #[derive(Debug, Clone)]
-pub struct Engine(ActorRef<EngineActor>);
+pub struct Engine {
+   actor: ActorRef<EngineActor>,
+   #[cfg(feature = "live")]
+   hub: Hub,
+}
 
 #[bon::bon]
 impl Engine {
@@ -198,13 +221,15 @@ impl Engine {
                path
             } else {
                std::env::current_dir()
-                  .expect("Failed to get current dir")
+                  .unwrap_or_else(|_| PathBuf::from("."))
                   .join(path)
             }
          }
-         None => std::env::current_dir().expect("Failed to get current dir"),
+         None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
       };
 
+      #[cfg(feature = "live")]
+      let hub = Hub::with_settings(settings.live);
       let args = EngineActorArgs {
          tcp_addr,
          utp_addr,
@@ -213,23 +238,29 @@ impl Engine {
          piece_storage_strategy,
          settings,
          default_base_path: Some(output_path),
+         #[cfg(feature = "live")]
+         hub: hub.clone(),
       };
 
       let actor = EngineActor::spawn(args);
 
-      Engine(actor)
+      Engine {
+         actor,
+         #[cfg(feature = "live")]
+         hub,
+      }
    }
 
    /// Just a helper function so we don't have to write `&self.0` all the time.
    fn actor(&self) -> &ActorRef<EngineActor> {
-      &self.0
+      &self.actor
    }
 
    /// Starts the torrenting process for a given torrent. This function
    /// automatically contacts trackers and connects to peers. The spawned
    /// [Torrent Actor](Torrent) will be controlled by the [Engine].
    ///
-   /// This function accepts a typed [`TorrentSource`] so frontends can pass
+   /// This function accepts a typed [`TorrentSource`] so callers can pass
    /// explicit user intent instead of relying on string-prefix detection.
    ///
    ///
@@ -248,7 +279,7 @@ impl Engine {
    ///       .await
    ///       .expect("Failed to add torrent");
    ///
-   ///    println!("Started torrenting: {}", torrent.key());
+   ///    println!("Started torrenting: {}", torrent.info_hash());
    /// }
    /// ```
    ///
@@ -265,7 +296,7 @@ impl Engine {
    ///       .await
    ///       .expect("Failed to add torrent");
    ///
-   ///    println!("Started torrenting: {}", torrent.key());
+   ///    println!("Started torrenting: {}", torrent.info_hash());
    /// }
    /// ```
    pub async fn add_torrent(&self, source: TorrentSource) -> Result<Torrent, EngineError> {
@@ -275,67 +306,203 @@ impl Engine {
       let torrent_ref = self
          .actor()
          .ask(CreateTorrent {
-            metainfo: Box::new(metainfo),
+            request: CreateTorrentRequest::New(Box::new(metainfo)),
          })
          .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+         .map_err(|error| map_engine_send_error("add torrent", error))?;
 
-      Ok(Torrent::new(info_hash, torrent_ref))
+      self.torrent_from_actor(info_hash, torrent_ref)
       // We don't need to assign link or insert the ref here because its already
       // done by the engine actor
+   }
+
+   /// Restores one torrent from a Serde-compatible persistence snapshot.
+   ///
+   /// Torrents that were downloading or seeding when captured resume after
+   /// their piece state and storage configuration have been restored.
+   pub async fn restore_torrent(&self, snapshot: TorrentSnapshot) -> Result<Torrent, EngineError> {
+      self
+         .restore_torrent_with_verification(snapshot, RestoreVerification::Full)
+         .await
+   }
+
+   /// Restores one torrent using an explicit durable-storage verification
+   /// policy.
+   pub async fn restore_torrent_with_verification(
+      &self, snapshot: TorrentSnapshot, verification: RestoreVerification,
+   ) -> Result<Torrent, EngineError> {
+      let info_hash = snapshot.info_hash;
+
+      let torrent_ref = self
+         .actor()
+         .ask(CreateTorrent {
+            request: CreateTorrentRequest::Restore {
+               snapshot: RestoreSnapshotInput::Unvalidated(Box::new(snapshot)),
+               verification,
+            },
+         })
+         .await
+         .map_err(|error| map_engine_send_error("restore torrent", error))?;
+
+      self.torrent_from_actor(info_hash, torrent_ref)
+   }
+
+   /// Restores all torrent sessions from an engine persistence snapshot.
+   ///
+   /// The target engine must be empty. If any torrent fails to restore, this
+   /// method removes the torrents already restored by this call before
+   /// returning the error.
+   pub async fn restore(&self, snapshot: EngineSnapshot) -> Result<Vec<Torrent>, EngineError> {
+      self
+         .restore_with_verification(snapshot, RestoreVerification::Full)
+         .await
+   }
+
+   /// Restores an engine snapshot with an explicit storage verification
+   /// policy applied to every torrent.
+   pub async fn restore_with_verification(
+      &self, snapshot: EngineSnapshot, verification: RestoreVerification,
+   ) -> Result<Vec<Torrent>, EngineError> {
+      let info_hashes = self
+         .actor()
+         .ask(RestoreEngine {
+            snapshot,
+            verification,
+         })
+         .await
+         .map_err(|error| map_engine_send_error("restore engine", error))?;
+      let mut torrents = Vec::with_capacity(info_hashes.len());
+      for info_hash in info_hashes {
+         torrents.push(self.restored_torrent(info_hash).await?);
+      }
+      Ok(torrents)
    }
    /// Starts all torrents managed by the engine.
    /// See [`Torrent::start`] for more information.
    pub async fn start_all(&self) -> Result<(), EngineError> {
       self
          .actor()
-         .tell(StartAll)
+         .ask(StartAll)
          .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+         .map_err(|error| map_engine_send_error("start all torrents", error))?;
       Ok(())
+   }
+
+   /// Returns a public handle for a torrent managed by this engine.
+   pub async fn torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
+      let torrent_ref = self
+         .actor()
+         .ask(GetTorrent { info_hash })
+         .await
+         .map_err(|error| map_engine_send_error("get torrent", error))?;
+
+      self.torrent_from_actor(info_hash, torrent_ref)
    }
 
    /// Removes a torrent from the engine and stops its actor gracefully.
    pub async fn remove_torrent(&self, info_hash: InfoHash) -> Result<(), EngineError> {
-      let torrent = match self.actor().ask(RemoveTorrent { info_hash }).await {
-         Ok(torrent) => torrent,
-         Err(SendError::HandlerError(err)) => return Err(err),
-         Err(err) => return Err(EngineError::Other(anyhow::anyhow!(err.to_string()))),
-      };
-
-      torrent
-         .stop_gracefully()
+      let torrent = self
+         .actor()
+         .ask(RemoveTorrent { info_hash })
          .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
-      torrent.wait_for_shutdown().await;
+         .map_err(|error| map_engine_send_error("remove torrent", error))?;
 
-      Ok(())
+      let stop_result = torrent.stop_gracefully().await;
+      torrent.wait_for_shutdown().await;
+      crate::live_only!(self.hub.remove_torrent_scope(info_hash));
+      stop_result.map_err(|error| EngineError::ActorCommunicationFailed {
+         operation: "stop torrent",
+         reason: error.to_string(),
+      })
    }
 
    /// Gracefully shuts down the engine and its managed torrent actors.
    pub async fn shutdown(&self) -> Result<(), EngineError> {
-      self
-         .actor()
-         .stop_gracefully()
-         .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))?;
+      self.actor().stop_gracefully().await.map_err(|error| {
+         EngineError::ActorCommunicationFailed {
+            operation: "shut down engine",
+            reason: error.to_string(),
+         }
+      })?;
       self.actor().wait_for_shutdown().await;
 
       Ok(())
    }
 
-   /// Exports the current engine state with frontend-ready torrent snapshots.
-   pub async fn export(&self) -> Result<EngineSnapshot, EngineError> {
-      self.snapshot().await
-   }
-
-   /// Snapshots the current engine state with frontend-ready torrent views.
+   /// Captures all managed torrent sessions in a Serde-compatible persistence
+   /// snapshot.
+   ///
+   /// With the `live` feature, use the engine listener for current state and
+   /// incremental updates.
+   /// Snapshot frequency is an application persistence decision, not a
+   /// live-update mechanism.
    pub async fn snapshot(&self) -> Result<EngineSnapshot, EngineError> {
       self
          .actor()
          .ask(SnapshotEngine)
          .await
-         .map_err(|e| EngineError::Other(anyhow::anyhow!(e.to_string())))
+         .map_err(|error| map_engine_send_error("snapshot engine", error))
+   }
+}
+
+#[cfg(not(feature = "live"))]
+impl Engine {
+   fn torrent_from_actor(
+      &self, info_hash: InfoHash, actor: ActorRef<TorrentActor>,
+   ) -> Result<Torrent, EngineError> {
+      Ok(Torrent::new(info_hash, actor))
+   }
+
+   async fn restored_torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
+      let actor = self
+         .actor()
+         .ask(GetTorrent { info_hash })
+         .await
+         .map_err(|error| map_engine_send_error("get restored torrent", error))?;
+      self.torrent_from_actor(info_hash, actor)
+   }
+}
+
+#[cfg(feature = "live")]
+impl Engine {
+   /// Subscribes to typed engine and torrent events as they happen.
+   ///
+   /// The returned stream is bounded. A lagging consumer can read
+   /// [`Self::view`] to rebuild its current state and then continue
+   /// receiving events.
+   #[must_use]
+   pub fn subscribe(&self) -> EventSubscription {
+      self.hub.subscribe()
+   }
+
+   /// Creates a listener with typed events and coherent current state.
+   #[must_use]
+   pub fn listener(&self) -> EngineListener {
+      let hub = self.hub.clone();
+      EngineListener::new(self.subscribe(), move || hub.view())
+   }
+
+   /// Returns the current engine state maintained by the projection tree.
+   #[must_use]
+   pub fn view(&self) -> EngineView {
+      self.hub.view()
+   }
+
+   fn torrent_handle(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
+      self
+         .hub
+         .torrent_handle(info_hash)
+         .ok_or_else(|| EngineError::TorrentHandleMissing { info_hash })
+   }
+
+   fn torrent_from_actor(
+      &self, info_hash: InfoHash, _actor: ActorRef<TorrentActor>,
+   ) -> Result<Torrent, EngineError> {
+      self.torrent_handle(info_hash)
+   }
+
+   async fn restored_torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
+      self.torrent_handle(info_hash)
    }
 }
 
@@ -353,7 +520,7 @@ mod snapshot_tests {
    use crate::{settings::Settings, testing};
 
    #[tokio::test]
-   async fn engine_when_torrent_is_added_then_snapshots_frontend_state() {
+   async fn engine_when_torrent_is_added_then_snapshots_persistence_state() {
       let mut settings = Settings::default();
       settings.dht.enabled = false;
       let engine = Engine::builder()
@@ -368,22 +535,33 @@ mod snapshot_tests {
          .unwrap();
       let snapshot = engine.snapshot().await.unwrap();
 
-      assert_eq!(snapshot.status, EngineStatus::Running);
-      assert_eq!(snapshot.torrent_count, 1);
+      assert_eq!(snapshot.version, ENGINE_SNAPSHOT_VERSION);
       assert_eq!(snapshot.torrents.len(), 1);
       assert_eq!(snapshot.torrents[0].info_hash, torrent.info_hash());
-      assert_eq!(snapshot.torrents[0].name, testing::BIG_BUCK_BUNNY_NAME);
-      assert!(snapshot.torrents[0].progress.total_pieces > 0);
-      assert!(snapshot.torrents[0].has_metadata);
+      assert_eq!(
+         snapshot.torrents[0].version,
+         crate::torrent::TORRENT_SNAPSHOT_VERSION
+      );
+      assert!(snapshot.torrents[0].resolved_magnet_info.is_none());
+      assert!(snapshot.torrents[0].resolved_info().is_some());
+      assert!(!snapshot.torrents[0].bitfield.is_empty());
 
       let snapshot_str = to_string(&snapshot).unwrap();
       let from_snapshot: EngineSnapshot = from_str(&snapshot_str).unwrap();
 
-      assert_eq!(snapshot, from_snapshot);
+      assert_eq!(snapshot.version, from_snapshot.version);
+      assert_eq!(
+         snapshot.torrents[0].info_hash,
+         from_snapshot.torrents[0].info_hash
+      );
+      assert_eq!(
+         snapshot.torrents[0].bitfield,
+         from_snapshot.torrents[0].bitfield
+      );
    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "live"))]
 mod tests {
    use std::time::Duration;
 
@@ -397,12 +575,76 @@ mod tests {
       },
       engine::{Engine, TorrentSource},
       errors::EngineError,
+      live::{EngineEventKind, TorrentEventKind},
       settings::{DhtSettings, Settings},
       testing::{
-         BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_MAGNET, BIG_BUCK_BUNNY_TORRENT_FILE, LocalPeer,
-         peer_id, torrent_fixture_path,
+         BIG_BUCK_BUNNY_INFO_HASH, BIG_BUCK_BUNNY_TORRENT_FILE, LocalPeer, peer_id,
+         torrent_fixture_path,
       },
+      torrent::TorrentState,
    };
+
+   #[tokio::test]
+   async fn abnormal_torrent_restart_keeps_its_listener_usable() {
+      let mut settings = Settings::default();
+      settings.dht.enabled = false;
+      let engine = Engine::builder()
+         .settings(settings)
+         .autostart(false)
+         .build();
+      let torrent = engine
+         .add_torrent(TorrentSource::torrent_file_path(torrent_fixture_path(
+            BIG_BUCK_BUNNY_TORRENT_FILE,
+         )))
+         .await
+         .unwrap();
+      let mut listener = torrent.listener();
+      let mut tracker_ids = torrent
+         .trackers()
+         .into_iter()
+         .map(|tracker| tracker.id())
+         .collect::<Vec<_>>();
+      tracker_ids.sort_unstable();
+
+      torrent.actor().kill();
+
+      timeout(Duration::from_secs(10), async {
+         loop {
+            let event = listener.recv().await.unwrap();
+            if matches!(
+               event.kind,
+               TorrentEventKind::StateChanged {
+                  current: TorrentState::Restarting,
+                  ..
+               }
+            ) {
+               break;
+            }
+         }
+      })
+      .await
+      .unwrap();
+      timeout(Duration::from_secs(2), async {
+         loop {
+            if torrent.state().await.is_ok() {
+               break;
+            }
+            sleep(Duration::from_millis(10)).await;
+         }
+      })
+      .await
+      .unwrap();
+      assert!(torrent.view().is_some());
+      let mut restarted_tracker_ids = torrent
+         .trackers()
+         .into_iter()
+         .map(|tracker| tracker.id())
+         .collect::<Vec<_>>();
+      restarted_tracker_ids.sort_unstable();
+      assert_eq!(restarted_tracker_ids, tracker_ids);
+
+      engine.shutdown().await.unwrap();
+   }
 
    const DHT_TEST_BUFFER_SIZE: usize = 2048;
    const DHT_TEST_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -423,10 +665,10 @@ mod tests {
          TorrentSource::torrent_file_path(torrent_fixture_path(BIG_BUCK_BUNNY_TORRENT_FILE));
 
       let torrent = engine.add_torrent(source).await.unwrap();
-      let export = engine.export().await.unwrap();
+      let snapshot = engine.snapshot().await.unwrap();
 
       assert_eq!(torrent.info_hash().to_hex(), BIG_BUCK_BUNNY_INFO_HASH);
-      assert_eq!(export.torrents.len(), 1);
+      assert_eq!(snapshot.torrents.len(), 1);
    }
 
    #[tokio::test]
@@ -435,13 +677,15 @@ mod tests {
          .settings(deterministic_settings())
          .autostart(false)
          .build();
-      let source = TorrentSource::magnet(BIG_BUCK_BUNNY_MAGNET);
+      let source = TorrentSource::magnet(format!(
+         "magnet:?xt=urn:btih:{BIG_BUCK_BUNNY_INFO_HASH}&dn=Big+Buck+Bunny"
+      ));
 
       let torrent = engine.add_torrent(source).await.unwrap();
-      let export = engine.export().await.unwrap();
+      let snapshot = engine.snapshot().await.unwrap();
 
       assert_eq!(torrent.info_hash().to_hex(), BIG_BUCK_BUNNY_INFO_HASH);
-      assert_eq!(export.torrents.len(), 1);
+      assert_eq!(snapshot.torrents.len(), 1);
    }
 
    #[tokio::test]
@@ -461,6 +705,77 @@ mod tests {
             ..
          }
       ));
+   }
+
+   #[tokio::test]
+   async fn torrent_removal_reconciles_projection_after_actor_shutdown_failure() {
+      let engine = Engine::builder()
+         .settings(deterministic_settings())
+         .autostart(false)
+         .build();
+      let torrent = engine
+         .add_torrent(TorrentSource::torrent_file_path(torrent_fixture_path(
+            BIG_BUCK_BUNNY_TORRENT_FILE,
+         )))
+         .await
+         .unwrap();
+      let info_hash = torrent.info_hash();
+      torrent.actor().stop_gracefully().await.unwrap();
+      torrent.actor().wait_for_shutdown().await;
+
+      let result = engine.remove_torrent(info_hash).await;
+
+      assert!(result.is_err());
+      assert_eq!(engine.view().torrent_count(), 0);
+      assert!(torrent.view().is_none());
+      engine.shutdown().await.unwrap();
+   }
+
+   #[tokio::test]
+   async fn removed_torrent_rejects_late_actor_views() {
+      let engine = Engine::builder()
+         .settings(deterministic_settings())
+         .autostart(false)
+         .build();
+      let torrent = engine
+         .add_torrent(TorrentSource::torrent_file_path(torrent_fixture_path(
+            BIG_BUCK_BUNNY_TORRENT_FILE,
+         )))
+         .await
+         .unwrap();
+      let info_hash = torrent.info_hash();
+      let late_view = torrent.view().unwrap();
+
+      engine.hub.remove_torrent_scope(info_hash);
+      engine
+         .hub
+         .replace_torrent_view_and_emit(late_view, crate::live::TorrentEventKind::Updated);
+
+      assert!(torrent.view().is_none());
+      assert_eq!(engine.view().torrent_count(), 0);
+      let _ = engine.remove_torrent(info_hash).await;
+      engine.shutdown().await.unwrap();
+   }
+
+   #[tokio::test]
+   async fn buffered_torrent_events_do_not_retain_the_hub() {
+      let engine = Engine::builder()
+         .settings(deterministic_settings())
+         .autostart(false)
+         .build();
+      let hub = engine.hub.downgrade();
+      let torrent = engine
+         .add_torrent(TorrentSource::torrent_file_path(torrent_fixture_path(
+            BIG_BUCK_BUNNY_TORRENT_FILE,
+         )))
+         .await
+         .unwrap();
+
+      engine.shutdown().await.unwrap();
+      drop(torrent);
+      drop(engine);
+
+      assert!(hub.upgrade().is_none());
    }
 
    #[tokio::test]
@@ -535,6 +850,7 @@ mod tests {
          .autostart(false)
          .sufficient_peers(1)
          .build();
+      let mut listener = engine.listener();
       let magnet = format!("magnet:?xt=urn:btih:{BIG_BUCK_BUNNY_INFO_HASH}&dn=dht-test");
 
       engine
@@ -553,7 +869,30 @@ mod tests {
       .await
       .unwrap();
 
+      let peer = timeout(Duration::from_secs(2), async {
+         loop {
+            let event = listener.recv().await.unwrap();
+            if let EngineEventKind::Torrent {
+               torrent,
+               event: TorrentEventKind::PeerConnected(peer),
+            } = event.kind
+            {
+               break (torrent, peer);
+            }
+         }
+      })
+      .await
+      .unwrap();
+      let (event_torrent, peer) = peer;
+      assert_eq!(peer.torrent(), info_hash);
+      assert!(peer.view().address.is_some());
+      assert!(
+         !peer.view().connected || event_torrent.view().is_some_and(|view| view.peer_count > 0)
+      );
+      let _peer_listener = peer.listener();
+
       engine.shutdown().await.unwrap();
+      assert!(!peer.view().connected);
       receive_task.abort();
       seed.kill();
    }

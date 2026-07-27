@@ -8,6 +8,8 @@ use tokio::{
 use tracing::{debug, info, trace, warn};
 
 use super::{TorrentActor, util};
+#[cfg(all(test, feature = "live"))]
+use crate::live::Hub;
 use crate::{
    errors::TorrentError,
    peer::commands::{CancelPiece, Have, NeedPiece},
@@ -21,7 +23,7 @@ impl TorrentActor {
    pub async fn handle_incoming_piece(
       &mut self, peer_id: crate::peer::PeerId, index: usize, offset: usize, block: Bytes,
    ) {
-      let info_dict = match &self.info {
+      let info_dict = match self.info_dict() {
          Some(info) => info,
          None => {
             warn!("Received piece block before info dict was available");
@@ -31,7 +33,15 @@ impl TorrentActor {
 
       let piece_length = info_dict.piece_length as usize;
       let total_length = info_dict.total_length();
-      let last_piece_index = info_dict.piece_count().saturating_sub(1);
+      let piece_count = info_dict.piece_count();
+      if index >= piece_count {
+         warn!(
+            index,
+            piece_count, "Received piece block outside the piece range"
+         );
+         return;
+      }
+      let last_piece_index = piece_count.saturating_sub(1);
 
       // Compute concrete length for this specific piece
       let concrete_piece_len = if index == last_piece_index {
@@ -91,49 +101,92 @@ impl TorrentActor {
          return;
       }
 
+      let expected_block_len = (concrete_piece_len - offset).min(BLOCK_SIZE);
+      if block.len() != expected_block_len {
+         warn!(
+            index,
+            offset,
+            actual = block.len(),
+            expected = expected_block_len,
+            "Received piece block with unexpected length"
+         );
+         return;
+      }
+
       if self.is_duplicate_block(index, block_index) {
          trace!("Received duplicate piece block");
          return;
       }
 
-      let block_len = block.len();
       if !self.write_block_to_storage(index, offset, block).await {
          return;
       }
 
       // Only mark block complete after successful write
-      self
-         .piece_scheduler
-         .mark_block_complete(index, block_index, expected_blocks);
-
-      self
-         .broadcast_to_peers(CancelPiece {
-            index,
-            begin: offset,
-            length: block_len,
-         })
-         .await;
+      let assigned_peer =
+         self
+            .piece_scheduler
+            .mark_block_complete(index, block_index, expected_blocks);
+      if let Some(assigned_peer) = assigned_peer
+         && assigned_peer != peer_id
+         && let Some(peer) = self.peers.get(&assigned_peer)
+      {
+         let _ = peer
+            .tell(CancelPiece {
+               index,
+               begin: offset,
+               length: expected_block_len,
+            })
+            .try_send();
+      }
 
       if self.is_piece_complete(index) {
          self.piece_completed(peer_id, index).await;
       } else {
-         self.request_blocks_from_peer(peer_id, 1).await;
+         self.fill_peer_request_window(peer_id);
          trace!(%peer_id, "Requested replacement block from peer");
       }
    }
 
-   pub(super) async fn request_blocks_from_peer(
-      &mut self, peer_id: crate::peer::PeerId, limit: usize,
-   ) {
-      let Some(info) = self.info.as_ref() else {
+   pub(super) fn fill_initial_peer_request_window(&mut self, peer_id: crate::peer::PeerId) {
+      self.fill_peer_request_window_to(peer_id, self.settings.torrent.initial_peer_request_window);
+   }
+
+   pub(super) fn fill_peer_request_window(&mut self, peer_id: crate::peer::PeerId) {
+      self.fill_peer_request_window_to(peer_id, self.settings.torrent.max_in_flight_per_peer);
+   }
+
+   pub(super) fn fill_all_peer_request_windows(&mut self) {
+      if self.state != TorrentState::Downloading || !self.is_ready() {
+         return;
+      }
+
+      let peer_ids: Vec<_> = self.peers.keys().copied().collect();
+      for peer_id in peer_ids {
+         self.fill_peer_request_window(peer_id);
+      }
+   }
+
+   fn fill_peer_request_window_to(&mut self, peer_id: crate::peer::PeerId, target_size: usize) {
+      if self.state != TorrentState::Downloading || !self.is_ready() {
+         return;
+      }
+      let Some(info) = self.info_dict() else {
          return;
       };
       let Some(peer) = self.peers.get(&peer_id).cloned() else {
          return;
       };
+
+      let current_size = self.piece_scheduler.in_flight_for_peer(peer_id);
+      let available_slots = target_size.saturating_sub(current_size);
+      if available_slots == 0 {
+         return;
+      }
+
       let requests = self.piece_scheduler.requests_for_peer(
          peer_id,
-         limit,
+         available_slots,
          info.piece_length as usize,
          info.total_length(),
       );
@@ -144,12 +197,14 @@ impl TorrentActor {
                begin: request.offset(),
                length: request.length,
             })
-            .await
+            .try_send()
          {
-            self
-               .piece_scheduler
-               .release_request(request.piece_index, request.offset());
-            warn!(?err, %peer_id, "Failed to request block from peer");
+            self.piece_scheduler.release_peer_request(
+               peer_id,
+               request.piece_index,
+               request.offset(),
+            );
+            trace!(?err, %peer_id, "Peer mailbox unavailable for block request");
          }
       }
    }
@@ -213,16 +268,15 @@ impl TorrentActor {
    }
 
    async fn piece_completed(&mut self, peer_id: crate::peer::PeerId, index: usize) {
-      let previous_blocks = self.piece_scheduler.remove_piece_blocks(index);
+      self.piece_scheduler.remove_piece_blocks(index);
       let info_dict = self
          .info_dict()
          .expect("Can't receive piece without info dict");
       let piece_count = info_dict.piece_count();
 
-      if !self
-         .validate_and_send_piece(peer_id, index, previous_blocks)
-         .await
-      {
+      if !self.validate_and_commit_piece(index).await {
+         self.publish_metrics_changed();
+         self.fill_peer_request_window(peer_id);
          return;
       }
 
@@ -235,23 +289,28 @@ impl TorrentActor {
          "Piece is now complete"
       );
 
-      self.broadcast_to_peers(Have { piece: index }).await;
+      self.broadcast_to_peers_best_effort(Have { piece: index });
 
-      self.sync_tracker_announce_progress().await;
+      // Piece completion is the meaningful progress boundary. Publishing for
+      // every 16 KiB block creates an event storm without improving the view.
+      self.publish_metrics_changed();
 
       if self.piece_scheduler.next_piece() >= piece_count {
-         self.state = TorrentState::Seeding;
+         self.update_tracker_progress().await;
+         self.transition_state(TorrentState::Seeding);
          self.announce_tracker_event(Event::Completed).await;
          info!("Torrenting process completed, switching to seeding mode");
          self.rechoke_peers().await;
          self.schedule_next_rechoke().await;
+      } else {
+         // The block that completed this piece consumed one request-window
+         // slot. Refill it just like every other accepted block so the
+         // pipeline cannot drain by one slot per completed piece.
+         self.fill_peer_request_window(peer_id);
       }
    }
 
-   async fn validate_and_send_piece(
-      &mut self, peer_id: crate::peer::PeerId, index: usize,
-      previous_blocks: Option<bitvec::vec::BitVec>,
-   ) -> bool {
+   async fn validate_and_commit_piece(&mut self, index: usize) -> bool {
       let info_dict = self
          .info_dict()
          .expect("Can't receive piece without info dict");
@@ -262,12 +321,6 @@ impl TorrentActor {
             // the piece manager to populate the final output files.
             let Ok(path) = self.get_piece_path(index) else {
                warn!(index, "Failed to get piece path; re-requesting");
-               if let Some(blocks) = previous_blocks.as_ref() {
-                  self
-                     .piece_scheduler
-                     .restore_piece_blocks(index, blocks.clone());
-               }
-               self.request_blocks_from_peer(peer_id, 1).await;
                return false;
             };
 
@@ -282,21 +335,11 @@ impl TorrentActor {
                Ok(data) => data,
                Err(err) => {
                   warn!(?err, index, path = %path.display(), "Failed to validate piece through piece store actor; re-requesting");
-                  if let Some(blocks) = previous_blocks.as_ref() {
-                     self
-                        .piece_scheduler
-                        .restore_piece_blocks(index, blocks.clone());
-                  }
-                  self.request_blocks_from_peer(peer_id, 1).await;
                   return false;
                }
             };
             if let Err(err) = self.piece_manager.recv(index, data).await {
                warn!(?err, index, path = %path.display(), "Piece manager rejected piece; re-requesting");
-               if let Some(blocks) = previous_blocks {
-                  self.piece_scheduler.restore_piece_blocks(index, blocks);
-               }
-               self.request_blocks_from_peer(peer_id, 1).await;
                return false;
             }
          }
@@ -315,12 +358,6 @@ impl TorrentActor {
                Ok(data) => data,
                Err(err) => {
                   warn!(?err, index, "Failed to read in-file piece; re-requesting");
-                  if let Some(blocks) = previous_blocks.as_ref() {
-                     self
-                        .piece_scheduler
-                        .restore_piece_blocks(index, blocks.clone());
-                  }
-                  self.request_blocks_from_peer(peer_id, 1).await;
                   return false;
                }
             };
@@ -330,10 +367,6 @@ impl TorrentActor {
                   ?err,
                   index, "Failed to validate in-file piece; re-requesting"
                );
-               if let Some(blocks) = previous_blocks {
-                  self.piece_scheduler.restore_piece_blocks(index, blocks);
-               }
-               self.request_blocks_from_peer(peer_id, 1).await;
                return false;
             }
          }
@@ -401,7 +434,6 @@ mod tests {
    use crate::{
       hashes::HashVec,
       metainfo::{Info, InfoKeys, MetaInfo, TorrentFile},
-      peer::PeerId,
       pieces::{FilePieceManager, PieceScheduler, PieceStoreActor},
       settings::Settings,
       testing,
@@ -463,14 +495,18 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(base_path.clone()),
          settings: Settings::default(),
+         #[cfg(feature = "live")]
+         hub: Hub::default(),
       });
 
       TorrentActor {
+         #[cfg(feature = "live")]
+         hub: Hub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),
          bitfield: BitVec::<AtomicU8>::repeat(false, info.piece_count()),
          id: peer_id,
-         info: Some(info.clone()),
+         resolved_magnet_info: None,
          metainfo,
          tracker_server,
          scheduler: Scheduler::spawn(Scheduler::new()),
@@ -507,11 +543,7 @@ mod tests {
             .write_block_to_storage(0, 2, Bytes::from_static(b"cd"))
             .await
       );
-      assert!(
-         actor
-            .validate_and_send_piece(PeerId::default(), 0, None)
-            .await
-      );
+      assert!(actor.validate_and_commit_piece(0).await);
 
       actor.bitfield.set_aliased(0, true);
       assert_eq!(
@@ -546,11 +578,7 @@ mod tests {
             .write_block_to_storage(0, 2, Bytes::from_static(b"cd"))
             .await
       );
-      assert!(
-         actor
-            .validate_and_send_piece(PeerId::default(), 0, None)
-            .await
-      );
+      assert!(actor.validate_and_commit_piece(0).await);
 
       actor.bitfield.set_aliased(0, true);
       assert_eq!(

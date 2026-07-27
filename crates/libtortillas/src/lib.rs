@@ -1,55 +1,222 @@
-//! Async BitTorrent engine for building Tortillas frontends.
+//! Async BitTorrent library for downloading and seeding files.
 //!
-//! # Runtime boundary
+//! # Getting started
 //!
-//! `libtortillas` is intentionally a Tokio-based library. Public handles such
-//! as [`engine::Engine`] and [`torrent::Torrent`] expose async methods that
-//! must be driven inside a Tokio runtime, and the crate uses Tokio tasks,
-//! sockets, timers, channels, and filesystem APIs internally.
+//! A basic downloader only needs an [`Engine`](engine::Engine) and a
+//! [`TorrentSource`](engine::TorrentSource). Live updates are optional.
 //!
-//! Frontends should create one application-level Tokio runtime and keep the
-//! engine plus all torrent handles on work scheduled by that runtime. The crate
-//! does not promise runtime independence, HTTP client injection, clock
-//! injection, listener injection, or storage runtime abstraction.
+//! Add the library and its Tokio runtime to a binary crate:
 //!
-//! A TUI can use `#[tokio::main]` on its binary entry point, or create an
-//! explicit Tokio runtime before initializing `Engine`.
-//!
-//! # Frontend facade
-//!
-//! Frontends should prefer [`facade`] or [`prelude`] imports. The facade names
-//! the stable concepts a TUI or other UI needs: [`facade::EngineHandle`],
-//! [`facade::TorrentHandle`], [`facade::TorrentSource`],
-//! [`facade::CoreCommand`], [`facade::CoreEvent`], and snapshot types for
-//! engine, torrent, peer, and tracker views.
-//!
-//! ```no_run
-//! use libtortillas::prelude::{CoreCommand, EngineHandle, TorrentSource};
-//!
-//! let _engine = EngineHandle::default();
-//! let _command = CoreCommand::AddTorrent {
-//!    source: TorrentSource::magnet("magnet:?xt=urn:btih:..."),
-//! };
+//! ```text
+//! cargo add libtortillas
+//! cargo add tokio --features full
 //! ```
 //!
-//! # Advanced APIs
+//! The following complete program loads `example.torrent`, writes its payload
+//! to `downloads/`, and continues downloading or seeding until Ctrl-C is
+//! pressed:
+//!
+//! ```no_run
+//! use libtortillas::prelude::{Engine, TorrentSource};
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!    let engine = Engine::builder().output_path("downloads").build();
+//!    let torrent = engine
+//!       .add_torrent(TorrentSource::torrent_file_path("example.torrent"))
+//!       .await?;
+//!
+//!    println!("torrenting {} — press Ctrl-C to stop", torrent.info_hash());
+//!    tokio::signal::ctrl_c().await?;
+//!
+//!    engine.shutdown().await?;
+//!    Ok(())
+//! }
+//! ```
+//!
+//! That is enough to start torrenting. By default, a newly added torrent starts
+//! automatically after it discovers enough peers. The
+//! [`Torrent`](torrent::Torrent) returned by
+//! [`Engine::add_torrent`](engine::Engine::add_torrent) is a lightweight handle
+//! for controlling that download.
+//!
+//! ## Torrent sources
+//!
+//! Use the constructor that matches the input your application already has:
+//!
+//! - [`TorrentSource::torrent_file_path`](engine::TorrentSource::torrent_file_path)
+//!   for a local `.torrent` file.
+//! - [`TorrentSource::magnet`](engine::TorrentSource::magnet) for a magnet URI.
+//! - [`TorrentSource::torrent_file_bytes`](engine::TorrentSource::torrent_file_bytes)
+//!   for bytes already in memory.
+//! - [`TorrentSource::remote_torrent_url`](engine::TorrentSource::remote_torrent_url)
+//!   for an HTTP or HTTPS URL.
+//!
+//! Every source is passed to
+//! [`Engine::add_torrent`](engine::Engine::add_torrent) in the same way. There
+//! is no live-specific setup.
+//!
+//! For example, downloading from a magnet link only changes the source:
+//!
+//! ```no_run
+//! use libtortillas::prelude::{Engine, TorrentSource};
+//!
+//! async fn add_magnet(engine: &Engine) -> Result<(), Box<dyn std::error::Error>> {
+//!    let torrent = engine
+//!       .add_torrent(TorrentSource::magnet(
+//!          "magnet:?xt=urn:btih:dd8255ecdc7ca55fb0bbf81323d87062db1f6d1c&dn=Big+Buck+Bunny",
+//!       ))
+//!       .await?;
+//!
+//!    println!("torrenting {}", torrent.info_hash());
+//!    Ok(())
+//! }
+//! ```
+//!
+//! ## Basic control
+//!
+//! The returned [`Torrent`](torrent::Torrent) can be
+//! [`paused`](torrent::Torrent::pause), [`resumed`](torrent::Torrent::resume),
+//! or inspected for its [`state`](torrent::Torrent::state). An engine can
+//! manage multiple torrents; call
+//! [`Engine::remove_torrent`](engine::Engine::remove_torrent) to remove one and
+//! [`Engine::shutdown`](engine::Engine::shutdown) before exiting cleanly.
+//!
+//! ```no_run
+//! use libtortillas::prelude::Torrent;
+//!
+//! async fn pause_and_resume(torrent: &Torrent) -> Result<(), Box<dyn std::error::Error>> {
+//!    torrent.pause().await?;
+//!    println!("state after pausing: {:?}", torrent.state().await?);
+//!
+//!    torrent.resume().await?;
+//!    Ok(())
+//! }
+//! ```
+//!
+//! ## Multiple torrents
+//!
+//! One engine can download and seed many torrents:
+//!
+//! ```no_run
+//! use libtortillas::prelude::{Engine, TorrentSource};
+//!
+//! async fn add_downloads(engine: &Engine) -> Result<(), Box<dyn std::error::Error>> {
+//!    let sources = [
+//!       TorrentSource::torrent_file_path("first.torrent"),
+//!       TorrentSource::torrent_file_path("second.torrent"),
+//!    ];
+//!
+//!    for source in sources {
+//!       let torrent = engine.add_torrent(source).await?;
+//!       println!("added {}", torrent.info_hash());
+//!    }
+//!
+//!    Ok(())
+//! }
+//! ```
+//!
+//! ## More examples
+//!
+//! Browse the repository's
+//! [examples directory](https://github.com/artrixdotdev/tortillas/tree/main/crates/libtortillas/examples)
+//! for complete runnable programs, including event-driven progress reporting.
+//!
+//! # Observing live state
+//!
+//! Live observation is provided by the default `live` Cargo feature. Consumers
+//! that only need actor-backed commands and direct queries can disable default
+//! features to omit the projection tree, event publishers, listener handles,
+//! and live metrics.
+//!
+//! See the `live` module for current views, listeners, and event streams.
+//!
+//! This helper waits for changes and prints verified payload progress until the
+//! torrent finishes downloading:
+//!
+//! ```no_run
+//! use libtortillas::prelude::{Torrent, TorrentState};
+//!
+//! # #[cfg(feature = "live")]
+//! async fn show_progress(torrent: &Torrent) -> Result<(), Box<dyn std::error::Error>> {
+//!    let mut listener = torrent.listener();
+//!
+//!    loop {
+//!       if let Some(view) = listener.view() {
+//!          let progress = &view.metrics.progress;
+//!          if let Some(total) = progress.total_bytes {
+//!             println!("{} / {} bytes verified", progress.verified_bytes.0, total.0);
+//!          }
+//!          if view.state == TorrentState::Seeding {
+//!             break;
+//!          }
+//!       }
+//!
+//!       listener.recv().await?;
+//!    }
+//!
+//!    Ok(())
+//! }
+//! ```
+//!
+//! # Runtime and advanced APIs
+//!
+//! `libtortillas` requires a Tokio runtime. Use `#[tokio::main]`, as above, or
+//! create a runtime before initializing an [`Engine`](engine::Engine).
 //!
 //! The lower-level [`engine`], [`torrent`], [`metainfo`], [`peer`],
 //! [`tracker`], [`pieces`], and [`protocol`] modules remain public for advanced
-//! integrations, tests, and protocol-level work. Frontend code should avoid
+//! integrations, tests, and protocol-level work. Applications should avoid
 //! depending on actor messages, raw peer streams, tracker clients, or storage
-//! internals when an equivalent facade type exists.
+//! internals when an equivalent [`facade`] type exists. [`prelude`] re-exports
+//! the types most applications need.
 //!
-//! Follow-up work will narrow the prelude and connect more commands, events,
-//! snapshots, and typed errors to the facade without requiring frontend callers
-//! to import implementation modules.
+//! # Internal architecture
+//!
+//! Most applications do not need these implementation details. They are
+//! documented here for contributors and advanced integrations.
+//!
+//! The runtime is organized as a supervised actor tree:
+//!
+//! ```text
+//! EngineActor
+//! ├── DhtActor (one shared instance)
+//! └── TorrentActor (one per torrent)
+//!     ├── TrackerActor (one per tracker)
+//!     └── PeerActor (one per connected peer)
+//!
+//! DhtActor ───── discovered peers ────> TorrentActor
+//! TrackerActor ── discovered peers ────> TorrentActor
+//! ```
+//!
+//! Actors own operational protocol state. Public applications interact through
+//! [`Engine`](engine::Engine), [`Torrent`](torrent::Torrent), and the
+//! transport-agnostic live views and event streams. Durable state is
+//! represented by [`EngineSnapshot`](engine::EngineSnapshot) and
+//! [`TorrentSnapshot`](torrent::TorrentSnapshot), never by live views.
+// `cfg!` type-checks both branches; this drops disabled live code before name
+// resolution.
+macro_rules! live_only {
+   ($($tokens:tt)*) => {{
+      #[cfg(feature = "live")]
+      {
+         $($tokens)*
+      }
+   }};
+}
+
+pub(crate) use live_only;
 
 pub(crate) mod dht;
 pub mod engine;
 pub mod errors;
 pub mod facade;
 pub mod hashes;
+#[cfg(feature = "live")]
+pub mod live;
 pub mod metainfo;
+#[cfg(feature = "live")]
+pub mod metrics;
 pub mod peer;
 pub mod pieces;
 pub mod protocol;
@@ -522,10 +689,11 @@ pub(crate) mod testing {
 /// use libtortillas::prelude::*;
 /// ```
 pub mod prelude {
+   #[cfg(feature = "live")]
+   pub use crate::facade::*;
    pub use crate::{
       engine::*,
       errors::*,
-      facade::*,
       hashes::InfoHash,
       metainfo::*,
       peer::{Peer, PeerId},

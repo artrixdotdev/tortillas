@@ -1,3 +1,10 @@
+//! Runtime policy for the engine and its supervised protocol scopes.
+//!
+//! Settings control application-tunable behavior such as actor mailbox sizes,
+//! event capacities, request windows, timeouts, and supervision. Wire-format
+//! constants and BEP-mandated values remain next to the protocol code that
+//! implements them.
+
 use std::{net::SocketAddr, time::Duration};
 
 const DEFAULT_DHT_BOOTSTRAP_NODES: [&str; 3] = [
@@ -26,6 +33,9 @@ pub struct Settings {
    pub dht: DhtSettings,
    /// Engine actor and incoming socket settings.
    pub engine: EngineSettings,
+   /// Live view and event-channel settings.
+   #[cfg(feature = "live")]
+   pub live: LiveSettings,
    /// Per-torrent actor settings.
    pub torrent: TorrentSettings,
    /// Per-peer actor settings.
@@ -33,6 +43,13 @@ pub struct Settings {
    /// Tracker actor and tracker protocol settings.
    pub tracker: TrackerSettings,
 }
+
+/// Bounded event capacities for each live scope.
+///
+/// Channels are allocated lazily when the first listener subscribes, so these
+/// capacities do not impose a per-scope allocation on unobserved peers.
+#[cfg(feature = "live")]
+pub use crate::live::LiveSettings;
 
 /// Mainline [BEP 5] DHT networking and lookup settings.
 ///
@@ -139,6 +156,9 @@ pub struct TorrentSettings {
    pub initial_peer_request_window: usize,
    /// Maximum in-flight block requests filled for a ready peer.
    pub max_in_flight_per_peer: usize,
+   /// Maximum age of an unanswered block request before it can be assigned
+   /// again. Duplicate late responses are safely ignored.
+   pub peer_request_timeout: Duration,
    /// Peer actor mailbox size. `0` means unbounded.
    pub peer_mailbox_size: usize,
    /// Maximum concurrent sends when broadcasting a message to peers.
@@ -170,6 +190,7 @@ impl Default for TorrentSettings {
          sufficient_peers: 6,
          initial_peer_request_window: 32,
          max_in_flight_per_peer: 32,
+         peer_request_timeout: Duration::from_secs(15),
          peer_mailbox_size: 120,
          peer_broadcast_concurrency: 32,
          tracker_broadcast_concurrency: 8,

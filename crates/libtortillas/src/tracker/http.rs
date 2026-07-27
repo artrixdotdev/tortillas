@@ -236,16 +236,13 @@ impl TrackerBase for HttpTracker {
       // HTTP request phase
       let request_start = Instant::now();
 
-      let response_bytes = reqwest::get(&uri)
-         .await
-         .map_err(TrackerActorError::Http)?
-         .bytes()
-         .await
-         .map_err(TrackerActorError::Http)?;
+      let response = reqwest::get(&uri).await.map_err(TrackerActorError::Http)?;
+      self.stats.increment_bytes_sent(uri.len());
+
+      let response_bytes = response.bytes().await.map_err(TrackerActorError::Http)?;
 
       let request_duration = request_start.elapsed();
 
-      self.stats.increment_bytes_sent(uri.len()); // Approximate bytes sent
       self.stats.increment_bytes_received(response_bytes.len());
 
       // Response parsing phase
@@ -549,6 +546,7 @@ mod tests {
       assert_eq!(peer.id, None);
    }
 
+   #[cfg(feature = "live")]
    #[tokio::test]
    async fn http_tracker_when_local_tracker_is_available_then_returns_ipv4_peer() {
       let expected_peer = Peer::from_ipv4(Ipv4Addr::LOCALHOST, 6881);
@@ -561,6 +559,8 @@ mod tests {
 
       assert_eq!(peers, vec![expected_peer]);
       assert_eq!(http_tracker.interval(), 1800);
+      assert!(http_tracker.stats().traffic_totals().uploaded.0 > 0);
+      assert!(http_tracker.stats().traffic_totals().downloaded.0 > 0);
    }
 
    #[tokio::test]

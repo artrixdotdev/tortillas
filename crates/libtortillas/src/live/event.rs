@@ -1,0 +1,126 @@
+use serde::{Deserialize, Serialize};
+
+use super::{EngineView, PeerHandle, TrackerHandle};
+use crate::{
+   hashes::InfoHash,
+   metrics::{PeerMetrics, TorrentMetrics},
+   torrent::{Torrent, TorrentState},
+};
+
+/// A sequenced event emitted by a live publisher.
+///
+/// Sequence numbers are local to one publisher and strictly increase for every
+/// event it emits. A consumer can use them to preserve scoped event order or
+/// detect a gap after reconnecting a consumer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SequencedEvent<E> {
+   pub sequence: u64,
+   pub kind: E,
+}
+
+pub type EngineEvent = SequencedEvent<EngineEventKind>;
+pub type TorrentEvent = SequencedEvent<TorrentEventKind>;
+pub type PeerEvent = SequencedEvent<PeerEventKind>;
+pub type TrackerEvent = SequencedEvent<TrackerEventKind>;
+
+impl SequencedEvent<EngineEventKind> {
+   /// Returns the torrent associated with this event, when applicable.
+   #[must_use]
+   pub fn torrent(&self) -> Option<InfoHash> {
+      self.kind.torrent()
+   }
+}
+
+/// Typed changes a consumer can react to without actor internals or polling.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum EngineEventKind {
+   /// The engine finished starting and is ready for operations.
+   EngineStarted(EngineView),
+   /// A change emitted by one managed torrent.
+   ///
+   /// The same canonical event is delivered to both the torrent listener and
+   /// the engine listener, avoiding parallel event vocabularies that can drift
+   /// apart as protocols are added.
+   Torrent {
+      torrent: Torrent,
+      event: TorrentEventKind,
+   },
+   /// An engine-wide health report was emitted.
+   Health(LiveHealth),
+   /// The engine and its managed torrents stopped.
+   Shutdown(EngineView),
+}
+
+/// Events emitted by one torrent's independent live publisher.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum TorrentEventKind {
+   Added,
+   Updated,
+   StateChanged {
+      previous: TorrentState,
+      current: TorrentState,
+   },
+   MetadataResolved,
+   MetricsChanged(TorrentMetrics),
+   PeerConnected(PeerHandle),
+   PeerDisconnected(PeerHandle),
+   TrackerAnnounceSucceeded(TrackerHandle),
+   TrackerAnnounceFailed(TrackerHandle),
+   TrackerRestarting(TrackerHandle),
+   TrackerStopped(TrackerHandle),
+   Health(LiveHealth),
+   Removed,
+}
+
+/// Events emitted by one peer's independent live publisher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PeerEventKind {
+   StateChanged,
+   MetricsChanged(PeerMetrics),
+   Disconnected,
+}
+
+/// Events emitted by one tracker's independent live publisher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TrackerEventKind {
+   AnnounceSucceeded { peers_returned: u64 },
+   AnnounceFailed,
+   Restarting,
+   Stopped,
+}
+
+impl EngineEventKind {
+   /// Returns the torrent associated with this event, when applicable.
+   #[must_use]
+   pub fn torrent(&self) -> Option<InfoHash> {
+      match self {
+         Self::EngineStarted(_) | Self::Shutdown(_) => None,
+         Self::Torrent { torrent, .. } => Some(torrent.info_hash()),
+         Self::Health(health) => health.torrent,
+      }
+   }
+}
+
+/// A recoverable or terminal runtime health report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveHealth {
+   /// Torrent associated with the report, or `None` for engine-wide health.
+   pub torrent: Option<InfoHash>,
+   /// Severity suitable for application filtering.
+   pub level: LiveHealthLevel,
+   /// Public description without internal actor details.
+   pub message: String,
+}
+
+/// Severity of a runtime health report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LiveHealthLevel {
+   /// The operation recovered but may merit user attention.
+   Warning,
+   /// The engine or torrent could not recover the operation.
+   Error,
+}

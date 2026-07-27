@@ -22,6 +22,7 @@
 
 use std::net::AddrParseError;
 
+use kameo::error::SendError;
 use thiserror::Error;
 
 use crate::{hashes::InfoHash, peer::PeerId};
@@ -63,6 +64,25 @@ pub enum EngineError {
    /// Tried to operate on a torrent the engine does not manage.
    #[error("Torrent not found: {0}")]
    TorrentNotFound(InfoHash),
+
+   /// Serialized engine state is incompatible or internally inconsistent.
+   #[error("Invalid engine snapshot: {reason}")]
+   InvalidSnapshot { reason: String },
+
+   /// A managed torrent command failed.
+   #[error(transparent)]
+   Torrent(#[from] TorrentError),
+
+   /// Communication with an actor failed before its handler completed.
+   #[error("Actor communication failed during {operation}: {reason}")]
+   ActorCommunicationFailed {
+      operation: &'static str,
+      reason: String,
+   },
+
+   /// The actor owns a torrent that is missing its public torrent handle.
+   #[error("Torrent {info_hash} is missing its public torrent handle")]
+   TorrentHandleMissing { info_hash: InfoHash },
 
    /// Any other engine-level error wrapped in [`anyhow::Error`]
    #[error(transparent)]
@@ -277,6 +297,21 @@ pub enum TorrentError {
    #[error("Unsafe torrent output path: {path}")]
    UnsafeOutputPath { path: String },
 
+   /// Serialized torrent state is incompatible or internally inconsistent.
+   #[error("Invalid torrent snapshot: {reason}")]
+   InvalidSnapshot { reason: String },
+
+   /// The current runtime configuration cannot be represented durably.
+   #[error("Torrent snapshot is unsupported: {reason}")]
+   SnapshotUnsupported { reason: SnapshotUnsupportedReason },
+
+   /// A public mutation is invalid for the torrent's current configuration.
+   #[error("Invalid operation {operation}: {reason}")]
+   InvalidOperation {
+      operation: &'static str,
+      reason: String,
+   },
+
    /// Bitfield operation failed
    #[error("Bitfield operation failed: {reason}")]
    BitfieldError { reason: String },
@@ -290,8 +325,11 @@ pub enum TorrentError {
    MissingInfoDict,
 
    /// Actor communication failed
-   #[error("Actor communication failed: {actor_type} - {reason}")]
-   ActorCommunicationFailed { actor_type: String, reason: String },
+   #[error("Actor communication failed during {operation}: {reason}")]
+   ActorCommunicationFailed {
+      operation: &'static str,
+      reason: String,
+   },
 
    /// IO error
    #[error(transparent)]
@@ -316,6 +354,36 @@ pub enum TorrentError {
    /// Any other torrent-level error wrapped in `anyhow::Error`
    #[error(transparent)]
    Other(#[from] anyhow::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum SnapshotUnsupportedReason {
+   #[error("custom piece managers do not have a persistence descriptor")]
+   CustomPieceManager,
+}
+
+pub(crate) fn map_engine_send_error<M>(
+   operation: &'static str, error: SendError<M, EngineError>,
+) -> EngineError {
+   match error {
+      SendError::HandlerError(error) => error,
+      error => EngineError::ActorCommunicationFailed {
+         operation,
+         reason: error.to_string(),
+      },
+   }
+}
+
+pub(crate) fn map_torrent_send_error<M>(
+   operation: &'static str, error: SendError<M, TorrentError>,
+) -> TorrentError {
+   match error {
+      SendError::HandlerError(error) => error,
+      error => TorrentError::ActorCommunicationFailed {
+         operation,
+         reason: error.to_string(),
+      },
+   }
 }
 // Conversion implementations for backward compatibility during transition
 impl From<num_enum::TryFromPrimitiveError<super::tracker::udp::Action>> for TrackerActorError {

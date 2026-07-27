@@ -1,53 +1,29 @@
-use std::path::PathBuf;
-
 use libtortillas::{
-   facade::{EngineSnapshot, TorrentSnapshot, TrackerStatus},
-   hashes::InfoHash,
-   prelude::{CoreCommand, EngineHandle, TorrentSource},
+   facade::{EngineSnapshot, TorrentSnapshot},
+   prelude::Engine,
 };
 
+#[cfg(feature = "live")]
 #[test]
-fn prelude_exposes_frontend_facade_types() {
-   let command = CoreCommand::AddTorrent {
-      source: TorrentSource::TorrentFilePath(PathBuf::from("ubuntu.torrent")),
+fn prelude_exposes_live_facade_types() {
+   use libtortillas::prelude::{
+      EventSubscription, PeerEventKind, TorrentEventKind, TrackerEventKind,
    };
 
-   match command {
-      CoreCommand::AddTorrent {
-         source: TorrentSource::TorrentFilePath(path),
-      } => assert_eq!(path, PathBuf::from("ubuntu.torrent")),
-      other => panic!("unexpected command: {other:?}"),
-   }
+   fn accepts_torrent_events(_: Option<EventSubscription<TorrentEventKind>>) {}
+   fn accepts_peer_events(_: Option<EventSubscription<PeerEventKind>>) {}
+   fn accepts_tracker_events(_: Option<EventSubscription<TrackerEventKind>>) {}
+
+   accepts_torrent_events(None);
+   accepts_peer_events(None);
+   accepts_tracker_events(None);
 }
 
 #[test]
 fn facade_engine_handle_matches_existing_engine_type() {
-   fn accepts_engine_handle(_: Option<EngineHandle>) {}
+   fn accepts_engine_handle(_: Option<Engine>) {}
 
    accepts_engine_handle(None);
-}
-
-#[test]
-fn command_variants_identify_torrents_by_info_hash() {
-   let torrent = InfoHash::from_bytes([7; 20]);
-   let command = CoreCommand::StartTorrent { torrent };
-
-   assert_eq!(command, CoreCommand::StartTorrent { torrent });
-
-   let command = CoreCommand::PauseTorrent { torrent };
-   assert_eq!(command, CoreCommand::PauseTorrent { torrent });
-
-   let command = CoreCommand::ResumeTorrent { torrent };
-   assert_eq!(command, CoreCommand::ResumeTorrent { torrent });
-
-   let command = CoreCommand::StopTorrent { torrent };
-   assert_eq!(command, CoreCommand::StopTorrent { torrent });
-
-   let command = CoreCommand::RemoveTorrent { torrent };
-   assert_eq!(command, CoreCommand::RemoveTorrent { torrent });
-
-   let command = CoreCommand::Shutdown;
-   assert_eq!(command, CoreCommand::Shutdown);
 }
 
 #[test]
@@ -60,5 +36,17 @@ fn facade_reexports_canonical_snapshot_types() {
 
    accepts_engine_snapshot(engine_snapshot);
    accepts_torrent_snapshot(torrent_snapshot);
-   assert_eq!(TrackerStatus::Pending, TrackerStatus::Pending);
+}
+
+#[cfg(not(feature = "live"))]
+#[test]
+fn actor_only_build_keeps_command_and_query_methods() {
+   use libtortillas::prelude::Torrent;
+
+   let _ = Engine::start_all;
+   let _ = Engine::torrent;
+   let _ = Engine::snapshot;
+   let _ = Torrent::state;
+   let _ = Torrent::pause;
+   let _ = Torrent::snapshot;
 }

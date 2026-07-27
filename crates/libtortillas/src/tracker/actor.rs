@@ -1,3 +1,5 @@
+#[cfg(feature = "live")]
+use std::time::Instant;
 use std::{net::SocketAddr, time::Duration};
 
 use anyhow::Result;
@@ -23,6 +25,11 @@ use crate::{
    settings::TrackerSettings,
    torrent::{self, TorrentActor},
 };
+#[cfg(feature = "live")]
+use crate::{
+   live::TrackerHandle,
+   metrics::{TimedTransferSample, TrackerMetrics, TransferMetrics},
+};
 
 /// The actor that handles all communication with a given tracker.
 pub(crate) struct TrackerActor {
@@ -33,6 +40,10 @@ pub(crate) struct TrackerActor {
    next_announce: Option<AbortHandle>,
    actor_ref: ActorRef<Self>,
    settings: TrackerSettings,
+   #[cfg(feature = "live")]
+   live_handle: TrackerHandle,
+   #[cfg(feature = "live")]
+   last_rate_sample: TimedTransferSample,
 }
 
 #[derive(Clone)]
@@ -45,6 +56,8 @@ pub(crate) struct TrackerActorArgs {
    pub(crate) supervisor: ActorRef<TorrentActor>,
    pub(crate) scheduler: ActorRef<Scheduler>,
    pub(crate) settings: TrackerSettings,
+   #[cfg(feature = "live")]
+   pub(crate) live_handle: TrackerHandle,
 }
 
 impl Actor for TrackerActor {
@@ -61,6 +74,8 @@ impl Actor for TrackerActor {
          supervisor,
          scheduler,
          settings,
+         #[cfg(feature = "live")]
+         live_handle,
       } = state;
 
       let info_hash = supervisor
@@ -115,6 +130,19 @@ impl Actor for TrackerActor {
       if let Some(left) = initial_left {
          tracker.update(TrackerUpdate::Left(left)).await?;
       }
+      #[cfg(feature = "live")]
+      let totals = {
+         let initial_metrics = tracker.stats().metrics();
+         let totals = initial_metrics.transfer.totals;
+         live_handle.publish_metrics(initial_metrics);
+         if let Err(e) = supervisor
+            .tell(torrent::events::TrackerMetricsChanged)
+            .await
+         {
+            warn!(error = %e, "Failed to publish initial tracker metrics");
+         }
+         totals
+      };
 
       let next_announce = scheduler
          .ask(SetTimeout::new(
@@ -133,11 +161,15 @@ impl Actor for TrackerActor {
          next_announce: Some(next_announce),
          actor_ref,
          settings,
+         #[cfg(feature = "live")]
+         live_handle,
+         #[cfg(feature = "live")]
+         last_rate_sample: TimedTransferSample::new(Instant::now(), totals),
       })
    }
 
    async fn on_stop(
-      &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
+      &mut self, _: WeakActorRef<Self>, _reason: ActorStopReason,
    ) -> Result<(), Self::Error> {
       if let Some(next_announce) = self.next_announce.take() {
          next_announce.abort();
@@ -146,8 +178,41 @@ impl Actor for TrackerActor {
       let _ = timeout(self.settings.stop_timeout, self.tracker.stop())
          .await
          .inspect_err(|e| warn!(e = %e.to_string(), "Tracker stop timed out"));
+      crate::live_only! {
+         let metrics = self.snapshot_metrics(self.live_handle.view().metrics.latest_peers_returned);
+         self.live_handle.publish_metrics(metrics);
+         if let Err(e) = self
+            .supervisor
+            .tell(torrent::events::TrackerMetricsChanged)
+            .await
+         {
+            warn!(error = %e, "Failed to publish final tracker metrics");
+         }
+
+         if _reason.is_normal() {
+            self.live_handle.stopped();
+         } else {
+            // Transient supervision may reconstruct this actor with the same
+            // live scope. Keep the listener open until its owning torrent
+            // performs final tree cleanup.
+            self.live_handle.restarting();
+         }
+      }
 
       Ok(())
+   }
+}
+
+#[cfg(feature = "live")]
+impl TrackerActor {
+   fn snapshot_metrics(&mut self, latest_peers_returned: Option<u64>) -> TrackerMetrics {
+      let mut metrics = self.tracker.stats().metrics();
+      let totals = metrics.transfer.totals;
+      let sample = TimedTransferSample::new(Instant::now(), totals);
+      metrics.transfer = TransferMetrics::from_sample(sample.sample_since(self.last_rate_sample));
+      self.last_rate_sample = sample;
+      metrics.latest_peers_returned = latest_peers_returned;
+      metrics
    }
 }
 
@@ -183,8 +248,17 @@ impl TrackerActor {
    /// Forces the tracker to make an announce request.
    #[message(derive(Debug, Clone, Copy))]
    pub(crate) async fn announce(&mut self) -> Option<TrackerStats> {
-      match self.tracker.announce().await {
+      let result = self.tracker.announce().await;
+      #[cfg(feature = "live")]
+      let latest_peers_returned = result
+         .as_ref()
+         .ok()
+         .map(|peers| u64::try_from(peers.len()).unwrap_or(u64::MAX));
+      #[cfg(feature = "live")]
+      let metrics = self.snapshot_metrics(latest_peers_returned);
+      match result {
          Ok(peers) => {
+            crate::live_only!(self.live_handle.announce_succeeded(metrics));
             if let Err(e) = self
                .supervisor
                .tell(torrent::events::Announce {
@@ -196,7 +270,19 @@ impl TrackerActor {
                error!(error = %e, "Failed to send announce to supervisor");
             }
          }
-         Err(e) => error!(error = %e, "Announce request failed"),
+         Err(e) => {
+            error!(error = %e, "Announce request failed");
+            crate::live_only!(self.live_handle.announce_failed(metrics));
+         }
+      }
+      crate::live_only! {
+         if let Err(e) = self
+            .supervisor
+            .tell(torrent::events::TrackerMetricsChanged)
+            .await
+         {
+            error!(error = %e, "Failed to publish tracker metrics");
+         }
       }
       self.schedule_next_announce().await;
       None

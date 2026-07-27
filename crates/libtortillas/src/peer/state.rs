@@ -9,6 +9,8 @@ use std::{
 use atomic_time::AtomicOptionInstant;
 
 use super::Peer;
+#[cfg(feature = "live")]
+use crate::metrics::{ByteCount, PeerMetrics, TrafficTotals, TransferMetrics};
 
 /// A helper struct for Peer that maintains a given peers state. This state
 /// includes both the state defined in [BEP 0003](https://www.bittorrent.org/beps/bep_0003.html) and our own state which we
@@ -29,10 +31,6 @@ use super::Peer;
 /// that everything is contained in an Arc.
 #[derive(Clone)]
 pub struct PeerState {
-   /// Download rate measured in kilobytes per second
-   download_rate: Arc<AtomicUsize>,
-   /// Upload rate measured in kilobytes per second
-   upload_rate: Arc<AtomicUsize>,
    /// Whether we are choking the remote peer
    am_choking: Arc<AtomicBool>,
    /// Whether the remote peer is interested in us
@@ -49,9 +47,9 @@ pub struct PeerState {
    /// Defaults to None. Does not update on initial handshake, initial sending
    /// of bitfield, or initial sending of Interested message.
    last_message_received: Arc<AtomicOptionInstant>,
-   /// Total bytes downloaded
+   /// Total bytes downloaded.
    bytes_downloaded: Arc<AtomicUsize>,
-   /// Total bytes uploaded
+   /// Total bytes uploaded.
    bytes_uploaded: Arc<AtomicUsize>,
 }
 
@@ -68,13 +66,38 @@ impl PeerState {
          peer_interested: Arc::new(false.into()),
          peer_choking: Arc::new(true.into()),
          am_interested: Arc::new(false.into()),
-         download_rate: Arc::new(0.into()),
-         upload_rate: Arc::new(0.into()),
          last_optimistic_unchoke: Arc::new(AtomicOptionInstant::none()),
          last_message_received: Arc::new(AtomicOptionInstant::none()),
          last_message_sent: Arc::new(AtomicOptionInstant::none()),
          bytes_downloaded: Arc::new(0.into()),
          bytes_uploaded: Arc::new(0.into()),
+      }
+   }
+
+   pub(crate) fn increment_bytes_downloaded(&self, bytes: usize) {
+      self.bytes_downloaded.fetch_add(bytes, Ordering::Relaxed);
+   }
+
+   pub(crate) fn increment_bytes_uploaded(&self, bytes: usize) {
+      self.bytes_uploaded.fetch_add(bytes, Ordering::Relaxed);
+   }
+
+   pub(crate) fn share_traffic_with(&mut self, state: &Self) {
+      self.bytes_downloaded = state.bytes_downloaded.clone();
+      self.bytes_uploaded = state.bytes_uploaded.clone();
+   }
+}
+
+#[cfg(feature = "live")]
+impl PeerState {
+   pub(crate) fn traffic_totals(&self) -> TrafficTotals {
+      TrafficTotals {
+         downloaded: ByteCount(
+            u64::try_from(self.bytes_downloaded.load(Ordering::Relaxed)).unwrap_or(u64::MAX),
+         ),
+         uploaded: ByteCount(
+            u64::try_from(self.bytes_uploaded.load(Ordering::Relaxed)).unwrap_or(u64::MAX),
+         ),
       }
    }
 }
@@ -104,14 +127,6 @@ impl Peer {
          .store(is_interested, Ordering::Release);
    }
 
-   pub(crate) fn set_download_rate(&self, rate_kbps: usize) {
-      self.state.download_rate.store(rate_kbps, Ordering::Release);
-   }
-
-   pub(crate) fn set_upload_rate(&self, rate_kbps: usize) {
-      self.state.upload_rate.store(rate_kbps, Ordering::Release);
-   }
-
    pub(crate) fn update_last_optimistic_unchoke(&self) {
       self
          .state
@@ -133,18 +148,8 @@ impl Peer {
          .store(Some(Instant::now()), Ordering::Release);
    }
 
-   pub(crate) fn increment_bytes_downloaded(&self, bytes: usize) {
-      self
-         .state
-         .bytes_downloaded
-         .fetch_add(bytes, Ordering::Relaxed);
-   }
-
-   pub(crate) fn increment_bytes_uploaded(&self, bytes: usize) {
-      self
-         .state
-         .bytes_uploaded
-         .fetch_add(bytes, Ordering::Relaxed);
+   pub(crate) fn share_traffic_with(&mut self, state: &PeerState) {
+      self.state.share_traffic_with(state);
    }
 
    pub(crate) fn choked(&self) -> bool {
@@ -161,14 +166,6 @@ impl Peer {
 
    pub(crate) fn am_interested(&self) -> bool {
       self.state.am_interested.load(Ordering::Acquire)
-   }
-
-   pub fn download_rate(&self) -> usize {
-      self.state.download_rate.load(Ordering::Acquire)
-   }
-
-   pub fn upload_rate(&self) -> usize {
-      self.state.upload_rate.load(Ordering::Acquire)
    }
 
    pub(crate) fn last_optimistic_unchoke(&self) -> Option<Instant> {
@@ -189,5 +186,26 @@ impl Peer {
 
    pub fn bytes_uploaded(&self) -> usize {
       self.state.bytes_uploaded.load(Ordering::Relaxed)
+   }
+}
+
+#[cfg(feature = "live")]
+impl Peer {
+   pub(crate) fn traffic_totals(&self) -> TrafficTotals {
+      self.state.traffic_totals()
+   }
+
+   pub(crate) fn metrics(&self) -> PeerMetrics {
+      PeerMetrics {
+         transfer: TransferMetrics {
+            totals: self.traffic_totals(),
+            samples: Vec::new(),
+         },
+         peer_choking: self.am_choked(),
+         peer_interested: self.interested(),
+         client_choking: self.choked(),
+         client_interested: self.am_interested(),
+         available_pieces: u64::try_from(self.pieces.count_ones()).unwrap_or(u64::MAX),
+      }
    }
 }

@@ -9,6 +9,9 @@ keywords = ["bittorrent", "p2p", "torrent"]
 categories = ["network-programming", "concurrency"]
 readme = "../../README.md"
 
+[features]
+default = ["live"]
+live = ["dep:tokio-stream"]
 
 [dependencies]
 serde = { workspace = true }
@@ -39,8 +42,29 @@ kameo_actors = "^0.5"
 dashmap = { version = "^6", features = ["serde"] }
 bon = "^3.9"
 tokio-util = "^0.7"
+tokio-stream = { version = "^0.1", features = ["sync"], optional = true }
 
 [dev-dependencies]
 tracing-test = "0.2.6"
 tracing-subscriber = { workspace = true }
 serde_json = "^1"
+
+[[example]]
+name = "live"
+required-features = ["live"]
+
+[[test]]
+name = "dht_network"
+required-features = ["live"]
+
+[[test]]
+name = "engine_lifecycle"
+required-features = ["live"]
+
+[[test]]
+name = "live"
+required-features = ["live"]
+
+[[test]]
+name = "persistence"
+required-features = ["live"]

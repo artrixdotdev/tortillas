@@ -7,7 +7,7 @@ use tracing::{trace, warn};
 
 use super::TorrentActor;
 use crate::peer::{
-   PeerActor, PeerStats,
+   PeerActor, PeerId, PeerStats,
    commands::{SetChoked, Stats},
 };
 
@@ -19,6 +19,16 @@ impl TorrentActor {
       }
 
       let peer_stats = self.peer_stats().await;
+      let expired_requests = self
+         .piece_scheduler
+         .release_stale_requests(self.settings.torrent.peer_request_timeout);
+      if expired_requests > 0 {
+         trace!(expired_requests, "Released unanswered peer requests");
+      }
+      // Peer actors publish their own high-frequency samples. The torrent
+      // publishes one coalesced aggregate after the collection interval.
+      self.publish_metrics_changed();
+      self.try_update_tracker_progress();
       let decision = self.choking_scheduler.decide(&peer_stats, self.state);
       let unchoked: HashSet<_> = decision.unchoked.iter().copied().collect();
 
@@ -30,7 +40,7 @@ impl TorrentActor {
 
       for stats in peer_stats {
          let choked = !unchoked.contains(&stats.id);
-         if stats.choked == choked {
+         if stats.client_choking == choked {
             continue;
          }
 
@@ -42,12 +52,17 @@ impl TorrentActor {
             warn!(?err, peer_id = %stats.id, choked, "Failed to update peer choke state");
          }
       }
+
+      // Recover work released by peers that rejected requests or disconnected
+      // between collection intervals. Filling to a target size is idempotent,
+      // so this cannot grow a peer beyond its configured request window.
+      self.fill_all_peer_request_windows();
    }
 
    async fn peer_stats(&self) -> Vec<PeerStats> {
       let peer_stats_timeout = self.settings.torrent.peer_stats_timeout;
       let peer_stats_concurrency = self.settings.torrent.peer_stats_concurrency.max(1);
-      let actor_refs: Vec<(crate::peer::PeerId, ActorRef<PeerActor>)> = self
+      let actor_refs: Vec<(PeerId, ActorRef<PeerActor>)> = self
          .peers
          .iter()
          .filter(|(_, actor)| actor.is_alive())

@@ -449,16 +449,14 @@ impl UdpServer {
    }
 
    /// Send a message through the shared socket
-   pub async fn send_message(&self, message: &Bytes, tracker_addr: SocketAddr) -> Result<()> {
+   pub async fn send_message(&self, message: &Bytes, tracker_addr: SocketAddr) -> Result<usize> {
       self
          .socket
          .send_to(message, tracker_addr)
          .await
          .map_err(|e| TrackerActorError::InvalidResponse {
             reason: e.to_string(),
-         })?;
-
-      Ok(())
+         })
    }
 }
 
@@ -740,14 +738,14 @@ impl UdpTracker {
       let registration = TransactionRegistration::new(self.server.clone(), *transaction_id);
 
       // Send the message through the shared message receiver
-      let send_result = self.server.send_message(&message_bytes, self.addr).await;
-
-      if let Err(err) = send_result {
-         registration.unregister();
-         return Err(RetryError::Permanent(err));
-      }
-
-      self.stats.increment_bytes_sent(message_bytes.len());
+      let bytes_sent = match self.server.send_message(&message_bytes, self.addr).await {
+         Ok(bytes_sent) => bytes_sent,
+         Err(err) => {
+            registration.unregister();
+            return Err(RetryError::Permanent(err));
+         }
+      };
+      self.stats.increment_bytes_sent(bytes_sent);
 
       trace!(
           message = %message,

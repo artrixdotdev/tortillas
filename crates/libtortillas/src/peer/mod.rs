@@ -26,8 +26,8 @@ pub type PeerKey = SocketAddr;
 
 pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
 
-/// Represents a BitTorrent peer with connection state and statistics
-/// Download rate and upload rate are measured in kilobytes per second.
+/// Represents a BitTorrent peer with connection state and statistics.
+/// Traffic totals and rates use bytes and bytes per second respectively.
 #[derive(Clone)]
 pub struct Peer {
    pub ip: IpAddr,

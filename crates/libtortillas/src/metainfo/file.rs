@@ -20,12 +20,12 @@ pub struct TorrentFile {
    pub announce: Option<Tracker>,
    /// Secondary announce URIs for different trackers, and protocols. Also can
    /// be used as a backup
-   #[serde(rename(deserialize = "announce-list"))]
+   #[serde(rename = "announce-list")]
    pub announce_list: Option<Vec<Vec<Tracker>>>, // Note: This is a list of lists
    pub comment: Option<String>,
-   #[serde(rename(deserialize = "created by"))]
+   #[serde(rename = "created by")]
    pub created_by: Option<String>,
-   #[serde(rename(deserialize = "creation date"))]
+   #[serde(rename = "creation date")]
    pub creation_date: Option<i64>, // Typically stored as unix timestamp
    pub encoding: Option<String>,
    pub info: Info,
@@ -117,7 +117,7 @@ pub enum InfoKeys {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InfoFile {
    /// The length of the file, in bytes.
-   pub length: usize,
+   pub length: u64,
 
    /// Subdirectory names for this file, the last of which is the actual file
    /// name (a zero length list is an error case).
@@ -145,7 +145,10 @@ impl Info {
    pub fn total_length(&self) -> usize {
       match &self.file {
          InfoKeys::Single { length, .. } => *length as usize,
-         InfoKeys::Multi { files } => files.iter().map(|f| f.length).sum(),
+         InfoKeys::Multi { files } => files
+            .iter()
+            .map(|file| usize::try_from(file.length).unwrap_or(usize::MAX))
+            .fold(0, usize::saturating_add),
       }
    }
 }

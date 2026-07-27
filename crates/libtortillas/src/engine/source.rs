@@ -16,10 +16,10 @@ const MAX_TORRENT_FILE_SIZE: usize = 10 * 1024 * 1024;
 
 /// Explicit source type for adding a torrent to an [`Engine`](super::Engine).
 ///
-/// Frontends should map user input into one of these variants before calling
-/// [`Engine::add_torrent`](super::Engine::add_torrent). That keeps UI intent
-/// separate from parsing and avoids guessing whether a string is a URL, path,
-/// or magnet URI.
+/// Applications should map user input into one of these variants before calling
+/// [`Engine::add_torrent`](super::Engine::add_torrent). That keeps caller
+/// intent separate from parsing and avoids guessing whether a string is a URL,
+/// path, or magnet URI.
 ///
 /// ```
 /// use std::path::PathBuf;
@@ -48,7 +48,7 @@ pub enum TorrentSource {
    MagnetUri(String),
    /// A local `.torrent` file path selected by the user.
    TorrentFilePath(PathBuf),
-   /// Raw bytes of a `.torrent` file already loaded by the frontend.
+   /// Raw bytes of a `.torrent` file already loaded by the caller.
    TorrentFileBytes(Bytes),
    /// An HTTP or HTTPS URL pointing to a remote `.torrent` file.
    RemoteTorrentUrl(String),

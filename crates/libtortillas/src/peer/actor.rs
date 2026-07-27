@@ -28,18 +28,31 @@ use crate::{
    settings::PeerSettings,
    torrent::{self, BLOCK_SIZE, TorrentActor},
 };
+#[cfg(feature = "live")]
+use crate::{
+   live::{PeerHandle, PeerView},
+   metrics::{HasTransferMetrics, PeerMetrics, TimedTransferSample, TransferMetrics},
+};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct PeerStats {
    pub(crate) id: PeerId,
    pub(crate) interested: bool,
-   pub(crate) choked: bool,
-   pub(crate) download_rate: usize,
-   pub(crate) upload_rate: usize,
-   pub(crate) bytes_downloaded: usize,
-   pub(crate) bytes_uploaded: usize,
+   pub(crate) client_choking: bool,
+   pub(crate) download_rate: u64,
+   pub(crate) upload_rate: u64,
+   #[cfg(feature = "live")]
+   pub(crate) metrics: PeerMetrics,
 }
 
+#[cfg(feature = "live")]
+impl HasTransferMetrics for PeerStats {
+   fn transfer_metrics(&self) -> &TransferMetrics {
+      self.metrics.transfer_metrics()
+   }
+}
+
+#[cfg(not(feature = "live"))]
 #[derive(Clone, Copy, Debug)]
 struct RateSample {
    at: Instant,
@@ -47,6 +60,7 @@ struct RateSample {
    bytes_uploaded: usize,
 }
 
+#[cfg(not(feature = "live"))]
 impl RateSample {
    fn new(peer: &Peer) -> Self {
       Self {
@@ -68,8 +82,23 @@ pub(crate) struct PeerActor {
 
    pending_block_requests: HashSet<(usize, usize, usize)>,
    pending_message_requests: VecDeque<PeerMessages>,
+   #[cfg(feature = "live")]
+   last_rate_sample: TimedTransferSample,
+   #[cfg(not(feature = "live"))]
    last_rate_sample: RateSample,
    settings: PeerSettings,
+   #[cfg(feature = "live")]
+   live_handle: PeerHandle,
+}
+
+pub(crate) struct PeerActorArgs {
+   pub(crate) peer: Peer,
+   pub(crate) stream: PeerStream,
+   pub(crate) supervisor: ActorRef<TorrentActor>,
+   pub(crate) info_hash: InfoHash,
+   pub(crate) settings: PeerSettings,
+   #[cfg(feature = "live")]
+   pub(crate) live_handle: PeerHandle,
 }
 
 impl PeerActor {
@@ -332,7 +361,42 @@ impl PeerActor {
 
       self.stream.send(msg).await
    }
+}
 
+#[cfg(feature = "live")]
+impl PeerActor {
+   fn snapshot_stats(&mut self) -> Option<PeerStats> {
+      let id = self.peer.id?;
+      let now = Instant::now();
+      let totals = self.peer.traffic_totals();
+      let sample = TimedTransferSample::new(now, totals);
+      let transfer_sample = sample.sample_since(self.last_rate_sample);
+      self.last_rate_sample = sample;
+      let transfer = TransferMetrics::from_sample(transfer_sample);
+      let mut metrics = self.peer.metrics();
+      metrics.transfer = transfer;
+      self
+         .live_handle
+         .publish_metrics(PeerView::from_peer_with_metrics(
+            &self.peer,
+            true,
+            metrics.clone(),
+         ));
+
+      let rates = metrics.transfer.rates().unwrap_or_default();
+      Some(PeerStats {
+         id,
+         interested: metrics.peer_interested,
+         client_choking: metrics.client_choking,
+         download_rate: rates.download.0,
+         upload_rate: rates.upload.0,
+         metrics,
+      })
+   }
+}
+
+#[cfg(not(feature = "live"))]
+impl PeerActor {
    fn snapshot_stats(&mut self) -> Option<PeerStats> {
       let id = self.peer.id?;
       let now = Instant::now();
@@ -342,15 +406,10 @@ impl PeerActor {
          .duration_since(self.last_rate_sample.at)
          .as_secs()
          .max(1) as usize;
-
-      let download_rate = bytes_downloaded.saturating_sub(self.last_rate_sample.bytes_downloaded)
-         / 1024
-         / elapsed_secs;
+      let download_rate =
+         bytes_downloaded.saturating_sub(self.last_rate_sample.bytes_downloaded) / elapsed_secs;
       let upload_rate =
-         bytes_uploaded.saturating_sub(self.last_rate_sample.bytes_uploaded) / 1024 / elapsed_secs;
-
-      self.peer.set_download_rate(download_rate);
-      self.peer.set_upload_rate(upload_rate);
+         bytes_uploaded.saturating_sub(self.last_rate_sample.bytes_uploaded) / elapsed_secs;
       self.last_rate_sample = RateSample {
          at: now,
          bytes_downloaded,
@@ -360,29 +419,30 @@ impl PeerActor {
       Some(PeerStats {
          id,
          interested: self.peer.interested(),
-         choked: self.peer.choked(),
-         download_rate,
-         upload_rate,
-         bytes_downloaded,
-         bytes_uploaded,
+         client_choking: self.peer.choked(),
+         download_rate: u64::try_from(download_rate).unwrap_or(u64::MAX),
+         upload_rate: u64::try_from(upload_rate).unwrap_or(u64::MAX),
       })
    }
 }
 
 impl Actor for PeerActor {
-   type Args = (
-      Peer,
-      PeerStream,
-      ActorRef<TorrentActor>,
-      InfoHash,
-      PeerSettings,
-   );
+   type Args = PeerActorArgs;
    type Error = PeerActorError;
 
    /// At this point, the peer has already been handshaked with. No other
    /// messages have been sent or received from the peer.
    async fn on_start(args: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
-      let (peer, mut stream, supervisor, info_hash, settings) = args;
+      let PeerActorArgs {
+         mut peer,
+         mut stream,
+         supervisor,
+         info_hash,
+         settings,
+         #[cfg(feature = "live")]
+         live_handle,
+      } = args;
+      peer.share_traffic_with(&stream.peer_state());
 
       info!(peer_id = %peer.id.unwrap(),  peer_addr = %stream, torrent_id = %info_hash, "Peer connected");
       let bitfield = match supervisor.ask(torrent::commands::GetBitfield).await {
@@ -402,11 +462,15 @@ impl Actor for PeerActor {
       supervisor
          .tell(torrent::events::PeerReady {
             id: peer.id.unwrap(),
+            available_pieces: peer.pieces.clone(),
          })
          .await
          .map_err(|e| PeerActorError::SupervisorCommunicationFailed(e.to_string()))?;
 
       Ok(Self {
+         #[cfg(feature = "live")]
+         last_rate_sample: TimedTransferSample::new(Instant::now(), peer.traffic_totals()),
+         #[cfg(not(feature = "live"))]
          last_rate_sample: RateSample::new(&peer),
          peer,
          stream,
@@ -414,6 +478,8 @@ impl Actor for PeerActor {
          pending_block_requests: HashSet::new(),
          pending_message_requests: VecDeque::with_capacity(settings.pending_message_capacity),
          settings,
+         #[cfg(feature = "live")]
+         live_handle,
       })
    }
 
@@ -423,7 +489,11 @@ impl Actor for PeerActor {
       if let Some(peer_id) = self.peer.id
          && let Err(err) = self
             .supervisor
-            .tell(torrent::commands::KillPeer { id: peer_id })
+            .tell(torrent::commands::KillPeer {
+               id: peer_id,
+               #[cfg(feature = "live")]
+               handle: self.live_handle.clone(),
+            })
             .await
       {
          warn!(error = %err, %peer_id, "Failed to notify torrent actor about stopped peer");
@@ -450,7 +520,11 @@ impl Actor for PeerActor {
             let id = self.peer.id.expect("Peer ID should exist");
             if let Err(err) = self
                .supervisor
-               .tell(torrent::commands::KillPeer { id })
+               .tell(torrent::commands::KillPeer {
+                  id,
+                  #[cfg(feature = "live")]
+                  handle: self.live_handle.clone(),
+               })
                .await
             {
                warn!(error = %err, "Failed to tell supervisor to kill peer");
@@ -526,7 +600,6 @@ impl Message<PeerMessages> for PeerActor {
                   warn!("Received piece from peer without id; ignoring");
                   return;
                };
-               self.peer.increment_bytes_downloaded(data.len());
                let supervisor_msg = torrent::events::IncomingPiece {
                   peer_id,
                   index: index as usize,
@@ -628,13 +701,11 @@ impl Message<PeerMessages> for PeerActor {
 
             match data {
                Some(data) => {
-                  let uploaded_bytes = data.len();
                   self
                      .stream
                      .send(PeerMessages::Piece(index as u32, offset as u32, data))
                      .await
                      .expect("Failed to send piece");
-                  self.peer.increment_bytes_uploaded(uploaded_bytes);
                }
                None => {
                   warn!(
@@ -671,6 +742,12 @@ impl Message<PeerMessages> for PeerActor {
             warn!("Received unexpected handshake from peer");
          }
       }
+      crate::live_only! {
+         let samples = self.live_handle.view().metrics.transfer.samples;
+         self
+            .live_handle
+            .publish_state(PeerView::from_peer_with_samples(&self.peer, true, samples));
+      }
    }
 }
 
@@ -682,7 +759,10 @@ impl PeerActor {
 
       if let Err(err) = self
          .supervisor
-         .tell(torrent::events::PeerReady { id: peer_id })
+         .tell(torrent::events::PeerReady {
+            id: peer_id,
+            available_pieces: self.peer.pieces.clone(),
+         })
          .await
       {
          trace!(error = %err, %peer_id, "Failed to notify torrent actor that peer is ready");
@@ -690,9 +770,13 @@ impl PeerActor {
    }
 
    async fn reject_piece_request(&self, index: usize, begin: usize) {
+      let Some(peer_id) = self.peer.id else {
+         return;
+      };
       if let Err(err) = self
          .supervisor
          .tell(torrent::events::PeerRejectedRequest {
+            peer_id,
             index,
             offset: begin,
          })
@@ -816,11 +900,10 @@ pub(crate) mod commands {
 
       #[message(derive(Clone, Debug))]
       pub(crate) async fn have_info_dict(&mut self, bitfield: Arc<BitVec<AtomicU8>>) {
-         self
-            .send_message(PeerMessages::Bitfield(bitfield))
-            .await
-            .expect("Failed to send bitfield");
-         trace!("Sent bitfield to peer");
+         match self.send_message(PeerMessages::Bitfield(bitfield)).await {
+            Ok(()) => trace!("Sent bitfield to peer"),
+            Err(error) => warn!(%error, "Failed to send bitfield"),
+         }
       }
 
       #[message(derive(Clone, Debug))]

@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "info_hash": [
+    80,
+    196,
+    197,
+    59,
+    251,
+    100,
+    119,
+    186,
+    79,
+    16,
+    98,
+    23,
+    107,
+    183,
+    109,
+    198,
+    61,
+    63,
+    253,
+    98
+  ],
+  "state": "Paused",
+  "auto_start": false,
+  "sufficient_peers": 6,
+  "output_path": ".",
+  "metainfo": {
+    "announce": null,
+    "announce-list": null,
+    "comment": "snapshot-v2",
+    "created by": "libtortillas",
+    "creation date": 0,
+    "encoding": "UTF-8",
+    "info": {
+      "name": "fixture.bin",
+      "piece length": 4,
+      "pieces": [],
+      "length": 0,
+      "md5sum": null,
+      "private": 1,
+      "publisher": null,
+      "publisher-url": null,
+      "source": null
+    },
+    "url_list": null
+  },
+  "piece_storage": {
+    "strategy": "InFile"
+  },
+  "info_dict": {
+    "name": "fixture.bin",
+    "piece length": 4,
+    "pieces": [],
+    "length": 0,
+    "md5sum": null,
+    "private": 1,
+    "publisher": null,
+    "publisher-url": null,
+    "source": null
+  },
+  "bitfield": {
+    "order": "bitvec::order::Lsb0",
+    "head": {
+      "width": 8,
+      "index": 0
+    },
+    "bits": 0,
+    "data": []
+  },
+  "block_map": {}
+}

@@ -69,7 +69,7 @@ pub(crate) fn select_unchoked_peers(
    let mut candidates: Vec<_> = peers
       .iter()
       .filter(|peer| peer.interested)
-      .copied()
+      .cloned()
       .collect();
    candidates.sort_by(|left, right| {
       rate_for(right, torrent_state)
@@ -112,7 +112,7 @@ pub(crate) fn select_unchoked_peers(
    }
 }
 
-fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> usize {
+fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> u64 {
    match torrent_state {
       TorrentState::Downloading => peer.download_rate,
       TorrentState::Seeding => peer.upload_rate,
@@ -120,6 +120,7 @@ fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> usize {
       | TorrentState::ResolvingMetadata
       | TorrentState::Ready
       | TorrentState::Paused
+      | TorrentState::Restarting
       | TorrentState::Stopping
       | TorrentState::Stopped
       | TorrentState::Failed => 0,
@@ -128,7 +129,12 @@ fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> usize {
 
 #[cfg(test)]
 mod tests {
+   #[cfg(feature = "live")]
+   use std::time::Duration;
+
    use super::*;
+   #[cfg(feature = "live")]
+   use crate::metrics::{ByteCount, PeerMetrics, TrafficTotals, TransferMetrics, TransferSample};
 
    fn peer_id(value: u8) -> PeerId {
       PeerId::from([value; 20])
@@ -138,20 +144,39 @@ mod tests {
       PeerStats {
          id: peer_id(id),
          interested: true,
-         choked: true,
+         client_choking: true,
          download_rate: 0,
          upload_rate: 0,
-         bytes_downloaded: 0,
-         bytes_uploaded: 0,
+         #[cfg(feature = "live")]
+         metrics: PeerMetrics {
+            peer_interested: true,
+            client_choking: true,
+            transfer: TransferMetrics::from_sample(TransferSample {
+               previous_totals: TrafficTotals::default(),
+               current_totals: TrafficTotals::default(),
+               elapsed: Duration::from_secs(1),
+            }),
+            ..Default::default()
+         },
       }
    }
 
-   fn with_rates(id: u8, download_rate: usize, upload_rate: usize) -> PeerStats {
-      PeerStats {
-         download_rate,
-         upload_rate,
-         ..stats(id)
+   fn with_rates(id: u8, download_rate: u64, upload_rate: u64) -> PeerStats {
+      let mut stats = stats(id);
+      stats.download_rate = download_rate;
+      stats.upload_rate = upload_rate;
+      #[cfg(feature = "live")]
+      {
+         stats.metrics.transfer = TransferMetrics::from_sample(TransferSample {
+            previous_totals: TrafficTotals::default(),
+            current_totals: TrafficTotals {
+               downloaded: ByteCount(download_rate),
+               uploaded: ByteCount(upload_rate),
+            },
+            elapsed: Duration::from_secs(1),
+         });
       }
+      stats
    }
 
    #[test]

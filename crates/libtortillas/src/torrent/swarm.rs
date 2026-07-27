@@ -9,8 +9,10 @@ use kameo::{
 use tracing::{debug, instrument, trace, warn};
 
 use super::TorrentActor;
+#[cfg(feature = "live")]
+use crate::live::{PeerIdentity, PeerView};
 use crate::{
-   peer::{Peer, PeerActor, PeerId},
+   peer::{Peer, PeerActor, PeerActorArgs, PeerId},
    protocol::{
       messages::{Handshake, PeerMessages},
       stream::{PeerSend, PeerStream, validate_handshake},
@@ -104,16 +106,40 @@ impl TorrentActor {
       let info_hash = self.info_hash();
       let peer_settings = self.settings.peer.clone();
       let peer_mailbox_size = self.settings.torrent.peer_mailbox_size;
+      if self.peers.contains_key(&id) {
+         return;
+      }
 
-      self.peers.entry(id).or_insert_with(|| {
-         PeerActor::spawn_with_mailbox(
-            (peer, stream, actor_ref, info_hash, peer_settings),
-            match peer_mailbox_size {
-               0 => mailbox::unbounded(),
-               size => mailbox::bounded(size),
-            },
-         )
-      });
+      #[cfg(feature = "live")]
+      let Some(peer_handle) = self.hub.register_peer_scope(
+         PeerIdentity {
+            torrent: info_hash,
+            peer: id,
+         },
+         PeerView::from_peer(&peer, true),
+      ) else {
+         return;
+      };
+
+      let peer_args = PeerActorArgs {
+         peer,
+         stream,
+         supervisor: actor_ref,
+         info_hash,
+         settings: peer_settings,
+         #[cfg(feature = "live")]
+         live_handle: peer_handle.clone(),
+      };
+      let peer_actor = PeerActor::spawn_with_mailbox(
+         peer_args,
+         match peer_mailbox_size {
+            0 => mailbox::unbounded(),
+            size => mailbox::bounded(size),
+         },
+      );
+      self.peers.insert(id, peer_actor);
+      self.publish_updated();
+      crate::live_only!(self.hub.emit_peer_connected(&peer_handle));
    }
 
    #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]
@@ -152,8 +178,38 @@ impl TorrentActor {
             dead_peers.push(*id);
          }
       }
+      let removed_dead_peers = !dead_peers.is_empty();
       for id in dead_peers {
          self.peers.remove(&id);
+      }
+      if removed_dead_peers {
+         self.publish_updated();
+      }
+   }
+
+   /// Enqueues an advisory peer message without allowing a slow peer mailbox
+   /// to block the torrent actor's piece-processing loop.
+   pub(super) fn broadcast_to_peers_best_effort<M>(&mut self, message: M)
+   where
+      PeerActor: Message<M, Reply = ()>,
+      M: Clone + std::fmt::Debug + Send + 'static,
+   {
+      let mut dead_peers = Vec::new();
+
+      for (id, actor) in &self.peers {
+         if !actor.is_alive() {
+            dead_peers.push(*id);
+            continue;
+         }
+
+         if let Err(error) = actor.tell(message.clone()).try_send() {
+            trace!(%error, peer_id = %id, "Peer mailbox unavailable for advisory message");
+         }
+      }
+
+      for id in dead_peers {
+         self.peers.remove(&id);
+         self.piece_scheduler.peer_disconnected(id);
       }
    }
 
@@ -186,6 +242,28 @@ impl TorrentActor {
             dead_trackers.push(tracker.clone());
          }
       }
+      for tracker in dead_trackers {
+         self.trackers.remove(&tracker);
+      }
+   }
+
+   /// Enqueues coalescible tracker state without allowing a slow announce
+   /// actor to stop piece processing. Lifecycle and explicit announce
+   /// messages continue to use the reliable async broadcast path.
+   pub(super) fn update_trackers_best_effort(&mut self, message: TrackerUpdate) {
+      let mut dead_trackers = Vec::new();
+
+      for (tracker, actor) in &self.trackers {
+         if !actor.is_alive() {
+            dead_trackers.push(tracker.clone());
+            continue;
+         }
+
+         if let Err(error) = actor.tell(message.clone()).try_send() {
+            trace!(%error, tracker_uri = ?tracker, "Tracker mailbox unavailable for progress update");
+         }
+      }
+
       for tracker in dead_trackers {
          self.trackers.remove(&tracker);
       }
