@@ -361,8 +361,10 @@ impl PeerActor {
 
       self.stream.send(msg).await
    }
+}
 
-   #[cfg(feature = "live")]
+#[cfg(feature = "live")]
+impl PeerActor {
    fn snapshot_stats(&mut self) -> Option<PeerStats> {
       let id = self.peer.id?;
       let now = Instant::now();
@@ -391,8 +393,10 @@ impl PeerActor {
          metrics,
       })
    }
+}
 
-   #[cfg(not(feature = "live"))]
+#[cfg(not(feature = "live"))]
+impl PeerActor {
    fn snapshot_stats(&mut self) -> Option<PeerStats> {
       let id = self.peer.id?;
       let now = Instant::now();

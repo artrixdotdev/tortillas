@@ -54,40 +54,6 @@ impl fmt::Debug for Torrent {
 }
 
 impl Torrent {
-   /// Creates a new [`Torrent`] handle from an [`InfoHash`] and a reference
-   /// to its underlying [`TorrentActor`].
-   #[cfg(all(test, feature = "live"))]
-   pub(crate) fn new(info_hash: InfoHash, actor_ref: ActorRef<TorrentActor>) -> Self {
-      Self::new_with_hub(info_hash, actor_ref, &Hub::default(), None)
-   }
-
-   #[cfg(not(feature = "live"))]
-   pub(crate) fn new(info_hash: InfoHash, actor: ActorRef<TorrentActor>) -> Self {
-      Self {
-         inner: Arc::new(TorrentInner { info_hash, actor }),
-      }
-   }
-
-   #[cfg(feature = "live")]
-   pub(crate) fn new_with_hub(
-      info_hash: InfoHash, actor: ActorRef<TorrentActor>, hub: &Hub,
-      initial_view: Option<TorrentView>,
-   ) -> Self {
-      let scope = hub
-         .ensure_torrent_scope(info_hash)
-         .expect("torrent handles require a live engine hub");
-      if let Some(view) = initial_view {
-         let _ = scope.publisher.install_initial_view(view);
-      }
-      let inner = Arc::new(TorrentInner {
-         info_hash,
-         actor,
-         hub: hub.downgrade(),
-         publisher: Arc::clone(&scope.publisher),
-      });
-      Self { inner }
-   }
-
    pub(crate) fn actor(&self) -> &ActorRef<TorrentActor> {
       &self.inner.actor
    }
@@ -223,16 +189,50 @@ impl Torrent {
          })?;
       Ok(())
    }
+}
+
+#[cfg(not(feature = "live"))]
+impl Torrent {
+   pub(crate) fn new(info_hash: InfoHash, actor: ActorRef<TorrentActor>) -> Self {
+      Self {
+         inner: Arc::new(TorrentInner { info_hash, actor }),
+      }
+   }
+}
+
+#[cfg(feature = "live")]
+impl Torrent {
+   #[cfg(test)]
+   pub(crate) fn new(info_hash: InfoHash, actor_ref: ActorRef<TorrentActor>) -> Self {
+      Self::new_with_hub(info_hash, actor_ref, &Hub::default(), None)
+   }
+
+   pub(crate) fn new_with_hub(
+      info_hash: InfoHash, actor: ActorRef<TorrentActor>, hub: &Hub,
+      initial_view: Option<TorrentView>,
+   ) -> Self {
+      let scope = hub
+         .ensure_torrent_scope(info_hash)
+         .expect("torrent handles require a live engine hub");
+      if let Some(view) = initial_view {
+         let _ = scope.publisher.install_initial_view(view);
+      }
+      let inner = Arc::new(TorrentInner {
+         info_hash,
+         actor,
+         hub: hub.downgrade(),
+         publisher: Arc::clone(&scope.publisher),
+      });
+      Self { inner }
+   }
 
    /// Subscribes to live events for this torrent only.
-   #[cfg(feature = "live")]
    #[must_use]
    pub fn subscribe(&self) -> EventSubscription<TorrentEventKind> {
       self.inner.publisher.subscribe()
    }
 
    /// Creates a live listener scoped to this torrent.
-   #[cfg(feature = "live")]
    #[must_use]
    pub fn listener(&self) -> TorrentListener {
       self.inner.publisher.listener()
@@ -241,14 +241,12 @@ impl Torrent {
    /// Returns the latest state maintained for this torrent.
    ///
    /// This returns `None` after the torrent has been removed from its engine.
-   #[cfg(feature = "live")]
    #[must_use]
    pub fn view(&self) -> Option<TorrentView> {
       self.inner.publisher.view()
    }
 
    /// Returns handles for this torrent's currently connected peers.
-   #[cfg(feature = "live")]
    #[must_use]
    pub fn peers(&self) -> Vec<PeerHandle> {
       self
@@ -257,7 +255,6 @@ impl Torrent {
    }
 
    /// Returns handles for this torrent's configured trackers.
-   #[cfg(feature = "live")]
    #[must_use]
    pub fn trackers(&self) -> Vec<TrackerHandle> {
       self
@@ -265,7 +262,6 @@ impl Torrent {
          .map_or_else(Vec::new, |live| live.tracker_handles(self.info_hash()))
    }
 
-   #[cfg(feature = "live")]
    fn hub(&self) -> Option<Hub> {
       self.inner.hub.upgrade().map(Hub::from_inner)
    }

@@ -83,7 +83,7 @@ use crate::{
    hashes::InfoHash,
    peer::PeerId,
    settings::Settings,
-   torrent::{PieceStorageStrategy, RestoreVerification, Torrent, TorrentActor},
+   torrent::{PieceStorageStrategy, RestoreVerification, Torrent, TorrentActor, TorrentSnapshot},
 };
 
 /// The main entry point for managing torrents.
@@ -320,9 +320,7 @@ impl Engine {
    ///
    /// Torrents that were downloading or seeding when captured resume after
    /// their piece state and storage configuration have been restored.
-   pub async fn restore_torrent(
-      &self, snapshot: crate::torrent::TorrentSnapshot,
-   ) -> Result<Torrent, EngineError> {
+   pub async fn restore_torrent(&self, snapshot: TorrentSnapshot) -> Result<Torrent, EngineError> {
       self
          .restore_torrent_with_verification(snapshot, RestoreVerification::Full)
          .await
@@ -331,7 +329,7 @@ impl Engine {
    /// Restores one torrent using an explicit durable-storage verification
    /// policy.
    pub async fn restore_torrent_with_verification(
-      &self, snapshot: crate::torrent::TorrentSnapshot, verification: RestoreVerification,
+      &self, snapshot: TorrentSnapshot, verification: RestoreVerification,
    ) -> Result<Torrent, EngineError> {
       let info_hash = snapshot.info_hash;
 
@@ -445,61 +443,16 @@ impl Engine {
          .await
          .map_err(|error| map_engine_send_error("snapshot engine", error))
    }
+}
 
-   /// Subscribes to typed engine and torrent events as they happen.
-   ///
-   /// The returned stream is bounded. A lagging consumer can read
-   /// [`Self::view`] to rebuild its current state and then continue
-   /// receiving events.
-   #[cfg(feature = "live")]
-   #[must_use]
-   pub fn subscribe(&self) -> EventSubscription {
-      self.hub.subscribe()
-   }
-
-   /// Creates a listener with typed events and coherent current state.
-   #[cfg(feature = "live")]
-   #[must_use]
-   pub fn listener(&self) -> EngineListener {
-      let hub = self.hub.clone();
-      EngineListener::new(self.subscribe(), move || hub.view())
-   }
-
-   /// Returns the current engine state maintained by the projection tree.
-   #[cfg(feature = "live")]
-   #[must_use]
-   pub fn view(&self) -> EngineView {
-      self.hub.view()
-   }
-
-   #[cfg(feature = "live")]
-   fn torrent_handle(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
-      self
-         .hub
-         .torrent_handle(info_hash)
-         .ok_or_else(|| EngineError::TorrentHandleMissing { info_hash })
-   }
-
-   #[cfg(feature = "live")]
-   fn torrent_from_actor(
-      &self, info_hash: InfoHash, _actor: ActorRef<TorrentActor>,
-   ) -> Result<Torrent, EngineError> {
-      self.torrent_handle(info_hash)
-   }
-
-   #[cfg(not(feature = "live"))]
+#[cfg(not(feature = "live"))]
+impl Engine {
    fn torrent_from_actor(
       &self, info_hash: InfoHash, actor: ActorRef<TorrentActor>,
    ) -> Result<Torrent, EngineError> {
       Ok(Torrent::new(info_hash, actor))
    }
 
-   #[cfg(feature = "live")]
-   async fn restored_torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
-      self.torrent_handle(info_hash)
-   }
-
-   #[cfg(not(feature = "live"))]
    async fn restored_torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
       let actor = self
          .actor()
@@ -507,6 +460,49 @@ impl Engine {
          .await
          .map_err(|error| map_engine_send_error("get restored torrent", error))?;
       self.torrent_from_actor(info_hash, actor)
+   }
+}
+
+#[cfg(feature = "live")]
+impl Engine {
+   /// Subscribes to typed engine and torrent events as they happen.
+   ///
+   /// The returned stream is bounded. A lagging consumer can read
+   /// [`Self::view`] to rebuild its current state and then continue
+   /// receiving events.
+   #[must_use]
+   pub fn subscribe(&self) -> EventSubscription {
+      self.hub.subscribe()
+   }
+
+   /// Creates a listener with typed events and coherent current state.
+   #[must_use]
+   pub fn listener(&self) -> EngineListener {
+      let hub = self.hub.clone();
+      EngineListener::new(self.subscribe(), move || hub.view())
+   }
+
+   /// Returns the current engine state maintained by the projection tree.
+   #[must_use]
+   pub fn view(&self) -> EngineView {
+      self.hub.view()
+   }
+
+   fn torrent_handle(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
+      self
+         .hub
+         .torrent_handle(info_hash)
+         .ok_or_else(|| EngineError::TorrentHandleMissing { info_hash })
+   }
+
+   fn torrent_from_actor(
+      &self, info_hash: InfoHash, _actor: ActorRef<TorrentActor>,
+   ) -> Result<Torrent, EngineError> {
+      self.torrent_handle(info_hash)
+   }
+
+   async fn restored_torrent(&self, info_hash: InfoHash) -> Result<Torrent, EngineError> {
+      self.torrent_handle(info_hash)
    }
 }
 
@@ -878,7 +874,7 @@ mod tests {
             let event = listener.recv().await.unwrap();
             if let EngineEventKind::Torrent {
                torrent,
-               event: crate::live::TorrentEventKind::PeerConnected(peer),
+               event: TorrentEventKind::PeerConnected(peer),
             } = event.kind
             {
                break (torrent, peer);

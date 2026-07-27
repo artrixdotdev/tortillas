@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::{
    engine::EngineStatus,
    hashes::InfoHash,
-   metrics::{HasTransferMetrics, PeerMetrics, TorrentMetrics, TrackerMetrics, TransferMetrics},
+   metrics::{
+      HasTransferMetrics, PeerMetrics, TorrentMetrics, TrackerMetrics, TransferMetrics,
+      TransferSample,
+   },
    peer::Peer,
    torrent::TorrentState,
 };
@@ -69,7 +72,7 @@ impl PeerView {
    }
 
    pub(crate) fn from_peer_with_samples(
-      peer: &Peer, connected: bool, samples: Vec<crate::metrics::TransferSample>,
+      peer: &Peer, connected: bool, samples: Vec<TransferSample>,
    ) -> Self {
       let mut metrics = peer.metrics();
       metrics.transfer.samples = samples;

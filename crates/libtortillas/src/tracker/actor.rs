@@ -203,9 +203,8 @@ impl Actor for TrackerActor {
    }
 }
 
-#[messages]
+#[cfg(feature = "live")]
 impl TrackerActor {
-   #[cfg(feature = "live")]
    fn snapshot_metrics(&mut self, latest_peers_returned: Option<u64>) -> TrackerMetrics {
       let mut metrics = self.tracker.stats().metrics();
       let totals = metrics.transfer.totals;
@@ -215,7 +214,10 @@ impl TrackerActor {
       metrics.latest_peers_returned = latest_peers_returned;
       metrics
    }
+}
 
+#[messages]
+impl TrackerActor {
    async fn schedule_next_announce(&mut self) {
       let interval = self.tracker.interval();
       let delay = if interval == usize::MAX || interval == u32::MAX as usize {

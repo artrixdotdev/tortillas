@@ -41,7 +41,7 @@ use crate::{
 };
 #[cfg(feature = "live")]
 use crate::{
-   live::{Hub, LiveHealthLevel, TorrentView, TrackerStatus, TrackerView},
+   live::{Hub, LiveHealthLevel, TorrentEventKind, TorrentView, TrackerStatus, TrackerView},
    metrics::{
       ByteCount, ContentProgress, HasTransferMetrics, TorrentMetrics, TrackerMetrics,
       TransferMetrics,
@@ -390,28 +390,6 @@ impl TorrentActor {
       Some(total_bytes)
    }
 
-   #[cfg(feature = "live")]
-   fn total_verified_bytes(&self) -> Option<usize> {
-      let info = self.info_dict()?;
-      let total_length = info.total_length();
-      let piece_length = usize::try_from(info.piece_length).unwrap_or(usize::MAX);
-      let last_piece = self.bitfield.len().saturating_sub(1);
-      Some(
-         self
-            .bitfield
-            .iter_ones()
-            .map(|index| {
-               if index == last_piece {
-                  total_length.saturating_sub(piece_length.saturating_mul(last_piece))
-               } else {
-                  piece_length
-               }
-            })
-            .fold(0_usize, usize::saturating_add)
-            .min(total_length),
-      )
-   }
-
    pub(super) fn tracker_announce_progress(&self) -> Option<TrackerAnnounceProgress> {
       let info = self.info_dict()?;
       let total_length = info.total_length();
@@ -488,8 +466,93 @@ impl TorrentActor {
       })
    }
 
+   #[inline]
+   pub(super) fn publish_updated(&self) {
+      crate::live_only!(self.publish_live_view(|_| crate::live::TorrentEventKind::Updated));
+   }
+
+   #[inline]
+   pub(super) fn publish_metrics_changed(&self) {
+      crate::live_only!(self.publish_live_view(|view| {
+         crate::live::TorrentEventKind::MetricsChanged(view.metrics.clone())
+      }));
+   }
+
+   #[inline]
+   pub(super) fn publish_metadata_resolved(&self) {
+      crate::live_only!(
+         self.publish_live_view(|_| crate::live::TorrentEventKind::MetadataResolved)
+      );
+   }
+
+   pub(super) fn remove_peer(&mut self, id: PeerId) {
+      self.piece_scheduler.peer_disconnected(id);
+      if let Some(actor) = self.peers.remove(&id) {
+         actor.kill();
+      }
+   }
+
+   pub(super) fn transition_state(&mut self, state: TorrentState) {
+      let previous = self.state;
+      if previous == state {
+         return;
+      }
+
+      self.state = state;
+      crate::live_only!(self.publish_live_view(|_| TorrentEventKind::StateChanged {
+         previous,
+         current: state,
+      }));
+   }
+
+   fn snapshot_u64(value: usize) -> u64 {
+      u64::try_from(value).unwrap_or(u64::MAX)
+   }
+
+   pub fn is_full(&self) -> bool {
+      self.bitfield.count_ones() == self.bitfield.len()
+   }
+
+   pub fn is_ready(&self) -> bool {
+      self.info_dict().is_some() && self.peers.len() >= self.sufficient_peers
+   }
+
+   pub fn is_ready_to_start(&self) -> bool {
+      self.is_ready() && self.state.can_become_ready()
+   }
+}
+
+#[cfg(feature = "live")]
+impl TorrentActor {
+   fn total_verified_bytes(&self) -> Option<usize> {
+      let info = self.info_dict()?;
+      let total_length = info.total_length();
+      let piece_length = usize::try_from(info.piece_length).unwrap_or(usize::MAX);
+      let last_piece = self.bitfield.len().saturating_sub(1);
+      Some(
+         self
+            .bitfield
+            .iter_ones()
+            .map(|index| {
+               if index == last_piece {
+                  total_length.saturating_sub(piece_length.saturating_mul(last_piece))
+               } else {
+                  piece_length
+               }
+            })
+            .fold(0_usize, usize::saturating_add)
+            .min(total_length),
+      )
+   }
+
+   fn display_name(&self) -> &str {
+      match &self.metainfo {
+         MetaInfo::Torrent(torrent) => &torrent.info.name,
+         MetaInfo::MagnetUri(magnet) => &magnet.name,
+      }
+   }
+
    /// Builds the current state exposed through listeners.
-   #[cfg(feature = "live")]
    pub fn live_view(&self) -> TorrentView {
       let info = self.info_dict();
       let total_bytes = info
@@ -566,78 +629,10 @@ impl TorrentActor {
    }
 
    /// The single publication entry point for torrent projection changes.
-   #[cfg(feature = "live")]
-   pub(super) fn publish_live_view(
-      &self, event: impl FnOnce(&TorrentView) -> crate::live::TorrentEventKind,
-   ) {
+   pub(super) fn publish_live_view(&self, event: impl FnOnce(&TorrentView) -> TorrentEventKind) {
       let view = self.live_view();
       let event = event(&view);
       self.hub.replace_torrent_view_and_emit(view, event);
-   }
-
-   #[inline]
-   pub(super) fn publish_updated(&self) {
-      crate::live_only!(self.publish_live_view(|_| crate::live::TorrentEventKind::Updated));
-   }
-
-   #[inline]
-   pub(super) fn publish_metrics_changed(&self) {
-      crate::live_only!(self.publish_live_view(|view| {
-         crate::live::TorrentEventKind::MetricsChanged(view.metrics.clone())
-      }));
-   }
-
-   #[inline]
-   pub(super) fn publish_metadata_resolved(&self) {
-      crate::live_only!(
-         self.publish_live_view(|_| crate::live::TorrentEventKind::MetadataResolved)
-      );
-   }
-
-   pub(super) fn remove_peer(&mut self, id: PeerId) {
-      self.piece_scheduler.peer_disconnected(id);
-      if let Some(actor) = self.peers.remove(&id) {
-         actor.kill();
-      }
-   }
-
-   pub(super) fn transition_state(&mut self, state: TorrentState) {
-      let previous = self.state;
-      if previous == state {
-         return;
-      }
-
-      self.state = state;
-      crate::live_only!(
-         self.publish_live_view(|_| crate::live::TorrentEventKind::StateChanged {
-            previous,
-            current: state,
-         })
-      );
-   }
-
-   fn snapshot_u64(value: usize) -> u64 {
-      u64::try_from(value).unwrap_or(u64::MAX)
-   }
-
-   #[cfg(feature = "live")]
-   fn display_name(&self) -> &str {
-      match &self.metainfo {
-         MetaInfo::Torrent(torrent) => &torrent.info.name,
-         MetaInfo::MagnetUri(magnet) => &magnet.name,
-      }
-   }
-
-   pub fn is_full(&self) -> bool {
-      self.bitfield.count_ones() == self.bitfield.len()
-   }
-
-   pub fn is_ready(&self) -> bool {
-      self.info_dict().is_some() && self.peers.len() >= self.sufficient_peers
-   }
-
-   pub fn is_ready_to_start(&self) -> bool {
-      self.is_ready() && self.state.can_become_ready()
    }
 }
 

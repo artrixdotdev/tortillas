@@ -86,8 +86,10 @@ impl PeerState {
       self.bytes_downloaded = state.bytes_downloaded.clone();
       self.bytes_uploaded = state.bytes_uploaded.clone();
    }
+}
 
-   #[cfg(feature = "live")]
+#[cfg(feature = "live")]
+impl PeerState {
    pub(crate) fn traffic_totals(&self) -> TrafficTotals {
       TrafficTotals {
          downloaded: ByteCount(
@@ -185,13 +187,14 @@ impl Peer {
    pub fn bytes_uploaded(&self) -> usize {
       self.state.bytes_uploaded.load(Ordering::Relaxed)
    }
+}
 
-   #[cfg(feature = "live")]
+#[cfg(feature = "live")]
+impl Peer {
    pub(crate) fn traffic_totals(&self) -> TrafficTotals {
       self.state.traffic_totals()
    }
 
-   #[cfg(feature = "live")]
    pub(crate) fn metrics(&self) -> PeerMetrics {
       PeerMetrics {
          transfer: TransferMetrics {
