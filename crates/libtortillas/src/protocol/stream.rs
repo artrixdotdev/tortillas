@@ -1,6 +1,7 @@
 use std::{
    fmt,
    fmt::Display,
+   io::IoSlice,
    net::SocketAddr,
    pin::Pin,
    sync::Arc,
@@ -18,7 +19,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use tracing::{error, instrument, trace};
 
-use super::messages::{Handshake, PeerMessages};
+use super::messages::{EncodedPeerMessage, Handshake, PeerMessages};
 use crate::{
    errors::PeerActorError,
    hashes::InfoHash,
@@ -42,8 +43,15 @@ pub struct PeerStream {
 pub trait PeerSend: AsyncWrite + Unpin {
    /// Sends a PeerMessage to a peer.
    async fn send(&mut self, data: PeerMessages) -> Result<(), PeerActorError> {
-      let bytes = data.to_bytes()?;
-      self.write_all(&bytes).await.map_err(|e| {
+      let mut writer = self;
+      let result = match data.encode()? {
+         EncodedPeerMessage::Contiguous(bytes) => writer.write_all(&bytes).await,
+         EncodedPeerMessage::Piece { header, block } => {
+            let mut frame = Buf::chain(header.as_slice(), block.as_ref());
+            AsyncWriteExt::write_all_buf(&mut writer, &mut frame).await
+         }
+      };
+      result.map_err(|e| {
          error!(error = %e, "Failed to send message to peer");
          PeerActorError::SendFailed(e.to_string())
       })
@@ -89,7 +97,8 @@ pub trait PeerRecv: AsyncRead + Unpin {
          return Ok(PeerMessages::KeepAlive);
       }
 
-      let mut message_buf = BytesMut::with_capacity(4 + length as usize);
+      let frame_length = 4 + length as usize;
+      let mut message_buf = BytesMut::with_capacity(frame_length);
       message_buf.extend_from_slice(&length_buf);
 
       let mut message_type = [0u8; 1];
@@ -101,13 +110,11 @@ pub trait PeerRecv: AsyncRead + Unpin {
       message_buf.extend_from_slice(&message_type);
 
       // Read the rest of the message payload
-      let mut rest = vec![0u8; (length - 1) as usize];
+      message_buf.resize(frame_length, 0);
       self
-         .read_exact(&mut rest)
+         .read_exact(&mut message_buf[5..])
          .await
          .map_err(PeerActorError::ReceiveFailed)?;
-
-      message_buf.extend_from_slice(&rest);
 
       PeerMessages::from_bytes(message_buf.freeze())
    }
@@ -194,12 +201,11 @@ impl PeerStream {
    /// Receives an incoming handshake from a peer.
    pub async fn recv_handshake_message(&mut self) -> Result<Handshake, PeerActorError> {
       let protocol_len = self.read_u8().await?;
-      let mut buf = Vec::with_capacity(1 + protocol_len as usize + 8 + 40);
+      let handshake_length = 1 + protocol_len as usize + 8 + 40;
+      let mut buf = Vec::with_capacity(handshake_length);
       buf.push(protocol_len);
-
-      let mut rest = vec![0u8; protocol_len as usize + 8 + 40];
-      self.read_exact(&mut rest).await?;
-      buf.extend_from_slice(&rest);
+      buf.resize(handshake_length, 0);
+      self.read_exact(&mut buf[1..]).await?;
 
       Handshake::from_bytes(&buf).map_err(|e| PeerActorError::HandshakeFailed {
          reason: e.to_string(),
@@ -352,6 +358,26 @@ impl AsyncWrite for PeerStream {
       result
    }
 
+   fn poll_write_vectored(
+      mut self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[IoSlice<'_>],
+   ) -> Poll<Result<usize, io::Error>> {
+      let result = match &mut self.transport {
+         PeerTransport::Tcp(stream) => Pin::new(stream).poll_write_vectored(cx, bufs),
+         PeerTransport::Utp(stream) => Pin::new(stream).poll_write_vectored(cx, bufs),
+      };
+      if let Poll::Ready(Ok(bytes_written)) = &result {
+         self.peer_state.increment_bytes_uploaded(*bytes_written);
+      }
+      result
+   }
+
+   fn is_write_vectored(&self) -> bool {
+      match &self.transport {
+         PeerTransport::Tcp(stream) => stream.is_write_vectored(),
+         PeerTransport::Utp(stream) => stream.is_write_vectored(),
+      }
+   }
+
    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
       match &mut self.transport {
          PeerTransport::Tcp(stream) => Pin::new(stream).poll_flush(cx),
@@ -423,6 +449,26 @@ impl AsyncWrite for PeerWriter {
          self.peer_state.increment_bytes_uploaded(*bytes_written);
       }
       result
+   }
+
+   fn poll_write_vectored(
+      mut self: Pin<&mut Self>, cx: &mut Context<'_>, bufs: &[IoSlice<'_>],
+   ) -> Poll<Result<usize, io::Error>> {
+      let result = match &mut self.writer {
+         PeerWriteHalf::Tcp(stream) => Pin::new(stream).poll_write_vectored(cx, bufs),
+         PeerWriteHalf::Utp(stream) => Pin::new(stream).poll_write_vectored(cx, bufs),
+      };
+      if let Poll::Ready(Ok(bytes_written)) = &result {
+         self.peer_state.increment_bytes_uploaded(*bytes_written);
+      }
+      result
+   }
+
+   fn is_write_vectored(&self) -> bool {
+      match &self.writer {
+         PeerWriteHalf::Tcp(stream) => stream.is_write_vectored(),
+         PeerWriteHalf::Utp(stream) => stream.is_write_vectored(),
+      }
    }
 
    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
@@ -497,6 +543,7 @@ pub fn validate_handshake_protocol(
 mod tests {
    use std::time::Duration;
 
+   use bytes::Bytes;
    use tokio::{io::AsyncWriteExt, net::TcpListener, time::timeout};
    use tracing_test::traced_test;
 
@@ -507,6 +554,57 @@ mod tests {
       protocol::messages::Handshake,
       testing::{self, LocalPeer},
    };
+
+   #[derive(Default)]
+   struct VectoredWriter {
+      bytes: Vec<u8>,
+      vectored_writes: usize,
+   }
+
+   impl AsyncWrite for VectoredWriter {
+      fn poll_write(
+         self: Pin<&mut Self>, _: &mut Context<'_>, _: &[u8],
+      ) -> Poll<Result<usize, io::Error>> {
+         panic!("piece messages should use vectored writes")
+      }
+
+      fn poll_write_vectored(
+         mut self: Pin<&mut Self>, _: &mut Context<'_>, bufs: &[IoSlice<'_>],
+      ) -> Poll<Result<usize, io::Error>> {
+         self.vectored_writes += 1;
+         let written = bufs.iter().map(|buffer| buffer.len()).sum();
+         for buffer in bufs {
+            self.bytes.extend_from_slice(buffer);
+         }
+         Poll::Ready(Ok(written))
+      }
+
+      fn is_write_vectored(&self) -> bool {
+         true
+      }
+
+      fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+         Poll::Ready(Ok(()))
+      }
+
+      fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+         Poll::Ready(Ok(()))
+      }
+   }
+
+   impl PeerSend for VectoredWriter {}
+
+   #[tokio::test]
+   async fn peer_send_when_message_is_piece_then_uses_vectored_write() {
+      let message = PeerMessages::Piece(2, 4, Bytes::from_static(b"payload"));
+      let expected = message.to_bytes().unwrap();
+      let mut writer = VectoredWriter::default();
+
+      writer.send(message).await.unwrap();
+
+      assert_eq!(writer.vectored_writes, 1);
+      assert_eq!(writer.bytes, expected);
+   }
 
    #[tokio::test]
    #[traced_test]

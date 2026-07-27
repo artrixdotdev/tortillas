@@ -2,6 +2,7 @@ use core::hash;
 use std::{
    collections::HashMap,
    fmt::Display,
+   mem::size_of,
    net::{IpAddr, Ipv4Addr, Ipv6Addr},
    sync::{Arc, atomic::AtomicU8},
 };
@@ -159,34 +160,70 @@ impl Display for PeerMessages {
    }
 }
 
+const PIECE_HEADER_LENGTH: usize = 13;
+const LENGTH_PREFIX_LENGTH: usize = size_of::<u32>();
+
+pub(super) enum EncodedPeerMessage<'a> {
+   Contiguous(Bytes),
+   Piece {
+      header: [u8; PIECE_HEADER_LENGTH],
+      block: &'a Bytes,
+   },
+}
+
+impl EncodedPeerMessage<'_> {
+   fn into_bytes(self) -> Bytes {
+      match self {
+         Self::Contiguous(bytes) => bytes,
+         Self::Piece { header, block } => {
+            let mut message = BytesMut::with_capacity(header.len() + block.len());
+            message.put_slice(&header);
+            message.put_slice(block);
+            message.freeze()
+         }
+      }
+   }
+}
+
 impl PeerMessages {
    pub fn to_bytes(&self) -> Result<Bytes, PeerActorError> {
+      Ok(self.encode()?.into_bytes())
+   }
+
+   pub(super) fn encode(&self) -> Result<EncodedPeerMessage<'_>, PeerActorError> {
       Ok(match self {
-         PeerMessages::Handshake(handshake) => handshake.to_bytes(),
-         PeerMessages::Choke => create_message_with_id(0, &[]),
-         PeerMessages::Unchoke => create_message_with_id(1, &[]),
-         PeerMessages::Interested => create_message_with_id(2, &[]),
-         PeerMessages::NotInterested => create_message_with_id(3, &[]),
-         PeerMessages::Have(index) => create_message_with_id(4, &index.to_be_bytes()),
-         PeerMessages::Bitfield(bits) => create_message_with_id(5, &encode_bitfield(bits)),
+         PeerMessages::Handshake(handshake) => {
+            EncodedPeerMessage::Contiguous(handshake.to_bytes())
+         }
+         PeerMessages::Choke => EncodedPeerMessage::Contiguous(create_message_with_id(0, &[])),
+         PeerMessages::Unchoke => EncodedPeerMessage::Contiguous(create_message_with_id(1, &[])),
+         PeerMessages::Interested => {
+            EncodedPeerMessage::Contiguous(create_message_with_id(2, &[]))
+         }
+         PeerMessages::NotInterested => {
+            EncodedPeerMessage::Contiguous(create_message_with_id(3, &[]))
+         }
+         PeerMessages::Have(index) => {
+            EncodedPeerMessage::Contiguous(create_message_with_id(4, &index.to_be_bytes()))
+         }
+         PeerMessages::Bitfield(bits) => {
+            EncodedPeerMessage::Contiguous(create_message_with_id(5, &encode_bitfield(bits)))
+         }
          PeerMessages::Request(index, begin, length) // Code is identical
          | PeerMessages::Cancel(index, begin, length) => {
             let id = match self {
                PeerMessages::Request(..) => 6,
                _ => 8,
             };
-            let mut payload = BytesMut::with_capacity(12);
-            payload.put_slice(&index.to_be_bytes());
-            payload.put_slice(&begin.to_be_bytes());
-            payload.put_slice(&length.to_be_bytes());
-            create_message_with_id(id, &payload)
+            EncodedPeerMessage::Contiguous(create_message_with_triplet(
+               id, *index, *begin, *length,
+            ))
          }
          PeerMessages::Piece(index, begin, data) => {
-            let mut payload = BytesMut::with_capacity(8 + data.len());
-            payload.put_slice(&index.to_be_bytes());
-            payload.put_slice(&begin.to_be_bytes());
-            payload.put_slice(data);
-            create_message_with_id(7, &payload)
+            EncodedPeerMessage::Piece {
+               header: create_piece_header(*index, *begin, data.len())?,
+               block: data,
+            }
          }
          PeerMessages::Extended(extended_id, handshake_message, metadata) => {
             let mut payload = BytesMut::new();
@@ -197,9 +234,11 @@ impl PeerMessages {
             if let Some(metadata) = metadata {
                payload.extend_from_slice(metadata);
             }
-            create_message_with_id(20, &payload)
+            EncodedPeerMessage::Contiguous(create_message_with_id(20, &payload))
          }
-         PeerMessages::KeepAlive => Bytes::from_static(&[0u8; 4]),
+         PeerMessages::KeepAlive => {
+            EncodedPeerMessage::Contiguous(Bytes::from_static(&[0u8; 4]))
+         }
       })
    }
 
@@ -613,6 +652,33 @@ fn create_message_with_id(id: u8, payload: &[u8]) -> Bytes {
    message.freeze()
 }
 
+fn create_message_with_triplet(id: u8, first: u32, second: u32, third: u32) -> Bytes {
+   let mut message = BytesMut::with_capacity(17);
+   message.put_u32(13);
+   message.put_u8(id);
+   message.put_u32(first);
+   message.put_u32(second);
+   message.put_u32(third);
+   message.freeze()
+}
+
+fn create_piece_header(
+   index: u32, begin: u32, block_length: usize,
+) -> Result<[u8; PIECE_HEADER_LENGTH], PeerActorError> {
+   let message_length = block_length
+      .checked_add(PIECE_HEADER_LENGTH - LENGTH_PREFIX_LENGTH)
+      .and_then(|length| u32::try_from(length).ok())
+      .ok_or_else(|| PeerActorError::InvalidMessagePayload {
+         message_type: "Piece length exceeds the protocol limit".to_string(),
+      })?;
+   let mut header = [0; PIECE_HEADER_LENGTH];
+   header[..4].copy_from_slice(&message_length.to_be_bytes());
+   header[4] = 7;
+   header[5..9].copy_from_slice(&index.to_be_bytes());
+   header[9..].copy_from_slice(&begin.to_be_bytes());
+   Ok(header)
+}
+
 /// Encodes the canonical piece-index order using BEP 3's most-significant-bit
 /// first wire representation. Internal bit vectors intentionally keep their
 /// default ordering; unit conversion belongs at the protocol boundary.
@@ -785,6 +851,20 @@ mod ipaddr_serde {
 #[cfg(test)]
 mod tests {
    use super::*;
+
+   #[test]
+   fn piece_message_when_encoded_then_contains_header_and_original_block() {
+      let block = Bytes::from_static(b"payload");
+      let message = PeerMessages::Piece(2, 4, block.clone());
+
+      let encoded = message.to_bytes().unwrap();
+
+      assert_eq!(&encoded[..4], &(16u32.to_be_bytes()));
+      assert_eq!(encoded[4], 7);
+      assert_eq!(&encoded[5..9], &(2u32.to_be_bytes()));
+      assert_eq!(&encoded[9..13], &(4u32.to_be_bytes()));
+      assert_eq!(&encoded[13..], block);
+   }
 
    #[test]
    fn peer_bitfield_uses_most_significant_bit_first_piece_order() {
