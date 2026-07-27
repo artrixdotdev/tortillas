@@ -605,8 +605,10 @@ mod tests {
             let announce_list = file.announce_list();
             println!("announce_list: {:?}", announce_list);
 
-            // An HTTP tracker
-            let announce_uri = announce_list[1].uri();
+            let announce_uri = announce_list
+               .first()
+               .expect("fixture should contain an HTTP tracker")
+               .uri();
             let http_tracker = HttpTracker::new(announce_uri, info_hash.unwrap(), None, None);
             http_tracker
                .update(TrackerUpdate::Left(file.info.total_length()))
