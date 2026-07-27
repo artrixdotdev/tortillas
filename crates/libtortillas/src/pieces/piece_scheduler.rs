@@ -66,7 +66,7 @@ impl PieceScheduler {
       self.completed_blocks.insert(index, blocks);
    }
 
-   #[cfg(test)]
+   #[cfg(all(test, feature = "live"))]
    pub(crate) fn set_piece_blocks(&mut self, index: usize, blocks: BitVec) {
       self.completed_blocks.insert(index, blocks);
    }

@@ -288,7 +288,7 @@ fn tracker_from_uri(uri: String) -> Result<Tracker, String> {
    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "live"))]
 mod tests {
    use super::*;
 

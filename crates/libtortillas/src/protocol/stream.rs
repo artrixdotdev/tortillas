@@ -544,6 +544,7 @@ mod tests {
       assert_eq!(incoming_id, client_id);
    }
 
+   #[cfg(feature = "live")]
    #[tokio::test]
    async fn peer_stream_when_frames_are_exchanged_then_counts_every_wire_byte() {
       let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

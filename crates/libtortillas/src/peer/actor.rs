@@ -738,8 +738,7 @@ impl Message<PeerMessages> for PeerActor {
             warn!("Received unexpected handshake from peer");
          }
       }
-      #[cfg(feature = "live")]
-      {
+      crate::live_only! {
          let samples = self.live_handle.view().metrics.transfer.samples;
          self
             .live_handle

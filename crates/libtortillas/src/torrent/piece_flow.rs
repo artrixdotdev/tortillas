@@ -495,10 +495,12 @@ mod tests {
          sufficient_peers: Some(usize::MAX),
          base_path: Some(base_path.clone()),
          settings: Settings::default(),
+         #[cfg(feature = "live")]
          hub: Hub::default(),
       });
 
       TorrentActor {
+         #[cfg(feature = "live")]
          hub: Hub::default(),
          peers: HashMap::new(),
          trackers: HashMap::new(),

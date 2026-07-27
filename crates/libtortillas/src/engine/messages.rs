@@ -50,8 +50,7 @@ pub(crate) mod commands {
          if let Err(error) = torrent.stop_gracefully().await {
             warn!(error = %error, %info_hash, "Failed to stop rejected restored torrent");
          }
-         #[cfg(feature = "live")]
-         self.hub.remove_torrent_scope(info_hash);
+         crate::live_only!(self.hub.remove_torrent_scope(info_hash));
       }
    }
 
@@ -296,8 +295,7 @@ pub(crate) mod commands {
                error,
             )));
          }
-         #[cfg(feature = "live")]
-         {
+         crate::live_only! {
             let initial_view = match torrent_ref.ask(torrent::commands::GetLiveView).await {
                Ok(view) => *view,
                Err(error) => {
@@ -349,8 +347,7 @@ pub(crate) mod commands {
                      match self.remove_torrent(info_hash).await {
                         Ok(torrent) => {
                            torrent.kill();
-                           #[cfg(feature = "live")]
-                           self.hub.remove_torrent_scope(info_hash);
+                           crate::live_only!(self.hub.remove_torrent_scope(info_hash));
                         }
                         Err(remove_error) => {
                            warn!(

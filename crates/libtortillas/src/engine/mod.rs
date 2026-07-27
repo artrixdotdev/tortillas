@@ -411,8 +411,7 @@ impl Engine {
 
       let stop_result = torrent.stop_gracefully().await;
       torrent.wait_for_shutdown().await;
-      #[cfg(feature = "live")]
-      self.hub.remove_torrent_scope(info_hash);
+      crate::live_only!(self.hub.remove_torrent_scope(info_hash));
       stop_result.map_err(|error| EngineError::ActorCommunicationFailed {
          operation: "stop torrent",
          reason: error.to_string(),
@@ -566,7 +565,7 @@ mod snapshot_tests {
    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "live"))]
 mod tests {
    use std::time::Duration;
 

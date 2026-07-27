@@ -139,8 +139,7 @@ impl TorrentActor {
       );
       self.peers.insert(id, peer_actor);
       self.publish_updated();
-      #[cfg(feature = "live")]
-      self.hub.emit_peer_connected(&peer_handle);
+      crate::live_only!(self.hub.emit_peer_connected(&peer_handle));
    }
 
    #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]

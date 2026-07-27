@@ -52,10 +52,7 @@ where
    V: Clone + Send + Sync + 'static,
    E: Clone + Send + 'static,
 {
-   /// Creates a publisher with an initial view and bounded event capacity.
-   ///
-   /// A zero capacity is normalized to one so configuration mistakes cannot
-   /// panic a public operation.
+   /// A zero capacity is normalized to one.
    #[must_use]
    pub fn new(initial_view: V, event_capacity: usize) -> Self {
       Self {
@@ -71,7 +68,6 @@ where
       }
    }
 
-   /// Subscribes to all future events from this publisher.
    #[must_use]
    pub fn subscribe(&self) -> EventSubscription<E> {
       let state = mutex_lock(&self.state);
@@ -105,14 +101,12 @@ where
             .saturating_mul(std::mem::size_of::<SequencedEvent<E>>())
    }
 
-   /// Creates a stream-compatible listener paired with the current view.
    #[must_use]
    pub fn listener(&self) -> EventListener<V, E> {
       let state = Arc::clone(&self.state);
       EventListener::new(self.subscribe(), move || mutex_lock(&state).view.clone())
    }
 
-   /// Clones the latest coherent view.
    #[must_use]
    pub fn view(&self) -> V {
       mutex_lock(&self.state).view.clone()
@@ -240,7 +234,6 @@ impl<E: Clone + Send + 'static> EventSubscription<E> {
       Self::from_receiver(receiver, weak)
    }
 
-   /// Waits for the next event in this subscription.
    pub async fn recv(&mut self) -> Result<SequencedEvent<E>, EventStreamError> {
       poll_fn(|context| Pin::new(&mut *self).poll_next(context))
          .await

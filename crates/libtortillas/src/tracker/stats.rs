@@ -167,7 +167,7 @@ impl TrackerStats {
    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "live"))]
 mod tests {
    use super::*;
 

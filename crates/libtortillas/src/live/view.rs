@@ -43,13 +43,11 @@ pub struct TorrentView {
 }
 
 impl TorrentView {
-   /// Whether the torrent has resolved payload metadata.
    #[must_use]
    pub const fn has_metadata(&self) -> bool {
       self.metrics.progress.total_bytes.is_some()
    }
 
-   /// Whether the torrent has reached its ready lifecycle state.
    #[must_use]
    pub const fn is_ready(&self) -> bool {
       matches!(self.state, TorrentState::Ready)
@@ -59,11 +57,8 @@ impl TorrentView {
 /// Current state of a connected or recently disconnected peer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PeerView {
-   /// Network address for the peer, when known.
    pub address: Option<SocketAddr>,
-   /// Parsed peer-client family, when known.
    pub client: Option<String>,
-   /// Whether this peer is currently connected.
    pub connected: bool,
    pub metrics: PeerMetrics,
 }
@@ -102,9 +97,8 @@ impl HasTransferMetrics for PeerView {
 /// Public tracker identity and latest announce outcome.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrackerView {
-   /// Credential-free tracker endpoint label.
+   /// Tracker URL with credentials removed.
    pub endpoint: String,
-   /// Current actor and announce lifecycle.
    pub status: TrackerStatus,
    pub metrics: TrackerMetrics,
 }

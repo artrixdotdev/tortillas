@@ -546,6 +546,7 @@ mod tests {
       assert_eq!(peer.id, None);
    }
 
+   #[cfg(feature = "live")]
    #[tokio::test]
    async fn http_tracker_when_local_tracker_is_available_then_returns_ipv4_peer() {
       let expected_peer = Peer::from_ipv4(Ipv4Addr::LOCALHOST, 6881);

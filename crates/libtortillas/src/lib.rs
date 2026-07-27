@@ -129,14 +129,7 @@
 //! features to omit the projection tree, event publishers, listener handles,
 //! and live metrics.
 //!
-//! Applications that only download and seed files do not need live
-//! listeners, events, views, or metrics. The module is for consumers that need
-//! current progress and incremental changes, whether they render a terminal,
-//! serve an API, update a website, or drive a desktop application.
-//!
-//! Start with `live::EventListener`: read its `view` for current state and
-//! receive events to learn when that state changes. The `live` module
-//! documents the complete transport-agnostic model.
+//! See the `live` module for current views, listeners, and event streams.
 //!
 //! This helper waits for changes and prints verified payload progress until the
 //! torrent finishes downloading:
@@ -144,6 +137,7 @@
 //! ```no_run
 //! use libtortillas::prelude::{Torrent, TorrentState};
 //!
+//! # #[cfg(feature = "live")]
 //! async fn show_progress(torrent: &Torrent) -> Result<(), Box<dyn std::error::Error>> {
 //!    let mut listener = torrent.listener();
 //!
@@ -167,22 +161,8 @@
 //!
 //! # Runtime and advanced APIs
 //!
-//! `libtortillas` is intentionally a Tokio-based library. Public handles such
-//! as [`Engine`](engine::Engine) and [`Torrent`](torrent::Torrent) expose async
-//! methods that must be driven inside a Tokio runtime, and the crate uses Tokio
-//! tasks, sockets, timers, channels, and filesystem APIs internally.
-//!
-//! Applications should create one Tokio runtime and keep the engine plus all
-//! torrent handles on work scheduled by that runtime. The crate does not
-//! promise runtime independence, HTTP client injection, clock injection,
-//! listener injection, or storage runtime abstraction.
-//! Synchronous adapter work should communicate with async engine tasks through
-//! channels or a dedicated adapter thread. [`tokio::task::spawn_blocking`] is
-//! appropriate for bounded blocking work, but not for a permanent input loop:
-//! a blocking task cannot be aborted after it starts and can delay shutdown.
-//!
-//! An application can use `#[tokio::main]`, as in the example above, or create
-//! an explicit Tokio runtime before initializing `Engine`.
+//! `libtortillas` requires a Tokio runtime. Use `#[tokio::main]`, as above, or
+//! create a runtime before initializing an [`Engine`](engine::Engine).
 //!
 //! The lower-level [`engine`], [`torrent`], [`metainfo`], [`peer`],
 //! [`tracker`], [`pieces`], and [`protocol`] modules remain public for advanced
@@ -190,10 +170,6 @@
 //! depending on actor messages, raw peer streams, tracker clients, or storage
 //! internals when an equivalent [`facade`] type exists. [`prelude`] re-exports
 //! the types most applications need.
-//!
-//! Engine and torrent handles expose listeners for current state and
-//! incremental updates. Persistence snapshots are intentionally separate and
-//! should not be polled for live changes.
 //!
 //! # Internal architecture
 //!
@@ -218,15 +194,18 @@
 //! transport-agnostic live views and event streams. Durable state is
 //! represented by [`EngineSnapshot`](engine::EngineSnapshot) and
 //! [`TorrentSnapshot`](torrent::TorrentSnapshot), never by live views.
-//!
-//! Stable public types are exported by module facades while actor messages and
-//! coordination details remain crate-private. Domain values such as lifecycle
-//! state, storage strategy, metrics, and snapshots live outside actor files so
-//! actors can focus on orchestration.
-//!
-//! See the `live` module for the source-of-truth, publication, lifecycle, and
-//! lock invariants. See [`torrent`] for transfer scheduling and persistence
-//! semantics.
+// `cfg!` type-checks both branches; this drops disabled live code before name
+// resolution.
+macro_rules! live_only {
+   ($($tokens:tt)*) => {{
+      #[cfg(feature = "live")]
+      {
+         $($tokens)*
+      }
+   }};
+}
+
+pub(crate) use live_only;
 
 pub(crate) mod dht;
 pub mod engine;

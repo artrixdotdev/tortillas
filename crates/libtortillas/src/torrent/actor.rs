@@ -224,12 +224,11 @@ impl TorrentActor {
       // Pre-start the piece manager before transitioning state
       if let Err(err) = self.piece_manager.pre_start(info.clone()).await {
          self.transition_state(TorrentState::Failed);
-         #[cfg(feature = "live")]
-         self.hub.emit_health(
+         crate::live_only!(self.hub.emit_health(
             Some(self.info_hash()),
             LiveHealthLevel::Error,
             "torrent storage could not be initialized",
-         );
+         ));
          error!(?err, "Failed to pre-start piece manager; aborting start");
          return;
       }
@@ -578,22 +577,21 @@ impl TorrentActor {
 
    #[inline]
    pub(super) fn publish_updated(&self) {
-      #[cfg(feature = "live")]
-      self.publish_live_view(|_| crate::live::TorrentEventKind::Updated);
+      crate::live_only!(self.publish_live_view(|_| crate::live::TorrentEventKind::Updated));
    }
 
    #[inline]
    pub(super) fn publish_metrics_changed(&self) {
-      #[cfg(feature = "live")]
-      self.publish_live_view(|view| {
+      crate::live_only!(self.publish_live_view(|view| {
          crate::live::TorrentEventKind::MetricsChanged(view.metrics.clone())
-      });
+      }));
    }
 
    #[inline]
    pub(super) fn publish_metadata_resolved(&self) {
-      #[cfg(feature = "live")]
-      self.publish_live_view(|_| crate::live::TorrentEventKind::MetadataResolved);
+      crate::live_only!(
+         self.publish_live_view(|_| crate::live::TorrentEventKind::MetadataResolved)
+      );
    }
 
    pub(super) fn remove_peer(&mut self, id: PeerId) {
@@ -610,11 +608,12 @@ impl TorrentActor {
       }
 
       self.state = state;
-      #[cfg(feature = "live")]
-      self.publish_live_view(|_| crate::live::TorrentEventKind::StateChanged {
-         previous,
-         current: state,
-      });
+      crate::live_only!(
+         self.publish_live_view(|_| crate::live::TorrentEventKind::StateChanged {
+            previous,
+            current: state,
+         })
+      );
    }
 
    fn snapshot_u64(value: usize) -> u64 {
@@ -859,8 +858,7 @@ impl Actor for TorrentActor {
          piece_manager: PieceManagerProxy::Default(default_manager),
          settings,
       };
-      #[cfg(feature = "live")]
-      actor.hub.initialize_torrent_projection(actor.live_view());
+      crate::live_only!(actor.hub.initialize_torrent_projection(actor.live_view()));
 
       Ok(actor)
    }
@@ -884,10 +882,11 @@ impl Actor for TorrentActor {
          // The engine supervises torrent actors transiently. Preserve the
          // live scope and make the temporary state explicit.
          self.transition_state(TorrentState::Restarting);
-         #[cfg(feature = "live")]
-         self
-            .hub
-            .close_peer_scopes_for_torrent_restart(self.info_hash());
+         crate::live_only!(
+            self
+               .hub
+               .close_peer_scopes_for_torrent_restart(self.info_hash())
+         );
       }
       info!(reason = %reason, "Torrent stopped");
       for peer in self.peers.values() {
@@ -913,20 +912,21 @@ impl Actor for TorrentActor {
       &mut self, _: WeakActorRef<Self>, id: ActorId, reason: ActorStopReason,
    ) -> Result<ControlFlow<ActorStopReason>, Self::Error> {
       error!(?id, ?reason, "Linked child died");
-      #[cfg(feature = "live")]
-      if !reason.is_normal() {
-         self.hub.emit_health(
-            Some(self.info_hash()),
-            LiveHealthLevel::Error,
-            "a torrent service stopped unexpectedly",
-         );
+      crate::live_only! {
+         if !reason.is_normal() {
+            self.hub.emit_health(
+               Some(self.info_hash()),
+               LiveHealthLevel::Error,
+               "a torrent service stopped unexpectedly",
+            );
+         }
       }
 
       Ok(ControlFlow::Continue(()))
    }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "live"))]
 mod tests {
    use std::{path::PathBuf, time::Duration};
 

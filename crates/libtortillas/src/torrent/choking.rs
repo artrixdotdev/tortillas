@@ -129,9 +129,11 @@ fn rate_for(peer: &PeerStats, torrent_state: TorrentState) -> u64 {
 
 #[cfg(test)]
 mod tests {
+   #[cfg(feature = "live")]
    use std::time::Duration;
 
    use super::*;
+   #[cfg(feature = "live")]
    use crate::metrics::{ByteCount, PeerMetrics, TrafficTotals, TransferMetrics, TransferSample};
 
    fn peer_id(value: u8) -> PeerId {
@@ -145,6 +147,7 @@ mod tests {
          client_choking: true,
          download_rate: 0,
          upload_rate: 0,
+         #[cfg(feature = "live")]
          metrics: PeerMetrics {
             peer_interested: true,
             client_choking: true,
@@ -162,14 +165,17 @@ mod tests {
       let mut stats = stats(id);
       stats.download_rate = download_rate;
       stats.upload_rate = upload_rate;
-      stats.metrics.transfer = TransferMetrics::from_sample(TransferSample {
-         previous_totals: TrafficTotals::default(),
-         current_totals: TrafficTotals {
-            downloaded: ByteCount(download_rate),
-            uploaded: ByteCount(upload_rate),
-         },
-         elapsed: Duration::from_secs(1),
-      });
+      #[cfg(feature = "live")]
+      {
+         stats.metrics.transfer = TransferMetrics::from_sample(TransferSample {
+            previous_totals: TrafficTotals::default(),
+            current_totals: TrafficTotals {
+               downloaded: ByteCount(download_rate),
+               uploaded: ByteCount(upload_rate),
+            },
+            elapsed: Duration::from_secs(1),
+         });
+      }
       stats
    }
 

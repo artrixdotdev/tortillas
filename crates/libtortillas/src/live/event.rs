@@ -14,19 +14,13 @@ use crate::{
 /// detect a gap after reconnecting a consumer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SequencedEvent<E> {
-   /// Publisher-local sequence number for this event.
    pub sequence: u64,
-   /// The typed change represented by this event.
    pub kind: E,
 }
 
-/// A sequenced event emitted by the engine's live publisher.
 pub type EngineEvent = SequencedEvent<EngineEventKind>;
-/// A sequenced event emitted by a torrent's live publisher.
 pub type TorrentEvent = SequencedEvent<TorrentEventKind>;
-/// A sequenced event emitted by a peer's live publisher.
 pub type PeerEvent = SequencedEvent<PeerEventKind>;
-/// A sequenced event emitted by a tracker's live publisher.
 pub type TrackerEvent = SequencedEvent<TrackerEventKind>;
 
 impl SequencedEvent<EngineEventKind> {

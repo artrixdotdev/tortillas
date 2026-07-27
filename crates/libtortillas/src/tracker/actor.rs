@@ -169,7 +169,7 @@ impl Actor for TrackerActor {
    }
 
    async fn on_stop(
-      &mut self, _: WeakActorRef<Self>, reason: ActorStopReason,
+      &mut self, _: WeakActorRef<Self>, _reason: ActorStopReason,
    ) -> Result<(), Self::Error> {
       if let Some(next_announce) = self.next_announce.take() {
          next_announce.abort();
@@ -178,8 +178,7 @@ impl Actor for TrackerActor {
       let _ = timeout(self.settings.stop_timeout, self.tracker.stop())
          .await
          .inspect_err(|e| warn!(e = %e.to_string(), "Tracker stop timed out"));
-      #[cfg(feature = "live")]
-      {
+      crate::live_only! {
          let metrics = self.snapshot_metrics(self.live_handle.view().metrics.latest_peers_returned);
          self.live_handle.publish_metrics(metrics);
          if let Err(e) = self
@@ -190,7 +189,7 @@ impl Actor for TrackerActor {
             warn!(error = %e, "Failed to publish final tracker metrics");
          }
 
-         if reason.is_normal() {
+         if _reason.is_normal() {
             self.live_handle.stopped();
          } else {
             // Transient supervision may reconstruct this actor with the same
@@ -199,8 +198,6 @@ impl Actor for TrackerActor {
             self.live_handle.restarting();
          }
       }
-      #[cfg(not(feature = "live"))]
-      let _ = reason;
 
       Ok(())
    }
@@ -259,8 +256,7 @@ impl TrackerActor {
       let metrics = self.snapshot_metrics(latest_peers_returned);
       match result {
          Ok(peers) => {
-            #[cfg(feature = "live")]
-            self.live_handle.announce_succeeded(metrics);
+            crate::live_only!(self.live_handle.announce_succeeded(metrics));
             if let Err(e) = self
                .supervisor
                .tell(torrent::events::Announce {
@@ -274,17 +270,17 @@ impl TrackerActor {
          }
          Err(e) => {
             error!(error = %e, "Announce request failed");
-            #[cfg(feature = "live")]
-            self.live_handle.announce_failed(metrics);
+            crate::live_only!(self.live_handle.announce_failed(metrics));
          }
       }
-      #[cfg(feature = "live")]
-      if let Err(e) = self
-         .supervisor
-         .tell(torrent::events::TrackerMetricsChanged)
-         .await
-      {
-         error!(error = %e, "Failed to publish tracker metrics");
+      crate::live_only! {
+         if let Err(e) = self
+            .supervisor
+            .tell(torrent::events::TrackerMetricsChanged)
+            .await
+         {
+            error!(error = %e, "Failed to publish tracker metrics");
+         }
       }
       self.schedule_next_announce().await;
       None
