@@ -215,13 +215,19 @@ impl PeerActor {
 
       if self.info.have_all_bytes() {
          trace!("Peer has all info bytes, sending them to supervisor...");
-         self
+         if let Err(err) = self
             .supervisor
             .tell(torrent::events::InfoBytes {
                bytes: self.info.info_bytes(),
             })
             .await
-            .unwrap();
+         {
+            warn!(
+               error = %err,
+               peer_id = %self.id,
+               "Failed to notify torrent actor about peer info bytes"
+            );
+         }
       }
    }
 
