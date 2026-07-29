@@ -35,17 +35,12 @@ use crate::{
       BLOCK_SIZE, PieceBlockSnapshot, PieceStorageStrategy, TORRENT_SNAPSHOT_VERSION,
       TorrentSnapshot, TorrentState,
    },
-   tracker::{
-      Announce, Event, Tracker, TrackerActor, TrackerActorArgs, TrackerUpdate, udp::UdpServer,
-   },
+   tracker::{Announce, Event, Tracker, TrackerActor, TrackerUpdate, udp::UdpServer},
 };
 #[cfg(feature = "live")]
 use crate::{
-   live::{Hub, LiveHealthLevel, TorrentEventKind, TorrentView, TrackerStatus, TrackerView},
-   metrics::{
-      ByteCount, ContentProgress, HasTransferMetrics, TorrentMetrics, TrackerMetrics,
-      TransferMetrics,
-   },
+   live::{Hub, LiveHealthLevel, TorrentEventKind, TorrentView},
+   metrics::{ByteCount, ContentProgress, HasTransferMetrics, TorrentMetrics, TransferMetrics},
 };
 
 /// A hook that is called when the torrent is ready to start downloading.
@@ -117,6 +112,7 @@ pub(crate) struct TorrentActor {
    pub(super) metainfo: MetaInfo,
    #[allow(dead_code)]
    pub(super) tracker_server: UdpServer,
+   pub(super) primary_addr: SocketAddr,
    pub(super) scheduler: ActorRef<Scheduler>,
    /// Should only be used to create new connections
    pub(super) utp_server: Arc<UtpSocketUdp>,
@@ -477,10 +473,13 @@ impl TorrentActor {
       );
    }
 
-   pub(super) fn remove_peer(&mut self, id: PeerId) {
+   pub(super) fn remove_peer(&mut self, id: PeerId) -> bool {
       self.piece_scheduler.peer_disconnected(id);
       if let Some(actor) = self.peers.remove(&id) {
          actor.kill();
+         true
+      } else {
+         false
       }
    }
 
@@ -757,61 +756,7 @@ impl Actor for TorrentActor {
          TorrentState::ResolvingMetadata
       };
       let bitfield = BitVec::repeat(false, piece_count);
-      let initial_left = info.map(Info::total_length);
-
-      // Create tracker actors
       let tracker_list = metainfo.announce_list();
-      let mut trackers = HashMap::new();
-      for tracker in tracker_list {
-         if matches!(tracker, Tracker::Websocket(_)) {
-            warn!(
-               tracker_uri = %tracker.redacted_endpoint(),
-               "Skipping unsupported websocket tracker"
-            );
-            continue;
-         }
-         #[cfg(feature = "live")]
-         let endpoint = tracker.redacted_endpoint();
-         #[cfg(feature = "live")]
-         let Some(tracker_handle) = hub.register_tracker_scope(
-            torrent_id,
-            &tracker,
-            TrackerView {
-               endpoint,
-               status: TrackerStatus::Pending,
-               metrics: TrackerMetrics::default(),
-            },
-         ) else {
-            return Err(TorrentError::ActorCommunicationFailed {
-               operation: "register tracker live scope",
-               reason: "live hub is no longer available".to_string(),
-            });
-         };
-         let actor = TrackerActor::supervise(
-            &us,
-            TrackerActorArgs {
-               tracker: tracker.clone(),
-               peer_id,
-               server: tracker_server.clone(),
-               socket_addr: primary_addr,
-               initial_left,
-               supervisor: us.clone(),
-               scheduler: scheduler.clone(),
-               settings: settings.tracker.clone(),
-               #[cfg(feature = "live")]
-               live_handle: tracker_handle,
-            },
-         )
-         .restart_policy(RestartPolicy::Transient)
-         .restart_limit(
-            settings.torrent.tracker_restart.limit,
-            settings.torrent.tracker_restart.period,
-         )
-         .spawn()
-         .await;
-
-         trackers.insert(tracker, actor);
-      }
       let default_manager = FilePieceManager(base_path, info.cloned());
       let piece_store = PieceStoreActor::supervise(&us, ())
          .restart_policy(RestartPolicy::Permanent)
@@ -822,15 +767,16 @@ impl Actor for TorrentActor {
          .spawn()
          .await;
 
-      let actor = Self {
+      let mut actor = Self {
          #[cfg(feature = "live")]
          hub,
          peers: HashMap::new(),
          bitfield,
          tracker_server,
+         primary_addr,
          scheduler,
          utp_server,
-         trackers,
+         trackers: HashMap::new(),
          id: peer_id,
          info_hash: torrent_id,
          metainfo,
@@ -853,6 +799,15 @@ impl Actor for TorrentActor {
          piece_manager: PieceManagerProxy::Default(default_manager),
          settings,
       };
+      for tracker in tracker_list {
+         if let Err(error) = actor.register_tracker_actor(tracker.clone()).await {
+            warn!(
+               %error,
+               tracker_uri = %tracker.redacted_endpoint(),
+               "Skipping unavailable tracker"
+            );
+         }
+      }
       crate::live_only!(actor.hub.initialize_torrent_projection(actor.live_view()));
 
       Ok(actor)
@@ -938,9 +893,11 @@ mod tests {
    use super::*;
    use crate::{
       hashes::HashVec,
-      live::{PeerIdentity, PeerView},
+      live::{PeerIdentity, PeerView, TrackerStatus, TrackerView},
       metainfo::{InfoKeys, MetaInfo, TorrentFile},
-      metrics::{BytesPerSecond, PeerMetrics, TrafficTotals, TransferRates, TransferSample},
+      metrics::{
+         BytesPerSecond, PeerMetrics, TrackerMetrics, TrafficTotals, TransferRates, TransferSample,
+      },
       protocol::{
          messages::{Handshake, PeerMessages},
          stream::{PeerRecv, PeerSend, PeerStream},
@@ -949,8 +906,8 @@ mod tests {
       testing,
       torrent::{
          BLOCK_SIZE, Torrent, TorrentSnapshot,
-         commands::{GetState, HasInfoDict, SetState, SnapshotState},
-         events::{AddPeer, IncomingPiece},
+         commands::{AddPeer, GetState, HasInfoDict, SetState, SnapshotState},
+         events::IncomingPiece,
       },
       tracker::Tracker,
    };
@@ -1346,7 +1303,12 @@ mod tests {
          hub: Hub::default(),
       });
       let torrent = Torrent::new(info_hash, actor.clone());
-      actor.tell(AddPeer { peer: seed.peer() }).await.unwrap();
+      let connection = actor.ask(AddPeer { peer: seed.peer() }).await.unwrap();
+      timeout(Duration::from_secs(5), connection)
+         .await
+         .expect("local seed connection should complete")
+         .unwrap()
+         .unwrap();
 
       timeout(Duration::from_secs(5), torrent.poll_ready())
          .await
@@ -1701,6 +1663,7 @@ mod tests {
          resolved_magnet_info: None,
          metainfo: metainfo.clone(),
          tracker_server: udp_server.clone(),
+         primary_addr: utp_server.bind_addr(),
          scheduler: Scheduler::spawn(Scheduler::new()),
          utp_server,
          actor_ref: actor_ref.clone(),
@@ -1861,6 +1824,7 @@ mod tests {
          resolved_magnet_info: None,
          metainfo: metainfo.clone(),
          tracker_server: udp_server,
+         primary_addr: utp_server.bind_addr(),
          scheduler: Scheduler::spawn(Scheduler::new()),
          utp_server,
          actor_ref: actor_ref.clone(),
@@ -2083,6 +2047,7 @@ mod tests {
          resolved_magnet_info: None,
          metainfo,
          tracker_server: udp_server,
+         primary_addr: utp_server.bind_addr(),
          scheduler: Scheduler::spawn(Scheduler::new()),
          utp_server,
          actor_ref: actor_ref.clone(),

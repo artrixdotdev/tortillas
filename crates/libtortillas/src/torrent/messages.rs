@@ -7,24 +7,25 @@ use bitvec::vec::BitVec;
 use bytes::Bytes;
 use kameo::{Reply, messages};
 use sha1::{Digest, Sha1};
+use tokio::sync::oneshot;
 use tracing::{info, instrument, trace, warn};
 
 use super::{
-   AnnounceFrom, BLOCK_SIZE, PieceStorageStrategy, TorrentActor, TorrentSnapshot, TorrentState,
-   ValidatedTorrentState,
+   AnnounceFrom, BLOCK_SIZE, ConfiguredTracker, ConnectedPeer, PeerDisconnect,
+   PieceStorageStrategy, TorrentActor, TorrentSnapshot, TorrentState, ValidatedTorrentState,
    actor::{PieceManagerProxy, ReadyHookSender},
    util,
 };
 #[cfg(feature = "live")]
 use crate::live::TorrentView;
 use crate::{
-   errors::TorrentError,
+   errors::{TorrentError, map_torrent_communication_error},
    hashes::InfoHash,
    metainfo::Info,
    peer::{PeerId, WirePeer, commands::HaveInfoDict},
    pieces::{PieceManager, PieceScheduler},
    protocol::stream::PeerStream,
-   tracker::Tracker,
+   tracker::{Announce, Tracker},
 };
 
 #[derive(Debug, Reply)]
@@ -58,22 +59,13 @@ pub(crate) mod events {
          self.append_peer(peer, Some((stream, reserved)));
       }
 
-      /// Used to manually add a peer. This is primarily used for testing but
-      /// can be used to initiate a peer connection without it having to
-      /// come from an announce.
-      #[message(derive(Debug))]
-      #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
-      pub(crate) fn add_peer(&mut self, peer: WirePeer) {
-         self.append_peer(peer, None);
-      }
-
       /// Sent by a connection task after peer handshaking completes.
       #[message]
       #[instrument(skip(self, stream), fields(torrent_id = %self.info_hash()))]
       pub(crate) fn peer_connected(
          &mut self, peer: WirePeer, reserved: [u8; 8], stream: PeerStream,
-      ) {
-         self.insert_peer(peer, reserved, stream);
+      ) -> Result<ConnectedPeer, TorrentError> {
+         self.insert_peer(peer, reserved, stream)
       }
 
       /// Index, offset, and data for a received peer `Piece` message.
@@ -177,16 +169,106 @@ pub(crate) mod commands {
 
    #[messages]
    impl TorrentActor {
+      #[message(derive(Debug))]
+      pub(crate) fn add_peer(
+         &mut self, peer: WirePeer,
+      ) -> oneshot::Receiver<Result<ConnectedPeer, TorrentError>> {
+         let (result_tx, result_rx) = oneshot::channel();
+         self.spawn_peer_connection(peer, None, Some(result_tx));
+         result_rx
+      }
+
       #[message]
-      pub(crate) fn kill_tracker(&mut self, tracker: Tracker) {
-         // Kill the actor quietly.
-         if let Some(actor) = self.trackers.get(&tracker) {
-            actor.kill();
-            self.trackers.remove(&tracker);
-            self.publish_updated();
-         } else {
-            warn!("Received kill tracker message for unknown tracker");
+      pub(crate) fn disconnect_peer(
+         &mut self, id: PeerId, handle: PeerDisconnect,
+      ) -> Result<(), TorrentError> {
+         #[cfg(not(feature = "live"))]
+         let () = handle;
+         if !self.remove_peer(id) {
+            return Err(TorrentError::PeerNotFound { peer_id: id });
          }
+         crate::live_only!(handle.disconnected());
+         self.publish_updated();
+         self.fill_all_peer_request_windows();
+         Ok(())
+      }
+
+      #[message(derive(Debug))]
+      pub(crate) async fn add_tracker(
+         &mut self, tracker: Tracker,
+      ) -> Result<ConfiguredTracker, TorrentError> {
+         self.register_tracker_actor(tracker).await
+      }
+
+      #[message(derive(Debug))]
+      pub(crate) async fn remove_tracker(&mut self, tracker: Tracker) -> Result<(), TorrentError> {
+         let endpoint = tracker.redacted_endpoint();
+         let actor = self
+            .trackers
+            .remove(&tracker)
+            .ok_or(TorrentError::TrackerNotFound { endpoint })?;
+         #[cfg(feature = "live")]
+         let tracker_handle = self.hub.tracker_handle(self.info_hash(), &tracker);
+
+         self.actor_ref.unlink(&actor).await;
+         // Tracker shutdown reports final metrics through this actor's
+         // mailbox. Remove it now and let that best-effort cleanup finish
+         // asynchronously instead of waiting on our own mailbox.
+         if actor.is_alive() {
+            actor.stop_gracefully().await.map_err(|error| {
+               TorrentError::ActorCommunicationFailed {
+                  operation: "remove tracker",
+                  reason: error.to_string(),
+               }
+            })?;
+         }
+         crate::live_only! {
+            if let Some(tracker_handle) = tracker_handle {
+               tracker_handle.stopped();
+            }
+         }
+         self.publish_updated();
+         Ok(())
+      }
+
+      #[message(derive(Debug))]
+      pub(crate) async fn reannounce_tracker(
+         &mut self, tracker: Tracker,
+      ) -> Result<(), TorrentError> {
+         let endpoint = tracker.redacted_endpoint();
+         let actor = self
+            .trackers
+            .get(&tracker)
+            .ok_or(TorrentError::TrackerNotFound { endpoint })?;
+         actor
+            .tell(Announce)
+            .await
+            .map_err(|error| map_torrent_communication_error("reannounce tracker", error))
+      }
+
+      #[message(derive(Debug, Clone, Copy))]
+      pub(crate) async fn force_reannounce(&mut self) -> Result<usize, TorrentError> {
+         if self.trackers.is_empty() {
+            return Err(TorrentError::InvalidOperation {
+               operation: "force reannounce",
+               reason: "torrent has no configured trackers".to_string(),
+            });
+         }
+
+         let mut queued = 0usize;
+         let mut first_error = None;
+         for (tracker, actor) in &self.trackers {
+            match actor.tell(Announce).await {
+               Ok(()) => queued = queued.saturating_add(1),
+               Err(error) => {
+                  first_error.get_or_insert_with(|| TorrentError::ActorCommunicationFailed {
+                     operation: "force tracker reannounce",
+                     reason: format!("{}: {error}", tracker.redacted_endpoint()),
+                  });
+               }
+            }
+         }
+         first_error.map_or(Ok(queued), Err)
       }
 
       #[message]

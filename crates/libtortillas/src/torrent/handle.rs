@@ -1,4 +1,6 @@
 #[cfg(feature = "live")]
+use std::net::SocketAddr;
+#[cfg(feature = "live")]
 use std::sync::Weak;
 use std::{fmt, path::PathBuf, sync::Arc};
 
@@ -9,14 +11,21 @@ use tracing::error;
 use super::{
    PieceStorageStrategy, TorrentActor, TorrentSnapshot, TorrentState,
    commands::{
-      GetState, ReadyHook, SetAutoStart, SetOutputPath, SetPieceManager, SetPieceStorage, SetState,
-      SetSufficientPeers, SnapshotState,
+      ForceReannounce, GetState, ReadyHook, SetAutoStart, SetOutputPath, SetPieceManager,
+      SetPieceStorage, SetState, SetSufficientPeers, SnapshotState,
    },
 };
 #[cfg(feature = "live")]
 use crate::live::{
    EventSubscription, Hub, HubInner, LivePublisher, PeerHandle, TorrentEventKind, TorrentListener,
    TorrentView, TrackerHandle,
+};
+#[cfg(feature = "live")]
+use crate::{
+   errors::map_torrent_communication_error,
+   peer::WirePeer,
+   torrent::commands::{AddPeer, AddTracker, DisconnectPeer, ReannounceTracker, RemoveTracker},
+   tracker::Tracker,
 };
 use crate::{
    errors::{TorrentError, map_torrent_send_error},
@@ -189,6 +198,183 @@ impl Torrent {
          })?;
       Ok(())
    }
+
+   /// Queues an immediate announce on every configured tracker.
+   ///
+   /// Every tracker is attempted even when another command delivery fails.
+   /// `Ok` returns the number of trackers that accepted the command. Tracker
+   /// responses remain asynchronous and are reported through their live views
+   /// and event streams.
+   pub async fn force_reannounce(&self) -> Result<usize, TorrentError> {
+      self
+         .actor()
+         .ask(ForceReannounce)
+         .await
+         .map_err(|error| map_torrent_send_error("force tracker reannounce", error))
+   }
+}
+
+#[cfg(all(test, feature = "live"))]
+mod tests {
+   use std::time::Duration;
+
+   use tokio::time::timeout;
+
+   use crate::{
+      engine::{Engine, TorrentSource},
+      errors::TorrentError,
+      live::{PeerEventKind, TrackerEventKind, TrackerStatus},
+      peer::PeerId,
+      settings::Settings,
+      testing::{self, LocalHttpTracker, LocalPeer},
+      tracker::Tracker,
+   };
+
+   fn deterministic_engine() -> Engine {
+      let mut settings = Settings::default();
+      settings.dht.enabled = false;
+      Engine::builder()
+         .settings(settings)
+         .autostart(false)
+         .build()
+   }
+
+   async fn trackerless_source() -> TorrentSource {
+      let mut metainfo = testing::read_torrent_fixture(testing::BIG_BUCK_BUNNY_TORRENT_FILE).await;
+      metainfo.clear_announce_list();
+      TorrentSource::torrent_file_bytes(serde_bencode::to_bytes(&metainfo).unwrap())
+   }
+
+   #[tokio::test]
+   async fn torrent_handle_manages_manual_peer_lifecycle() {
+      let engine = deterministic_engine();
+      let torrent = engine
+         .add_torrent(trackerless_source().await)
+         .await
+         .unwrap();
+      let remote_id = PeerId::Unknown([42; 20]);
+      let local_peer = LocalPeer::start(remote_id, Vec::new()).await.unwrap();
+
+      let peer = torrent
+         .add_peer(local_peer.peer().socket_addr())
+         .await
+         .unwrap();
+      let mut listener = peer.listener();
+
+      assert_eq!(peer.id(), remote_id);
+      assert!(peer.view().connected);
+      assert_eq!(torrent.peers(), vec![peer.clone()]);
+
+      torrent.disconnect_peer(&peer).await.unwrap();
+
+      assert!(!listener.view().connected);
+      assert_eq!(
+         listener.recv().await.unwrap().kind,
+         PeerEventKind::Disconnected
+      );
+      assert!(torrent.peers().is_empty());
+      assert!(matches!(
+         torrent.disconnect_peer(&peer).await,
+         Err(TorrentError::PeerNotFound { peer_id }) if peer_id == remote_id
+      ));
+
+      engine.shutdown().await.unwrap();
+   }
+
+   #[tokio::test]
+   async fn torrent_handle_manages_tracker_and_reannounce_lifecycle() {
+      let engine = deterministic_engine();
+      let torrent = engine
+         .add_torrent(trackerless_source().await)
+         .await
+         .unwrap();
+      let local_tracker = LocalHttpTracker::start([]).await.unwrap();
+      let source = Tracker::Http(local_tracker.uri());
+
+      assert!(matches!(
+         torrent
+            .add_tracker(Tracker::Websocket(
+               "wss://tracker.example/announce".to_string()
+            ))
+            .await,
+         Err(TorrentError::UnsupportedTrackerProtocol {
+            protocol: "websocket"
+         })
+      ));
+      let tracker = timeout(Duration::from_secs(2), torrent.add_tracker(source.clone()))
+         .await
+         .expect("tracker initialization timed out")
+         .unwrap();
+      let mut listener = tracker.listener();
+
+      assert_eq!(tracker.view().status, TrackerStatus::Pending);
+      assert_eq!(torrent.trackers(), vec![tracker.clone()]);
+      assert!(matches!(
+         timeout(Duration::from_secs(2), torrent.add_tracker(source))
+            .await
+            .expect("duplicate tracker check timed out"),
+         Err(TorrentError::TrackerAlreadyExists { .. })
+      ));
+
+      timeout(Duration::from_secs(2), torrent.reannounce_tracker(&tracker))
+         .await
+         .expect("tracker reannounce timed out")
+         .unwrap();
+      let announce = timeout(Duration::from_secs(2), listener.recv())
+         .await
+         .unwrap()
+         .unwrap();
+      assert!(matches!(
+         announce.kind,
+         TrackerEventKind::AnnounceSucceeded { peers_returned: 0 }
+      ));
+      assert_eq!(
+         timeout(Duration::from_secs(2), torrent.force_reannounce())
+            .await
+            .expect("torrent reannounce timed out")
+            .unwrap(),
+         1
+      );
+      let announce = timeout(Duration::from_secs(2), listener.recv())
+         .await
+         .unwrap()
+         .unwrap();
+      assert!(matches!(
+         announce.kind,
+         TrackerEventKind::AnnounceSucceeded { peers_returned: 0 }
+      ));
+      assert_eq!(listener.view().status, TrackerStatus::Healthy);
+      assert!(local_tracker.requests().await.len() >= 2);
+
+      drop(local_tracker);
+      timeout(Duration::from_secs(2), torrent.reannounce_tracker(&tracker))
+         .await
+         .expect("failed tracker reannounce timed out")
+         .unwrap();
+      assert!(matches!(
+         timeout(Duration::from_secs(2), listener.recv())
+            .await
+            .unwrap()
+            .unwrap()
+            .kind,
+         TrackerEventKind::AnnounceFailed
+      ));
+      assert_eq!(listener.view().status, TrackerStatus::Degraded);
+
+      timeout(Duration::from_secs(2), torrent.remove_tracker(&tracker))
+         .await
+         .expect("tracker removal timed out")
+         .unwrap();
+
+      assert_eq!(listener.view().status, TrackerStatus::Stopped);
+      assert!(torrent.trackers().is_empty());
+      assert!(matches!(
+         torrent.reannounce_tracker(&tracker).await,
+         Err(TorrentError::TrackerNotFound { .. })
+      ));
+
+      engine.shutdown().await.unwrap();
+   }
 }
 
 #[cfg(not(feature = "live"))]
@@ -202,6 +388,17 @@ impl Torrent {
 
 #[cfg(feature = "live")]
 impl Torrent {
+   async fn await_delegated<T>(
+      result: oneshot::Receiver<Result<T, TorrentError>>, operation: &'static str,
+   ) -> Result<T, TorrentError> {
+      result
+         .await
+         .map_err(|error| TorrentError::ActorCommunicationFailed {
+            operation,
+            reason: error.to_string(),
+         })?
+   }
+
    #[cfg(test)]
    pub(crate) fn new(info_hash: InfoHash, actor_ref: ActorRef<TorrentActor>) -> Self {
       Self::new_with_hub(info_hash, actor_ref, &Hub::default(), None)
@@ -224,6 +421,79 @@ impl Torrent {
          publisher: Arc::clone(&scope.publisher),
       });
       Self { inner }
+   }
+
+   /// Connects and handshakes with a manually supplied peer.
+   ///
+   /// A successful result guarantees that the handshake completed and the
+   /// peer was registered with this torrent. Peer actor initialization then
+   /// follows the same asynchronous path as discovered peers.
+   pub async fn add_peer(&self, address: SocketAddr) -> Result<PeerHandle, TorrentError> {
+      let result = self
+         .actor()
+         .ask(AddPeer {
+            peer: WirePeer::from_socket_addr(address),
+         })
+         .await
+         .map_err(|error| map_torrent_communication_error("add peer", error))?;
+      Self::await_delegated(result, "add peer").await
+   }
+
+   /// Disconnects a peer.
+   ///
+   /// `Ok` guarantees that the peer is no longer registered in the active
+   /// swarm, its actor has been told to stop, and its terminal live event has
+   /// been published.
+   pub async fn disconnect_peer(&self, peer: &PeerHandle) -> Result<(), TorrentError> {
+      self.ensure_torrent_identity(peer.torrent(), "disconnect peer")?;
+      self
+         .actor()
+         .ask(DisconnectPeer {
+            id: peer.id(),
+            handle: peer.clone(),
+         })
+         .await
+         .map_err(|error| map_torrent_send_error("disconnect peer", error))
+   }
+
+   /// Adds a tracker and starts its actor.
+   ///
+   /// `Ok` guarantees that the tracker was accepted and registered. Actor
+   /// initialization and announces are asynchronous; use its listener or
+   /// [`TrackerHandle::view`] to observe their result.
+   pub async fn add_tracker(&self, tracker: Tracker) -> Result<TrackerHandle, TorrentError> {
+      self
+         .actor()
+         .ask(AddTracker { tracker })
+         .await
+         .map_err(|error| map_torrent_send_error("add tracker", error))
+   }
+
+   /// Removes a tracker and publishes its terminal event.
+   ///
+   /// `Ok` guarantees that the tracker is no longer configured and its live
+   /// scope is terminal. Its final stopped announce is best-effort and may
+   /// finish after this method returns.
+   pub async fn remove_tracker(&self, tracker: &TrackerHandle) -> Result<(), TorrentError> {
+      let source = self.tracker_source(tracker, "remove tracker")?;
+      self
+         .actor()
+         .ask(RemoveTracker { tracker: source })
+         .await
+         .map_err(|error| map_torrent_send_error("remove tracker", error))
+   }
+
+   /// Queues an immediate announce on one tracker.
+   ///
+   /// `Ok` guarantees command delivery. The tracker response is asynchronous
+   /// and updates the handle's view and event stream.
+   pub async fn reannounce_tracker(&self, tracker: &TrackerHandle) -> Result<(), TorrentError> {
+      let source = self.tracker_source(tracker, "reannounce tracker")?;
+      self
+         .actor()
+         .ask(ReannounceTracker { tracker: source })
+         .await
+         .map_err(|error| map_torrent_send_error("reannounce tracker", error))
    }
 
    /// Subscribes to live events for this torrent only.
@@ -264,5 +534,29 @@ impl Torrent {
 
    fn hub(&self) -> Option<Hub> {
       self.inner.hub.upgrade().map(Hub::from_inner)
+   }
+
+   fn ensure_torrent_identity(
+      &self, torrent: InfoHash, operation: &'static str,
+   ) -> Result<(), TorrentError> {
+      if torrent == self.info_hash() {
+         return Ok(());
+      }
+      Err(TorrentError::InvalidOperation {
+         operation,
+         reason: "the handle belongs to a different torrent".to_string(),
+      })
+   }
+
+   fn tracker_source(
+      &self, tracker: &TrackerHandle, operation: &'static str,
+   ) -> Result<Tracker, TorrentError> {
+      self.ensure_torrent_identity(tracker.torrent(), operation)?;
+      self
+         .hub()
+         .and_then(|hub| hub.tracker_source(tracker))
+         .ok_or_else(|| TorrentError::TrackerNotFound {
+            endpoint: tracker.endpoint(),
+         })
    }
 }

@@ -3,102 +3,109 @@ use kameo::{
    actor::{ActorRef, Spawn},
    mailbox,
    prelude::Message,
+   supervision::RestartPolicy,
 };
+use tokio::sync::oneshot;
 use tracing::{debug, instrument, trace, warn};
 
-use super::TorrentActor;
-#[cfg(feature = "live")]
-use crate::live::{PeerIdentity, PeerView};
+use super::{ConfiguredTracker, ConnectedPeer, TorrentActor};
 use crate::{
+   errors::{TorrentError, map_torrent_send_error},
    peer::{PeerActor, PeerActorArgs, PeerId, WirePeer},
    protocol::{
       messages::{Handshake, PeerMessages},
       stream::{PeerSend, PeerStream, validate_handshake},
    },
    torrent::events::PeerConnected,
-   tracker::{Tracker, TrackerActor, TrackerUpdate},
+   tracker::{Tracker, TrackerActor, TrackerActorArgs, TrackerUpdate},
+};
+#[cfg(feature = "live")]
+use crate::{
+   live::{PeerIdentity, PeerView, TrackerStatus, TrackerView},
+   metrics::TrackerMetrics,
 };
 
 impl TorrentActor {
    #[instrument(skip(self, peer, stream), fields(%self, peer_addr = ?peer.socket_addr(), torrent_id = %self.info_hash()))]
-   pub(super) fn append_peer(&self, mut peer: WirePeer, stream: Option<(PeerStream, [u8; 8])>) {
+   pub(super) fn append_peer(&self, peer: WirePeer, stream: Option<(PeerStream, [u8; 8])>) {
+      self.spawn_peer_connection(peer, stream, None);
+   }
+
+   pub(super) fn spawn_peer_connection(
+      &self, mut peer: WirePeer, stream: Option<(PeerStream, [u8; 8])>,
+      result: Option<oneshot::Sender<Result<ConnectedPeer, TorrentError>>>,
+   ) {
       let info_hash = self.info_hash();
       let actor_ref = self.actor_ref.clone();
       let our_id = self.id;
       let utp_server = self.utp_server.clone();
 
+      // Handshakes may involve network timeouts, so keep them outside the
+      // torrent actor's mailbox. Explicit additions receive the result through
+      // `result`; discovery paths remain fire-and-report.
       tokio::spawn(async move {
          let mut id = peer.id;
-         let (stream, reserved) = match stream {
-            Some((mut stream, reserved)) => {
-               let handshake = Handshake::new(info_hash, our_id);
-               if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
-                  debug!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer");
-                  return;
+         let connection = async {
+            let (stream, reserved) = match stream {
+               Some((mut stream, reserved)) => {
+                  let handshake = Handshake::new(info_hash, our_id);
+                  stream.send(PeerMessages::Handshake(handshake)).await?;
+                  (stream, reserved)
                }
-               (stream, reserved)
-            }
-            None => {
-               let stream = PeerStream::connect(peer.socket_addr(), Some(utp_server)).await;
-               match stream {
-                  Ok(mut stream) => match stream.send_handshake(our_id, info_hash).await {
-                     Ok(_) => match stream.recv_handshake_message().await {
-                        Ok(handshake) => {
-                           if let Err(err) =
-                              validate_handshake(&handshake, peer.socket_addr(), info_hash)
-                           {
-                              trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to validate peer handshake; exiting");
-                              return;
-                           }
-                           id = Some(handshake.peer_id);
-                           (stream, handshake.reserved)
-                        }
-                        Err(err) => {
-                           trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to receive handshake from peer; exiting");
-                           return;
-                        }
-                     },
-                     Err(err) => {
-                        trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer; exiting");
-                        return;
-                     }
-                  },
-                  Err(err) => {
-                     trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to connect to peer; exiting");
-                     return;
-                  }
+               None => {
+                  let mut stream =
+                     PeerStream::connect(peer.socket_addr(), Some(utp_server)).await?;
+                  stream.send_handshake(our_id, info_hash).await?;
+                  let handshake = stream.recv_handshake_message().await?;
+                  validate_handshake(&handshake, peer.socket_addr(), info_hash)?;
+                  id = Some(handshake.peer_id);
+                  (stream, handshake.reserved)
                }
+            };
+
+            let id = id.ok_or_else(|| TorrentError::InvalidOperation {
+               operation: "add peer",
+               reason: "peer connection completed without a peer id".to_string(),
+            })?;
+
+            if id == our_id {
+               return Err(TorrentError::InvalidOperation {
+                  operation: "add peer",
+                  reason: "a torrent cannot connect to its own peer id".to_string(),
+               });
             }
-         };
 
-         let Some(id) = id else {
-            trace!(peer_addr = %peer.socket_addr(), "Peer connection completed without a peer id; exiting");
-            return;
-         };
+            peer.id = Some(id);
 
-         if id == our_id {
-            return;
+            // Registration is the boundary where the connection becomes part
+            // of the swarm, so a manual add does not succeed before this ask.
+            actor_ref
+               .ask(PeerConnected {
+                  peer,
+                  reserved,
+                  stream,
+               })
+               .await
+               .map_err(|error| map_torrent_send_error("register connected peer", error))
          }
+         .await;
 
-         peer.id = Some(id);
-
-         if let Err(err) = actor_ref
-            .tell(PeerConnected {
-               peer,
-               reserved,
-               stream,
-            })
-            .await
-         {
-            warn!(?err, peer_id = %id, "Failed to route connected peer back to torrent actor");
+         if let Some(result_tx) = result {
+            let _ = result_tx.send(connection);
+         } else if let Err(error) = connection {
+            debug!(%error, "Failed to add discovered peer");
          }
       });
    }
 
-   pub(super) fn insert_peer(&mut self, peer: WirePeer, reserved: [u8; 8], stream: PeerStream) {
+   pub(super) fn insert_peer(
+      &mut self, peer: WirePeer, reserved: [u8; 8], stream: PeerStream,
+   ) -> Result<ConnectedPeer, TorrentError> {
       let Some(id) = peer.id else {
-         trace!(peer_addr = %peer.socket_addr(), "Connected peer missing peer id; ignoring");
-         return;
+         return Err(TorrentError::InvalidOperation {
+            operation: "register connected peer",
+            reason: "connected peer is missing its peer id".to_string(),
+         });
       };
 
       let actor_ref = self.actor_ref.clone();
@@ -106,7 +113,7 @@ impl TorrentActor {
       let peer_settings = self.settings.peer.clone();
       let peer_mailbox_size = self.settings.torrent.peer_mailbox_size;
       if self.peers.contains_key(&id) {
-         return;
+         return Err(TorrentError::PeerAlreadyConnected { peer_id: id });
       }
 
       #[cfg(feature = "live")]
@@ -117,7 +124,10 @@ impl TorrentActor {
          },
          PeerView::connected(peer.socket_addr(), id),
       ) else {
-         return;
+         return Err(TorrentError::ActorCommunicationFailed {
+            operation: "register peer live scope",
+            reason: "live hub is no longer available".to_string(),
+         });
       };
 
       let peer_args = PeerActorArgs {
@@ -140,6 +150,74 @@ impl TorrentActor {
       self.peers.insert(id, peer_actor);
       self.publish_updated();
       crate::live_only!(self.hub.emit_peer_connected(&peer_handle));
+      #[cfg(feature = "live")]
+      return Ok(peer_handle);
+      #[cfg(not(feature = "live"))]
+      Ok(id)
+   }
+
+   pub(super) async fn register_tracker_actor(
+      &mut self, tracker: Tracker,
+   ) -> Result<ConfiguredTracker, TorrentError> {
+      // Startup trackers and runtime additions share this path so the actor
+      // registry and live projection cannot drift apart.
+      let endpoint = tracker.redacted_endpoint();
+      if self.trackers.contains_key(&tracker) {
+         return Err(TorrentError::TrackerAlreadyExists { endpoint });
+      }
+      if matches!(tracker, Tracker::Websocket(_)) {
+         return Err(TorrentError::UnsupportedTrackerProtocol {
+            protocol: "websocket",
+         });
+      }
+
+      #[cfg(feature = "live")]
+      let Some(tracker_handle) = self.hub.register_tracker_scope(
+         self.info_hash(),
+         &tracker,
+         TrackerView {
+            endpoint: endpoint.clone(),
+            status: TrackerStatus::Pending,
+            metrics: TrackerMetrics::default(),
+         },
+      ) else {
+         return Err(TorrentError::ActorCommunicationFailed {
+            operation: "register tracker live scope",
+            reason: "live hub is no longer available".to_string(),
+         });
+      };
+
+      let actor = TrackerActor::supervise(
+         &self.actor_ref,
+         TrackerActorArgs {
+            tracker: tracker.clone(),
+            peer_id: self.id,
+            server: self.tracker_server.clone(),
+            socket_addr: self.primary_addr,
+            initial_left: self
+               .tracker_announce_progress()
+               .map(|progress| progress.left),
+            supervisor: self.actor_ref.clone(),
+            scheduler: self.scheduler.clone(),
+            settings: self.settings.tracker.clone(),
+            #[cfg(feature = "live")]
+            live_handle: tracker_handle.clone(),
+         },
+      )
+      .restart_policy(RestartPolicy::Transient)
+      .restart_limit(
+         self.settings.torrent.tracker_restart.limit,
+         self.settings.torrent.tracker_restart.period,
+      )
+      .spawn()
+      .await;
+
+      self.trackers.insert(tracker, actor);
+      self.publish_updated();
+      #[cfg(feature = "live")]
+      return Ok(tracker_handle);
+      #[cfg(not(feature = "live"))]
+      Ok(())
    }
 
    #[instrument(skip(self, tell), fields(torrent_id = %self.info_hash(), msg = ?tell))]

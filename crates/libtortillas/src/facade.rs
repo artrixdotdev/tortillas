@@ -5,6 +5,7 @@
 pub use crate::{
    engine::{Engine, EngineSnapshot, EngineStatus, TorrentSource},
    torrent::{RestoreVerification, Torrent, TorrentSnapshot},
+   tracker::Tracker,
 };
 #[cfg(feature = "live")]
 pub use crate::{

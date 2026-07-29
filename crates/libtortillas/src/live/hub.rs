@@ -76,17 +76,21 @@ where
    }
 
    fn remove_value(&self, value: &Arc<V>) -> bool {
-      let key = self
-         .values
-         .iter()
-         .find(|entry| Arc::ptr_eq(entry.value(), value))
-         .map(|entry| entry.key().clone());
+      let key = self.key_for_value(value);
       key.is_some_and(|key| {
          self
             .values
             .remove_if(&key, |_, current| Arc::ptr_eq(current, value))
             .is_some()
       })
+   }
+
+   fn key_for_value(&self, value: &Arc<V>) -> Option<K> {
+      self
+         .values
+         .iter()
+         .find(|entry| Arc::ptr_eq(entry.value(), value))
+         .map(|entry| entry.key().clone())
    }
 
    fn values(&self) -> Vec<Arc<V>> {
@@ -605,6 +609,23 @@ impl Hub {
             .map(|inner| TrackerHandle { inner })
             .collect()
       })
+   }
+
+   pub(crate) fn tracker_handle(
+      &self, torrent: InfoHash, source: &Tracker,
+   ) -> Option<TrackerHandle> {
+      let inner = self.inner()?;
+      let scope = inner.torrents.get(&torrent)?;
+      scope
+         .trackers
+         .get(source)
+         .map(|inner| TrackerHandle { inner })
+   }
+
+   pub(crate) fn tracker_source(&self, tracker: &TrackerHandle) -> Option<Tracker> {
+      let inner = self.inner()?;
+      let scope = inner.torrents.get(&tracker.torrent())?;
+      scope.trackers.key_for_value(&tracker.inner)
    }
 
    pub(crate) fn register_tracker_scope(

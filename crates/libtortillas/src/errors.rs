@@ -312,6 +312,26 @@ pub enum TorrentError {
       reason: String,
    },
 
+   /// Tried to connect a peer that is already part of this torrent's swarm.
+   #[error("Peer is already connected: {peer_id}")]
+   PeerAlreadyConnected { peer_id: PeerId },
+
+   /// Tried to disconnect a peer that is not part of this torrent's swarm.
+   #[error("Peer not found: {peer_id}")]
+   PeerNotFound { peer_id: PeerId },
+
+   /// Tried to add a tracker that is already configured for this torrent.
+   #[error("Tracker already exists: {endpoint}")]
+   TrackerAlreadyExists { endpoint: String },
+
+   /// Tried to operate on a tracker that is not configured for this torrent.
+   #[error("Tracker not found: {endpoint}")]
+   TrackerNotFound { endpoint: String },
+
+   /// Tried to add a tracker protocol that the runtime cannot operate.
+   #[error("Unsupported tracker protocol: {protocol}")]
+   UnsupportedTrackerProtocol { protocol: &'static str },
+
    /// Bitfield operation failed
    #[error("Bitfield operation failed: {reason}")]
    BitfieldError { reason: String },
@@ -383,6 +403,18 @@ pub(crate) fn map_torrent_send_error<M>(
          operation,
          reason: error.to_string(),
       },
+   }
+}
+
+pub(crate) fn map_torrent_communication_error<M, E>(
+   operation: &'static str, error: SendError<M, E>,
+) -> TorrentError
+where
+   E: std::fmt::Debug + std::fmt::Display,
+{
+   TorrentError::ActorCommunicationFailed {
+      operation,
+      reason: error.to_string(),
    }
 }
 // Conversion implementations for backward compatibility during transition

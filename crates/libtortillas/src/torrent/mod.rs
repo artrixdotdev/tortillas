@@ -47,6 +47,18 @@ mod storage;
 mod swarm;
 
 pub(crate) use actor::{TorrentActor, TorrentActorArgs};
+#[cfg(feature = "live")]
+pub(crate) type ConnectedPeer = crate::live::PeerHandle;
+#[cfg(not(feature = "live"))]
+pub(crate) type ConnectedPeer = crate::peer::PeerId;
+#[cfg(feature = "live")]
+pub(crate) type PeerDisconnect = crate::live::PeerHandle;
+#[cfg(not(feature = "live"))]
+pub(crate) type PeerDisconnect = ();
+#[cfg(feature = "live")]
+pub(crate) type ConfiguredTracker = crate::live::TrackerHandle;
+#[cfg(not(feature = "live"))]
+pub(crate) type ConfiguredTracker = ();
 pub use block::{BLOCK_SIZE, BlockMap};
 pub use discovery::AnnounceFrom;
 pub use handle::Torrent;
