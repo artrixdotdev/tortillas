@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::Context;
 use bitvec::vec::BitVec;
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use kameo::{
    Actor,
    actor::{ActorRef, WeakActorRef},
@@ -487,7 +487,7 @@ impl Actor for PeerActor {
          state,
          pieces,
          supports: PeerSupports::from_reserved(reserved),
-         info: PeerInfo::new(0, BytesMut::new()),
+         info: PeerInfo::default(),
          stream,
          supervisor,
          pending_block_requests: HashSet::new(),
@@ -645,7 +645,6 @@ impl Message<PeerMessages> for PeerActor {
             trace!("Peer choked us");
          }
          PeerMessages::Unchoke => {
-            self.update_last_optimistic_unchoke();
             self.set_am_choked(false);
 
             // Send all pending messages

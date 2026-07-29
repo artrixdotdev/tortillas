@@ -36,13 +36,11 @@ pub(crate) struct PeerState {
    /// Whether we are choking the remote peer
    am_choking: Arc<AtomicBool>,
    /// Whether the remote peer is interested in us
-   pub(crate) peer_interested: Arc<AtomicBool>,
+   peer_interested: Arc<AtomicBool>,
    /// Whether the remote peer is choking us
-   pub(crate) peer_choking: Arc<AtomicBool>,
+   peer_choking: Arc<AtomicBool>,
    /// Our interest status
    am_interested: Arc<AtomicBool>,
-   /// The timestamp of the last time that a peer unchoked us
-   last_optimistic_unchoke: Arc<AtomicOptionInstant>,
    /// Defaults to None. Does not update on initial handshake, initial sending
    /// of bitfield, or initial sending of Interested message.
    last_message_sent: Arc<AtomicOptionInstant>,
@@ -68,7 +66,6 @@ impl PeerState {
          peer_interested: Arc::new(false.into()),
          peer_choking: Arc::new(true.into()),
          am_interested: Arc::new(false.into()),
-         last_optimistic_unchoke: Arc::new(AtomicOptionInstant::none()),
          last_message_received: Arc::new(AtomicOptionInstant::none()),
          last_message_sent: Arc::new(AtomicOptionInstant::none()),
          bytes_downloaded: Arc::new(0.into()),
@@ -84,15 +81,12 @@ impl PeerState {
       self.bytes_uploaded.fetch_add(bytes, Ordering::Relaxed);
    }
 
-   pub(crate) fn share_traffic_with(&mut self, state: &Self) {
-      self.bytes_downloaded = state.bytes_downloaded.clone();
-      self.bytes_uploaded = state.bytes_uploaded.clone();
-   }
-
+   #[cfg(not(feature = "live"))]
    pub(crate) fn bytes_downloaded(&self) -> usize {
       self.bytes_downloaded.load(Ordering::Relaxed)
    }
 
+   #[cfg(not(feature = "live"))]
    pub(crate) fn bytes_uploaded(&self) -> usize {
       self.bytes_uploaded.load(Ordering::Relaxed)
    }
@@ -112,8 +106,6 @@ impl PeerState {
    }
 }
 
-/// A bunch of helper methods (basically getter and setter wrappers)
-#[allow(dead_code)]
 impl PeerActor {
    pub(crate) fn set_client_choking(&self, is_choked: bool) {
       self.state.am_choking.store(is_choked, Ordering::Release);
@@ -137,13 +129,6 @@ impl PeerActor {
          .store(is_interested, Ordering::Release);
    }
 
-   pub(crate) fn update_last_optimistic_unchoke(&self) {
-      self
-         .state
-         .last_optimistic_unchoke
-         .store(Some(Instant::now()), Ordering::Release);
-   }
-
    pub(crate) fn update_last_message_sent(&self) {
       self
          .state
@@ -158,10 +143,6 @@ impl PeerActor {
          .store(Some(Instant::now()), Ordering::Release);
    }
 
-   pub(crate) fn share_traffic_with(&mut self, state: &PeerState) {
-      self.state.share_traffic_with(state);
-   }
-
    pub(crate) fn choked(&self) -> bool {
       self.state.am_choking.load(Ordering::Acquire)
    }
@@ -174,12 +155,9 @@ impl PeerActor {
       self.state.peer_choking.load(Ordering::Acquire)
    }
 
+   #[cfg(feature = "live")]
    pub(crate) fn am_interested(&self) -> bool {
       self.state.am_interested.load(Ordering::Acquire)
-   }
-
-   pub(crate) fn last_optimistic_unchoke(&self) -> Option<Instant> {
-      self.state.last_optimistic_unchoke.load(Ordering::Acquire)
    }
 
    pub(crate) fn last_message_sent(&self) -> Option<Instant> {
@@ -190,10 +168,12 @@ impl PeerActor {
       self.state.last_message_received.load(Ordering::Acquire)
    }
 
+   #[cfg(not(feature = "live"))]
    pub(crate) fn bytes_downloaded(&self) -> usize {
       self.state.bytes_downloaded()
    }
 
+   #[cfg(not(feature = "live"))]
    pub(crate) fn bytes_uploaded(&self) -> usize {
       self.state.bytes_uploaded()
    }
