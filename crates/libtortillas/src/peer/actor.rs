@@ -1,3 +1,5 @@
+#[cfg(feature = "live")]
+use std::net::SocketAddr;
 use std::{
    collections::{HashMap, HashSet, VecDeque},
    sync::{Arc, atomic::AtomicU8},
@@ -23,7 +25,7 @@ use tracing::{Span, debug, info, instrument, trace, warn};
 use crate::{
    errors::PeerActorError,
    hashes::InfoHash,
-   peer::{Peer, PeerId},
+   peer::{PeerId, PeerInfo, PeerState, PeerSupports, WirePeer},
    protocol::{stream::PeerRecv, *},
    settings::PeerSettings,
    torrent::{self, BLOCK_SIZE, TorrentActor},
@@ -62,19 +64,24 @@ struct RateSample {
 
 #[cfg(not(feature = "live"))]
 impl RateSample {
-   fn new(peer: &Peer) -> Self {
+   fn new(state: &PeerState) -> Self {
       Self {
          at: Instant::now(),
-         bytes_downloaded: peer.bytes_downloaded(),
-         bytes_uploaded: peer.bytes_uploaded(),
+         bytes_downloaded: state.bytes_downloaded(),
+         bytes_uploaded: state.bytes_uploaded(),
       }
    }
 }
 
 /// The actor that handles all communications with a given peer.
 pub(crate) struct PeerActor {
-   /// The peers state and statistics
-   peer: Peer,
+   id: PeerId,
+   #[cfg(feature = "live")]
+   address: SocketAddr,
+   pub(super) state: PeerState,
+   pub(super) pieces: Arc<BitVec<AtomicU8>>,
+   pub(super) supports: PeerSupports,
+   info: PeerInfo,
    /// The stream connecting to the peer -- either TCP or uTP
    stream: PeerStream,
    /// The [TorrentActor] that manages this peer
@@ -92,7 +99,8 @@ pub(crate) struct PeerActor {
 }
 
 pub(crate) struct PeerActorArgs {
-   pub(crate) peer: Peer,
+   pub(crate) peer: WirePeer,
+   pub(crate) reserved: [u8; 8],
    pub(crate) stream: PeerStream,
    pub(crate) supervisor: ActorRef<TorrentActor>,
    pub(crate) info_hash: InfoHash,
@@ -121,7 +129,7 @@ impl PeerActor {
       }
    }
 
-   #[instrument(skip(self, actor_ref, signal), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self, actor_ref, signal), fields(peer_addr = %self.stream, peer_id = %self.id))]
    fn check_message_signal(
       &mut self, actor_ref: WeakActorRef<Self>, signal: Result<PeerMessages, PeerActorError>,
    ) -> Option<Signal<Self>> {
@@ -156,7 +164,7 @@ impl PeerActor {
    /// 0010](https://www.bittorrent.org/beps/bep_0010.html), and the 3 extension messages as specified
    /// in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html), with the exception of
    /// `Reject`.
-   #[instrument(skip(self, _extended_id, extended_message, metadata), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self, _extended_id, extended_message, metadata), fields(peer_addr = %self.stream, peer_id = %self.id))]
    async fn handle_extended_message(
       &mut self, _extended_id: u8, extended_message: Option<ExtendedMessage>,
       metadata: &Option<Bytes>,
@@ -166,11 +174,11 @@ impl PeerActor {
          if extended_message.is_bep_0009_data().unwrap_or_default()
             && let Some(metadata) = metadata
          {
-            if let Err(e) = self.peer.info.append_to_bytes(metadata) {
+            if let Err(e) = self.info.append_to_bytes(metadata) {
                trace!(error = %e, "Failed to append metadata bytes");
             } else {
                // Request next piece if we don't have all the piece bytes
-               if !self.peer.info.have_all_bytes() {
+               if !self.info.have_all_bytes() {
                   let next_piece = extended_message.piece.expect("Should always be Some") + 1;
 
                   self
@@ -181,7 +189,7 @@ impl PeerActor {
          }
 
          if let Ok(id) = extended_message.supports_bep_0009() {
-            self.peer.set_bep_0009(id);
+            self.set_bep_0009(id);
 
             // If peer has metadata and we don't already have it, request metadata from peer
             if let Some(metadata_size) = extended_message.metadata_size {
@@ -205,42 +213,45 @@ impl PeerActor {
          }
       }
 
-      if self.peer.info.have_all_bytes() {
+      if self.info.have_all_bytes() {
          trace!("Peer has all info bytes, sending them to supervisor...");
-         self
+         if let Err(err) = self
             .supervisor
             .tell(torrent::events::InfoBytes {
-               bytes: self.peer.info.info_bytes(),
+               bytes: self.info.info_bytes(),
             })
             .await
-            .unwrap();
+         {
+            warn!(
+               error = %err,
+               peer_id = %self.id,
+               "Failed to notify torrent actor about peer info bytes"
+            );
+         }
       }
    }
 
    /// Contains the logic for requesting a piece from a peer under [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html)/[BEP 0010](https://www.bittorrent.org/beps/bep_0010.html). This function expects the exact piece to be specified -- in other words, when requesting the next piece of metadata, this function will not automatically increment the `piece` field. The caller of the function is expected to handle this.
-   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.id))]
    async fn request_metadata(&mut self, metadata_size: Option<usize>, piece: usize) {
       if let Some(size) = metadata_size {
-         self.peer.info.set_info_size(size);
+         self.info.set_info_size(size);
       }
 
-      if self.peer.info.info_size() > 0 && !self.peer.info.have_all_bytes() {
+      if self.info.info_size() > 0 && !self.info.have_all_bytes() {
          let mut extended_message = ExtendedMessage::new();
          extended_message.piece = Some(piece);
          extended_message.msg_type = Some(ExtendedMessageType::Request);
 
-         let message = PeerMessages::Extended(
-            self.peer.bep_0009_id(),
-            Box::new(Some(extended_message)),
-            None,
-         );
+         let message =
+            PeerMessages::Extended(self.bep_0009_id(), Box::new(Some(extended_message)), None);
 
          if let Err(e) = self.send_message(message).await {
             trace!(error = %e, piece, "Failed to send metadata request");
          }
       } else {
          trace!(
-            info_size = self.peer.info.info_size(),
+            info_size = self.info.info_size(),
             "Peer already has all metadata bytes or info size is invalid"
          );
       }
@@ -248,9 +259,9 @@ impl PeerActor {
 
    /// Checks if the peer has any bits in the bitfield that we don't have, and
    /// sends an interested message if so.
-   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.id))]
    async fn determine_interest(&mut self) {
-      let their_bitfield = self.peer.pieces.clone();
+      let their_bitfield = self.pieces.clone();
       let response = match self
          .supervisor
          .ask(torrent::commands::InterestingPieces {
@@ -288,13 +299,13 @@ impl PeerActor {
          debug!("Peer has no pieces we need - not interested");
       }
 
-      self.peer.set_am_interested(has_interesting_pieces);
+      self.set_am_interested(has_interesting_pieces);
    }
 
    /// Sends all queued messages to the peer. This sends synchronously, and will
    /// not return until each message has been sent. This is because most of
    /// the time we want the messages to be sent in their original order.
-   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.id))]
    async fn flush_queue(&mut self) {
       if self.pending_message_requests.is_empty() {
          return;
@@ -314,7 +325,7 @@ impl PeerActor {
    }
 
    /// Flushes/resends all pending block requests to the peer.
-   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.id))]
    async fn flush_block_requests(&mut self) {
       if self.pending_block_requests.is_empty() {
          return;
@@ -353,9 +364,9 @@ impl PeerActor {
    /// Unless you're doing something like a `KeepAlive` message or a piece
    /// request, you should use this function over sending on the stream
    /// directly.
-   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.id))]
    async fn send_message(&mut self, msg: PeerMessages) -> Result<(), PeerActorError> {
-      if self.peer.am_choked() && matches!(msg, PeerMessages::Request(..)) {
+      if self.am_choked() && matches!(msg, PeerMessages::Request(..)) {
          return Ok(());
       }
 
@@ -366,22 +377,21 @@ impl PeerActor {
 #[cfg(feature = "live")]
 impl PeerActor {
    fn snapshot_stats(&mut self) -> Option<PeerStats> {
-      let id = self.peer.id?;
+      let id = self.id;
       let now = Instant::now();
-      let totals = self.peer.traffic_totals();
+      let totals = self.traffic_totals();
       let sample = TimedTransferSample::new(now, totals);
       let transfer_sample = sample.sample_since(self.last_rate_sample);
       self.last_rate_sample = sample;
       let transfer = TransferMetrics::from_sample(transfer_sample);
-      let mut metrics = self.peer.metrics();
+      let mut metrics = self.metrics();
       metrics.transfer = transfer;
-      self
-         .live_handle
-         .publish_metrics(PeerView::from_peer_with_metrics(
-            &self.peer,
-            true,
-            metrics.clone(),
-         ));
+      self.live_handle.publish_metrics(PeerView::from_metrics(
+         self.address,
+         self.id,
+         true,
+         metrics.clone(),
+      ));
 
       let rates = metrics.transfer.rates().unwrap_or_default();
       Some(PeerStats {
@@ -398,10 +408,10 @@ impl PeerActor {
 #[cfg(not(feature = "live"))]
 impl PeerActor {
    fn snapshot_stats(&mut self) -> Option<PeerStats> {
-      let id = self.peer.id?;
+      let id = self.id;
       let now = Instant::now();
-      let bytes_downloaded = self.peer.bytes_downloaded();
-      let bytes_uploaded = self.peer.bytes_uploaded();
+      let bytes_downloaded = self.bytes_downloaded();
+      let bytes_uploaded = self.bytes_uploaded();
       let elapsed_secs = now
          .duration_since(self.last_rate_sample.at)
          .as_secs()
@@ -418,8 +428,8 @@ impl PeerActor {
 
       Some(PeerStats {
          id,
-         interested: self.peer.interested(),
-         client_choking: self.peer.choked(),
+         interested: self.interested(),
+         client_choking: self.choked(),
          download_rate: u64::try_from(download_rate).unwrap_or(u64::MAX),
          upload_rate: u64::try_from(upload_rate).unwrap_or(u64::MAX),
       })
@@ -434,7 +444,8 @@ impl Actor for PeerActor {
    /// messages have been sent or received from the peer.
    async fn on_start(args: Self::Args, _: ActorRef<Self>) -> Result<Self, Self::Error> {
       let PeerActorArgs {
-         mut peer,
+         peer,
+         reserved,
          mut stream,
          supervisor,
          info_hash,
@@ -442,9 +453,13 @@ impl Actor for PeerActor {
          #[cfg(feature = "live")]
          live_handle,
       } = args;
-      peer.share_traffic_with(&stream.peer_state());
+      let id = peer.id.expect("connected peer should have an id");
+      #[cfg(feature = "live")]
+      let address = peer.socket_addr();
+      let state = stream.peer_state();
+      let pieces = Arc::new(BitVec::EMPTY);
 
-      info!(peer_id = %peer.id.unwrap(),  peer_addr = %stream, torrent_id = %info_hash, "Peer connected");
+      info!(peer_id = %id, peer_addr = %stream, torrent_id = %info_hash, "Peer connected");
       let bitfield = match supervisor.ask(torrent::commands::GetBitfield).await {
          Ok(bitfield) => bitfield,
          Err(err) => {
@@ -461,18 +476,24 @@ impl Actor for PeerActor {
 
       supervisor
          .tell(torrent::events::PeerReady {
-            id: peer.id.unwrap(),
-            available_pieces: peer.pieces.clone(),
+            id,
+            available_pieces: pieces.clone(),
          })
          .await
          .map_err(|e| PeerActorError::SupervisorCommunicationFailed(e.to_string()))?;
 
       Ok(Self {
+         id,
          #[cfg(feature = "live")]
-         last_rate_sample: TimedTransferSample::new(Instant::now(), peer.traffic_totals()),
+         address,
+         #[cfg(feature = "live")]
+         last_rate_sample: TimedTransferSample::new(Instant::now(), state.traffic_totals()),
          #[cfg(not(feature = "live"))]
-         last_rate_sample: RateSample::new(&peer),
-         peer,
+         last_rate_sample: RateSample::new(&state),
+         state,
+         pieces,
+         supports: PeerSupports::from_reserved(reserved),
+         info: PeerInfo::default(),
          stream,
          supervisor,
          pending_block_requests: HashSet::new(),
@@ -486,15 +507,15 @@ impl Actor for PeerActor {
    async fn on_stop(
       &mut self, _: WeakActorRef<Self>, _: ActorStopReason,
    ) -> Result<(), Self::Error> {
-      if let Some(peer_id) = self.peer.id
-         && let Err(err) = self
-            .supervisor
-            .tell(torrent::commands::KillPeer {
-               id: peer_id,
-               #[cfg(feature = "live")]
-               handle: self.live_handle.clone(),
-            })
-            .await
+      let peer_id = self.id;
+      if let Err(err) = self
+         .supervisor
+         .tell(torrent::commands::KillPeer {
+            id: peer_id,
+            #[cfg(feature = "live")]
+            handle: self.live_handle.clone(),
+         })
+         .await
       {
          warn!(error = %err, %peer_id, "Failed to notify torrent actor about stopped peer");
       }
@@ -503,21 +524,18 @@ impl Actor for PeerActor {
    }
 
    /// Coerces messages from the [PeerStream] to a [Message]
-   #[instrument(skip(self, actor_ref, mailbox_rx), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+   #[instrument(skip(self, actor_ref, mailbox_rx), fields(peer_addr = %self.stream, peer_id = %self.id))]
    async fn next(
       &mut self, actor_ref: WeakActorRef<Self>, mailbox_rx: &mut MailboxReceiver<Self>,
    ) -> Result<Option<Signal<Self>>, Self::Error> {
       loop {
          // Send a BEP 3 keepalive after an idle period, then disconnect only if
          // the peer remains silent until the disconnect deadline.
-         let last_received = self
-            .peer
-            .last_message_received()
-            .unwrap_or_else(Instant::now);
+         let last_received = self.last_message_received().unwrap_or_else(Instant::now);
          let idle = last_received.elapsed();
 
          if idle >= self.settings.disconnect_timeout {
-            let id = self.peer.id.expect("Peer ID should exist");
+            let id = self.id;
             if let Err(err) = self
                .supervisor
                .tell(torrent::commands::KillPeer {
@@ -535,7 +553,6 @@ impl Actor for PeerActor {
          }
 
          let keepalive_sent = self
-            .peer
             .last_message_sent()
             .is_some_and(|last_sent| last_sent >= last_received);
          if idle >= self.settings.keepalive_timeout && !keepalive_sent {
@@ -548,7 +565,7 @@ impl Actor for PeerActor {
                warn!(error = %err, "Failed to send keep alive message to peer");
                return Ok(Some(Signal::Stop));
             }
-            self.peer.update_last_message_sent();
+            self.update_last_message_sent();
          }
 
          let next_idle_deadline = if keepalive_sent || idle >= self.settings.keepalive_timeout {
@@ -579,11 +596,11 @@ impl Actor for PeerActor {
 impl Message<PeerMessages> for PeerActor {
    type Reply = ();
 
-   #[instrument(skip(self, msg), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap(), message = %msg))]
+   #[instrument(skip(self, msg), fields(peer_addr = %self.stream, peer_id = %self.id, message = %msg))]
    async fn handle(
       &mut self, msg: PeerMessages, _: &mut KameoContext<Self, Self::Reply>,
    ) -> Self::Reply {
-      self.peer.update_last_message_received();
+      self.update_last_message_received();
       #[cfg(feature = "live")]
       let publish_live_state = matches!(
          &msg,
@@ -606,10 +623,7 @@ impl Message<PeerMessages> for PeerActor {
             // Only send the piece to the supervisor if they request it or it hasn't been
             // cancelled
             if self.pending_block_requests.remove(&key) {
-               let Some(peer_id) = self.peer.id else {
-                  warn!("Received piece from peer without id; ignoring");
-                  return;
-               };
+               let peer_id = self.id;
                let supervisor_msg = torrent::events::IncomingPiece {
                   peer_id,
                   index: index as usize,
@@ -633,12 +647,11 @@ impl Message<PeerMessages> for PeerActor {
             }
          }
          PeerMessages::Choke => {
-            self.peer.set_am_choked(true);
+            self.set_am_choked(true);
             trace!("Peer choked us");
          }
          PeerMessages::Unchoke => {
-            self.peer.update_last_optimistic_unchoke();
-            self.peer.set_am_choked(false);
+            self.set_am_choked(false);
 
             // Send all pending messages
             self.flush_queue().await;
@@ -647,11 +660,11 @@ impl Message<PeerMessages> for PeerActor {
             trace!("Peer unchoked us");
          }
          PeerMessages::Interested => {
-            self.peer.set_interested(true);
+            self.set_interested(true);
             trace!("Peer is interested in our pieces");
          }
          PeerMessages::NotInterested => {
-            self.peer.set_interested(false);
+            self.set_interested(false);
             trace!("Peer is not interested in our pieces");
          }
          PeerMessages::KeepAlive => {
@@ -660,9 +673,9 @@ impl Message<PeerMessages> for PeerActor {
          PeerMessages::Have(piece_index) => {
             trace!(piece_index, "Peer has a new piece");
             let idx = piece_index as usize;
-            if idx < self.peer.pieces.len() {
-               let was_set = self.peer.pieces[idx];
-               self.peer.pieces.set_aliased(idx, true);
+            if idx < self.pieces.len() {
+               let was_set = self.pieces[idx];
+               self.pieces.set_aliased(idx, true);
                // If this is a new piece, our interest may change.
                if !was_set {
                   self.determine_interest().await;
@@ -670,13 +683,13 @@ impl Message<PeerMessages> for PeerActor {
             } else {
                warn!(
                   piece_index,
-                  len = self.peer.pieces.len(),
+                  len = self.pieces.len(),
                   "Have index out of bounds; ignoring"
                );
             }
          }
          PeerMessages::Request(index, offset, length) => {
-            if self.peer.choked() {
+            if self.choked() {
                trace!(
                   piece_index = index,
                   offset, length, "Ignoring request from choked peer"
@@ -744,7 +757,7 @@ impl Message<PeerMessages> for PeerActor {
                .remove(&(index as usize, offset as usize, length as usize));
          }
          PeerMessages::Bitfield(bitfield) => {
-            self.peer.pieces = bitfield;
+            self.pieces = bitfield;
             self.determine_interest().await;
             self.notify_ready().await;
          }
@@ -754,25 +767,27 @@ impl Message<PeerMessages> for PeerActor {
       }
       #[cfg(feature = "live")]
       if publish_live_state {
-         let samples = self.live_handle.view().metrics.transfer.samples;
-         self
-            .live_handle
-            .publish_state(PeerView::from_peer_with_samples(&self.peer, true, samples));
+         let mut metrics = self.metrics();
+         metrics.transfer.samples = self.live_handle.view().metrics.transfer.samples;
+         self.live_handle.publish_state(PeerView::from_metrics(
+            self.address,
+            self.id,
+            true,
+            metrics,
+         ));
       }
    }
 }
 
 impl PeerActor {
    async fn notify_ready(&self) {
-      let Some(peer_id) = self.peer.id else {
-         return;
-      };
+      let peer_id = self.id;
 
       if let Err(err) = self
          .supervisor
          .tell(torrent::events::PeerReady {
             id: peer_id,
-            available_pieces: self.peer.pieces.clone(),
+            available_pieces: self.pieces.clone(),
          })
          .await
       {
@@ -781,9 +796,7 @@ impl PeerActor {
    }
 
    async fn reject_piece_request(&self, index: usize, begin: usize) {
-      let Some(peer_id) = self.peer.id else {
-         return;
-      };
+      let peer_id = self.id;
       if let Err(err) = self
          .supervisor
          .tell(torrent::events::PeerRejectedRequest {
@@ -809,9 +822,9 @@ pub(crate) mod commands {
    #[messages]
    impl PeerActor {
       #[message(derive(Clone, Debug))]
-      #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+      #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.id))]
       pub(crate) async fn need_piece(&mut self, index: usize, begin: usize, length: usize) {
-         let piece_exists = matches!(self.peer.pieces.get(index).as_deref(), Some(true));
+         let piece_exists = matches!(self.pieces.get(index).as_deref(), Some(true));
 
          if !piece_exists {
             trace!(
@@ -822,7 +835,7 @@ pub(crate) mod commands {
             return;
          }
 
-         if self.peer.am_choked() {
+         if self.am_choked() {
             trace!(piece_index = index, "Peer is choking us, queueing request");
             self.pending_block_requests.insert((index, begin, length));
             return;
@@ -852,7 +865,7 @@ pub(crate) mod commands {
       }
 
       #[message(derive(Clone, Debug))]
-      #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+      #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.id))]
       pub(crate) async fn cancel_piece(&mut self, index: usize, begin: usize, length: usize) {
          if !self
             .pending_block_requests
@@ -883,9 +896,9 @@ pub(crate) mod commands {
       }
 
       #[message(derive(Clone, Debug))]
-      #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.peer.id.unwrap()))]
+      #[instrument(skip(self), fields(peer_addr = %self.stream, peer_id = %self.id))]
       pub(crate) async fn set_choked(&mut self, choked: bool) {
-         if self.peer.choked() == choked {
+         if self.choked() == choked {
             return;
          }
 
@@ -900,7 +913,7 @@ pub(crate) mod commands {
             return;
          }
 
-         self.peer.set_choked(choked);
+         self.set_client_choking(choked);
          trace!(choked, "Updated peer choke state");
       }
 

@@ -5,11 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
    engine::EngineStatus,
    hashes::InfoHash,
-   metrics::{
-      HasTransferMetrics, PeerMetrics, TorrentMetrics, TrackerMetrics, TransferMetrics,
-      TransferSample,
-   },
-   peer::Peer,
+   metrics::{HasTransferMetrics, PeerMetrics, TorrentMetrics, TrackerMetrics, TransferMetrics},
+   peer::PeerId,
    torrent::TorrentState,
 };
 
@@ -67,24 +64,16 @@ pub struct PeerView {
 }
 
 impl PeerView {
-   pub(crate) fn from_peer(peer: &Peer, connected: bool) -> Self {
-      Self::from_peer_with_samples(peer, connected, Vec::new())
+   pub(crate) fn connected(address: SocketAddr, id: PeerId) -> Self {
+      Self::from_metrics(address, id, true, PeerMetrics::default())
    }
 
-   pub(crate) fn from_peer_with_samples(
-      peer: &Peer, connected: bool, samples: Vec<TransferSample>,
-   ) -> Self {
-      let mut metrics = peer.metrics();
-      metrics.transfer.samples = samples;
-      Self::from_peer_with_metrics(peer, connected, metrics)
-   }
-
-   pub(crate) fn from_peer_with_metrics(
-      peer: &Peer, connected: bool, metrics: PeerMetrics,
+   pub(crate) fn from_metrics(
+      address: SocketAddr, id: PeerId, connected: bool, metrics: PeerMetrics,
    ) -> Self {
       Self {
-         address: Some(peer.socket_addr()),
-         client: peer.id.map(|id| id.client_name().to_string()),
+         address: Some(address),
+         client: Some(id.client_name().to_string()),
          connected,
          metrics,
       }

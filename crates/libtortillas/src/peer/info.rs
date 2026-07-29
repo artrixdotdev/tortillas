@@ -1,68 +1,19 @@
 use anyhow::ensure;
 use bytes::{Bytes, BytesMut};
 
-use crate::{hashes::InfoHash, metainfo::Info};
-
-/// A helper struct for Peer. Manages and handles any metadata (informally
-/// called an Info dict, as is the case here) from a Peer.
+/// Metadata assembly state owned by a connected peer actor.
 ///
 /// If you're unfamiliar, you can get metadata from a peer using the protocol
 /// described in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html) and [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html)
-#[derive(Clone)]
-pub struct PeerInfo {
+#[derive(Default)]
+pub(crate) struct PeerInfo {
    info_size: usize,
    info_bytes: BytesMut,
 }
 
-#[allow(dead_code)]
 impl PeerInfo {
-   pub fn new(info_size: usize, info_bytes: BytesMut) -> Self {
-      PeerInfo {
-         info_size,
-         info_bytes,
-      }
-   }
-
    pub(crate) fn set_info_size(&mut self, info_size: usize) {
       self.info_size = info_size;
-   }
-
-   pub(crate) fn set_info_bytes(&mut self, info_bytes: BytesMut) {
-      self.info_bytes = info_bytes;
-   }
-
-   /// Generates an Info dict from the current bytes in info_bytes. If the hash
-   /// of the created Info dict is not the same as the inputted info hash, an
-   /// error will be returned. If the hash is the same, the newly created
-   /// Info will be returned.
-   pub(crate) async fn generate_info_from_bytes(
-      &self, info_hash: InfoHash,
-   ) -> anyhow::Result<Info> {
-      // We have to do this because sometimes info dicts have non-standard properties
-      // that get discared by serde automatically, causing the hash to be
-      // different.
-      //
-      // The solution? Hash the raw bytes of it instead of parsing it first.
-      let real_info_hash: InfoHash = {
-         use sha1::{Digest, Sha1};
-         let mut hasher = Sha1::new();
-
-         hasher.update(&self.info_bytes);
-         let hash = hasher.finalize();
-         hash.to_vec().try_into()?
-      };
-
-      // Put bytes into Info struct
-      // The metadata should be bencoded bytes.
-      let info_dict: Info = serde_bencode::from_bytes(self.info_bytes.as_ref())?;
-
-      // Validate hash of struct with given info hash
-      ensure!(
-         real_info_hash == info_hash,
-         "Inputted info_hash was not the same as generated info_hash"
-      );
-
-      Ok(info_dict)
    }
 
    /// A helper function for handling any issues with appending the new bytes to
@@ -102,11 +53,5 @@ impl PeerInfo {
 
    pub(crate) fn info_bytes(&self) -> Bytes {
       self.info_bytes.clone().freeze()
-   }
-
-   /// Resets the PeerInfo struct.
-   pub(crate) fn reset(&mut self) {
-      self.info_bytes = BytesMut::new();
-      self.info_size = 0;
    }
 }

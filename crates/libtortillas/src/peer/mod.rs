@@ -8,16 +8,13 @@ use std::{
    fmt::{self, Debug, Display},
    hash::{Hash as InternalHash, Hasher},
    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-   sync::{Arc, atomic::AtomicU8},
 };
 
 pub(crate) use actor::*;
-use bitvec::vec::BitVec;
-use bytes::BytesMut;
 pub use id::*;
-pub use info::*;
-pub use state::*;
-pub use supports::*;
+pub(crate) use info::*;
+pub(crate) use state::*;
+pub(crate) use supports::*;
 
 /// It should be noted that the *name* PeerKey is slightly deprecated from
 /// previous renditions of libtortillas. The idea of having a type for the "key"
@@ -26,67 +23,53 @@ pub type PeerKey = SocketAddr;
 
 pub const MAGIC_STRING: &[u8] = b"BitTorrent protocol";
 
-/// Represents a BitTorrent peer with connection state and statistics.
-/// Traffic totals and rates use bytes and bytes per second respectively.
+/// The identity advertised for a peer on the BitTorrent wire.
+///
+/// Connection state belongs to the peer actor once a connection is
+/// established.
 #[derive(Clone)]
-pub struct Peer {
+pub struct WirePeer {
    pub ip: IpAddr,
    pub port: u16,
-   pub state: PeerState,
-   pub pieces: Arc<BitVec<AtomicU8>>,
-   /// The reserved bytes that the peer sent us in their handshake. This
-   /// indicates what extensions the peer supports.
-   pub reserved: [u8; 8],
-   pub peer_supports: PeerSupports,
    pub id: Option<PeerId>,
-   pub info: PeerInfo,
 }
 
-impl Debug for Peer {
+impl Debug for WirePeer {
    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-      f.debug_struct("Peer")
+      f.debug_struct("WirePeer")
          .field("addr", &self.socket_addr())
-         .field("choked", &self.choked())
-         .field("interested", &self.interested())
-         .field("am_choked", &self.am_choked())
-         .field("am_interested", &self.am_interested())
          .field("id", &self.id)
          .finish()
    }
 }
 
-impl InternalHash for Peer {
+impl InternalHash for WirePeer {
    fn hash<H: Hasher>(&self, state: &mut H) {
       self.socket_addr().hash(state)
    }
 }
 
-impl Eq for Peer {}
-impl PartialEq for Peer {
+impl Eq for WirePeer {}
+impl PartialEq for WirePeer {
    fn eq(&self, other: &Self) -> bool {
       self.socket_addr() == other.socket_addr()
    }
 }
 
-impl Display for Peer {
+impl Display for WirePeer {
    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-      write!(f, "{}:{}", self.ip, self.port)
+      let display = match &self.id {
+         Some(id) => id.to_string(),
+         None => format!("{}:{}", self.ip, self.port),
+      };
+      write!(f, "{}", display)
    }
 }
 
-impl Peer {
+impl WirePeer {
    /// Create a new peer with the given IP address and port
    pub fn new(ip: IpAddr, port: u16) -> Self {
-      Peer {
-         ip,
-         port,
-         state: PeerState::new(),
-         pieces: Arc::new(BitVec::EMPTY),
-         reserved: [0u8; 8],
-         peer_supports: PeerSupports::new(),
-         id: None,
-         info: PeerInfo::new(0, BytesMut::new()),
-      }
+      Self { ip, port, id: None }
    }
 
    /// Create a new peer from an IPv4 address and port

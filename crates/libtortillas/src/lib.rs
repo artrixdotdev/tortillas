@@ -248,7 +248,7 @@ pub(crate) mod testing {
    use crate::{
       hashes::{Hash, InfoHash},
       metainfo::{MagnetUri, MetaInfo, TorrentFile},
-      peer::{Peer, PeerId},
+      peer::{PeerId, WirePeer},
       protocol::{
          messages::{Handshake, PeerMessages},
          stream::PeerStream,
@@ -378,7 +378,7 @@ pub(crate) mod testing {
 
    impl LocalHttpTracker {
       /// Starts a tracker that returns the given IPv4 peers in compact form.
-      pub(crate) async fn start(peers: impl IntoIterator<Item = Peer>) -> io::Result<Self> {
+      pub(crate) async fn start(peers: impl IntoIterator<Item = WirePeer>) -> io::Result<Self> {
          let peers = Arc::new(peers.into_iter().collect::<Vec<_>>());
          let requests = Arc::new(Mutex::new(Vec::new()));
          let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
@@ -408,7 +408,7 @@ pub(crate) mod testing {
    }
 
    async fn run_http_tracker(
-      listener: TcpListener, peers: Arc<Vec<Peer>>, requests: Arc<Mutex<Vec<String>>>,
+      listener: TcpListener, peers: Arc<Vec<WirePeer>>, requests: Arc<Mutex<Vec<String>>>,
    ) {
       let mut connections = JoinSet::new();
       loop {
@@ -429,7 +429,7 @@ pub(crate) mod testing {
    }
 
    async fn handle_http_tracker_connection(
-      mut stream: TcpStream, peers: Arc<Vec<Peer>>, requests: Arc<Mutex<Vec<String>>>,
+      mut stream: TcpStream, peers: Arc<Vec<WirePeer>>, requests: Arc<Mutex<Vec<String>>>,
    ) -> io::Result<()> {
       let mut buf = Vec::new();
       let mut chunk = [0; 1024];
@@ -471,7 +471,7 @@ pub(crate) mod testing {
       parts.next().map(ToOwned::to_owned)
    }
 
-   fn tracker_response_body(peers: &[Peer]) -> Vec<u8> {
+   fn tracker_response_body(peers: &[WirePeer]) -> Vec<u8> {
       let compact_peers = compact_peer_bytes(peers);
       let mut response = format!("d8:intervali1800e5:peers{}:", compact_peers.len()).into_bytes();
       response.extend_from_slice(&compact_peers);
@@ -479,7 +479,7 @@ pub(crate) mod testing {
       response
    }
 
-   fn compact_peer_bytes(peers: &[Peer]) -> Vec<u8> {
+   fn compact_peer_bytes(peers: &[WirePeer]) -> Vec<u8> {
       let mut bytes = Vec::with_capacity(peers.len() * 6);
       for peer in peers {
          let IpAddr::V4(ip) = peer.ip else {
@@ -519,8 +519,8 @@ pub(crate) mod testing {
          })
       }
 
-      pub(crate) fn peer(&self) -> Peer {
-         Peer::from_socket_addr(self.addr)
+      pub(crate) fn peer(&self) -> WirePeer {
+         WirePeer::from_socket_addr(self.addr)
       }
 
       pub(crate) async fn handshakes(&self) -> Vec<Handshake> {
@@ -601,7 +601,7 @@ pub(crate) mod testing {
 
       #[tokio::test]
       async fn local_http_tracker_returns_compact_peers_and_records_requests() {
-         let peer = Peer::from_ipv4(Ipv4Addr::LOCALHOST, 6881);
+         let peer = WirePeer::from_ipv4(Ipv4Addr::LOCALHOST, 6881);
          let tracker = LocalHttpTracker::start([peer.clone()]).await.unwrap();
          let http_tracker =
             crate::tracker::http::HttpTracker::new(tracker.uri(), test_info_hash(), None, None);
@@ -695,7 +695,7 @@ pub mod prelude {
       errors::*,
       hashes::InfoHash,
       metainfo::*,
-      peer::{Peer, PeerId},
+      peer::{PeerId, WirePeer},
       settings::*,
       torrent::*,
       tracker::Tracker,

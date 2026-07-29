@@ -16,7 +16,7 @@ use super::{
 };
 use crate::{
    hashes::InfoHash,
-   peer::{Peer, PeerId},
+   peer::{PeerId, WirePeer},
    settings::TrackerSettings,
 };
 
@@ -153,7 +153,7 @@ impl Tracker {
 #[async_trait]
 pub trait TrackerBase: Send + Sync {
    async fn initialize(&self) -> Result<()>;
-   async fn announce(&self) -> Result<Vec<Peer>>;
+   async fn announce(&self) -> Result<Vec<WirePeer>>;
    async fn update(&self, update: TrackerUpdate) -> Result<()>;
    fn stats(&self) -> TrackerStats;
    fn interval(&self) -> usize;
@@ -176,7 +176,7 @@ impl TrackerBase for TrackerInstance {
       }
    }
 
-   async fn announce(&self) -> Result<Vec<Peer>> {
+   async fn announce(&self) -> Result<Vec<WirePeer>> {
       match self {
          TrackerInstance::Udp(tracker) => tracker.announce().await,
          TrackerInstance::Http(tracker) => tracker.announce().await,
