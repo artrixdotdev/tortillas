@@ -10,7 +10,7 @@ use super::TorrentActor;
 #[cfg(feature = "live")]
 use crate::live::{PeerIdentity, PeerView};
 use crate::{
-   peer::{Peer, PeerActor, PeerActorArgs, PeerId},
+   peer::{PeerActor, PeerActorArgs, PeerId, WirePeer},
    protocol::{
       messages::{Handshake, PeerMessages},
       stream::{PeerSend, PeerStream, validate_handshake},
@@ -21,7 +21,7 @@ use crate::{
 
 impl TorrentActor {
    #[instrument(skip(self, peer, stream), fields(%self, peer_addr = ?peer.socket_addr(), torrent_id = %self.info_hash()))]
-   pub(super) fn append_peer(&self, mut peer: Peer, stream: Option<PeerStream>) {
+   pub(super) fn append_peer(&self, mut peer: WirePeer, stream: Option<(PeerStream, [u8; 8])>) {
       let info_hash = self.info_hash();
       let actor_ref = self.actor_ref.clone();
       let our_id = self.id;
@@ -29,14 +29,14 @@ impl TorrentActor {
 
       tokio::spawn(async move {
          let mut id = peer.id;
-         let stream = match stream {
-            Some(mut stream) => {
+         let (stream, reserved) = match stream {
+            Some((mut stream, reserved)) => {
                let handshake = Handshake::new(info_hash, our_id);
                if let Err(err) = stream.send(PeerMessages::Handshake(handshake)).await {
                   debug!(error = %err, peer_addr = %peer.socket_addr(), "Failed to send handshake to peer");
                   return;
                }
-               stream
+               (stream, reserved)
             }
             None => {
                let stream = PeerStream::connect(peer.socket_addr(), Some(utp_server)).await;
@@ -51,9 +51,7 @@ impl TorrentActor {
                               return;
                            }
                            id = Some(handshake.peer_id);
-                           peer.reserved = handshake.reserved;
-                           peer.determine_supported().await;
-                           stream
+                           (stream, handshake.reserved)
                         }
                         Err(err) => {
                            trace!(error = %err, peer_addr = %peer.socket_addr(), "Failed to receive handshake from peer; exiting");
@@ -84,13 +82,20 @@ impl TorrentActor {
 
          peer.id = Some(id);
 
-         if let Err(err) = actor_ref.tell(PeerConnected { peer, stream }).await {
+         if let Err(err) = actor_ref
+            .tell(PeerConnected {
+               peer,
+               reserved,
+               stream,
+            })
+            .await
+         {
             warn!(?err, peer_id = %id, "Failed to route connected peer back to torrent actor");
          }
       });
    }
 
-   pub(super) fn insert_peer(&mut self, peer: Peer, stream: PeerStream) {
+   pub(super) fn insert_peer(&mut self, peer: WirePeer, reserved: [u8; 8], stream: PeerStream) {
       let Some(id) = peer.id else {
          trace!(peer_addr = %peer.socket_addr(), "Connected peer missing peer id; ignoring");
          return;
@@ -110,13 +115,14 @@ impl TorrentActor {
             torrent: info_hash,
             peer: id,
          },
-         PeerView::from_peer(&peer, true),
+         PeerView::connected(peer.socket_addr(), id),
       ) else {
          return;
       };
 
       let peer_args = PeerActorArgs {
          peer,
+         reserved,
          stream,
          supervisor: actor_ref,
          info_hash,

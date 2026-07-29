@@ -24,7 +24,7 @@ use tracing::{debug, error, instrument, trace, warn};
 use crate::{
    errors::TrackerActorError,
    hashes::InfoHash,
-   peer::{Peer, PeerId},
+   peer::{PeerId, WirePeer},
    settings::TrackerSettings,
    tracker::{Event, TrackerBase, TrackerStats, TrackerUpdate},
 };
@@ -37,7 +37,7 @@ pub struct TrackerResponse {
    pub interval: Option<usize>,
    #[serde(default)]
    #[serde(deserialize_with = "deserialize_peers")]
-   pub peers: Vec<Peer>,
+   pub peers: Vec<WirePeer>,
 }
 
 /// Tracker request. See <https://www.bittorrent.org/beps/bep_0003.html> @ trackers
@@ -221,7 +221,7 @@ impl TrackerBase for HttpTracker {
         peer_id = %self.peer_id,
         torrent_id = %self.info_hash,
     ))]
-   async fn announce(&self) -> Result<Vec<Peer>> {
+   async fn announce(&self) -> Result<Vec<WirePeer>> {
       // Update statistics
       self.stats.increment_announce_attempts();
 
@@ -347,7 +347,7 @@ fn parse_tracker_response(response_bytes: &[u8]) -> Result<TrackerResponse> {
 struct PeerVisitor;
 
 impl<'de> Visitor<'de> for PeerVisitor {
-   type Value = Vec<Peer>;
+   type Value = Vec<WirePeer>;
 
    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
       formatter.write_str("a byte array containing peer information")
@@ -393,7 +393,7 @@ impl<'de> Visitor<'de> for PeerVisitor {
          let ip = Ipv4Addr::new(chunk[0], chunk[1], chunk[2], chunk[3]);
          let port = u16::from_be_bytes([chunk[4], chunk[5]]);
 
-         peers.push(Peer::from_ipv4(ip, port));
+         peers.push(WirePeer::from_ipv4(ip, port));
       }
 
       trace!(
@@ -427,7 +427,7 @@ impl<'de> Visitor<'de> for PeerVisitor {
             Ok(ip) => {
                let port = dictionary_peer.port;
                let id_bytes: Option<[u8; 20]> = dictionary_peer.id.and_then(|b| b.try_into().ok());
-               let mut peer = Peer::from_socket_addr(SocketAddr::from((ip, port)));
+               let mut peer = WirePeer::from_socket_addr(SocketAddr::from((ip, port)));
 
                peer.id = id_bytes.map(PeerId::from);
                peers.push(peer);
@@ -451,7 +451,7 @@ impl<'de> Visitor<'de> for PeerVisitor {
 }
 
 /// Serde related code. Reference their documentation: <https://serde.rs/impl-deserialize.html>
-fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<Peer>, D::Error>
+fn deserialize_peers<'de, D>(deserializer: D) -> Result<Vec<WirePeer>, D::Error>
 where
    D: serde::Deserializer<'de>,
 {
@@ -472,7 +472,7 @@ mod tests {
    use crate::{
       errors::TrackerActorError,
       metainfo::MetaInfo,
-      peer::{Peer, PeerId},
+      peer::{PeerId, WirePeer},
       testing::{
          KNOPPIX_TORRENT_FILE, LocalHttpTracker, init_tracing, random_port, read_torrent_fixture,
          test_info_hash, udp_server,
@@ -557,7 +557,7 @@ mod tests {
    #[cfg(feature = "live")]
    #[tokio::test]
    async fn http_tracker_when_local_tracker_is_available_then_returns_ipv4_peer() {
-      let expected_peer = Peer::from_ipv4(Ipv4Addr::LOCALHOST, 6881);
+      let expected_peer = WirePeer::from_ipv4(Ipv4Addr::LOCALHOST, 6881);
       let local_tracker = LocalHttpTracker::start([expected_peer.clone()])
          .await
          .unwrap();
@@ -573,7 +573,7 @@ mod tests {
 
    #[tokio::test]
    async fn http_tracker_instance_when_local_tracker_is_available_then_returns_peers() {
-      let expected_peer = Peer::from_ipv4(Ipv4Addr::LOCALHOST, 51413);
+      let expected_peer = WirePeer::from_ipv4(Ipv4Addr::LOCALHOST, 51413);
       let local_tracker = LocalHttpTracker::start([expected_peer.clone()])
          .await
          .unwrap();

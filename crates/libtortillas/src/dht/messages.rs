@@ -8,7 +8,7 @@ use tracing::{trace, warn};
 use super::{DhtActor, LookupResult, Message, NodeId, actor::DhtTorrent, announce_peer};
 use crate::{
    hashes::InfoHash,
-   peer::Peer,
+   peer::WirePeer,
    torrent::{AnnounceFrom, TorrentActor, commands::HasInfoDict, events::Announce},
 };
 
@@ -82,7 +82,7 @@ pub(crate) mod events {
          let peers = result
             .peers
             .into_iter()
-            .map(Peer::from_socket_addr)
+            .map(WirePeer::from_socket_addr)
             .collect::<Vec<_>>();
          if !peers.is_empty()
             && let Err(err) = torrent

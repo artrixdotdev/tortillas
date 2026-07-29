@@ -1008,8 +1008,8 @@ mod tests {
          Self { address, task }
       }
 
-      fn peer(&self) -> crate::peer::Peer {
-         crate::peer::Peer::from_socket_addr(self.address)
+      fn peer(&self) -> crate::peer::WirePeer {
+         crate::peer::WirePeer::from_socket_addr(self.address)
       }
    }
 

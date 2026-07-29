@@ -11,7 +11,7 @@ use crate::{
    errors::{EngineError, map_torrent_send_error},
    hashes::InfoHash,
    metainfo::MetaInfo,
-   peer::Peer,
+   peer::WirePeer,
    protocol::stream::{PeerStream, validate_handshake_protocol},
    torrent::{
       self, RestoreVerification, TorrentActor, TorrentActorArgs, TorrentSnapshot, TorrentState,
@@ -86,15 +86,17 @@ pub(crate) mod commands {
          }
 
          let info_hash = handshake.info_hash;
-         let mut peer = Peer::from_socket_addr(peer_addr);
+         let mut peer = WirePeer::from_socket_addr(peer_addr);
 
-         // Populate peer fields from parsed handshake.
          peer.id = Some(handshake.peer_id);
-         peer.reserved = handshake.reserved;
 
          if let Some(torrent) = self.torrents.get(&info_hash) {
             if let Err(err) = torrent
-               .tell(torrent::events::IncomingPeer { peer, stream })
+               .tell(torrent::events::IncomingPeer {
+                  peer,
+                  reserved: handshake.reserved,
+                  stream,
+               })
                .await
             {
                warn!(error = %err, %info_hash, "Failed to route incoming peer to torrent");

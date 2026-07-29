@@ -21,7 +21,7 @@ use crate::{
    errors::TorrentError,
    hashes::InfoHash,
    metainfo::Info,
-   peer::{Peer, PeerId, commands::HaveInfoDict},
+   peer::{PeerId, WirePeer, commands::HaveInfoDict},
    pieces::{PieceManager, PieceScheduler},
    protocol::stream::PeerStream,
    tracker::Tracker,
@@ -38,7 +38,7 @@ pub(crate) mod events {
       /// A message from an announce actor containing new peers.
       #[message(derive(Debug))]
       #[instrument(skip(self, peers, from), fields(torrent_id = %self.info_hash(), announce_from = from.kind()))]
-      pub(crate) fn announce(&mut self, peers: Vec<Peer>, from: AnnounceFrom) {
+      pub(crate) fn announce(&mut self, peers: Vec<WirePeer>, from: AnnounceFrom) {
          trace!(peer_count = peers.len(), "Received announce message");
          for peer in peers {
             self.append_peer(peer, None);
@@ -52,8 +52,10 @@ pub(crate) mod events {
       /// not the responsibility of the engine.
       #[message]
       #[instrument(skip(self, stream), fields(torrent_id = %self.info_hash()))]
-      pub(crate) fn incoming_peer(&mut self, peer: Peer, stream: PeerStream) {
-         self.append_peer(peer, Some(stream));
+      pub(crate) fn incoming_peer(
+         &mut self, peer: WirePeer, reserved: [u8; 8], stream: PeerStream,
+      ) {
+         self.append_peer(peer, Some((stream, reserved)));
       }
 
       /// Used to manually add a peer. This is primarily used for testing but
@@ -61,15 +63,17 @@ pub(crate) mod events {
       /// come from an announce.
       #[message(derive(Debug))]
       #[instrument(skip(self), fields(torrent_id = %self.info_hash()))]
-      pub(crate) fn add_peer(&mut self, peer: Peer) {
+      pub(crate) fn add_peer(&mut self, peer: WirePeer) {
          self.append_peer(peer, None);
       }
 
       /// Sent by a connection task after peer handshaking completes.
       #[message]
       #[instrument(skip(self, stream), fields(torrent_id = %self.info_hash()))]
-      pub(crate) fn peer_connected(&mut self, peer: Peer, stream: PeerStream) {
-         self.insert_peer(peer, stream);
+      pub(crate) fn peer_connected(
+         &mut self, peer: WirePeer, reserved: [u8; 8], stream: PeerStream,
+      ) {
+         self.insert_peer(peer, reserved, stream);
       }
 
       /// Index, offset, and data for a received peer `Piece` message.

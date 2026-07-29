@@ -3,20 +3,18 @@ use bytes::{Bytes, BytesMut};
 
 use crate::{hashes::InfoHash, metainfo::Info};
 
-/// A helper struct for Peer. Manages and handles any metadata (informally
-/// called an Info dict, as is the case here) from a Peer.
+/// Metadata assembly state owned by a connected peer actor.
 ///
 /// If you're unfamiliar, you can get metadata from a peer using the protocol
 /// described in [BEP 0009](https://www.bittorrent.org/beps/bep_0009.html) and [BEP 0010](https://www.bittorrent.org/beps/bep_0010.html)
-#[derive(Clone)]
-pub struct PeerInfo {
+pub(crate) struct PeerInfo {
    info_size: usize,
    info_bytes: BytesMut,
 }
 
 #[allow(dead_code)]
 impl PeerInfo {
-   pub fn new(info_size: usize, info_bytes: BytesMut) -> Self {
+   pub(crate) fn new(info_size: usize, info_bytes: BytesMut) -> Self {
       PeerInfo {
          info_size,
          info_bytes,

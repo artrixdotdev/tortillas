@@ -25,7 +25,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use crate::{
    errors::TrackerActorError,
    hashes::InfoHash,
-   peer::{Peer, PeerId},
+   peer::{PeerId, WirePeer},
    settings::TrackerSettings,
    tracker::{Event, TrackerBase, TrackerStats, TrackerUpdate},
 };
@@ -179,8 +179,8 @@ enum TrackerResponse {
       leechers: u32,
       /// Number of seeders (4 bytes)
       seeders: u32,
-      /// List of [peers](Peer) (6 bytes per peer) unless ipv6
-      peers: Vec<Peer>,
+      /// List of [peers](WirePeer) (6 bytes per peer) unless ipv6
+      peers: Vec<WirePeer>,
    },
 
    /// Error response (8 + message length bytes total)
@@ -276,7 +276,7 @@ impl TrackerResponse {
                let ip = Ipv4Addr::from(buf.get_u32());
                let port = buf.get_u16();
 
-               peers.push(Peer::from_ipv4(ip, port));
+               peers.push(WirePeer::from_ipv4(ip, port));
             }
 
             Ok(TrackerResponse::Announce {
@@ -876,7 +876,7 @@ impl TrackerBase for UdpTracker {
         torrent_id = %self.info_hash,
         tracker_ready_state = ?self.get_ready_state(),
     ))]
-   async fn announce(&self) -> anyhow::Result<Vec<Peer>> {
+   async fn announce(&self) -> anyhow::Result<Vec<WirePeer>> {
       ensure!(
          self.get_ready_state() == ReadyState::Ready,
          "Tracker not ready for announce request"
