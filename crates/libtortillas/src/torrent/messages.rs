@@ -258,7 +258,7 @@ pub(crate) mod commands {
          let mut queued = 0usize;
          let mut first_error = None;
          for (tracker, actor) in &self.trackers {
-            match actor.tell(Announce).await {
+            match actor.tell(Announce).try_send() {
                Ok(()) => queued = queued.saturating_add(1),
                Err(error) => {
                   first_error.get_or_insert_with(|| TorrentError::ActorCommunicationFailed {

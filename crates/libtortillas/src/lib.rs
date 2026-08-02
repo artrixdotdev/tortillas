@@ -571,6 +571,8 @@ pub(crate) mod testing {
          stream.write_all(&message.to_bytes()?).await?;
       }
 
+      // Keep the connection open so the peer does not observe EOF until its
+      // accept task and JoinSet are aborted by LocalPeer::drop.
       std::future::pending().await
    }
 

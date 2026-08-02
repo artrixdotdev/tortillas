@@ -5,7 +5,7 @@ use kameo::{
    prelude::Message,
    supervision::RestartPolicy,
 };
-use tokio::sync::oneshot;
+use tokio::{sync::oneshot, time::timeout};
 use tracing::{debug, instrument, trace, warn};
 
 use super::{ConfiguredTracker, ConnectedPeer, TorrentActor};
@@ -39,6 +39,7 @@ impl TorrentActor {
       let actor_ref = self.actor_ref.clone();
       let our_id = self.id;
       let utp_server = self.utp_server.clone();
+      let handshake_timeout = self.settings.engine.incoming_peer_handshake_timeout;
 
       // Handshakes may involve network timeouts, so keep them outside the
       // torrent actor's mailbox. Explicit additions receive the result through
@@ -46,22 +47,30 @@ impl TorrentActor {
       tokio::spawn(async move {
          let mut id = peer.id;
          let connection = async {
-            let (stream, reserved) = match stream {
-               Some((mut stream, reserved)) => {
-                  let handshake = Handshake::new(info_hash, our_id);
-                  stream.send(PeerMessages::Handshake(handshake)).await?;
-                  (stream, reserved)
+            let (stream, reserved, handshake_id) = timeout(handshake_timeout, async {
+               match stream {
+                  Some((mut stream, reserved)) => {
+                     let handshake = Handshake::new(info_hash, our_id);
+                     stream.send(PeerMessages::Handshake(handshake)).await?;
+                     Ok::<_, TorrentError>((stream, reserved, None))
+                  }
+                  None => {
+                     let mut stream =
+                        PeerStream::connect(peer.socket_addr(), Some(utp_server)).await?;
+                     stream.send_handshake(our_id, info_hash).await?;
+                     let handshake = stream.recv_handshake_message().await?;
+                     validate_handshake(&handshake, peer.socket_addr(), info_hash)?;
+                     Ok::<_, TorrentError>((stream, handshake.reserved, Some(handshake.peer_id)))
+                  }
                }
-               None => {
-                  let mut stream =
-                     PeerStream::connect(peer.socket_addr(), Some(utp_server)).await?;
-                  stream.send_handshake(our_id, info_hash).await?;
-                  let handshake = stream.recv_handshake_message().await?;
-                  validate_handshake(&handshake, peer.socket_addr(), info_hash)?;
-                  id = Some(handshake.peer_id);
-                  (stream, handshake.reserved)
-               }
-            };
+            })
+            .await
+            .map_err(|_| {
+               TorrentError::PeerActor(crate::errors::PeerActorError::PeerTimeout {
+                  seconds: handshake_timeout.as_secs().max(1),
+               })
+            })??;
+            id = id.or(handshake_id);
 
             let id = id.ok_or_else(|| TorrentError::InvalidOperation {
                operation: "add peer",

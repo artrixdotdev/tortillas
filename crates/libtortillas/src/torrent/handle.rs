@@ -269,7 +269,11 @@ mod tests {
 
       assert!(!listener.view().connected);
       assert_eq!(
-         listener.recv().await.unwrap().kind,
+         timeout(Duration::from_secs(2), listener.recv())
+            .await
+            .expect("peer disconnected event timed out")
+            .unwrap()
+            .kind,
          PeerEventKind::Disconnected
       );
       assert!(torrent.peers().is_empty());
