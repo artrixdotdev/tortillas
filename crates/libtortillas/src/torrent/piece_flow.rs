@@ -511,6 +511,7 @@ mod tests {
          resolved_magnet_info: None,
          metainfo,
          tracker_server,
+         primary_addr: utp_server.bind_addr(),
          scheduler: Scheduler::spawn(Scheduler::new()),
          utp_server,
          actor_ref,

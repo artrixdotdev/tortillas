@@ -571,7 +571,9 @@ pub(crate) mod testing {
          stream.write_all(&message.to_bytes()?).await?;
       }
 
-      Ok(())
+      // Keep the connection open so the peer does not observe EOF until its
+      // accept task and JoinSet are aborted by LocalPeer::drop.
+      std::future::pending().await
    }
 
    pub(crate) fn test_info_hash() -> InfoHash {
