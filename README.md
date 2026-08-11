@@ -1,3 +1,5 @@
+
+
 # Tortillas
 A terminal-based TUI (Text User Interface) torrent client built in Rust 🫓.
 
@@ -74,7 +76,7 @@ Tortillas is the TUI (Text User Interface) application most people will use.
 
 There are plans to publish tortillas to registries such as [crates.io](https://crates.io) and [the AUR](https://aur.archlinux.org). However, for now, you can install it from source using cargo:
 ```bash
-cargo install --git https://github.com/artrixdotdev/tortillas
+cargo install --git https://github.com/artrixdotdev/tortillas --package tortillas
 ```
 
 This will install `tortillas` to your local Rust toolchain.
